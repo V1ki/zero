@@ -133,6 +133,8 @@ describe('SpawnAgentTool', () => {
       waitAll: async () => ({ statuses: {}, timedOut: false }),
       getStatus: () => undefined,
       getOutput: () => undefined,
+      getSnapshot: () => [],
+      restoreSnapshot: () => {},
       sendInput: () => ({ success: true }),
       getTraceSpanId: () => undefined,
       getAgentInfo: () => undefined,
@@ -197,9 +199,9 @@ describe('SpawnAgentTool', () => {
     ]) as ToolRegistry
 
     expect(scopedRegistry.list().map((entry: BaseTool) => entry.name)).toEqual(['read', 'bash'])
-    expect(scopedRegistry.list().every((entry: BaseTool) => !SUB_AGENT_BLOCKED_TOOLS.has(entry.name))).toBe(
-      true,
-    )
+    expect(
+      scopedRegistry.list().every((entry: BaseTool) => !SUB_AGENT_BLOCKED_TOOLS.has(entry.name)),
+    ).toBe(true)
   })
 
   test('defaults exclude blocked tools from the full registry', () => {

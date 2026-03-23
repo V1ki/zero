@@ -1,9 +1,22 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { join } from 'node:path'
 import type { Channel, FeishuStreamingSession } from '@zero-os/channel'
 import { FeishuChannel, TelegramChannel, WebChannel } from '@zero-os/channel'
-import type { Command } from '@zero-os/core'
-import { CONTEXT_PARAMS, CommandRouter, loadConfig, loadFuseList, registerBuiltinCommands } from '@zero-os/core'
+import type { AgentSnapshot, Command } from '@zero-os/core'
+import {
+  CONTEXT_PARAMS,
+  CommandRouter,
+  loadConfig,
+  loadFuseList,
+  registerBuiltinCommands,
+} from '@zero-os/core'
 import {
   BashTool,
   CloseAgentTool,
@@ -114,6 +127,7 @@ interface RestartSentinelEntry {
   source: SessionSource
   channelId: string
   channelName?: string
+  subAgents?: AgentSnapshot[]
 }
 
 interface RestartSentinelFile {
@@ -854,13 +868,14 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
 
             try {
               session.setChannelCapabilities(channel.getCapabilities() as Record<string, unknown>)
+              if (entry.subAgents?.length) {
+                session.restoreSubAgentSnapshot(entry.subAgents)
+              }
               // Skip duplicate restart notice if trigger already notified this chat
               if (entry.channelId !== triggerChannelId) {
                 await channel.send(entry.channelId, '✅ ZeRo OS 已重启完成')
               }
-              const replies = await session.handleMessage(
-                '[System] The process restarted while your previous turn was still running. Continue the interrupted task from the existing conversation context. If the task is already complete, briefly confirm completion.',
-              )
+              const replies = await session.handleMessage(buildRestartRecoveryMessage(entry))
               const replyText = collectAssistantReply(replies)
               if (replyText) {
                 await channel.send(entry.channelId, replyText)
@@ -886,6 +901,38 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
   globalBus.emit('session:create', { event: 'system_start' })
 
   return zero
+}
+
+function buildRestartRecoveryMessage(entry: RestartSentinelEntry): string {
+  let systemMessage = '[System] The process restarted while your previous turn was still running.'
+
+  if (entry.subAgents?.length) {
+    const completed = entry.subAgents.filter((agent) => agent.state === 'completed')
+    const running = entry.subAgents.filter((agent) => agent.state === 'running')
+    const failed = entry.subAgents.filter((agent) => agent.state === 'failed')
+
+    systemMessage += '\n\nSub-agent state at restart:'
+    systemMessage += `\n- ${completed.length} completed (outputs preserved, accessible via wait_agent)`
+    systemMessage += `\n- ${running.length} were still running (marked as failed, need re-spawn)`
+    systemMessage += `\n- ${failed.length} had already failed`
+
+    if (running.length > 0) {
+      systemMessage += '\n\nLost sub-agents that need re-spawning:'
+      for (const agent of running) {
+        systemMessage += `\n  - "${agent.label}" (was: ${agent.instruction.slice(0, 100)})`
+      }
+    }
+  }
+
+  systemMessage +=
+    '\n\nContinue the interrupted task from the existing conversation context. If the task is already complete, briefly confirm completion.'
+
+  if (entry.subAgents?.length) {
+    systemMessage +=
+      ' For completed sub-agents, use wait_agent with their original IDs to retrieve results. For lost sub-agents, re-spawn them.'
+  }
+
+  return systemMessage
 }
 
 function buildExternalChannelDefinitions(

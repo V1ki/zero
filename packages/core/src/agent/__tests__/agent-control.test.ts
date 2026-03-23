@@ -86,7 +86,11 @@ function createObservabilityMocks(): {
   tracer: ToolTracer
   logger: ToolLogger
   updates: Array<{ spanId: string; update: Record<string, unknown> }>
-  endings: Array<{ spanId: string; status?: 'success' | 'error'; metadata?: Record<string, unknown> }>
+  endings: Array<{
+    spanId: string
+    status?: 'success' | 'error'
+    metadata?: Record<string, unknown>
+  }>
   infos: Array<{ event: string; data?: Record<string, unknown> }>
   warns: Array<{ event: string; data?: Record<string, unknown> }>
   errors: Array<{ event: string; data?: Record<string, unknown> }>
@@ -208,6 +212,96 @@ describe('AgentControl', () => {
     expect(control.getOutput(result.agentId)).toBeUndefined()
   })
 
+  test('getSnapshot returns empty array when no agents', () => {
+    const control = new AgentControl()
+
+    expect(control.getSnapshot()).toEqual([])
+  })
+
+  test('getSnapshot returns completed agent with output and originalInstruction', async () => {
+    const control = new AgentControl()
+    const result = control.spawn(createAgent({ text: 'snapshot output' }), agentContext, 'inspect')
+    if (!('agentId' in result)) throw new Error('expected spawn success')
+
+    await control.waitAll([result.agentId], 100)
+
+    expect(control.getSnapshot()).toEqual([
+      {
+        id: result.agentId,
+        label: result.label,
+        role: undefined,
+        state: 'completed',
+        instruction: 'inspect',
+        output: 'snapshot output',
+        error: undefined,
+        startedAt: expect.any(Number),
+        endedAt: expect.any(Number),
+      },
+    ])
+  })
+
+  test('getSnapshot returns failed agent with error', async () => {
+    const control = new AgentControl()
+    const result = control.spawn(createAgent({ error: 'snapshot boom' }), agentContext, 'inspect')
+    if (!('agentId' in result)) throw new Error('expected spawn success')
+
+    await control.waitAll([result.agentId], 100)
+
+    expect(control.getSnapshot()).toEqual([
+      {
+        id: result.agentId,
+        label: result.label,
+        role: undefined,
+        state: 'failed',
+        instruction: 'inspect',
+        output: undefined,
+        error: 'snapshot boom',
+        startedAt: expect.any(Number),
+        endedAt: expect.any(Number),
+      },
+    ])
+  })
+
+  test('getSnapshot returns running agent state', async () => {
+    const control = new AgentControl()
+    const result = control.spawn(createAgent({ delayMs: 40 }), agentContext, 'long task')
+    if (!('agentId' in result)) throw new Error('expected spawn success')
+
+    expect(control.getSnapshot()).toEqual([
+      {
+        id: result.agentId,
+        label: result.label,
+        role: undefined,
+        state: 'running',
+        instruction: 'long task',
+        output: undefined,
+        error: undefined,
+        startedAt: expect.any(Number),
+        endedAt: undefined,
+      },
+    ])
+
+    control.close(result.agentId)
+    await sleep(50)
+  })
+
+  test('getSnapshot preserves originalInstruction even after agent completes', async () => {
+    const control = new AgentControl()
+    const result = control.spawn(createAgent({ text: 'done' }), agentContext, 'preserve this')
+    if (!('agentId' in result)) throw new Error('expected spawn success')
+
+    await control.waitAll([result.agentId], 100)
+
+    const internal = control as unknown as {
+      entries: Map<string, { instruction: string; originalInstruction: string }>
+    }
+    const entry = internal.entries.get(result.agentId)
+
+    expect(entry?.instruction).toBe('')
+    expect(entry?.originalInstruction).toBe('preserve this')
+    expect(control.getSnapshot()[0]?.instruction).toBe('preserve this')
+  })
+
   test('failed agents expose failed status and error', async () => {
     const control = new AgentControl()
     const result = control.spawn(createAgent({ error: 'boom' }), agentContext, 'fail')
@@ -254,6 +348,166 @@ describe('AgentControl', () => {
         status: { state: 'completed' },
         depth: 3,
         elapsedMs: expect.any(Number),
+      },
+    ])
+  })
+
+  test('restoreSnapshot restores completed agents', () => {
+    const control = new AgentControl()
+    control.restoreSnapshot([
+      {
+        id: 'agent_completed',
+        label: 'worker',
+        role: 'explorer',
+        state: 'completed',
+        instruction: 'inspect repository',
+        output: 'all good',
+        startedAt: 10,
+        endedAt: 20,
+      },
+    ])
+
+    expect(control.getStatus('agent_completed')).toEqual({
+      state: 'completed',
+      label: 'worker',
+      role: 'explorer',
+      depth: 1,
+      elapsedMs: 10,
+      output: 'all good',
+    })
+    expect(control.getOutput('agent_completed')).toBe('all good')
+  })
+
+  test('restoreSnapshot marks running agents as failed', () => {
+    const control = new AgentControl()
+    control.restoreSnapshot([
+      {
+        id: 'agent_running',
+        label: 'worker',
+        state: 'running',
+        instruction: 'still working',
+        startedAt: Date.now() - 50,
+      },
+    ])
+
+    expect(control.getStatus('agent_running')).toEqual({
+      state: 'failed',
+      label: 'worker',
+      depth: 1,
+      elapsedMs: expect.any(Number),
+      error: 'Process restarted while agent was running',
+    })
+    expect(control.getOutput('agent_running')).toBeUndefined()
+  })
+
+  test('restoreSnapshot preserves failed agents as-is', () => {
+    const control = new AgentControl()
+    control.restoreSnapshot([
+      {
+        id: 'agent_failed',
+        label: 'worker',
+        state: 'failed',
+        instruction: 'bad task',
+        error: 'boom',
+        startedAt: 10,
+        endedAt: 30,
+      },
+    ])
+
+    expect(control.getStatus('agent_failed')).toEqual({
+      state: 'failed',
+      label: 'worker',
+      depth: 1,
+      elapsedMs: 20,
+      error: 'boom',
+    })
+  })
+
+  test('waitAny and waitAll work with restored agents', async () => {
+    const control = new AgentControl()
+    control.restoreSnapshot([
+      {
+        id: 'agent_done',
+        label: 'done',
+        state: 'completed',
+        instruction: 'complete',
+        output: 'done output',
+        startedAt: 10,
+        endedAt: 20,
+      },
+      {
+        id: 'agent_lost',
+        label: 'lost',
+        state: 'running',
+        instruction: 'still running',
+        startedAt: 10,
+      },
+    ])
+
+    await expect(control.waitAny(['agent_done', 'agent_lost'], 1)).resolves.toEqual({
+      statuses: {
+        agent_done: {
+          state: 'completed',
+          label: 'done',
+          depth: 1,
+          elapsedMs: 10,
+          output: 'done output',
+        },
+        agent_lost: {
+          state: 'failed',
+          label: 'lost',
+          depth: 1,
+          elapsedMs: expect.any(Number),
+          error: 'Process restarted while agent was running',
+        },
+      },
+      timedOut: false,
+    })
+
+    await expect(control.waitAll(['agent_done', 'agent_lost'], 1)).resolves.toEqual({
+      statuses: {
+        agent_done: {
+          state: 'completed',
+          label: 'done',
+          depth: 1,
+          elapsedMs: 10,
+          output: 'done output',
+        },
+        agent_lost: {
+          state: 'failed',
+          label: 'lost',
+          depth: 1,
+          elapsedMs: expect.any(Number),
+          error: 'Process restarted while agent was running',
+        },
+      },
+      timedOut: false,
+    })
+  })
+
+  test('listAgents includes restored agents', () => {
+    const control = new AgentControl()
+    control.restoreSnapshot([
+      {
+        id: 'agent_restored',
+        label: 'worker',
+        role: 'explorer',
+        state: 'completed',
+        instruction: 'inspect',
+        output: 'done',
+        startedAt: 10,
+        endedAt: 15,
+      },
+    ])
+
+    expect(control.listAgents()).toEqual([
+      {
+        id: 'agent_restored',
+        label: 'worker',
+        role: 'explorer',
+        status: { state: 'completed' },
+        depth: 1,
+        elapsedMs: 5,
       },
     ])
   })
@@ -341,7 +595,11 @@ describe('AgentControl', () => {
 
   test('closed agents are not overwritten by later completion', async () => {
     const control = new AgentControl()
-    const result = control.spawn(createAgent({ delayMs: 20, text: 'late output' }), agentContext, 'work')
+    const result = control.spawn(
+      createAgent({ delayMs: 20, text: 'late output' }),
+      agentContext,
+      'work',
+    )
     if (!('agentId' in result)) throw new Error('expected spawn success')
 
     control.close(result.agentId)

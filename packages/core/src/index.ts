@@ -26,6 +26,7 @@ export { Agent } from './agent/agent'
 export { AgentControl } from './agent/agent-control'
 export { loadRoles, resolveRole, getBuiltinRoles } from './agent/roles'
 export type { AgentConfig, AgentContext } from './agent/agent'
+export type { AgentSnapshot, AgentState } from './agent/agent-control'
 export type { RoleDefinition } from './agent/roles'
 
 // Session

@@ -211,6 +211,8 @@ describe('TaskTool', () => {
       waitAll: async () => ({ statuses: {}, timedOut: false }),
       getStatus: () => undefined,
       getOutput: () => undefined,
+      getSnapshot: () => [],
+      restoreSnapshot: () => {},
       sendInput: () => ({ success: true }),
       getTraceSpanId: () => undefined,
       getAgentInfo: () => undefined,
@@ -308,7 +310,15 @@ describe('TaskTool', () => {
 
     const taskTool = new TaskTool(createStubRouter(new StaticResponseAdapter()), registry)
     const scopedRegistry = (taskTool as any).buildScopedRegistry(undefined, {
-      defaultTools: ['read', 'task', 'spawn_agent', 'wait_agent', 'close_agent', 'send_input', 'bash'],
+      defaultTools: [
+        'read',
+        'task',
+        'spawn_agent',
+        'wait_agent',
+        'close_agent',
+        'send_input',
+        'bash',
+      ],
     }) as ToolRegistry
 
     expect(scopedRegistry.list().map((tool: BaseTool) => tool.name)).toEqual(['read', 'bash'])
@@ -317,7 +327,10 @@ describe('TaskTool', () => {
   test('preserves the lightweight default tool set when no tools are provided', () => {
     const registry = createToolRegistry()
     const taskTool = new TaskTool(createStubRouter(new StaticResponseAdapter()), registry)
-    const scopedRegistry = (taskTool as any).buildScopedRegistry(undefined, undefined) as ToolRegistry
+    const scopedRegistry = (taskTool as any).buildScopedRegistry(
+      undefined,
+      undefined,
+    ) as ToolRegistry
 
     expect(scopedRegistry.list().map((tool: BaseTool) => tool.name)).toEqual(['read', 'bash'])
   })

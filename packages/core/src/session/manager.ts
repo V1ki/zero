@@ -3,6 +3,7 @@ import type { ModelRouter } from '@zero-os/model'
 import type { MetricsDB, SessionDB, SessionRow } from '@zero-os/observe'
 import { generateSessionId } from '@zero-os/shared'
 import type { Message, Session as SessionData, SessionSource, SessionStatus } from '@zero-os/shared'
+import type { AgentSnapshot } from '../agent/agent-control'
 import type { AgentConfig } from '../agent/agent'
 import type { ToolRegistry } from '../tool/registry'
 import { Session, type SessionDeps } from './session'
@@ -22,6 +23,7 @@ export interface InterruptedSessionRef {
   source: SessionSource
   channelId?: string
   channelName?: string
+  subAgents?: AgentSnapshot[]
 }
 
 /**
@@ -197,7 +199,9 @@ export class SessionManager {
       }
     }
 
-    throw new Error(`Unable to allocate unique session ID for source "${source}" after 16 attempts.`)
+    throw new Error(
+      `Unable to allocate unique session ID for source "${source}" after 16 attempts.`,
+    )
   }
 
   /**
@@ -378,13 +382,17 @@ export class SessionManager {
    * therefore will need recovery after restart.
    */
   async drainAndCollectInterrupted(timeoutMs = 30_000): Promise<InterruptedSessionRef[]> {
-    const active = Array.from(this.sessions.values()).filter((session) => session.isTurnInProgress())
+    const active = Array.from(this.sessions.values()).filter((session) =>
+      session.isTurnInProgress(),
+    )
     if (active.length === 0) return []
 
     console.log(`[SessionManager] Draining ${active.length} active turn(s)...`)
 
     const result = await Promise.race([
-      Promise.all(active.map((session) => session.waitForTurnComplete())).then(() => 'done' as const),
+      Promise.all(active.map((session) => session.waitForTurnComplete())).then(
+        () => 'done' as const,
+      ),
       new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), timeoutMs)),
     ])
 
@@ -395,12 +403,16 @@ export class SessionManager {
 
     const interrupted = active
       .filter((session) => session.isTurnInProgress())
-      .map((session) => ({
-        sessionId: session.data.id,
-        source: session.data.source,
-        channelId: session.data.channelId,
-        channelName: session.data.channelName,
-      }))
+      .map((session) => {
+        const subAgents = session.getSubAgentSnapshot()
+        return {
+          sessionId: session.data.id,
+          source: session.data.source,
+          channelId: session.data.channelId,
+          channelName: session.data.channelName,
+          ...(subAgents.length > 0 ? { subAgents } : {}),
+        }
+      })
 
     console.warn(`[SessionManager] Drain timeout: ${interrupted.length} turn(s) still active`)
     return interrupted

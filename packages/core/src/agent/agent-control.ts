@@ -3,7 +3,19 @@ import { generatePrefixedId, toErrorMessage } from '@zero-os/shared'
 import type { AgentContext } from './agent'
 import type { QueuedMessage } from './queue'
 
-type AgentState = 'running' | 'completed' | 'failed' | 'closed'
+export type AgentState = 'running' | 'completed' | 'failed' | 'closed'
+
+export interface AgentSnapshot {
+  id: string
+  label: string
+  role?: string
+  state: AgentState
+  instruction: string
+  output?: string
+  error?: string
+  startedAt: number
+  endedAt?: number
+}
 
 interface ControlledAgent {
   run(
@@ -28,6 +40,7 @@ interface AgentEntry {
   startedAt: number
   endedAt?: number
   instruction: string
+  originalInstruction: string
   agent?: ControlledAgent
   context?: AgentContext
   output?: string
@@ -100,6 +113,7 @@ export class AgentControl {
       state: 'running',
       startedAt: Date.now(),
       instruction,
+      originalInstruction: instruction,
       agent,
       context,
       messageQueue: [],
@@ -156,6 +170,61 @@ export class AgentControl {
 
   getTraceSpanId(agentId: string): string | undefined {
     return this.entries.get(agentId)?.traceSpanId
+  }
+
+  getSnapshot(): AgentSnapshot[] {
+    return Array.from(this.entries.values()).map((entry) => ({
+      id: entry.id,
+      label: entry.label,
+      role: entry.role,
+      state: entry.state,
+      instruction: entry.originalInstruction,
+      output: entry.output,
+      error: entry.error,
+      startedAt: entry.startedAt,
+      endedAt: entry.endedAt,
+    }))
+  }
+
+  restoreSnapshot(entries: AgentSnapshot[]): void {
+    for (const snapshot of entries) {
+      if (snapshot.state === 'running') {
+        this.entries.set(snapshot.id, {
+          id: snapshot.id,
+          label: snapshot.label,
+          role: snapshot.role,
+          depth: 1,
+          state: 'failed',
+          startedAt: snapshot.startedAt,
+          endedAt: Date.now(),
+          instruction: '',
+          originalInstruction: snapshot.instruction,
+          output: undefined,
+          error: 'Process restarted while agent was running',
+          messageQueue: [],
+          interruptFlag: false,
+          waiters: new Set(),
+        })
+        continue
+      }
+
+      this.entries.set(snapshot.id, {
+        id: snapshot.id,
+        label: snapshot.label,
+        role: snapshot.role,
+        depth: 1,
+        state: snapshot.state,
+        startedAt: snapshot.startedAt,
+        endedAt: snapshot.endedAt,
+        instruction: '',
+        originalInstruction: snapshot.instruction,
+        output: snapshot.output,
+        error: snapshot.error,
+        messageQueue: [],
+        interruptFlag: false,
+        waiters: new Set(),
+      })
+    }
   }
 
   sendInput(
@@ -378,10 +447,7 @@ export class AgentControl {
       }
     } catch (error) {
       if (entry.state !== 'closed') {
-        entry.error = this.filterSensitive(
-          entry,
-          toErrorMessage(error),
-        )
+        entry.error = this.filterSensitive(entry, toErrorMessage(error))
         entry.state = 'failed'
         entry.endedAt = Date.now()
         this.failSpan(entry)

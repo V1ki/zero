@@ -24,7 +24,7 @@ import type {
 } from '@zero-os/shared'
 import { Mutex, generateId, generateSessionId, now } from '@zero-os/shared'
 import { Agent, type AgentConfig, type AgentContext, type AgentObservability } from '../agent/agent'
-import { AgentControl } from '../agent/agent-control'
+import { AgentControl, type AgentSnapshot } from '../agent/agent-control'
 import { allocateBudget } from '../agent/budget'
 import { estimateConversationTokens } from '../agent/context'
 import { buildDynamicContext, buildSystemPrompt } from '../agent/prompt'
@@ -803,6 +803,14 @@ export class Session {
 
   getMessages(): Message[] {
     return [...this.messages]
+  }
+
+  getSubAgentSnapshot(): AgentSnapshot[] {
+    return this.agentControl.getSnapshot()
+  }
+
+  restoreSubAgentSnapshot(snapshot: AgentSnapshot[]): void {
+    this.agentControl.restoreSnapshot(snapshot)
   }
 
   isTurnInProgress(): boolean {

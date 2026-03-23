@@ -119,6 +119,30 @@ export interface AgentControlHandle {
   }>
   getStatus(agentId: string): { state: string; [key: string]: unknown } | undefined
   getOutput(agentId: string): string | undefined
+  getSnapshot(): Array<{
+    id: string
+    label: string
+    role?: string
+    state: string
+    instruction: string
+    output?: string
+    error?: string
+    startedAt: number
+    endedAt?: number
+  }>
+  restoreSnapshot(
+    entries: Array<{
+      id: string
+      label: string
+      role?: string
+      state: string
+      instruction: string
+      output?: string
+      error?: string
+      startedAt: number
+      endedAt?: number
+    }>,
+  ): void
   sendInput(
     agentId: string,
     message: string,

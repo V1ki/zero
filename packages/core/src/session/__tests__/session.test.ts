@@ -80,14 +80,7 @@ describe('Session', () => {
     const observability = new ObservabilityStore(loggerDir)
     const sessionId = 'sess_20260313_1423_fei_a1b2'
 
-    const session = new Session(
-      'feishu',
-      router,
-      registry,
-      { observability },
-      undefined,
-      sessionId,
-    )
+    const session = new Session('feishu', router, registry, { observability }, undefined, sessionId)
     const activeLink = join(loggerDir, 'sessions', '_active', sessionId)
 
     expect(existsSync(activeLink)).toBe(true)
