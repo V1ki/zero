@@ -470,6 +470,41 @@ describe('Agent tool recovery', () => {
       expect.objectContaining({
         need: true,
         queries: ['x.com browser login'],
+        searches: [
+          expect.objectContaining({
+            query: 'x.com browser login',
+            mode: 'scored',
+            resultCount: 1,
+            results: [
+              expect.objectContaining({
+                id: 'mem_x',
+                title: 'Twitter requires browser',
+                score: 0.92,
+                scoreBreakdown: expect.objectContaining({
+                  keyword: 1,
+                  recency: 1,
+                }),
+              }),
+            ],
+          }),
+        ],
+        selectedMemoryIds: ['mem_x'],
+        selectedMemories: [
+          expect.objectContaining({
+            id: 'mem_x',
+            title: 'Twitter requires browser',
+            score: 0.92,
+          }),
+        ],
+      }),
+    )
+    expect(decisionSpan?.metadata).toEqual(
+      expect.objectContaining({
+        source: 'memory_hint',
+        need: true,
+        queryCount: 1,
+        searchCount: 1,
+        selectedCount: 1,
       }),
     )
     expect(adapter.decisionPrompts).toHaveLength(1)

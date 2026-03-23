@@ -190,6 +190,40 @@ describe('Session memory retrieval', () => {
       expect.objectContaining({
         need: true,
         queries: ['x.com browser'],
+        searches: [
+          expect.objectContaining({
+            query: 'x.com browser',
+            mode: 'scored',
+            resultCount: 1,
+            results: [
+              expect.objectContaining({
+                id: 'mem_twitter',
+                title: 'Twitter 访问偏好',
+                score: 0.91,
+                scoreBreakdown: expect.objectContaining({
+                  keyword: 1,
+                  recency: 1,
+                }),
+              }),
+            ],
+          }),
+        ],
+        selectedMemoryIds: ['mem_twitter'],
+        selectedMemories: [
+          expect.objectContaining({
+            id: 'mem_twitter',
+            title: 'Twitter 访问偏好',
+            score: 0.91,
+          }),
+        ],
+      }),
+    )
+    expect(decisionSpan?.metadata).toEqual(
+      expect.objectContaining({
+        need: true,
+        queryCount: 1,
+        searchCount: 1,
+        selectedCount: 1,
       }),
     )
   })
