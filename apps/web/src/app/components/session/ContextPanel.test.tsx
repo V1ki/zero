@@ -208,6 +208,56 @@ describe('TraceSummaryCard', () => {
     expect(html).toContain('10:31 | 2 images')
   })
 
+  test('renders memory injection details for llm requests', () => {
+    const html = renderToStaticMarkup(
+      <ContextPanel
+        sessionId="sess_1"
+        modelHistory={[]}
+        toolCalls={[]}
+        filesTouched={[]}
+        totalTokens={0}
+        llmRequests={[
+          {
+            id: 'req_1',
+            model: 'gpt-test',
+            provider: 'openai',
+            userPrompt: 'check status',
+            response: 'all good',
+            stopReason: 'end_turn',
+            toolUseCount: 0,
+            tokens: { input: 10, output: 20 },
+            cost: 0.001,
+            ts: '2026-03-08T00:00:01.000Z',
+            memoryInjections: [
+              {
+                layer: 'layer1',
+                source: 'retrieved_memories',
+                formattedText:
+                  '<memory_inject layer="layer1"><retrieved_memories>demo</retrieved_memories></memory_inject>',
+              },
+              {
+                layer: 'layer2',
+                source: 'memory_hint',
+                formattedText:
+                  '<memory_inject layer="layer2"><memory_hint>retry with browser</memory_hint></memory_inject>',
+              },
+            ],
+          },
+        ]}
+        selectedToolId={null}
+      />,
+    )
+
+    expect(html).toContain('memory_injections')
+    expect(html).toContain('layer1')
+    expect(html).toContain('retrieved_memories')
+    expect(html).toContain('layer2')
+    expect(html).toContain('memory_hint')
+    expect(html).toContain(
+      '&lt;memory_inject layer=&quot;layer2&quot;&gt;&lt;memory_hint&gt;retry with browser&lt;/memory_hint&gt;&lt;/memory_inject&gt;',
+    )
+  })
+
   test('does not render queued injection block when absent', () => {
     const html = renderToStaticMarkup(
       <ContextPanel

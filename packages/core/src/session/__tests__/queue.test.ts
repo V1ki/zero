@@ -449,6 +449,64 @@ describe('Session queue handling', () => {
     expect(turnIndexes).toEqual([2])
   })
 
+  test('notification messages do not advance recovered turn indexes', async () => {
+    const router = createRouter()
+    const registry = new ToolRegistry()
+    const seed = new Session('web', router, registry)
+
+    const restored = Session.restore(
+      seed.data,
+      [
+        makeMessage(seed.data.id, 'user', 'message', 'first turn'),
+        makeMessage(seed.data.id, 'assistant', 'message', 'reply'),
+        makeMessage(seed.data.id, 'user', 'notification', '<memory_hint>hint</memory_hint>'),
+      ],
+      router,
+      registry,
+    )
+    restored.initAgent({ name: 'queue-agent', agentInstruction: 'queue test agent' })
+
+    const turnIndexes: number[] = []
+    ;(
+      restored as unknown as {
+        agent: {
+          run: (
+            context: unknown,
+            userMessage: string,
+            images: unknown,
+            onNewMessage?: (message: Message) => void,
+            onTextDelta?: unknown,
+            shouldInterrupt?: () => boolean,
+            getQueuedMessages?: () => QueuedMessage[],
+            requestLogMeta?: { turnIndex?: number },
+          ) => Promise<Message[]>
+        }
+      }
+    ).agent = {
+      run: async (
+        _context: unknown,
+        userMessage: string,
+        _images: unknown,
+        onNewMessage?: (message: Message) => void,
+        _onTextDelta?: unknown,
+        _shouldInterrupt?: () => boolean,
+        _getQueuedMessages?: () => QueuedMessage[],
+        requestLogMeta?: { turnIndex?: number },
+      ) => {
+        turnIndexes.push(requestLogMeta?.turnIndex ?? -1)
+        const user = makeMessage(restored.data.id, 'user', 'message', userMessage)
+        const assistant = makeMessage(restored.data.id, 'assistant', 'message', 'ok')
+        onNewMessage?.(user)
+        onNewMessage?.(assistant)
+        return [user, assistant]
+      },
+    }
+
+    await restored.handleMessage('next turn')
+
+    expect(turnIndexes).toEqual([2])
+  })
+
   test('failed turn rollback emits session:update for subscribers', async () => {
     const events: Array<{ topic: string; data: Record<string, unknown> }> = []
     const session = new Session('web', createRouter(), new ToolRegistry(), {

@@ -16,6 +16,9 @@ export function buildRetrievalDecisionPrompt(userMessage: string, identitySummar
 - 任务涉及已有的 runbook、incident、decision
 - 需要了解项目上下文或技术决策背景
 - 用户问题与身份记忆中提到但未展开的内容相关
+- 任务涉及访问特定网站、平台或外部服务，可能存在已知的访问方式偏好
+- 用户提供了 URL 链接，可能存在针对该域名的工具使用经验
+- 操作需要使用浏览器、爬虫或特定 API 接入方式
 
 不需要检索的情况：
 - 通用技术问题（"如何写 TypeScript 泛型"）

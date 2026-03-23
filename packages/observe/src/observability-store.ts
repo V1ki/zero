@@ -51,6 +51,12 @@ export interface RequestQueuedInjectionEntry {
   messages: RequestQueuedInjectionMessageEntry[]
 }
 
+export interface RequestMemoryInjectionEntry {
+  layer: 'layer1' | 'layer2'
+  source: 'retrieved_memories' | 'memory_hint'
+  formattedText: string
+}
+
 export interface RequestLogEntry {
   id: string
   turnIndex: number
@@ -69,6 +75,7 @@ export interface RequestLogEntry {
   toolCalls: RequestToolCallEntry[]
   toolResults: RequestToolResultEntry[]
   queuedInjection?: RequestQueuedInjectionEntry
+  memoryInjections?: RequestMemoryInjectionEntry[]
   toolNames?: string[]
   toolDefinitionsHash?: string
   systemHash?: string
@@ -403,6 +410,7 @@ export class ObservabilityStore {
       toolCalls: this.normalizeToolCalls(entry.toolCalls),
       toolResults: this.normalizeToolResults(entry.toolResults),
       queuedInjection: this.normalizeQueuedInjection(entry.queuedInjection),
+      memoryInjections: this.normalizeMemoryInjections(entry.memoryInjections),
     }
   }
 
@@ -477,5 +485,26 @@ export class ObservabilityStore {
           ),
       ),
     }
+  }
+
+  private normalizeMemoryInjections(
+    memoryInjections: unknown,
+  ): RequestMemoryInjectionEntry[] | undefined {
+    if (!Array.isArray(memoryInjections)) return undefined
+
+    const normalized = memoryInjections.filter(
+      (memoryInjection): memoryInjection is RequestMemoryInjectionEntry =>
+        Boolean(
+          memoryInjection &&
+            typeof memoryInjection === 'object' &&
+            ((memoryInjection as RequestMemoryInjectionEntry).layer === 'layer1' ||
+              (memoryInjection as RequestMemoryInjectionEntry).layer === 'layer2') &&
+            ((memoryInjection as RequestMemoryInjectionEntry).source === 'retrieved_memories' ||
+              (memoryInjection as RequestMemoryInjectionEntry).source === 'memory_hint') &&
+            typeof (memoryInjection as RequestMemoryInjectionEntry).formattedText === 'string',
+        ),
+    )
+
+    return normalized.length > 0 ? normalized : undefined
   }
 }

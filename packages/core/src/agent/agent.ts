@@ -4,6 +4,7 @@ import { computeCost } from '@zero-os/model'
 import type {
   ClosureLogEntryInput,
   MetricsDB,
+  RequestMemoryInjectionEntry,
   RequestToolCallEntry,
   RequestToolResultEntry,
   TaskClosureClassifierResponse,
@@ -26,6 +27,7 @@ import { EMPTY_RESPONSE_RETRY_PROMPT } from '../constants'
 import type { ToolRegistry } from '../tool/registry'
 import { allocateBudget, shouldCompress } from './budget'
 import { estimateConversationTokens, prepareConversationHistory } from './context'
+import { retrieveMemoriesWithDecision } from './memory-retrieval'
 import { CONTEXT_PARAMS } from './params'
 import {
   CONTINUATION_PROMPT,
@@ -48,6 +50,25 @@ import {
 } from './task-closure'
 import { artifactizeToolOutput } from './truncate'
 
+interface FailedToolAttempt {
+  toolUseId: string
+  toolName: string
+  input: unknown
+  output: string
+  outputSummary?: string
+}
+
+function cloneMemoryInjections(
+  memoryInjections?: RequestMemoryInjectionEntry[],
+): RequestMemoryInjectionEntry[] | undefined {
+  if (!memoryInjections || memoryInjections.length === 0) return undefined
+  return memoryInjections.map((memoryInjection) => ({ ...memoryInjection }))
+}
+
+function wrapMemoryInjection(layer: 'layer1' | 'layer2', content: string): string {
+  return [`<memory_inject layer="${layer}">`, content, '</memory_inject>'].join('\n')
+}
+
 class ToolInputParseError extends Error {
   constructor(message: string) {
     super(message)
@@ -69,6 +90,8 @@ export interface AgentContext {
   identityMemory?: string
   /** Dynamic context (<system-reminder>) injected into user message for the API only, not stored. */
   dynamicContext?: string
+  /** Request-scoped memory injections for observability and UI trace previews. */
+  requestMemoryInjections?: RequestMemoryInjectionEntry[]
   conversationHistory: Message[]
   tools: ToolDefinition[]
   maxContext?: number
@@ -229,6 +252,7 @@ export class Agent {
     let pendingParentRequestId: string | undefined
     let currentRequestToolResults: RequestToolResultEntry[] = []
     let pendingQueuedInjection: QueuedInjectionTrace | undefined
+    let pendingMemoryInjections = cloneMemoryInjections(context.requestMemoryInjections)
 
     try {
       while (true) {
@@ -283,10 +307,12 @@ export class Agent {
           },
           currentRequestToolResults,
           pendingQueuedInjection,
+          pendingMemoryInjections,
           llmSpan?.id,
         )
         currentRequestToolResults = []
         pendingQueuedInjection = undefined
+        pendingMemoryInjections = undefined
         pendingParentRequestId = response.stopReason === 'tool_use' ? response.id : undefined
 
         if (response.content.length === 0) {
@@ -447,6 +473,7 @@ export class Agent {
         // Process tool calls
         const toolUseBlocks = response.content.filter((b) => b.type === 'tool_use')
         const toolResultBlocks: ContentBlock[] = []
+        const failedToolAttempts: FailedToolAttempt[] = []
         const toolContext: ToolContext = {
           ...this.toolContext,
           currentRequestId: response.id,
@@ -581,6 +608,15 @@ export class Agent {
           isError: !result.success,
           outputSummary: result.outputSummary,
         })
+        if (!result.success) {
+          failedToolAttempts.push({
+            toolUseId: block.id,
+            toolName: block.name,
+            input: block.input,
+            output: result.output,
+            outputSummary: result.outputSummary,
+          })
+        }
         }
 
         // Add tool results as user message
@@ -596,6 +632,24 @@ export class Agent {
         messages.push(toolResultMsg)
         newMessages.push(toolResultMsg)
         onNewMessage?.(toolResultMsg)
+
+        const memoryHintMsg = await this.buildMemoryHintMessage(
+          failedToolAttempts,
+          userMessage,
+          context.identityMemory,
+        )
+        if (memoryHintMsg) {
+          messages.push(memoryHintMsg)
+          newMessages.push(memoryHintMsg)
+          onNewMessage?.(memoryHintMsg)
+          pendingMemoryInjections = [
+            {
+              layer: 'layer2',
+              source: 'memory_hint',
+              formattedText: this.extractTextFromMessage(memoryHintMsg),
+            },
+          ]
+        }
         }
         currentRequestToolResults = this.toRequestToolResults(toolResultBlocks)
 
@@ -682,10 +736,12 @@ export class Agent {
           },
           currentRequestToolResults,
           pendingQueuedInjection,
+          pendingMemoryInjections,
           finalLlmSpan?.id,
         )
         currentRequestToolResults = []
         pendingQueuedInjection = undefined
+        pendingMemoryInjections = undefined
         pendingParentRequestId =
           finalResponse.stopReason === 'tool_use' ? finalResponse.id : undefined
 
@@ -1367,6 +1423,7 @@ export class Agent {
     },
     requestToolResults: RequestToolResultEntry[],
     queuedInjection?: QueuedInjectionTrace,
+    memoryInjections?: RequestMemoryInjectionEntry[],
     traceSpanId?: string,
   ): void {
     const cost = computeCost(response.usage, this.obs.pricing)
@@ -1387,6 +1444,7 @@ export class Agent {
         : response.reasoningContent
       : undefined
     const safeQueuedInjection = this.filterQueuedInjection(queuedInjection)
+    const safeMemoryInjections = this.filterMemoryInjections(memoryInjections)
 
     if (traceSpanId) {
       this.obs.tracer?.updateSpan(traceSpanId, {
@@ -1409,6 +1467,7 @@ export class Agent {
             toolCalls,
             toolResults: requestToolResults,
             ...(safeQueuedInjection ? { queuedInjection: safeQueuedInjection } : {}),
+            ...(safeMemoryInjections ? { memoryInjections: safeMemoryInjections } : {}),
             toolNames: requestMetadata.toolNames,
             toolDefinitionsHash: requestMetadata.toolDefinitionsHash,
             systemHash: requestMetadata.systemHash,
@@ -1469,6 +1528,20 @@ export class Agent {
     }
   }
 
+  private filterMemoryInjections(
+    memoryInjections?: RequestMemoryInjectionEntry[],
+  ): RequestMemoryInjectionEntry[] | undefined {
+    if (!memoryInjections || memoryInjections.length === 0) return undefined
+
+    const filter = this.obs.secretFilter
+    if (!filter) return cloneMemoryInjections(memoryInjections)
+
+    return memoryInjections.map((memoryInjection) => ({
+      ...memoryInjection,
+      formattedText: filter.filter(memoryInjection.formattedText),
+    }))
+  }
+
   private buildRequestMetadata(request: CompletionRequest): {
     toolNames: string[]
     toolDefinitionsHash?: string
@@ -1493,6 +1566,13 @@ export class Agent {
       systemHash,
       staticPrefixHash,
     }
+  }
+
+  private extractTextFromMessage(message: Message): string {
+    return message.content
+      .filter((block) => block.type === 'text')
+      .map((block) => block.text)
+      .join('\n')
   }
 
   private hashValue(value: unknown): string {
@@ -1525,6 +1605,73 @@ export class Agent {
         },
       ]
     })
+  }
+
+  private async buildMemoryHintMessage(
+    failedTools: FailedToolAttempt[],
+    userMessage: string,
+    identitySummary?: string,
+  ): Promise<Message | undefined> {
+    if (failedTools.length === 0) return undefined
+
+    const decisionContext = [
+      `用户当前请求：${userMessage}`,
+      '工具执行失败，需要判断是否检索历史经验来辅助恢复。',
+      ...failedTools.map((tool, index) =>
+        [
+          `失败工具 ${index + 1}:`,
+          `- tool: ${tool.toolName}`,
+          `- input: ${this.stringifyTraceData(tool.input, 1000)}`,
+          `- error_summary: ${tool.outputSummary ?? tool.output}`,
+        ].join('\n'),
+      ),
+    ].join('\n')
+
+    const matches = await retrieveMemoriesWithDecision({
+      adapter: this.adapter,
+      sessionId: this.toolContext.sessionId,
+      memoryRetriever: this.toolContext.memoryRetriever,
+      identitySummary,
+      userMessage: decisionContext,
+      logger: this.toolContext.logger,
+      failureEvent: 'memory_hint_retrieval_failed',
+      trace: {
+        tracer: this.obs.tracer,
+        agentName: this.config.name,
+        providerName: this.obs.providerName,
+        modelLabel: this.obs.modelLabel,
+        pricing: this.obs.pricing,
+        secretFilter: this.obs.secretFilter,
+        spanName: 'memory_retrieval_decision',
+        metadata: {
+          layer: 'layer2',
+          source: 'memory_hint',
+        },
+      },
+    })
+    if (!matches || matches.length === 0) return undefined
+
+      const hint = [
+        '<memory_hint>',
+        '工具执行失败。以下是相关的历史经验：',
+        ...matches.slice(0, 3).flatMap((match) => [
+          `  <memory id="${escapeXml(match.id)}" type="${escapeXml(match.type)}">`,
+          `    <title>${escapeXml(match.title)}</title>`,
+          `    <content>${escapeXml(match.content)}</content>`,
+          '  </memory>',
+        ]),
+        '</memory_hint>',
+      ].join('\n')
+      const notificationText = wrapMemoryInjection('layer2', hint)
+
+      return {
+        id: generateId(),
+        sessionId: this.toolContext.sessionId,
+        role: 'user',
+        messageType: 'notification',
+        content: [{ type: 'text', text: notificationText }],
+        createdAt: now(),
+      }
   }
 
   private filterToolInput(input: Record<string, unknown>): Record<string, unknown> {
@@ -1578,4 +1725,13 @@ export class Agent {
       return block
     })
   }
+}
+
+function escapeXml(text: string): string {
+  return text
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;')
 }

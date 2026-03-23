@@ -185,7 +185,7 @@ Task：拆分 SubAgent 时明确每个子任务的输入、输出和依赖关系
 
 #### System Reminder — 运行时提示
 
-`<system-reminder>` 只用于 API 请求内的内部运行时提示，不落盘，不视为用户消息。当前该区块仅承载新增 Skill 通知，不包含时间、memo 或 memory。
+`<system-reminder>` 只用于 API 请求内的内部运行时提示，不落盘，不视为用户消息。当前该区块承载新增 Skill 通知和检索到的历史记忆，不包含时间或 memo。
 
 ```xml
 <system-reminder>
@@ -193,6 +193,9 @@ Task：拆分 SubAgent 时明确每个子任务的输入、输出和依赖关系
     新增了以下 Skill，可通过 Read 工具读取 SKILL.md 获取详细指令：
     <skill name="browser" path="/path/to/SKILL.md">...</skill>
   </new_skills>
+  <retrieved_memories>
+    ...检索到的历史记忆...
+  </retrieved_memories>
 </system-reminder>
 ```
 

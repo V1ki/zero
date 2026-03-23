@@ -87,8 +87,10 @@ export function mergeInterleavedQueuedMessages(messages: Message[]): Message[] {
 export function prepareConversationHistory(messages: Message[]): Message[] {
   if (messages.length === 0) return []
 
+  const promptHistory = messages.filter((message) => message.messageType !== 'notification')
+
   // Merge queued messages that break tool_use → tool_result pairing
-  const cleaned = mergeInterleavedQueuedMessages(messages)
+  const cleaned = mergeInterleavedQueuedMessages(promptHistory)
 
   // Assign turn indices by scanning from the end
   const turnBoundaries: number[] = []
@@ -162,7 +164,7 @@ export function prepareConversationHistory(messages: Message[]): Message[] {
 function startsTopLevelTurn(message: Message): boolean {
   return (
     message.role === 'user' &&
-    message.messageType !== 'queued' &&
+    message.messageType === 'message' &&
     message.content.some((block) => block.type === 'text')
   )
 }

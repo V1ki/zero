@@ -1,6 +1,7 @@
 import type {
   ClosureLogEntry,
   RequestLogEntry,
+  RequestMemoryInjectionEntry,
   RequestQueuedInjectionEntry,
   RequestQueuedInjectionMessageEntry,
   RequestToolCallEntry,
@@ -84,6 +85,26 @@ function asQueuedInjection(value: unknown): RequestQueuedInjectionEntry | undefi
   }
 }
 
+function asMemoryInjections(value: unknown): RequestMemoryInjectionEntry[] | undefined {
+  if (!Array.isArray(value)) return undefined
+
+  const normalized = value.filter((item): item is RequestMemoryInjectionEntry =>
+    Boolean(
+      item &&
+        typeof item === 'object' &&
+        (((item as RequestMemoryInjectionEntry).layer === 'layer1' &&
+          ((item as RequestMemoryInjectionEntry).source === 'retrieved_memories' ||
+            (item as RequestMemoryInjectionEntry).source === 'memory_hint')) ||
+          ((item as RequestMemoryInjectionEntry).layer === 'layer2' &&
+            ((item as RequestMemoryInjectionEntry).source === 'retrieved_memories' ||
+              (item as RequestMemoryInjectionEntry).source === 'memory_hint'))) &&
+        typeof (item as RequestMemoryInjectionEntry).formattedText === 'string',
+    ),
+  )
+
+  return normalized.length > 0 ? normalized : undefined
+}
+
 function sortByTs<T extends { ts: string }>(entries: T[]): T[] {
   return entries.sort((left, right) => left.ts.localeCompare(right.ts))
 }
@@ -141,6 +162,7 @@ export function projectSessionRequestsFromTraceEntries(entries: TraceEntry[]): R
           toolCalls: asToolCalls(request.toolCalls),
           toolResults: asToolResults(request.toolResults),
           queuedInjection: asQueuedInjection(request.queuedInjection),
+          memoryInjections: asMemoryInjections(request.memoryInjections),
           toolNames: asStringArray(request.toolNames),
           toolDefinitionsHash: asString(request.toolDefinitionsHash),
           systemHash: asString(request.systemHash),

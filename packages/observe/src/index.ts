@@ -4,6 +4,7 @@ export type {
   LogEntry,
   EventLogEntry,
   RequestLogEntry,
+  RequestMemoryInjectionEntry,
   RequestQueuedInjectionEntry,
   RequestQueuedInjectionMessageEntry,
   RequestToolCallEntry,

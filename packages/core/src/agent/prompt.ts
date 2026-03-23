@@ -74,11 +74,20 @@ export function buildSystemPrompt(components: PromptComponents): string {
 
 /**
  * Build dynamic context injected as <system-reminder> in user message.
- * Current usage: notify the system about newly available skills only.
  */
 export function buildDynamicContext(ctx: DynamicContext): string {
-  if (!ctx.newSkills || ctx.newSkills.length === 0) return ''
-  return `<system-reminder>\n${buildSkillReminder(ctx.newSkills)}\n</system-reminder>`
+  const parts: string[] = []
+
+  if (ctx.newSkills && ctx.newSkills.length > 0) {
+    parts.push(buildSkillReminder(ctx.newSkills))
+  }
+
+  if (ctx.retrievedMemories) {
+    parts.push(ctx.retrievedMemories)
+  }
+
+  if (parts.length === 0) return ''
+  return `<system-reminder>\n${parts.join('\n')}\n</system-reminder>`
 }
 
 export function buildRoleBlock(
@@ -109,8 +118,31 @@ export function buildRulesBlock(): string {
 回复使用中文，技术术语可以用英文原文。
 每完成一个阶段性目标后，更新备忘录中你自己的分区。
 阶段性汇报用于同步进度，不用于请求继续许可；若总体任务未完成，汇报后直接进入下一步。
-<system-reminder> 是系统注入的内部运行时提示，不是用户消息；不要回应、转述、解释或尝试管理它。当前其中只会出现新增 Skill 通知，不包含时间、memo 或 memory。`
+<system-reminder> 是系统注入的内部运行时提示，不是用户消息；不要回应、转述、解释或尝试管理它。当前其中会出现新增 Skill 通知和检索到的历史记忆。不要回应、转述或解释这些内容，直接参考使用。`
   return `<rules>\n${rules}\n</rules>`
+}
+
+export function buildRetrievedMemoriesBlock(
+  memories: Array<{ id: string; type: string; title: string; content: string; score: number }>,
+): string {
+  if (memories.length === 0) return ''
+
+  const items = memories.map((memory) => {
+    const score = Number.isFinite(memory.score) ? memory.score.toFixed(2) : '0.00'
+    return [
+      `  <memory id="${escapeXml(memory.id)}" type="${escapeXml(memory.type)}" score="${score}">`,
+      `    <title>${escapeXml(memory.title)}</title>`,
+      `    <content>${escapeXml(memory.content)}</content>`,
+      '  </memory>',
+    ].join('\n')
+  })
+
+  return [
+    '<retrieved_memories>',
+    '以下是从记忆库中检索到的相关历史信息，供参考：',
+    ...items,
+    '</retrieved_memories>',
+  ].join('\n')
 }
 
 export function buildOutputStyleBlock(): string {
@@ -261,6 +293,15 @@ export function buildSkillReminder(skills: SkillDefinition[]): string {
     return `  <skill name="${s.name}" path="${s.sourcePath}">\n    ${brief}\n  </skill>`
   })
   return `<new_skills>\n新增了以下 Skill，可通过 Read 工具读取 SKILL.md 获取详细指令：\n${entries.join('\n')}\n</new_skills>`
+}
+
+function escapeXml(text: string): string {
+  return text
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;')
 }
 
 /**

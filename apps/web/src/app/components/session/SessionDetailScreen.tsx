@@ -56,6 +56,12 @@ interface QueuedInjectionEntry {
   messages: QueuedInjectionMessageEntry[]
 }
 
+interface MemoryInjectionEntry {
+  layer: 'layer1' | 'layer2'
+  source: 'retrieved_memories' | 'memory_hint'
+  formattedText: string
+}
+
 interface SessionRequestEntry {
   id: string
   turnIndex?: number
@@ -68,6 +74,7 @@ interface SessionRequestEntry {
   toolUseCount: number
   toolResults?: ToolResultEntry[]
   queuedInjection?: QueuedInjectionEntry
+  memoryInjections?: MemoryInjectionEntry[]
   tokens: {
     input: number
     output: number

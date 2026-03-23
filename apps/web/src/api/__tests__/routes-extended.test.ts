@@ -308,6 +308,14 @@ describe('API Routes Extended', () => {
               },
             ],
           },
+          memoryInjections: [
+            {
+              layer: 'layer1',
+              source: 'retrieved_memories',
+              formattedText:
+                '<memory_inject layer="layer1"><retrieved_memories>demo</retrieved_memories></memory_inject>',
+            },
+          ],
           tokens: { input: 10, output: 20 },
           cost: 0.42,
           durationMs: 900,
@@ -346,6 +354,14 @@ describe('API Routes Extended', () => {
         },
       ],
     })
+    expect(data.requests[0].memoryInjections).toEqual([
+      {
+        layer: 'layer1',
+        source: 'retrieved_memories',
+        formattedText:
+          '<memory_inject layer="layer1"><retrieved_memories>demo</retrieved_memories></memory_inject>',
+      },
+    ])
   })
 
   test('POST /api/sessions/:id/llm-judge returns parsed judge result and prompt signals', async () => {

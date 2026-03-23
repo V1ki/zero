@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { ProviderAdapter } from '@zero-os/model'
+import { Tracer, flattenTraceSpans } from '@zero-os/observe'
 import type {
   CompletionRequest,
   CompletionResponse,
@@ -111,6 +112,113 @@ class EmptyResponseRecoveryAdapter implements ProviderAdapter {
   }
 }
 
+class FailingFetchTool extends BaseTool {
+  name = 'fetch'
+  description = 'Fails with an x.com access error'
+  parameters = {
+    type: 'object',
+    properties: {
+      url: { type: 'string' },
+    },
+    required: ['url'],
+  }
+
+  protected async execute(): Promise<ToolResult> {
+    return {
+      success: false,
+      output: 'Fetch failed: login required for x.com',
+      outputSummary: 'Fetch error: login required',
+    }
+  }
+}
+
+class MemoryHintAdapter implements ProviderAdapter {
+  readonly apiType = 'fake-memory-hint'
+  private mainCallCount = 0
+  decisionPrompts: string[] = []
+
+  async complete(req: CompletionRequest): Promise<CompletionResponse> {
+    const promptText =
+      req.messages[0]?.content
+        .filter((block) => block.type === 'text')
+        .map((block) => (block as { type: 'text'; text: string }).text)
+        .join('\n') ?? ''
+
+    if (promptText.includes('<instruction>') && promptText.includes('工具执行失败')) {
+      this.decisionPrompts.push(promptText)
+      return {
+        id: 'resp_retrieval_decision',
+        content: [{ type: 'text', text: '{"need": true, "queries": ["x.com browser login"]}' }],
+        stopReason: 'end_turn',
+        usage: { input: 6, output: 5 },
+        model: 'fake-model',
+      }
+    }
+
+    this.mainCallCount++
+    if (this.mainCallCount === 1) {
+      return {
+        id: 'resp_tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_fetch_1',
+            name: 'fetch',
+            input: { url: 'https://x.com/openai/status/1' },
+          },
+        ],
+        stopReason: 'tool_use',
+        usage: { input: 10, output: 5 },
+        model: 'fake-model',
+      }
+    }
+
+    return {
+      id: 'resp_final',
+      content: [{ type: 'text', text: 'done' }],
+      stopReason: 'end_turn',
+      usage: { input: 5, output: 3 },
+      model: 'fake-model',
+    }
+  }
+
+  async *stream(_req: CompletionRequest): AsyncIterable<StreamEvent> {
+    yield {
+      type: 'done',
+      data: { finishReason: 'end_turn' },
+    }
+  }
+
+  async healthCheck(): Promise<boolean> {
+    return true
+  }
+}
+
+class SimpleReplyAdapter implements ProviderAdapter {
+  readonly apiType = 'fake-simple'
+
+  async complete(_req: CompletionRequest): Promise<CompletionResponse> {
+    return {
+      id: 'resp_simple',
+      content: [{ type: 'text', text: 'done' }],
+      stopReason: 'end_turn',
+      usage: { input: 4, output: 2 },
+      model: 'fake-model',
+    }
+  }
+
+  async *stream(_req: CompletionRequest): AsyncIterable<StreamEvent> {
+    yield {
+      type: 'done',
+      data: { finishReason: 'end_turn' },
+    }
+  }
+
+  async healthCheck(): Promise<boolean> {
+    return true
+  }
+}
+
 function expectDefined<T>(value: T | null | undefined): NonNullable<T> {
   expect(value).toBeDefined()
   if (value == null) {
@@ -120,6 +228,64 @@ function expectDefined<T>(value: T | null | undefined): NonNullable<T> {
 }
 
 describe('Agent tool recovery', () => {
+  test('run: layer1 memory injections are recorded on the request trace', async () => {
+    const adapter = new SimpleReplyAdapter()
+    const registry = new ToolRegistry()
+    const tracer = new Tracer()
+
+    const toolContext: ToolContext = {
+      sessionId: 'test-session',
+      workDir: process.cwd(),
+      logger: {
+        info: () => {},
+        warn: () => {},
+        error: () => {},
+      },
+    }
+
+    const agent = new Agent(
+      {
+        name: 'test-agent',
+        agentInstruction: 'Test prompt',
+      },
+      adapter,
+      registry,
+      toolContext,
+      { tracer },
+    )
+
+    const context: AgentContext = {
+      systemPrompt: 'Test prompt',
+      conversationHistory: [],
+      tools: registry.getDefinitions(),
+      requestMemoryInjections: [
+        {
+          layer: 'layer1',
+          source: 'retrieved_memories',
+          formattedText: '<memory_inject layer="layer1"><retrieved_memories>demo</retrieved_memories></memory_inject>',
+        },
+      ],
+    }
+
+    await agent.run(context, 'Analyze this link')
+
+    const requestSpan = flattenTraceSpans(tracer.exportSession('test-session')).find(
+      (span) => span.kind === 'llm_request',
+    )
+    expect(requestSpan?.data?.request).toEqual(
+      expect.objectContaining({
+        memoryInjections: [
+          {
+            layer: 'layer1',
+            source: 'retrieved_memories',
+            formattedText:
+              '<memory_inject layer="layer1"><retrieved_memories>demo</retrieved_memories></memory_inject>',
+          },
+        ],
+      }),
+    )
+  })
+
   test('run: tool exceptions are converted into tool_result errors', async () => {
     const adapter = new FakeAdapter()
     const registry = new ToolRegistry()
@@ -207,5 +373,108 @@ describe('Agent tool recovery', () => {
     ])
     expect(messages.some((m) => m.role === 'assistant' && m.content.length === 0)).toBe(false)
     expect(adapter.completeCalls).toBeGreaterThanOrEqual(2)
+  })
+
+  test('run: failed tool retrieval adds a notification memory hint', async () => {
+    const adapter = new MemoryHintAdapter()
+    const registry = new ToolRegistry()
+    registry.register(new FailingFetchTool())
+    const tracer = new Tracer()
+
+    const toolContext: ToolContext = {
+      sessionId: 'test-session',
+      workDir: process.cwd(),
+      logger: {
+        info: () => {},
+        warn: () => {},
+        error: () => {},
+      },
+      memoryRetriever: {
+        async retrieve() {
+          return []
+        },
+        async retrieveScored() {
+          return [
+            {
+              memory: {
+                id: 'mem_x',
+                type: 'decision',
+                title: 'Twitter requires browser',
+                content: 'x.com 需要登录，优先使用 browser skill。',
+                createdAt: '2026-03-01T00:00:00.000Z',
+                updatedAt: '2026-03-01T00:00:00.000Z',
+                status: 'verified',
+                confidence: 0.95,
+                tags: ['twitter'],
+                related: [],
+              },
+              score: 0.92,
+              scoreBreakdown: {
+                keyword: 1,
+                recency: 1,
+              },
+            },
+          ]
+        },
+      },
+    }
+
+    const agent = new Agent(
+      {
+        name: 'test-agent',
+        agentInstruction: 'Test prompt',
+      },
+      adapter,
+      registry,
+      toolContext,
+      { tracer },
+    )
+
+    const context: AgentContext = {
+      systemPrompt: 'Test prompt',
+      conversationHistory: [],
+      tools: registry.getDefinitions(),
+    }
+
+    const messages = await agent.run(context, 'Analyze this x.com link')
+    const notification = messages.find((message) => message.messageType === 'notification')
+
+    expect(notification).toBeDefined()
+    expect(notification?.role).toBe('user')
+    expect(notification?.content).toEqual([
+      expect.objectContaining({
+        type: 'text',
+        text: expect.stringContaining('<memory_inject layer="layer2">'),
+      }),
+    ])
+
+    const requestSpans = flattenTraceSpans(tracer.exportSession('test-session')).filter(
+      (span) => span.kind === 'llm_request' && span.data?.request,
+    )
+    expect(requestSpans).toHaveLength(2)
+    expect(requestSpans[1]?.data?.request).toEqual(
+      expect.objectContaining({
+        memoryInjections: [
+          {
+            layer: 'layer2',
+            source: 'memory_hint',
+            formattedText: expect.stringContaining('<memory_inject layer="layer2">'),
+          },
+        ],
+      }),
+    )
+    const decisionSpan = flattenTraceSpans(tracer.exportSession('test-session')).find(
+      (span) => span.name === 'memory_retrieval_decision',
+    )
+    expect(decisionSpan?.data?.memoryRetrievalDecision).toEqual(
+      expect.objectContaining({
+        need: true,
+        queries: ['x.com browser login'],
+      }),
+    )
+    expect(adapter.decisionPrompts).toHaveLength(1)
+    expect(adapter.decisionPrompts[0]).toContain('用户当前请求：Analyze this x.com link')
+    expect(adapter.decisionPrompts[0]).toContain('tool: fetch')
+    expect(adapter.decisionPrompts[0]).toContain('error_summary: Fetch error: login required')
   })
 })

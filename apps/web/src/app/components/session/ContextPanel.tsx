@@ -58,6 +58,12 @@ interface QueuedInjectionEntry {
   messages: QueuedInjectionMessageEntry[]
 }
 
+interface MemoryInjectionEntry {
+  layer: 'layer1' | 'layer2'
+  source: 'retrieved_memories' | 'memory_hint'
+  formattedText: string
+}
+
 interface LlmRequestEntry {
   id: string
   turnIndex?: number
@@ -70,6 +76,7 @@ interface LlmRequestEntry {
   toolUseCount: number
   toolResults?: ToolResultEntry[]
   queuedInjection?: QueuedInjectionEntry
+  memoryInjections?: MemoryInjectionEntry[]
   tokens: {
     input: number
     output: number
@@ -525,6 +532,9 @@ export function ContextPanel({
                         <TracePreview label="prompt" value={request.userPrompt} />
                         {request.queuedInjection && (
                           <QueuedInjectionPreview queuedInjection={request.queuedInjection} />
+                        )}
+                        {request.memoryInjections && request.memoryInjections.length > 0 && (
+                          <MemoryInjectionPreview memoryInjections={request.memoryInjections} />
                         )}
                         <TracePreview label="response" value={request.response} />
                       </div>
@@ -1196,6 +1206,33 @@ function QueuedInjectionPreview({
         <pre className="max-h-[240px] overflow-y-auto whitespace-pre-wrap break-words rounded bg-black/20 p-2 text-[10px] text-[var(--color-text-muted)]">
           {queuedInjection.formattedText}
         </pre>
+      </div>
+    </div>
+  )
+}
+
+function MemoryInjectionPreview({
+  memoryInjections,
+}: {
+  memoryInjections: MemoryInjectionEntry[]
+}) {
+  return (
+    <div>
+      <div className="mb-1 text-[10px] uppercase tracking-wide text-[var(--color-text-disabled)]">
+        memory_injections
+      </div>
+      <div className="space-y-2 rounded bg-black/20 p-2">
+        {memoryInjections.map((memoryInjection, index) => (
+          <div key={`${memoryInjection.layer}-${memoryInjection.source}-${index}`} className="space-y-1">
+            <div className="flex items-center gap-2 text-[10px] text-[var(--color-text-secondary)]">
+              <span className="rounded bg-white/5 px-1.5 py-0.5">{memoryInjection.layer}</span>
+              <span>{memoryInjection.source}</span>
+            </div>
+            <pre className="max-h-[240px] overflow-y-auto whitespace-pre-wrap break-words rounded bg-black/20 p-2 text-[10px] text-[var(--color-text-muted)]">
+              {memoryInjection.formattedText}
+            </pre>
+          </div>
+        ))}
       </div>
     </div>
   )

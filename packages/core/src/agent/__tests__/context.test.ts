@@ -37,6 +37,13 @@ function makeQueuedUserText(text: string): Message {
   }
 }
 
+function makeNotificationUserText(text: string): Message {
+  return {
+    ...makeMessage('user', [{ type: 'text', text }]),
+    messageType: 'notification',
+  }
+}
+
 function makeAssistantToolUse(name: string, toolUseId: string): Message {
   return makeMessage('assistant', [
     { type: 'text', text: 'Using tool...' },
@@ -78,6 +85,34 @@ describe('prepareConversationHistory', () => {
   test('returns empty array for empty input', () => {
     const result = prepareConversationHistory([])
     expect(result).toEqual([])
+  })
+
+  test('does not treat notification messages as top-level turns', () => {
+    const messages: Message[] = [
+      makeUserText('first question'),
+      makeAssistantToolUse('fetch', 'tool-1'),
+      makeToolResult('tool-1', 'tool output'),
+      makeNotificationUserText('<memory_hint>domain specific hint</memory_hint>'),
+      makeAssistantText('first reply'),
+      makeUserText('second question'),
+      makeAssistantText('second reply'),
+    ]
+
+    const result = prepareConversationHistory(messages)
+    const toolResult = expectDefined(result[2].content.find((block) => block.type === 'tool_result'))
+    expect(toolResult.truncationLevel).toBe('full')
+  })
+
+  test('excludes notification messages from prompt history', () => {
+    const notification = makeNotificationUserText('<memory_inject layer="layer1">hint</memory_inject>')
+    const result = prepareConversationHistory([
+      makeUserText('first question'),
+      notification,
+      makeAssistantText('first reply'),
+    ])
+
+    expect(result).toHaveLength(2)
+    expect(result.some((message) => message.messageType === 'notification')).toBe(false)
   })
 
   test('mutates tool_result blocks in place to persist truncation levels', () => {

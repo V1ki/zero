@@ -89,6 +89,14 @@ describe('ObservabilityStore', () => {
                 },
               ],
             },
+            memoryInjections: [
+              {
+                layer: 'layer1',
+                source: 'retrieved_memories',
+                formattedText:
+                  '<memory_inject layer="layer1"><retrieved_memories>demo</retrieved_memories></memory_inject>',
+              },
+            ],
             tokens: { input: 3, output: 4, reasoning: 1 },
             cost: 0.02,
             durationMs: 1000,
@@ -124,10 +132,18 @@ describe('ObservabilityStore', () => {
         },
       ],
     })
+    expect(entries[0].memoryInjections).toEqual([
+      {
+        layer: 'layer1',
+        source: 'retrieved_memories',
+        formattedText:
+          '<memory_inject layer="layer1"><retrieved_memories>demo</retrieved_memories></memory_inject>',
+      },
+    ])
     expect(entries[0].tokens.reasoning).toBe(1)
   })
 
-  test('readSessionRequests ignores malformed queuedInjection payloads', () => {
+  test('readSessionRequests ignores malformed queuedInjection and memoryInjections payloads', () => {
     const store = new ObservabilityStore(testDir)
     const sessionId = 'sess_20260316_0105_web_trace'
 
@@ -159,6 +175,13 @@ describe('ObservabilityStore', () => {
               formattedText: 123,
               messages: {},
             },
+            memoryInjections: [
+              {
+                layer: 'layer3',
+                source: 'oops',
+                formattedText: 123,
+              },
+            ],
             tokens: { input: 3, output: 4 },
             cost: 0.02,
           },
@@ -169,6 +192,7 @@ describe('ObservabilityStore', () => {
     const entries = store.readSessionRequests(sessionId)
     expect(entries).toHaveLength(1)
     expect(entries[0].queuedInjection).toBeUndefined()
+    expect(entries[0].memoryInjections).toBeUndefined()
   })
 
   test('readSessionRequests ignores non-projectable trace entries', () => {

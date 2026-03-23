@@ -13,6 +13,17 @@ describe('buildRetrievalDecisionPrompt', () => {
     expect(result).toContain('用户偏好 TypeScript')
     expect(result).toContain('<identity_summary>')
   })
+
+  test('includes URL and external service retrieval scenarios', () => {
+    const result = buildRetrievalDecisionPrompt(
+      '分析这个链接 https://x.com/openai/status/123',
+      '用户偏好 TypeScript',
+    )
+
+    expect(result).toContain('用户提供了 URL 链接')
+    expect(result).toContain('访问特定网站、平台或外部服务')
+    expect(result).toContain('浏览器、爬虫或特定 API 接入方式')
+  })
 })
 
 describe('parseRetrievalDecision', () => {

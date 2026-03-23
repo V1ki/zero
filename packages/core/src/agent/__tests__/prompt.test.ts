@@ -6,6 +6,7 @@ import {
   buildExecutionModeBlock,
   buildIdentityBlock,
   buildOutputStyleBlock,
+  buildRetrievedMemoriesBlock,
   buildRoleBlock,
   buildRulesBlock,
   buildRuntimeBlock,
@@ -282,6 +283,81 @@ describe('buildDynamicContext', () => {
   test('omits new_skills when undefined', () => {
     const result = buildDynamicContext({})
     expect(result).toBe('')
+  })
+
+  test('returns empty when only retrievedMemories is empty string', () => {
+    const result = buildDynamicContext({
+      retrievedMemories: '',
+    })
+    expect(result).toBe('')
+  })
+
+  test('includes retrieved memories when present', () => {
+    const result = buildDynamicContext({
+      retrievedMemories: '<retrieved_memories>\n  <memory id="m1" type="note">demo</memory>\n</retrieved_memories>',
+    })
+
+    expect(result).toContain('<system-reminder>')
+    expect(result).toContain('<retrieved_memories>')
+    expect(result).toContain('type="note"')
+  })
+
+  test('includes both new skills and retrieved memories', () => {
+    const result = buildDynamicContext({
+      newSkills: [makeSkill('awiki')],
+      retrievedMemories:
+        '<retrieved_memories>\n  <memory id="m1" type="note">demo</memory>\n</retrieved_memories>',
+    })
+
+    expect(result).toContain('<new_skills>')
+    expect(result).toContain('<retrieved_memories>')
+  })
+})
+
+describe('buildRetrievedMemoriesBlock', () => {
+  test('returns empty string for empty array', () => {
+    expect(buildRetrievedMemoriesBlock([])).toBe('')
+  })
+
+  test('renders XML with id, type, title, content, score', () => {
+    const result = buildRetrievedMemoriesBlock([
+      {
+        id: 'mem_1',
+        type: 'preference',
+        title: 'Twitter 访问偏好',
+        content: '优先使用 browser <skill>',
+        score: 0.853,
+      },
+    ])
+
+    expect(result).toContain('<retrieved_memories>')
+    expect(result).toContain('id="mem_1"')
+    expect(result).toContain('type="preference"')
+    expect(result).toContain('score="0.85"')
+    expect(result).toContain('<title>Twitter 访问偏好</title>')
+    expect(result).toContain('browser &lt;skill&gt;')
+  })
+
+  test('handles multiple memories', () => {
+    const result = buildRetrievedMemoriesBlock([
+      {
+        id: 'mem_1',
+        type: 'preference',
+        title: 'one',
+        content: 'first',
+        score: 0.9,
+      },
+      {
+        id: 'mem_2',
+        type: 'decision',
+        title: 'two',
+        content: 'second',
+        score: 0.8,
+      },
+    ])
+
+    expect(result).toContain('id="mem_1"')
+    expect(result).toContain('id="mem_2"')
   })
 })
 

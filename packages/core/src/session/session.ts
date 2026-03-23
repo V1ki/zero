@@ -1,11 +1,12 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
-import type { MemoryRetriever } from '@zero-os/memory'
+import { type MemoryRetriever } from '@zero-os/memory'
 import type { ModelRouter, ModelSwitchResult, ResolvedModel } from '@zero-os/model'
 import type {
   ObservabilityStore,
   MetricsDB,
+  RequestMemoryInjectionEntry,
   RequestLogEntry,
   SessionDB,
   SnapshotEntry,
@@ -27,14 +28,23 @@ import { Agent, type AgentConfig, type AgentContext, type AgentObservability } f
 import { AgentControl, type AgentSnapshot } from '../agent/agent-control'
 import { allocateBudget } from '../agent/budget'
 import { estimateConversationTokens } from '../agent/context'
-import { buildDynamicContext, buildSystemPrompt } from '../agent/prompt'
+import {
+  buildDynamicContext,
+  buildRetrievedMemoriesBlock,
+  buildSystemPrompt,
+} from '../agent/prompt'
 import { CONTINUATION_PROMPT, type QueuedMessage } from '../agent/queue'
+import { retrieveMemoriesWithDecision } from '../agent/memory-retrieval'
 import { buildSnapshot } from '../agent/snapshot'
 import { TASK_CLOSURE_PROMPT } from '../agent/task-closure'
 import { loadBootstrapFiles } from '../bootstrap/loader'
 import { EMPTY_RESPONSE_RETRY_PROMPT } from '../constants'
 import { loadSkills } from '../skill/loader'
 import type { ToolRegistry } from '../tool/registry'
+
+function wrapMemoryInjection(layer: 'layer1' | 'layer2', content: string): string {
+  return [`<memory_inject layer="${layer}">`, content, '</memory_inject>'].join('\n')
+}
 
 /**
  * Dependencies injected into Session for observability, memory, and eventing.
@@ -527,23 +537,40 @@ export class Session {
 
     // === DYNAMIC: Per-message context ===
 
-    // Detect newly added skills (incremental notification)
-    const globalSkills = loadSkills(join(projectRoot, '.zero', 'skills'))
-    const workspaceSkills = loadSkills(join(workspacePath, 'skills'))
-    const allSkills = [...globalSkills, ...workspaceSkills]
-    const newSkills = allSkills.filter((s) => !this.knownSkillNames.has(s.name))
-    for (const s of newSkills) this.knownSkillNames.add(s.name)
+    const [newSkills, retrievedMemories] = await Promise.all([
+      Promise.resolve().then(() => {
+        const globalSkills = loadSkills(join(projectRoot, '.zero', 'skills'))
+        const workspaceSkills = loadSkills(join(workspacePath, 'skills'))
+        const allSkills = [...globalSkills, ...workspaceSkills]
+        const nextSkills = allSkills.filter((s) => !this.knownSkillNames.has(s.name))
+        for (const skill of nextSkills) this.knownSkillNames.add(skill.name)
+        return nextSkills
+      }),
+      this.retrieveMemories(content),
+    ])
 
     // Build dynamic context — injected into API request only, not stored in messages
     const dynamicCtx = buildDynamicContext({
       newSkills: newSkills.length > 0 ? newSkills : undefined,
+      retrievedMemories,
     })
+    const requestMemoryInjections: RequestMemoryInjectionEntry[] | undefined = retrievedMemories
+      ? [
+          {
+            layer: 'layer1',
+            source: 'retrieved_memories',
+            formattedText: wrapMemoryInjection('layer1', retrievedMemories),
+          },
+        ]
+      : undefined
+    const conversationHistory = [...this.messages]
 
     const context: AgentContext = {
       systemPrompt,
       identityMemory: this.deps.identityMemory,
       dynamicContext: dynamicCtx,
-      conversationHistory: this.messages,
+      requestMemoryInjections,
+      conversationHistory,
       tools,
       maxContext: currentModel?.modelConfig.maxContext,
       maxOutput: currentModel?.modelConfig.maxOutput,
@@ -570,6 +597,23 @@ export class Session {
 
     // Snapshot message count so we can rollback on transient failure
     const messageCountBefore = this.messages.length
+    const prefaceMessages: Message[] = []
+    if (requestMemoryInjections) {
+      for (const memoryInjection of requestMemoryInjections) {
+        const memoryNotification: Message = {
+          id: generateId(),
+          sessionId: this.data.id,
+          role: 'user',
+          messageType: 'notification',
+          content: [{ type: 'text', text: memoryInjection.formattedText }],
+          createdAt: now(),
+        }
+        this.messages.push(memoryNotification)
+        this.data.updatedAt = memoryNotification.createdAt
+        options?.onProgress?.(memoryNotification)
+        prefaceMessages.push(memoryNotification)
+      }
+    }
 
     let newMessages: Message[]
     try {
@@ -611,7 +655,40 @@ export class Session {
       messageCount: this.messages.length,
     })
 
-    return newMessages
+    return [...prefaceMessages, ...newMessages]
+  }
+
+  private async retrieveMemories(userMessage: string): Promise<string | undefined> {
+    if ((this.lastAgentConfig?.promptMode ?? 'full') !== 'full') return undefined
+
+    const resolved =
+      this.activeModel ?? this.modelRouter.getDefaultModel() ?? this.modelRouter.getCurrentModel()
+    if (!resolved) return undefined
+
+    const memories = await retrieveMemoriesWithDecision({
+      adapter: resolved.adapter,
+      sessionId: this.data.id,
+      memoryRetriever: this.deps.memoryRetriever,
+      identitySummary: this.deps.identityMemory ?? '',
+      userMessage,
+      logger: this.logger,
+      failureEvent: 'memory_retrieval_failed',
+      trace: {
+        tracer: this.deps.tracer,
+        agentName: this.getAgentName(),
+        providerName: resolved.providerName,
+        modelLabel: this.modelRouter.getModelLabel(resolved),
+        pricing: resolved.modelConfig.pricing,
+        secretFilter: this.deps.secretFilter,
+        spanName: 'memory_retrieval_decision',
+        metadata: {
+          layer: 'layer1',
+        },
+      },
+    })
+    if (!memories || memories.length === 0) return undefined
+
+    return buildRetrievedMemoriesBlock(memories)
   }
 
   /**
@@ -873,7 +950,7 @@ export class Session {
 
   private static isTopLevelUserTurn(message: Message): boolean {
     if (message.role !== 'user') return false
-    if (message.messageType === 'queued') return false
+    if (message.messageType !== 'message') return false
     if (message.content.some((block) => block.type === 'tool_result')) return false
 
     const hasVisibleContent = message.content.some(

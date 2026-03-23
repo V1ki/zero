@@ -150,8 +150,12 @@ export function buildTimeline(
     }
 
     if (msg.role === 'user') {
+      if (msg.messageType === 'queued') {
+        continue
+      }
+
       const hasToolResultBlocks = msg.content.some((b) => b.type === 'tool_result')
-      if (hasToolResultBlocks && msg.messageType !== 'queued') {
+      if (hasToolResultBlocks) {
         continue
       }
 
@@ -168,7 +172,7 @@ export function buildTimeline(
         items.push({
           type: 'user-message',
           text,
-          queued: msg.messageType === 'queued',
+          queued: false,
           images: imageBlocks.length > 0 ? imageBlocks : undefined,
           createdAt: msg.createdAt,
         })

@@ -160,6 +160,25 @@ describe('buildTimeline', () => {
       expect(toolCall.durationMs).toBe(125)
     }
   })
+
+  test('renders notification messages as system events', () => {
+    const messages: Message[] = [
+      {
+        id: 'msg_notification',
+        role: 'user',
+        messageType: 'notification',
+        content: [{ type: 'text', text: '<memory_hint>twitter requires browser</memory_hint>' }],
+        createdAt: '2026-03-08T00:00:01.000Z',
+      },
+    ]
+
+    const items = buildTimeline(messages)
+    expect(items).toHaveLength(1)
+    expect(items[0].type).toBe('system-event')
+    if (items[0].type === 'system-event') {
+      expect(items[0].text).toContain('twitter requires browser')
+    }
+  })
 })
 
 test('adds session task closure event when traces are unavailable', () => {
@@ -307,7 +326,7 @@ test('does not infer tool duration without toolUseId metadata', () => {
   }
 })
 
-test('marks queued user messages for timeline rendering and preserves image attachments', () => {
+test('does not render queued user messages as standalone timeline items', () => {
   const items = buildTimeline([
     {
       id: 'msg_live',
@@ -328,17 +347,11 @@ test('marks queued user messages for timeline rendering and preserves image atta
     },
   ])
 
-  expect(items).toHaveLength(2)
+  expect(items).toHaveLength(1)
   expect(items[0]).toMatchObject({
     type: 'user-message',
     text: 'first',
     queued: false,
-  })
-  expect(items[1]).toMatchObject({
-    type: 'user-message',
-    text: 'late follow-up',
-    queued: true,
-    images: [{ mediaType: 'image/png', data: 'abc123' }],
   })
 })
 
@@ -370,15 +383,10 @@ test('does not render tool-result carrier messages as duplicate user messages', 
     },
   ])
 
-  expect(items).toHaveLength(2)
+  expect(items).toHaveLength(1)
   expect(items[0]).toMatchObject({
     type: 'tool-call',
     id: 'call_1',
-  })
-  expect(items[1]).toMatchObject({
-    type: 'user-message',
-    text: 'late follow-up',
-    queued: true,
   })
 })
 
