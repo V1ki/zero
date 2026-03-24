@@ -111,6 +111,23 @@ describe('Session', () => {
     expect(session.data.modelHistory.at(-1)?.model).toBe('openai-codex/gpt-5.4-medium')
   })
 
+  test('initAgent resolves dedicated closure adapter when taskClosureModel is configured', () => {
+    const router = createRouter()
+    const registry = createToolRegistry()
+    const session = new Session('web', router, registry, {
+      taskClosureModel: 'openai-codex/gpt-5.4-medium',
+    })
+
+    session.initAgent({
+      name: 'test-agent',
+      agentInstruction: 'You are a helpful assistant. Reply briefly.',
+    })
+
+    const agent = (session as unknown as { agent: { closureAdapter: unknown } | null }).agent
+    expect(agent).toBeDefined()
+    expect(agent?.closureAdapter).toBe(router.resolveModel('openai-codex/gpt-5.4-medium')?.adapter)
+  })
+
   test('handles real conversation with AI (real API)', async () => {
     const router = createRouter()
     const registry = createToolRegistry()

@@ -2,7 +2,7 @@ import { Eye, EyeSlash, Plus, Trash } from '@phosphor-icons/react'
 import { useCallback, useEffect, useState } from 'react'
 import { ConfirmDialog } from '../components/shared/ConfirmDialog'
 import { SkeletonCard } from '../components/shared/Skeleton'
-import { apiFetch, apiPost } from '../lib/api'
+import { apiFetch, apiPost, apiPut } from '../lib/api'
 import { useUIStore } from '../stores/ui'
 
 interface ProviderView {
@@ -32,6 +32,7 @@ interface ConfigData {
   fallbackChain: string[]
   schedules: { name: string; cron: string; task: string }[]
   fuseList: { pattern: string; description: string }[]
+  taskClosureModel: string | null
   secrets?: { key: string; masked: string; configured: boolean }[]
 }
 
@@ -141,6 +142,19 @@ export function ConfigPage() {
     } finally {
       setRollbackLoading(false)
       setShowRollbackConfirm(false)
+    }
+  }
+
+  async function handleSetTaskClosureModel(model: string | null) {
+    try {
+      await apiPut('/api/config', { taskClosureModel: model })
+      setConfig((prev) => (prev ? { ...prev, taskClosureModel: model } : prev))
+      addToast(
+        'success',
+        model ? `Task closure model set to ${model}` : 'Task closure model cleared',
+      )
+    } catch {
+      // Error toast handled by api layer
     }
   }
 
@@ -365,6 +379,28 @@ export function ConfigPage() {
                     </p>
                   )}
                 </div>
+              </div>
+
+              <div className="card p-5 animate-fade-up lg:col-span-2" style={{ animationDelay: '120ms' }}>
+                <h3 className="text-[14px] font-semibold mb-1 text-[var(--color-text-secondary)]">
+                  Task Closure Model
+                </h3>
+                <p className="text-[11px] text-[var(--color-text-muted)] mb-3">
+                  可选的轻量模型，用于任务收尾判定。未设置时使用主 agent 模型。
+                </p>
+                <select
+                  aria-label="Task Closure Model"
+                  value={config?.taskClosureModel ?? ''}
+                  onChange={(e) => handleSetTaskClosureModel(e.target.value || null)}
+                  className="w-full max-w-md px-3 py-2 rounded-lg bg-[var(--color-bg-secondary)] border border-[var(--color-border)] text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent)]"
+                >
+                  <option value="">Default（与 agent 主模型相同）</option>
+                  {models.map((m) => (
+                    <option key={`${m.provName}/${m.mName}`} value={`${m.provName}/${m.mName}`}>
+                      {m.provName}/{m.mName}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
           )}

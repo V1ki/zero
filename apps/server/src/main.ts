@@ -353,6 +353,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
       sessionDb,
       schedulerHandle,
       scheduleStore,
+      taskClosureModel: config.taskClosureModel,
     },
     sessionDb,
   )

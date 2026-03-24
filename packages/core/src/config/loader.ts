@@ -62,6 +62,9 @@ function normalizeConfig(raw: Record<string, unknown>): SystemConfig {
   const fallbackChain = ((raw.fallback_chain as string[]) ?? []).map((model) =>
     normalizeModelReference(model, providers),
   )
+  const taskClosureModel = raw.task_closure_model
+    ? normalizeModelReference(raw.task_closure_model as string, providers)
+    : undefined
 
   return {
     providers,
@@ -70,6 +73,7 @@ function normalizeConfig(raw: Record<string, unknown>): SystemConfig {
     schedules: (raw.schedules as SystemConfig['schedules']) ?? [],
     fuseList: (raw.fuse_list as FuseRule[]) ?? [],
     ...(raw.channels !== undefined ? { channels } : {}),
+    ...(taskClosureModel ? { taskClosureModel } : {}),
     ...(raw.embedding !== undefined
       ? { embedding: normalizeEmbeddingConfig(raw.embedding as Record<string, unknown>) }
       : {}),

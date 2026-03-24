@@ -1,7 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { cpSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { readYaml } from '@zero-os/shared/utils'
+import type { ProviderAdapter } from '@zero-os/model'
+import { encryptSecrets } from '@zero-os/secrets'
 import { startZeroOS } from '../../../../server/src/main'
 import type { ZeroOS } from '../../../../server/src/main'
 import { createRoutes } from '../routes'
@@ -9,22 +12,102 @@ import { createRoutes } from '../routes'
 let app: ReturnType<typeof createRoutes>
 let zero: ZeroOS
 let testDataDir: string
+const previousZeroDataDir = process.env.ZERO_DATA_DIR
+const previousMasterKey = process.env.ZERO_MASTER_KEY_BASE64
+const TEST_MASTER_KEY = Buffer.alloc(32, 9)
+
+function writeConfig(dataDir: string) {
+  writeFileSync(
+    join(dataDir, 'config.yaml'),
+    `providers:
+  openai-codex:
+    api_type: openai_chat_completions
+    base_url: https://example.com/v1
+    auth:
+      type: api_key
+      api_key_ref: openai_codex_api_key
+    models:
+      gpt-5.4-medium:
+        model_id: gpt-5.4-medium
+        max_context: 400000
+        max_output: 128000
+        capabilities:
+          - tools
+          - vision
+          - reasoning
+        tags:
+          - powerful
+          - coding
+      gpt-5.3-codex-medium:
+        model_id: gpt-5.3-codex-medium
+        max_context: 400000
+        max_output: 128000
+        capabilities:
+          - tools
+          - vision
+          - reasoning
+        tags:
+          - powerful
+          - coding
+  anthropic:
+    api_type: anthropic_messages
+    base_url: https://example.com/anthropic
+    auth:
+      type: api_key
+      api_key_ref: anthropic_api_key
+    models:
+      claude-opus-4-6:
+        model_id: claude-opus-4-6
+        max_context: 200000
+        max_output: 8192
+        capabilities:
+          - tools
+          - reasoning
+        tags:
+          - analysis
+        pricing:
+          input: 5
+          output: 25
+          cacheWrite: 6.25
+          cacheRead: 0.5
+default_model: openai-codex/gpt-5.4-medium
+fallback_chain:
+  - openai-codex/gpt-5.4-medium
+schedules: []
+fuse_list: []
+`,
+  )
+  writeFileSync(join(dataDir, 'fuse_list.yaml'), 'rules: []\n')
+}
 
 beforeAll(async () => {
   testDataDir = mkdtempSync(join(tmpdir(), 'zero-test-'))
-  const prodDir = join(process.cwd(), '.zero')
-  for (const file of ['secrets.enc', 'config.yaml', 'fuse_list.yaml']) {
-    const src = join(prodDir, file)
-    if (existsSync(src)) {
-      cpSync(src, join(testDataDir, file))
-    }
-  }
+  process.env.ZERO_DATA_DIR = testDataDir
+  process.env.ZERO_MASTER_KEY_BASE64 = TEST_MASTER_KEY.toString('base64')
+  writeConfig(testDataDir)
+  encryptSecrets(
+    {
+      openai_codex_api_key: 'sk-test-placeholder',
+    },
+    TEST_MASTER_KEY,
+    join(testDataDir, 'secrets.enc'),
+  )
   zero = await startZeroOS({ dataDir: testDataDir, skipProcessExit: true })
   app = createRoutes(zero)
 })
 
 afterAll(async () => {
   await zero.shutdown()
+  if (previousMasterKey === undefined) {
+    delete process.env.ZERO_MASTER_KEY_BASE64
+  } else {
+    process.env.ZERO_MASTER_KEY_BASE64 = previousMasterKey
+  }
+  if (previousZeroDataDir === undefined) {
+    delete process.env.ZERO_DATA_DIR
+  } else {
+    process.env.ZERO_DATA_DIR = previousZeroDataDir
+  }
   rmSync(testDataDir, { recursive: true, force: true })
 })
 
@@ -101,6 +184,82 @@ describe('API Routes (Real)', () => {
     const data = await res.json()
     expect(data.defaultModel).toBe('openai-codex/gpt-5.4-medium')
     expect(data.providers).toBeDefined()
+    expect(data.taskClosureModel).toBeNull()
+  })
+
+  test('PUT /api/config updates task closure model in config.yaml', async () => {
+    const res = await app.request('/api/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskClosureModel: 'openai-codex/gpt-5.4-medium' }),
+    })
+    expect(res.status).toBe(200)
+    const data = await res.json()
+    expect(data.ok).toBe(true)
+    expect(data.taskClosureModel).toBe('openai-codex/gpt-5.4-medium')
+
+    const raw = readYaml<Record<string, unknown>>(join(testDataDir, 'config.yaml'))
+    expect(raw.task_closure_model).toBe('openai-codex/gpt-5.4-medium')
+  })
+
+  test('PUT /api/config clears task closure model when set to null', async () => {
+    const res = await app.request('/api/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskClosureModel: null }),
+    })
+    expect(res.status).toBe(200)
+    const data = await res.json()
+    expect(data.ok).toBe(true)
+    expect(data.taskClosureModel).toBeNull()
+
+    const raw = readYaml<Record<string, unknown>>(join(testDataDir, 'config.yaml'))
+    expect(raw.task_closure_model).toBeUndefined()
+  })
+
+  test('PUT /api/config updates runtime task closure model for active and future sessions', async () => {
+    const session = zero.sessionManager.create('web')
+    session.initAgent({
+      name: 'runtime-config-agent',
+      agentInstruction: 'Test runtime config updates.',
+    })
+
+    const initialAgent = (
+      session as unknown as {
+        agent: { closureAdapter: ProviderAdapter } | null
+      }
+    ).agent
+    expect(initialAgent?.closureAdapter).toBe(zero.modelRouter.getDefaultModel()?.adapter)
+
+    const res = await app.request('/api/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskClosureModel: 'openai-codex/gpt-5.3-codex-medium' }),
+    })
+    expect(res.status).toBe(200)
+
+    const refreshedAgent = (
+      session as unknown as {
+        agent: { closureAdapter: ProviderAdapter } | null
+      }
+    ).agent
+    expect(refreshedAgent?.closureAdapter).toBe(
+      zero.modelRouter.resolveModel('openai-codex/gpt-5.3-codex-medium')?.adapter,
+    )
+
+    const future = zero.sessionManager.create('web')
+    future.initAgent({
+      name: 'runtime-config-agent-future',
+      agentInstruction: 'Test future runtime config updates.',
+    })
+    const futureAgent = (
+      future as unknown as {
+        agent: { closureAdapter: ProviderAdapter } | null
+      }
+    ).agent
+    expect(futureAgent?.closureAdapter).toBe(
+      zero.modelRouter.resolveModel('openai-codex/gpt-5.3-codex-medium')?.adapter,
+    )
   })
 
   test('GET /api/models returns model list', async () => {

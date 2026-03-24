@@ -68,6 +68,7 @@ export interface SessionDeps {
   sessionDb?: SessionDB
   schedulerHandle?: import('@zero-os/shared').ToolContext['schedulerHandle']
   scheduleStore?: import('@zero-os/shared').ToolContext['scheduleStore']
+  taskClosureModel?: string
 }
 
 /**
@@ -113,6 +114,7 @@ export class Session {
   private currentSnapshotId?: string
   private lastSnapshotContext: SnapshotContext | null = null
   private nextTurnIndex = 1
+  private pendingAgentRefresh = false
   /** Channel capabilities for system prompt injection */
   private channelCapabilities?: ChannelCapabilities
 
@@ -203,6 +205,9 @@ export class Session {
       throw new Error('No active model available for session.')
     }
     const adapter = resolved.adapter
+    const closureAdapter = this.deps.taskClosureModel
+      ? this.modelRouter.resolveModel(this.deps.taskClosureModel)?.adapter
+      : undefined
 
     const projectRoot = process.cwd()
     const workspacePath = join(projectRoot, '.zero', 'workspace', config.name)
@@ -258,7 +263,15 @@ export class Session {
       },
     }
 
-    this.agent = new Agent(config, adapter, this.toolRegistry, toolContext, agentObs)
+    this.agent = new Agent(
+      config,
+      adapter,
+      this.toolRegistry,
+      toolContext,
+      agentObs,
+      closureAdapter,
+    )
+    this.pendingAgentRefresh = false
 
     // Persist session with agent config
     this.deps.sessionDb?.saveSession(this.data, JSON.stringify(config))
@@ -293,6 +306,10 @@ export class Session {
     this.interruptFlag = false
 
     try {
+      if (this.pendingAgentRefresh) {
+        this.pendingAgentRefresh = false
+        this.reinitializeAgent()
+      }
       return await this.processMessage(content, options)
     } finally {
       this.mutex.release(lockId)
@@ -762,6 +779,16 @@ export class Session {
     this.initAgent(this.lastAgentConfig)
   }
 
+  setTaskClosureModel(taskClosureModel?: string): void {
+    this.deps.taskClosureModel = taskClosureModel
+    if (!this.agent || !this.lastAgentConfig) return
+    if (this.isTurnInProgress()) {
+      this.pendingAgentRefresh = true
+      return
+    }
+    this.reinitializeAgent()
+  }
+
   private persistState(): void {
     this.deps.sessionDb?.saveMessages(this.data.id, this.messages)
     const agentConfig = this.lastAgentConfig
@@ -864,6 +891,7 @@ export class Session {
       currentSnapshotId: undefined,
       lastSnapshotContext: null,
       nextTurnIndex: Session.deriveNextTurnIndex(data.id, messages, deps.observability),
+      pendingAgentRefresh: false,
     })
     session.restoreSnapshotStateFromLogger()
     session.deps.observability?.syncSessionActiveState(session.data.id, session.data.status)

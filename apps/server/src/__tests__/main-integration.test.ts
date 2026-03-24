@@ -5,6 +5,7 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MemoryStore } from '@zero-os/memory'
+import type { ProviderAdapter } from '@zero-os/model'
 import { encryptSecrets } from '@zero-os/secrets'
 import { startZeroOS } from '../main'
 import type { ZeroOS } from '../main'
@@ -13,7 +14,14 @@ let zero: ZeroOS
 let testDataDir: string
 const TEST_MASTER_KEY = Buffer.alloc(32, 7)
 
-function writeConfig(dataDir: string, options?: { embeddingBaseUrl?: string }) {
+function writeConfig(
+  dataDir: string,
+  options?: {
+    embeddingBaseUrl?: string
+    includeClosureModel?: boolean
+    taskClosureModel?: string
+  },
+) {
   writeFileSync(
     join(dataDir, 'config.yaml'),
     `providers:
@@ -35,8 +43,20 @@ function writeConfig(dataDir: string, options?: { embeddingBaseUrl?: string }) {
         tags:
           - powerful
           - coding
-default_model: openai-codex/gpt-5.4-medium
-fallback_chain:
+${options?.includeClosureModel ? `      gpt-5.3-codex-medium:
+        model_id: gpt-5.3-codex-medium
+        max_context: 400000
+        max_output: 128000
+        capabilities:
+          - tools
+          - vision
+          - reasoning
+        tags:
+          - powerful
+          - coding
+` : ''}default_model: openai-codex/gpt-5.4-medium
+${options?.taskClosureModel ? `task_closure_model: ${options.taskClosureModel}
+` : ''}fallback_chain:
   - openai-codex/gpt-5.4-medium
 schedules: []
 fuse_list: []
@@ -189,6 +209,48 @@ describe('startZeroOS Integration', () => {
       throw new Error('expected current model')
     }
     expect(current.modelName).toBe('gpt-5.4-medium')
+  })
+
+  test('passes taskClosureModel into new session agents as a dedicated closure adapter', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'zero-task-closure-'))
+    process.env.ZERO_MASTER_KEY_BASE64 = TEST_MASTER_KEY.toString('base64')
+    writeConfig(dataDir, {
+      includeClosureModel: true,
+      taskClosureModel: 'openai-codex/gpt-5.3-codex-medium',
+    })
+    encryptSecrets(
+      {
+        openai_codex_api_key: 'sk-test-placeholder',
+      },
+      TEST_MASTER_KEY,
+      join(dataDir, 'secrets.enc'),
+    )
+
+    let closureZero: ZeroOS | undefined
+
+    try {
+      closureZero = await startZeroOS({ dataDir, skipProcessExit: true })
+      const session = closureZero.sessionManager.create('web')
+      session.initAgent({
+        name: 'closure-test-agent',
+        agentInstruction: 'Test closure routing.',
+      })
+
+      const agent = (
+        session as unknown as {
+          agent: { adapter: ProviderAdapter; closureAdapter: ProviderAdapter } | null
+        }
+      ).agent
+      expect(agent).toBeDefined()
+      expect(agent?.adapter).toBe(closureZero.modelRouter.getDefaultModel()?.adapter)
+      expect(agent?.closureAdapter).toBe(
+        closureZero.modelRouter.resolveModel('openai-codex/gpt-5.3-codex-medium')?.adapter,
+      )
+      expect(agent?.closureAdapter).not.toBe(agent?.adapter)
+    } finally {
+      await closureZero?.shutdown()
+      rmSync(dataDir, { recursive: true, force: true })
+    }
   })
 
   test('toolRegistry has 15 registered tools', () => {

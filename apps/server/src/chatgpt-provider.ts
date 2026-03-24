@@ -4,9 +4,6 @@ import { loadConfig } from '@zero-os/core'
 import { readYaml, writeYaml } from '@zero-os/shared'
 import type { ModelConfig, ProviderConfig, SystemConfig } from '@zero-os/shared'
 
-const ZERO_DIR = join(process.cwd(), '.zero')
-const CONFIG_PATH = join(ZERO_DIR, 'config.yaml')
-
 const CHATGPT_PROVIDER = 'chatgpt'
 const CHATGPT_OAUTH_TOKEN_REF = 'chatgpt_oauth_token'
 
@@ -39,12 +36,17 @@ const DEFAULT_MODEL_TEMPLATES: Record<(typeof CHATGPT_MODELS)[number], ModelConf
   },
 }
 
+function getZeroDir() {
+  return process.env.ZERO_DATA_DIR ?? join(process.cwd(), '.zero')
+}
+
 function loadRawConfig(): Record<string, unknown> {
-  if (!existsSync(CONFIG_PATH)) {
-    throw new Error(`Config file not found: ${CONFIG_PATH}`)
+  const configPath = getConfigPath()
+  if (!existsSync(configPath)) {
+    throw new Error(`Config file not found: ${configPath}`)
   }
 
-  return readYaml<Record<string, unknown>>(CONFIG_PATH)
+  return readYaml<Record<string, unknown>>(configPath)
 }
 
 function modelToYaml(model: ModelConfig): Record<string, unknown> {
@@ -112,11 +114,12 @@ export function getChatgptOAuthTokenRef() {
 }
 
 export function getConfigPath() {
-  return CONFIG_PATH
+  return join(getZeroDir(), 'config.yaml')
 }
 
 export function ensureChatgptProviderConfig(): { changed: boolean; config: SystemConfig } {
-  const existingConfig = loadConfig(CONFIG_PATH)
+  const configPath = getConfigPath()
+  const existingConfig = loadConfig(configPath)
   const raw = loadRawConfig()
   let changed = false
   if (!raw.providers || typeof raw.providers !== 'object') {
@@ -205,12 +208,12 @@ export function ensureChatgptProviderConfig(): { changed: boolean; config: Syste
   }
 
   if (changed) {
-    writeYaml(CONFIG_PATH, raw)
+    writeYaml(configPath, raw)
   }
 
   return {
     changed,
-    config: loadConfig(CONFIG_PATH),
+    config: loadConfig(configPath),
   }
 }
 

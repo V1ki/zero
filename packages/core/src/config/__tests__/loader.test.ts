@@ -187,6 +187,42 @@ embedding:
       dimensions: 1024,
     })
   })
+
+  test('normalizes task closure model from snake_case config', () => {
+    const configPath = join(tmpDir, 'task-closure.yaml')
+    writeFileSync(
+      configPath,
+      `
+providers:
+  openai:
+    api_type: openai_chat_completions
+    base_url: https://api.openai.com/v1
+    auth:
+      type: api_key
+      api_key_ref: openai-key
+    models:
+      primary:
+        model_id: gpt-5.4-medium
+        max_context: 128000
+        max_output: 4096
+        capabilities: []
+        tags: []
+      closure:
+        model_id: gpt-5.3-codex-medium
+        max_context: 128000
+        max_output: 4096
+        capabilities: []
+        tags: []
+default_model: primary
+task_closure_model: closure
+`,
+    )
+
+    const config = loadConfig(configPath)
+
+    expect(config.defaultModel).toBe('openai/primary')
+    expect(config.taskClosureModel).toBe('openai/closure')
+  })
 })
 
 describe('loadFuseList', () => {

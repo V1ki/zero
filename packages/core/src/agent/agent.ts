@@ -164,6 +164,7 @@ type SessionTaskClosureEvent =
 export class Agent {
   private config: AgentConfig
   private adapter: ProviderAdapter
+  private closureAdapter: ProviderAdapter
   private toolRegistry: ToolRegistry
   private toolContext: ToolContext
   private obs: AgentObservability
@@ -174,9 +175,11 @@ export class Agent {
     toolRegistry: ToolRegistry,
     toolContext: ToolContext,
     obs: AgentObservability = {},
+    closureAdapter?: ProviderAdapter,
   ) {
     this.config = config
     this.adapter = adapter
+    this.closureAdapter = closureAdapter ?? adapter
     this.toolRegistry = toolRegistry
     this.toolContext = toolContext
     this.obs = obs
@@ -1066,7 +1069,7 @@ export class Agent {
     }
 
     try {
-      const result = await this.adapter.complete({
+      const result = await this.closureAdapter.complete({
         messages: [classifierMessage],
         system: classifierRequest.system,
         stream: false,

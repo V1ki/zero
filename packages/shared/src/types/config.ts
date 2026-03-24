@@ -118,6 +118,7 @@ export interface SystemConfig {
   schedules: ScheduleConfig[]
   fuseList: FuseRule[]
   channels?: ChannelInstanceConfig[]
+  taskClosureModel?: string
   embedding?: EmbeddingModelConfig
 }
 

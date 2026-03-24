@@ -1,6 +1,7 @@
 import { loadConfig } from '@zero-os/core'
 import type { MemoryStatus, MemoryType, ModelPricing, SessionStatus } from '@zero-os/shared'
 import { toErrorMessage } from '@zero-os/shared'
+import { readYaml, writeYaml } from '@zero-os/shared/utils'
 import { GitOps } from '@zero-os/supervisor'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
@@ -748,12 +749,37 @@ export function createRoutes(zero: ZeroOS) {
         fallbackChain: config.fallbackChain,
         schedules: config.schedules,
         fuseList: config.fuseList,
+        taskClosureModel: config.taskClosureModel ?? null,
         secrets: zero.vault.keys().map((key) => ({
           key,
           masked: key === getChatgptOAuthTokenRef() ? 'oauth:configured' : 'configured',
           configured: true,
         })),
       })
+    })
+
+    .put('/api/config', async (c) => {
+      const body = await c.req.json<Record<string, unknown>>()
+      const configPath = getConfigPath()
+      const raw = readYaml<Record<string, unknown>>(configPath)
+
+      const keyMap: Record<string, string> = {
+        taskClosureModel: 'task_closure_model',
+      }
+
+      for (const [key, value] of Object.entries(body)) {
+        const yamlKey = keyMap[key] ?? key
+        if (value === null || value === '') {
+          delete raw[yamlKey]
+        } else {
+          raw[yamlKey] = value
+        }
+      }
+
+      writeYaml(configPath, raw)
+      const updated = readCurrentConfig()
+      zero.sessionManager.setTaskClosureModel(updated.taskClosureModel)
+      return c.json({ ok: true, taskClosureModel: updated.taskClosureModel ?? null })
     })
 
     .post('/api/providers/chatgpt/oauth/start', async (c) => {

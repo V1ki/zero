@@ -128,6 +128,13 @@ export class SessionManager {
     return normalized
   }
 
+  setTaskClosureModel(taskClosureModel?: string): void {
+    this.deps.taskClosureModel = taskClosureModel
+    for (const session of this.sessions.values()) {
+      session.setTaskClosureModel(taskClosureModel)
+    }
+  }
+
   private createSessionDeps(
     source: SessionSource,
     modelScope?: { channelId: string; channelName?: string },

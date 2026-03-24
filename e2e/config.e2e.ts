@@ -35,6 +35,34 @@ test.describe('Config Page', () => {
     await expect(page.locator('main span:has-text("Default")')).toBeVisible({ timeout: 10_000 })
   })
 
+  test('Models tab shows task closure model selector with default option', async ({ page }) => {
+    await page.goto('/config')
+    await expect(page.locator('main h3:has-text("Task Closure Model")')).toBeVisible({
+      timeout: 10_000,
+    })
+    const selector = page.getByLabel('Task Closure Model')
+    await expect(selector).toBeVisible()
+    await expect(selector).toHaveValue('')
+    await expect(selector.locator('option')).toContainText(['Default（与 agent 主模型相同）'])
+  })
+
+  test('task closure model selector persists selection and can be cleared', async ({ page }) => {
+    await page.goto('/config')
+    const selector = page.getByLabel('Task Closure Model')
+
+    await selector.selectOption('openai-codex/gpt-5.3-codex-medium')
+    await expect(selector).toHaveValue('openai-codex/gpt-5.3-codex-medium')
+
+    await page.reload()
+    await expect(selector).toHaveValue('openai-codex/gpt-5.3-codex-medium')
+
+    await selector.selectOption('')
+    await expect(selector).toHaveValue('')
+
+    await page.reload()
+    await expect(selector).toHaveValue('')
+  })
+
   test('Scheduler tab shows scheduled tasks', async ({ page }) => {
     await page.goto('/config')
     await page.locator('main button:has-text("Scheduler")').click()

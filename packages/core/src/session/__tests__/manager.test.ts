@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { ModelRouter } from '@zero-os/model'
+import type { ProviderAdapter } from '@zero-os/model'
 import type { SystemConfig } from '@zero-os/shared'
 import { BashTool } from '../../tool/bash'
 import { ReadTool } from '../../tool/read'
@@ -243,5 +244,51 @@ describe('SessionManager', () => {
 
     const rotated = manager.startNewForChannel('telegram', 'room-scope')
     expect(rotated.session.data.currentModel).toBe('openai-codex/gpt-5.4-medium')
+  })
+
+  test('setTaskClosureModel updates idle sessions and future sessions', () => {
+    const router = createRouter()
+    const manager = new SessionManager(router, createToolRegistry(), {
+      taskClosureModel: 'openai-codex/gpt-5.3-codex-medium',
+    })
+    const current = manager.create('web')
+    current.initAgent({
+      name: 'manager-test-agent',
+      agentInstruction: 'Test closure model updates.',
+    })
+
+    const currentAgent = (
+      current as unknown as {
+        agent: { closureAdapter: ProviderAdapter } | null
+      }
+    ).agent
+    expect(currentAgent?.closureAdapter).toBe(
+      router.resolveModel('openai-codex/gpt-5.3-codex-medium')?.adapter,
+    )
+
+    manager.setTaskClosureModel('openai-codex/gpt-5.4-medium')
+
+    const refreshedAgent = (
+      current as unknown as {
+        agent: { closureAdapter: ProviderAdapter } | null
+      }
+    ).agent
+    expect(refreshedAgent?.closureAdapter).toBe(
+      router.resolveModel('openai-codex/gpt-5.4-medium')?.adapter,
+    )
+
+    const future = manager.create('web')
+    future.initAgent({
+      name: 'manager-test-agent-next',
+      agentInstruction: 'Test future closure model updates.',
+    })
+    const futureAgent = (
+      future as unknown as {
+        agent: { closureAdapter: ProviderAdapter } | null
+      }
+    ).agent
+    expect(futureAgent?.closureAdapter).toBe(
+      router.resolveModel('openai-codex/gpt-5.4-medium')?.adapter,
+    )
   })
 })

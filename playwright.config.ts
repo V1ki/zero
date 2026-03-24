@@ -8,12 +8,12 @@ export default defineConfig({
     timeout: 10_000,
   },
   use: {
-    baseURL: 'http://127.0.0.1:3101',
+    baseURL: 'http://127.0.0.1:3211',
     trace: 'on-first-retry',
   },
   webServer: {
     command: 'bun run e2e:server',
-    url: 'http://127.0.0.1:3101/api/status',
+    url: 'http://127.0.0.1:3211/api/status',
     reuseExistingServer: false,
     timeout: 30_000,
   },

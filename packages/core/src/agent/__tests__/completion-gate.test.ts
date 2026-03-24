@@ -167,6 +167,30 @@ function createContext(registry: ToolRegistry): AgentContext {
 }
 
 describe('Agent task closure gate', () => {
+  test('uses closure adapter for task closure classifier requests when provided', async () => {
+    const registry = new ToolRegistry()
+    const adapter = new TaskClosureAdapter('continue')
+    const closureAdapter = new TaskClosureAdapter('finish')
+    const agent = new Agent(
+      { name: 'test-agent', agentInstruction: 'Test prompt' },
+      adapter,
+      registry,
+      createToolContext(),
+      {},
+      closureAdapter,
+    )
+
+    const messages = await agent.run(createContext(registry), '帮我看看这帖值不值得信')
+    const assistantMessages = messages.filter((message) => message.role === 'assistant')
+
+    expect(assistantMessages).toHaveLength(1)
+    expect(getTextFromMessage(assistantMessages[0])).toContain('如果你愿意')
+    expect(adapter.normalCalls).toBe(1)
+    expect(adapter.classifierCalls).toBe(0)
+    expect(closureAdapter.normalCalls).toBe(0)
+    expect(closureAdapter.classifierCalls).toBe(1)
+  })
+
   test('continues automatically when classifier marks optional tail as required work', async () => {
     const registry = new ToolRegistry()
     const adapter = new TaskClosureAdapter('continue')
