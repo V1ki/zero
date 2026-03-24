@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import type { SessionTaskClosureEvent, TraceSpan } from './timeline'
-import { evaluateTraceSession } from './trace-eval'
+import type { SessionTaskClosureEvent, TraceSpan } from '../timeline'
+import { evaluateTraceSession } from '../trace-eval'
 
 describe('evaluateTraceSession', () => {
   test('returns resolved verdict for successful traced completion', () => {

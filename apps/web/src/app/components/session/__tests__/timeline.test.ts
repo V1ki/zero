@@ -4,7 +4,7 @@ import {
   type SessionTaskClosureEvent,
   type TraceSpan,
   buildTimeline,
-} from './timeline'
+} from '../timeline'
 
 describe('buildTimeline', () => {
   test('adds task closure decision span as a system event from trace data', () => {
@@ -177,6 +177,72 @@ describe('buildTimeline', () => {
     expect(items[0].type).toBe('system-event')
     if (items[0].type === 'system-event') {
       expect(items[0].text).toContain('twitter requires browser')
+    }
+  })
+
+  test('anchors memory inject notifications after the triggering user message', () => {
+    const messages: Message[] = [
+      {
+        id: 'msg_memory_inject',
+        role: 'user',
+        messageType: 'notification',
+        content: [{ type: 'text', text: '<memory_inject layer="layer1">memory</memory_inject>' }],
+        createdAt: '2026-03-08T00:00:00.000Z',
+      },
+      {
+        id: 'msg_user',
+        role: 'user',
+        messageType: 'message',
+        content: [{ type: 'text', text: 'please inspect this' }],
+        createdAt: '2026-03-08T00:00:00.001Z',
+      },
+      {
+        id: 'msg_assistant',
+        role: 'assistant',
+        messageType: 'message',
+        content: [{ type: 'text', text: 'working on it' }],
+        createdAt: '2026-03-08T00:00:01.000Z',
+      },
+    ]
+
+    const items = buildTimeline(messages)
+    expect(items.map((item) => item.type)).toEqual(['user-message', 'system-event', 'agent-text'])
+    if (items[1]?.type === 'system-event') {
+      expect(items[1].text).toContain('<memory_inject layer="layer1">')
+      expect(items[1].createdAt).toBe('2026-03-08T00:00:00.001Z')
+    }
+  })
+
+  test('anchors later memory inject notifications to the most recent user message', () => {
+    const messages: Message[] = [
+      {
+        id: 'msg_user',
+        role: 'user',
+        messageType: 'message',
+        content: [{ type: 'text', text: 'analyze x.com link' }],
+        createdAt: '2026-03-08T00:00:00.000Z',
+      },
+      {
+        id: 'msg_assistant',
+        role: 'assistant',
+        messageType: 'message',
+        content: [{ type: 'text', text: 'fetch failed, retrying' }],
+        createdAt: '2026-03-08T00:00:01.000Z',
+      },
+      {
+        id: 'msg_memory_hint',
+        role: 'user',
+        messageType: 'notification',
+        content: [{ type: 'text', text: '<memory_inject layer="layer2">hint</memory_inject>' }],
+        createdAt: '2026-03-08T00:00:02.000Z',
+      },
+    ]
+
+    const items = buildTimeline(messages)
+    expect(items.map((item) => item.type)).toEqual(['user-message', 'system-event', 'agent-text'])
+    if (items[1]?.type === 'system-event') {
+      expect(items[1].text).toContain('<memory_inject layer="layer2">')
+      expect(items[1].createdAt).toBe('2026-03-08T00:00:00.000Z')
     }
   })
 })

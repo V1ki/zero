@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { ChannelSessionSelector } from './ChannelSessionSelector'
+import { ChannelSessionSelector } from '../ChannelSessionSelector'
 
 describe('ChannelSessionSelector', () => {
   test('renders channel session metadata and options', () => {
