@@ -6,6 +6,7 @@ import type {
   CompletionRequest,
   CompletionResponse,
   Message,
+  MemorySearchOptions,
   StreamEvent,
   SystemConfig,
 } from '@zero-os/shared'
@@ -73,6 +74,7 @@ describe('Session memory retrieval', () => {
   test('injects retrieved memories into dynamic context before agent.run', async () => {
     const router = createRouter()
     const tracer = new Tracer()
+    let capturedSearchOptions: MemorySearchOptions | undefined
     const session = new Session('web', router, new ToolRegistry(), {
       identityMemory: '用户曾经要求优先使用浏览器插件',
       tracer,
@@ -80,7 +82,8 @@ describe('Session memory retrieval', () => {
         async retrieve() {
           return []
         },
-        async retrieveScored() {
+        async retrieveScored(_query: string, options?: MemorySearchOptions) {
+          capturedSearchOptions = options
           return [
             {
               memory: {
@@ -97,8 +100,9 @@ describe('Session memory retrieval', () => {
               },
               score: 0.91,
               scoreBreakdown: {
-                keyword: 1,
+                keyword: 0,
                 recency: 1,
+                vector: 0.91,
               },
             },
           ]
@@ -165,6 +169,13 @@ describe('Session memory retrieval', () => {
     expect(capturedContext?.dynamicContext).toContain('<system-reminder>')
     expect(capturedContext?.dynamicContext).toContain('<retrieved_memories>')
     expect(capturedContext?.dynamicContext).toContain('Twitter 访问偏好')
+    expect(capturedSearchOptions).toEqual(
+      expect.objectContaining({
+        topN: 5,
+        confidenceThreshold: 0.6,
+        minScore: 0.15,
+      }),
+    )
     expect(capturedContext?.requestMemoryInjections).toEqual([
       expect.objectContaining({
         layer: 'layer1',
@@ -194,6 +205,9 @@ describe('Session memory retrieval', () => {
           expect.objectContaining({
             query: 'x.com browser',
             mode: 'scored',
+            options: expect.objectContaining({
+              minScore: 0.15,
+            }),
             resultCount: 1,
             results: [
               expect.objectContaining({
@@ -201,8 +215,9 @@ describe('Session memory retrieval', () => {
                 title: 'Twitter 访问偏好',
                 score: 0.91,
                 scoreBreakdown: expect.objectContaining({
-                  keyword: 1,
+                  keyword: 0,
                   recency: 1,
+                  vector: 0.91,
                 }),
               }),
             ],

@@ -410,8 +410,9 @@ describe('Agent tool recovery', () => {
               },
               score: 0.92,
               scoreBreakdown: {
-                keyword: 1,
+                keyword: 0,
                 recency: 1,
+                vector: 0.92,
               },
             },
           ]
@@ -474,6 +475,9 @@ describe('Agent tool recovery', () => {
           expect.objectContaining({
             query: 'x.com browser login',
             mode: 'scored',
+            options: expect.objectContaining({
+              minScore: 0.15,
+            }),
             resultCount: 1,
             results: [
               expect.objectContaining({
@@ -481,8 +485,9 @@ describe('Agent tool recovery', () => {
                 title: 'Twitter requires browser',
                 score: 0.92,
                 scoreBreakdown: expect.objectContaining({
-                  keyword: 1,
+                  keyword: 0,
                   recency: 1,
+                  vector: 0.92,
                 }),
               }),
             ],

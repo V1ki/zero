@@ -50,6 +50,7 @@ export interface ScoredMemoryMatch {
 export interface MemorySearchOptions {
   topN?: number
   confidenceThreshold?: number
+  minScore?: number
   types?: MemoryType[]
   tags?: string[]
   status?: MemoryStatus[]

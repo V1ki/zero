@@ -1,27 +1,25 @@
 import {
-  ALL_MEMORY_TYPES,
-  Memory,
-  MemoryScoreBreakdown,
   MemorySearchOptions,
   ScoredMemoryMatch,
+  type Memory,
+  type MemoryType,
   toErrorMessage,
 } from '@zero-os/shared'
 import type { EmbeddingProvider } from './embedding'
 import type { MemoryRepository } from './store'
 import type { VectorIndexLike } from './vector-index'
 
-const DEFAULT_TYPES = ALL_MEMORY_TYPES
+const DEFAULT_TYPES: MemoryType[] = ['preference', 'decision', 'note', 'runbook', 'incident']
 
 export interface MemoryRetrieverConfig {
   vectorWeight?: number
-  keywordWeight?: number
   recencyWeight?: number
   recencyHalfLifeDays?: number
 }
 
 /**
  * Memory retriever — searches memories by relevance.
- * Supports hybrid vector search, tag filters, and confidence thresholds.
+ * Uses vector retrieval plus recency ranking.
  */
 export class MemoryRetriever {
   constructor(
@@ -39,61 +37,71 @@ export class MemoryRetriever {
     query: string,
     options: MemorySearchOptions = {},
   ): Promise<ScoredMemoryMatch[]> {
-    const { topN = 5, confidenceThreshold = 0.6, types, tags, status } = options
-    const keywords = extractKeywords(query)
+    const { topN = 5, confidenceThreshold = 0.6, minScore = 0, types, tags, status } = options
+    if (!query.trim() || !this.embeddingClient || !this.vectorIndex) return []
+
     const targetTypes = types ?? DEFAULT_TYPES
+    const targetTypeSet = new Set(targetTypes)
 
-    let allMemories: Memory[] = []
-    for (const type of targetTypes) {
-      allMemories.push(...this.store.list(type))
+    let vectorResults: Array<{ memoryId: string; score: number }>
+    try {
+      const queryVector = await this.embeddingClient.embed(query)
+      vectorResults = await this.vectorIndex.query(queryVector, Math.max(topN * 3, topN))
+    } catch (error) {
+      console.warn('[memory] vector retrieval failed', {
+        message: toErrorMessage(error),
+      })
+      return []
     }
 
-    if (status) {
-      allMemories = allMemories.filter((memory) => status.includes(memory.status))
-    } else {
-      allMemories = allMemories.filter((memory) => memory.status === 'verified')
+    if (vectorResults.length === 0) return []
+
+    const vectorScoreMap = new Map(vectorResults.map((result) => [result.memoryId, result.score]))
+    const unresolvedIds = new Set(vectorScoreMap.keys())
+    const matchedMemories: Memory[] = []
+
+    for (const memoryId of vectorScoreMap.keys()) {
+      const meta = await this.vectorIndex.getMetadata?.(memoryId)
+      if (!meta || !targetTypeSet.has(meta.type as MemoryType)) continue
+      const memory = this.store.get(meta.type as MemoryType, memoryId)
+      if (!memory) continue
+      matchedMemories.push(memory)
+      unresolvedIds.delete(memoryId)
     }
 
-    allMemories = allMemories.filter((memory) => memory.confidence >= confidenceThreshold)
-
-    const keywordScores = new Map<string, number>()
-    const recencyScores = new Map<string, number>()
-    for (const memory of allMemories) {
-      keywordScores.set(memory.id, computeKeywordScore(memory, keywords, tags ?? []))
-      recencyScores.set(memory.id, computeRecencyScore(memory, this.recencyHalfLifeDays))
-    }
-
-    let vectorScores = new Map<string, number>()
-    if (query.trim() && this.embeddingClient && this.vectorIndex) {
-      try {
-        const queryVector = await this.embeddingClient.embed(query)
-        const vectorResults = await this.vectorIndex.query(queryVector, Math.max(topN * 3, topN))
-        vectorScores = new Map(vectorResults.map((result) => [result.memoryId, result.score]))
-      } catch (error) {
-        console.warn('[memory] vector retrieval failed, falling back to keyword search', {
-          message: toErrorMessage(error),
-        })
+    if (unresolvedIds.size > 0) {
+      for (const type of targetTypes) {
+        for (const memory of this.store.list(type)) {
+          if (!unresolvedIds.has(memory.id)) continue
+          matchedMemories.push(memory)
+          unresolvedIds.delete(memory.id)
+        }
+        if (unresolvedIds.size === 0) {
+          break
+        }
       }
     }
 
-    const maxKeywordScore = Math.max(0, ...keywordScores.values())
+    const filtered = matchedMemories
+      .filter((memory) => {
+        if (status) return status.includes(memory.status)
+        return memory.status === 'verified'
+      })
+      .filter((memory) => memory.confidence >= confidenceThreshold)
+      .filter((memory) => {
+        if (!tags?.length) return true
+        return tags.some((tag) => memory.tags.includes(tag))
+      })
 
-    const scored = allMemories.map((memory) => {
-      const keyword = normalizeScore(keywordScores.get(memory.id) ?? 0, maxKeywordScore)
-      const recency = recencyScores.get(memory.id) ?? 0
-      const vector = vectorScores.get(memory.id)
-      const scoreBreakdown: MemoryScoreBreakdown = {
-        keyword,
+    const scored = filtered.map((memory) => {
+      const vector = vectorScoreMap.get(memory.id) ?? 0
+      const recency = computeRecencyScore(memory, this.recencyHalfLifeDays)
+      const scoreBreakdown = {
+        keyword: 0,
         recency,
-        ...(vector !== undefined ? { vector } : {}),
+        vector,
       }
-
-      const hasSemanticSignal = keyword > 0 || (vector ?? 0) > 0
-      const score = hasSemanticSignal
-        ? this.keywordWeight * keyword +
-          this.recencyWeight * recency +
-          this.vectorWeight * (vector ?? 0)
-        : 0
+      const score = this.vectorWeight * vector + this.recencyWeight * recency
 
       return {
         memory,
@@ -107,15 +115,11 @@ export class MemoryRetriever {
       return b.memory.confidence - a.memory.confidence
     })
 
-    return scored.filter((entry) => entry.score > 0).slice(0, topN)
+    return scored.filter((entry) => entry.score >= minScore).slice(0, topN)
   }
 
   private get vectorWeight(): number {
-    return this.embeddingClient && this.vectorIndex ? (this.config.vectorWeight ?? 0.5) : 0
-  }
-
-  private get keywordWeight(): number {
-    return this.config.keywordWeight ?? 0.3
+    return this.config.vectorWeight ?? 0.8
   }
 
   private get recencyWeight(): number {
@@ -127,42 +131,8 @@ export class MemoryRetriever {
   }
 }
 
-export function extractKeywords(text: string): string[] {
-  return text
-    .toLowerCase()
-    .split(/[^\p{L}\p{N}_-]+/u)
-    .filter((word) => word.length > 1)
-}
-
-function computeKeywordScore(memory: Memory, keywords: string[], filterTags: string[]): number {
-  let score = 0
-
-  for (const tag of memory.tags) {
-    const normalizedTag = tag.toLowerCase()
-    if (filterTags.includes(tag)) score += 3
-    if (keywords.includes(normalizedTag)) score += 2
-  }
-
-  const titleLower = memory.title.toLowerCase()
-  for (const keyword of keywords) {
-    if (titleLower.includes(keyword)) score += 2
-  }
-
-  const contentLower = memory.content.toLowerCase()
-  for (const keyword of keywords) {
-    if (contentLower.includes(keyword)) score += 1
-  }
-
-  return score
-}
-
 function computeRecencyScore(memory: Memory, recencyHalfLifeDays: number): number {
   const ageInDays = (Date.now() - new Date(memory.updatedAt).getTime()) / 86_400_000
   if (!Number.isFinite(ageInDays) || ageInDays < 0) return 1
   return Math.exp(-ageInDays / recencyHalfLifeDays)
-}
-
-function normalizeScore(score: number, maxScore: number): number {
-  if (maxScore <= 0) return 0
-  return score / maxScore
 }

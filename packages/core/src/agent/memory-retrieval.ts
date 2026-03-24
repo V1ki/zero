@@ -39,6 +39,7 @@ interface MemoryRetrievalSearchTrace {
   options: {
     topN: number
     confidenceThreshold: number
+    minScore?: number
   }
   resultCount: number
   results: MemoryRetrievalSearchTraceResult[]
@@ -170,6 +171,7 @@ export async function retrieveMemoriesWithDecision({
           const entries = await memoryRetriever.retrieveScored(query, {
             topN: CONTEXT_PARAMS.retrieval.topN,
             confidenceThreshold: CONTEXT_PARAMS.retrieval.confidenceThreshold,
+            minScore: CONTEXT_PARAMS.retrieval.minScore,
           })
           return {
             entries,
@@ -179,6 +181,7 @@ export async function retrieveMemoriesWithDecision({
               options: {
                 topN: CONTEXT_PARAMS.retrieval.topN,
                 confidenceThreshold: CONTEXT_PARAMS.retrieval.confidenceThreshold,
+                minScore: CONTEXT_PARAMS.retrieval.minScore,
               },
               resultCount: entries.length,
               results: entries.map((entry) => ({
@@ -195,6 +198,7 @@ export async function retrieveMemoriesWithDecision({
         const memories = await memoryRetriever.retrieve(query, {
           topN: CONTEXT_PARAMS.retrieval.topN,
           confidenceThreshold: CONTEXT_PARAMS.retrieval.confidenceThreshold,
+          minScore: CONTEXT_PARAMS.retrieval.minScore,
         })
         const entries = memories.map((memory) => ({
           memory,
@@ -212,6 +216,7 @@ export async function retrieveMemoriesWithDecision({
             options: {
               topN: CONTEXT_PARAMS.retrieval.topN,
               confidenceThreshold: CONTEXT_PARAMS.retrieval.confidenceThreshold,
+              minScore: CONTEXT_PARAMS.retrieval.minScore,
             },
             resultCount: entries.length,
             results: entries.map((entry) => ({

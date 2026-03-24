@@ -274,26 +274,42 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
         const reindexed = await indexedMemoryStore.reindexAll()
         console.log(`[ZeRo OS] Memory vector index ready (${reindexed} items)`)
       } catch (error) {
-        embeddingClient = undefined
-        vectorIndex = undefined
         memoryStore = baseMemoryStore
-        console.warn(
-          '[ZeRo OS] Memory vector index unavailable, falling back to keyword retrieval',
-          {
+
+        if (vectorIndex) {
+          try {
+            await vectorIndex.ensureIndex()
+            const stats = await vectorIndex.getStats()
+            if (stats.itemCount > 0) {
+              console.warn('[ZeRo OS] Using existing memory vector index; reindex skipped', {
+                itemCount: stats.itemCount,
+                message: toErrorMessage(error),
+              })
+            } else {
+              embeddingClient = undefined
+              vectorIndex = undefined
+            }
+          } catch {
+            embeddingClient = undefined
+            vectorIndex = undefined
+          }
+        }
+
+        if (!vectorIndex) {
+          console.warn('[ZeRo OS] Memory vector index unavailable, memory search disabled', {
             message: toErrorMessage(error),
-          },
-        )
+          })
+        }
       }
     } else {
       console.warn(
-        `[ZeRo OS] Embedding secret "${embeddingConfig.apiKeyRef}" not found, memory search will use keyword fallback`,
+        `[ZeRo OS] Embedding secret "${embeddingConfig.apiKeyRef}" not found, memory search disabled`,
       )
     }
   }
 
   const memoryRetriever = new MemoryRetriever(memoryStore, embeddingClient, vectorIndex, {
     vectorWeight: CONTEXT_PARAMS.retrieval.vectorWeight,
-    keywordWeight: CONTEXT_PARAMS.retrieval.keywordWeight,
     recencyWeight: CONTEXT_PARAMS.retrieval.recencyWeight,
     recencyHalfLifeDays: CONTEXT_PARAMS.retrieval.recencyHalfLifeDays,
   })

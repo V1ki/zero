@@ -1,15 +1,44 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { MemoryRetriever, MemoryStore } from '@zero-os/memory'
+import {
+  IndexedMemoryStore,
+  MemoryRetriever,
+  MemoryStore,
+  VectorIndex,
+  type EmbeddingProvider,
+} from '@zero-os/memory'
 import { MemoryGetTool } from '../memory-get'
 import { MemorySearchTool } from '../memory-search'
 
-const testDir = join(import.meta.dir, '__fixtures__', 'memory-recall-test')
+let testDir = ''
 
-let store: MemoryStore
+let store: IndexedMemoryStore
 let retriever: MemoryRetriever
 let preferenceId = ''
+
+function createEmbeddingProvider(): EmbeddingProvider {
+  const embedText = (text: string): number[] => {
+    const normalized = text.toLowerCase()
+    return [
+      Number(normalized.includes('deploy')) + Number(normalized.includes('release')),
+      Number(normalized.includes('typescript')) + Number(normalized.includes('language')),
+    ]
+  }
+
+  return {
+    async embed(text: string): Promise<number[]> {
+      return embedText(text)
+    },
+    async embedBatch(texts: string[]): Promise<number[][]> {
+      return texts.map((text) => embedText(text))
+    },
+    memoryToText(memory) {
+      return [memory.title, memory.tags.join(' '), memory.content].join('\n')
+    },
+  }
+}
 
 const makeCtx = () => ({
   sessionId: 'test_session',
@@ -24,9 +53,16 @@ const makeCtx = () => ({
 })
 
 beforeAll(async () => {
+  testDir = mkdtempSync(join(tmpdir(), 'zero-memory-recall-'))
   mkdirSync(join(testDir, 'notes'), { recursive: true })
-  store = new MemoryStore(testDir)
-  retriever = new MemoryRetriever(store)
+  const baseStore = new MemoryStore(testDir)
+  const embeddingClient = createEmbeddingProvider()
+  const vectorIndex = new VectorIndex(join(testDir, 'vectors'))
+  store = new IndexedMemoryStore(baseStore, embeddingClient, vectorIndex)
+  retriever = new MemoryRetriever(store, embeddingClient, vectorIndex, {
+    vectorWeight: 0.8,
+    recencyWeight: 0.2,
+  })
 
   await store.create('note', 'Deploy Checklist', 'Run bun run check before release', {
     status: 'verified',
@@ -56,7 +92,7 @@ describe('Memory recall tools', () => {
   test('memory_search returns preference memories with path and score', async () => {
     const tool = new MemorySearchTool()
     const result = await tool.run(makeCtx(), {
-      query: 'What language does the user prefer?',
+      query: 'language preference typescript',
       maxResults: 5,
     })
 
@@ -72,9 +108,22 @@ describe('Memory recall tools', () => {
 
   test('memory_search returns no-match message when nothing is found', async () => {
     const tool = new MemorySearchTool()
-    const result = await tool.run(makeCtx(), {
-      query: 'completely unrelated search terms',
-    })
+    const result = await tool.run(
+      {
+        ...makeCtx(),
+        memoryRetriever: {
+          async retrieve() {
+            return []
+          },
+          async retrieveScored() {
+            return []
+          },
+        },
+      },
+      {
+        query: 'completely unrelated search terms',
+      },
+    )
 
     expect(result.success).toBe(true)
     expect(result.output).toContain('No relevant memories found')
