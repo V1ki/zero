@@ -26,6 +26,7 @@ const turndown = new TurndownService({
 })
 
 export class FetchTool extends BaseTool {
+  kind = 'built-in' as const
   name = 'fetch'
   description = 'HTTP 请求，读取网页内容 / API / 下载文件。HTML 自动转 Markdown。'
   parameters = {

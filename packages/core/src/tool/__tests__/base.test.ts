@@ -48,4 +48,10 @@ describe('BaseTool observability', () => {
     expect(calls.logEvent).toBe(0)
     expect(calls.recordOperation).toBe(1)
   })
+
+  test('defaults tool definitions to kind=tool', () => {
+    const tool = new NoopTool()
+
+    expect(tool.toDefinition().kind).toBe('tool')
+  })
 })

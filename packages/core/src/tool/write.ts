@@ -10,6 +10,7 @@ interface WriteInput {
 }
 
 export class WriteTool extends BaseTool {
+  kind = 'built-in' as const
   name = 'write'
   description = 'Write content to a file. Creates directories if needed.'
   parameters = {

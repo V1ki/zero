@@ -9,6 +9,7 @@ interface ReadInput {
 }
 
 export class ReadTool extends BaseTool {
+  kind = 'built-in' as const
   name = 'read'
   description = 'Read file contents. Supports optional line offset and limit.'
   parameters = {

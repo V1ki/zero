@@ -10,6 +10,7 @@ interface BashInput {
 }
 
 export class BashTool extends BaseTool {
+  kind = 'built-in' as const
   name = 'bash'
   description = 'Execute a shell command and return output.'
   parameters = {

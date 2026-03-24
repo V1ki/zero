@@ -189,6 +189,7 @@ describe('ToolRegistry', () => {
     const defs = registry.getDefinitions()
     expect(defs).toHaveLength(1)
     expect(defs[0].name).toBe('read')
+    expect(defs[0].kind).toBe('built-in')
     expect(defs[0].parameters).toBeDefined()
   })
 })

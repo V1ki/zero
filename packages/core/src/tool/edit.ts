@@ -10,6 +10,7 @@ interface EditInput {
 }
 
 export class EditTool extends BaseTool {
+  kind = 'built-in' as const
   name = 'edit'
   description = 'Replace exact text in a file. The old_text must match exactly.'
   parameters = {

@@ -1,3 +1,4 @@
+import type { ToolKind } from '@zero-os/shared'
 import { useEffect, useState } from 'react'
 import { ConfirmDialog } from '../components/shared/ConfirmDialog'
 import { Skeleton } from '../components/shared/Skeleton'
@@ -8,25 +9,15 @@ interface ToolInfo {
   name: string
   description: string
   parameters: Record<string, unknown>
+  kind?: ToolKind
   enabled?: boolean
 }
 
-type ToolType = 'built-in' | 'tool' | 'skill' | 'mcp'
-type Filter = 'all' | ToolType
+type Filter = 'all' | ToolKind
 
-const BUILT_IN_TOOLS = new Set(['read', 'write', 'edit', 'bash', 'fetch'])
-
-function getToolType(name: string): ToolType {
-  if (BUILT_IN_TOOLS.has(name)) return 'built-in'
-  if (name === 'task') return 'tool'
-  if (name.startsWith('mcp_') || name.startsWith('mcp:')) return 'mcp'
-  return 'skill'
-}
-
-const TYPE_STYLES: Record<ToolType, { bg: string; text: string }> = {
+const TYPE_STYLES: Record<ToolKind, { bg: string; text: string }> = {
   'built-in': { bg: 'bg-cyan-400/10', text: 'text-cyan-400' },
   tool: { bg: 'bg-emerald-400/10', text: 'text-emerald-400' },
-  skill: { bg: 'bg-amber-400/10', text: 'text-amber-400' },
   mcp: { bg: 'bg-violet-400/10', text: 'text-violet-400' },
 }
 
@@ -34,7 +25,6 @@ const FILTERS: { key: Filter; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'built-in', label: 'Built-in' },
   { key: 'tool', label: 'Tool' },
-  { key: 'skill', label: 'Skill' },
   { key: 'mcp', label: 'MCP' },
 ]
 
@@ -91,13 +81,13 @@ export function ToolsPage() {
     setConfirmDisable(null)
   }
 
-  const filtered = filter === 'all' ? tools : tools.filter((t) => getToolType(t.name) === filter)
+  const filtered = filter === 'all' ? tools : tools.filter((t) => (t.kind ?? 'tool') === filter)
 
   const enabledTools = filtered.filter((t) => !disabledTools.has(t.name))
   const disabledList = filtered.filter((t) => disabledTools.has(t.name))
 
   function renderToolCard(tool: ToolInfo) {
-    const type = getToolType(tool.name)
+    const type = tool.kind ?? 'tool'
     const style = TYPE_STYLES[type]
     const isEnabled = !disabledTools.has(tool.name)
     const isExpanded = expanded.has(tool.name)

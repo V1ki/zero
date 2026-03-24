@@ -86,8 +86,11 @@ export interface StreamEvent {
   data: unknown
 }
 
+export type ToolKind = 'built-in' | 'tool' | 'mcp'
+
 export interface ToolDefinition {
   name: string
   description: string
   parameters: Record<string, unknown>
+  kind?: ToolKind
 }

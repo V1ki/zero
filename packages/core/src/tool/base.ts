@@ -1,10 +1,11 @@
-import type { ToolContext, ToolResult } from '@zero-os/shared'
+import type { ToolContext, ToolDefinition, ToolKind, ToolResult } from '@zero-os/shared'
 import { now, toErrorMessage } from '@zero-os/shared'
 
 /**
  * Abstract base class for all ZeRo OS tools.
  */
 export abstract class BaseTool {
+  kind: ToolKind = 'tool'
   abstract name: string
   abstract description: string
   abstract parameters: Record<string, unknown>
@@ -114,11 +115,12 @@ export abstract class BaseTool {
   /**
    * Get tool definition for LLM tool use.
    */
-  toDefinition(): { name: string; description: string; parameters: Record<string, unknown> } {
+  toDefinition(): ToolDefinition {
     return {
       name: this.name,
       description: this.description,
       parameters: this.parameters,
+      kind: this.kind,
     }
   }
 }

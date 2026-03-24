@@ -2,9 +2,9 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readYaml } from '@zero-os/shared/utils'
 import type { ProviderAdapter } from '@zero-os/model'
 import { encryptSecrets } from '@zero-os/secrets'
+import { readYaml } from '@zero-os/shared/utils'
 import { startZeroOS } from '../../../../server/src/main'
 import type { ZeroOS } from '../../../../server/src/main'
 import { createRoutes } from '../routes'
@@ -326,6 +326,14 @@ describe('API Routes (Real)', () => {
     expect(names).toContain('wait_agent')
     expect(names).toContain('close_agent')
     expect(names).toContain('send_input')
+
+    const readTool = data.tools.find((t: { name: string }) => t.name === 'read')
+    const codexTool = data.tools.find((t: { name: string }) => t.name === 'codex')
+    const taskTool = data.tools.find((t: { name: string }) => t.name === 'task')
+
+    expect(readTool?.kind).toBe('built-in')
+    expect(codexTool?.kind).toBe('tool')
+    expect(taskTool?.kind).toBe('tool')
   })
 
   test('GET /api/metrics/cost-by-day returns data array', async () => {

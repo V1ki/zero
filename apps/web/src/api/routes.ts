@@ -923,11 +923,7 @@ export function createRoutes(zero: ZeroOS) {
 
     // Tools
     .get('/api/tools', (c) => {
-      const tools = zero.toolRegistry.list().map((t) => ({
-        name: t.name,
-        description: t.description,
-        parameters: t.parameters,
-      }))
+      const tools = zero.toolRegistry.list().map((t) => t.toDefinition())
       return c.json({ tools })
     })
 
