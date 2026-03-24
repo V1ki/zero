@@ -10,6 +10,7 @@ import { MetadataBar } from './MetadataBar'
 import { TimelineView } from './TimelineView'
 import {
   type SessionTaskClosureEvent,
+  type TaskClosureTimelineItem,
   type TraceSpan,
   buildTimeline,
   extractFilesTouched,
@@ -136,6 +137,7 @@ export function SessionDetailScreen({
   const [loading, setLoading] = useState(true)
   const [traceLoading, setTraceLoading] = useState(true)
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null)
+  const [selectedTaskClosureId, setSelectedTaskClosureId] = useState<string | null>(null)
   const [selectedSubAgentId, setSelectedSubAgentId] = useState<string | null>(null)
   const [highlightedAssistantMessageId, setHighlightedAssistantMessageId] = useState<string | null>(
     null,
@@ -240,6 +242,7 @@ export function SessionDetailScreen({
     if (previousSessionIdRef.current === sessionId) return
     previousSessionIdRef.current = sessionId
     setSelectedToolId(null)
+    setSelectedTaskClosureId(null)
     setSelectedSubAgentId(null)
     setHighlightedAssistantMessageId(null)
     setHighlightedSubAgentId(null)
@@ -342,6 +345,26 @@ export function SessionDetailScreen({
 
   const filesTouched = useMemo(() => extractFilesTouched(timelineItems), [timelineItems])
 
+  const selectedTaskClosure = useMemo(() => {
+    if (!selectedTaskClosureId) return null
+    return (
+      timelineItems.find(
+        (item): item is TaskClosureTimelineItem =>
+          item.type === 'task-closure' && item.id === selectedTaskClosureId,
+      ) ?? null
+    )
+  }, [selectedTaskClosureId, timelineItems])
+
+  const handleSelectTool = useCallback((toolId: string | null) => {
+    setSelectedToolId(toolId)
+    setSelectedTaskClosureId(null)
+  }, [])
+
+  const handleSelectTaskClosure = useCallback((taskClosureId: string | null) => {
+    setSelectedTaskClosureId(taskClosureId)
+    setSelectedToolId(null)
+  }, [])
+
   const handleSelectSubAgent = useCallback((subAgentId: string | null) => {
     setSelectedSubAgentId(subAgentId)
   }, [])
@@ -397,6 +420,7 @@ export function SessionDetailScreen({
       el.scrollBy({ top: -scrollAmount, behavior: 'smooth' })
     } else if (e.key === 'Escape') {
       setSelectedToolId(null)
+      setSelectedTaskClosureId(null)
     } else if (e.key === 'g' && lastKeyRef.current === 'g') {
       el.scrollTo({ top: 0, behavior: 'smooth' })
     } else if (e.key === 'G') {
@@ -529,10 +553,12 @@ export function SessionDetailScreen({
               traces={traces}
               taskClosureEvents={taskClosureEvents}
               selectedToolId={selectedToolId}
+              selectedTaskClosureId={selectedTaskClosureId}
               selectedSubAgentId={selectedSubAgentId}
               highlightedAssistantMessageId={highlightedAssistantMessageId}
               highlightedSubAgentId={highlightedSubAgentId}
-              onSelectTool={setSelectedToolId}
+              onSelectTool={handleSelectTool}
+              onSelectTaskClosure={handleSelectTaskClosure}
               onSelectSubAgent={handleSelectSubAgent}
             />
           )}
@@ -558,6 +584,7 @@ export function SessionDetailScreen({
           netSavings={session.netSavings}
           llmRequests={llmRequests}
           selectedToolId={selectedToolId}
+          selectedTaskClosure={selectedTaskClosure}
           selectedSubAgentId={selectedSubAgentId}
           traces={traces}
           taskClosureEvents={taskClosureEvents}

@@ -33,6 +33,22 @@ export interface SessionTaskClosureEvent {
   error?: string
 }
 
+export interface TaskClosureTimelineItem {
+  type: 'task-closure'
+  id: string
+  event: SessionTaskClosureEvent['event']
+  action?: SessionTaskClosureEvent['action']
+  reason: string
+  failureStage?: SessionTaskClosureEvent['failureStage']
+  trimFrom?: string
+  classifierRequest?: SessionTaskClosureEvent['classifierRequest']
+  classifierResponseRaw?: string
+  assistantMessageId?: string
+  assistantMessageCreatedAt?: string
+  error?: string
+  createdAt: string
+}
+
 export interface TraceSpan {
   id: string
   parentId?: string
@@ -89,6 +105,7 @@ export type TimelineItem =
       durationMs?: number
       createdAt: string
     }
+  | TaskClosureTimelineItem
   | { type: 'system-event'; variant: 'warning' | 'info'; text: string; createdAt: string }
   | {
       type: 'sub-agent'
@@ -237,7 +254,9 @@ export function buildTimeline(
               (toolInput.agentId as string | undefined) ??
               toolId
 
-            const labelFromResult = result?.content ? tryParseJsonField(result.content, 'label') : null
+            const labelFromResult = result?.content
+              ? tryParseJsonField(result.content, 'label')
+              : null
             const labelFromTrace = findLabelFromTraceSpan(traces, toolId)
             const label =
               (toolInput.label as string | undefined) ??
@@ -257,7 +276,8 @@ export function buildTimeline(
 
             // Prefer trace-based duration (actual agent runtime) over wait_agent or tool span duration
             const resolvedDurationMs = traceInfo?.durationMs ?? waitInfo?.durationMs
-            const resolvedStatus = traceInfo?.status ?? waitInfo?.status ?? (result?.isError ? 'errored' : 'running')
+            const resolvedStatus =
+              traceInfo?.status ?? waitInfo?.status ?? (result?.isError ? 'errored' : 'running')
             const resolvedOutput = waitInfo?.output ?? traceInfo?.output
 
             items.push({
@@ -324,10 +344,10 @@ function buildTaskClosureEvents(
       }
       return []
     })
-    .filter((item): item is TimelineItem => item !== null)
+    .filter((item): item is TaskClosureTimelineItem => item !== null)
 
   const sessionItems = filterDuplicateTaskClosureEvents(flattenedTraces, taskClosureEvents).map(
-    mapSessionTaskClosureEvent,
+    (event, index) => mapSessionTaskClosureEvent(event, index),
   )
   return [...traceItems, ...sessionItems]
 }
@@ -346,58 +366,74 @@ export function filterDuplicateTaskClosureEvents(
   })
 }
 
-function mapSessionTaskClosureEvent(event: SessionTaskClosureEvent): TimelineItem {
+function mapSessionTaskClosureEvent(
+  event: SessionTaskClosureEvent,
+  index: number,
+): TaskClosureTimelineItem {
   const createdAt = event.assistantMessageCreatedAt ?? event.ts
 
-  if (event.event === 'task_closure_failed') {
-    return {
-      type: 'system-event',
-      variant: 'warning',
-      text: `Task closure failed: ${event.reason}${event.assistantMessageId ? ` · ${event.assistantMessageId.slice(0, 8)}` : ''}`,
-      createdAt,
-    }
-  }
-
-  const action = event.action ?? 'unknown'
-  const text = event.reason
-    ? `Task closure ${action}: ${event.reason}${event.assistantMessageId ? ` · ${event.assistantMessageId.slice(0, 8)}` : ''}`
-    : `Task closure ${action}${event.assistantMessageId ? ` · ${event.assistantMessageId.slice(0, 8)}` : ''}`
-  const variant = action === 'block' ? 'warning' : 'info'
-
-  return {
-    type: 'system-event',
-    variant,
-    text,
+  return buildTaskClosureTimelineItem({
+    id: `tc-sess-${index}`,
+    event: event.event,
+    action: event.action,
+    reason: event.reason,
+    failureStage: event.failureStage,
+    trimFrom: event.trimFrom,
+    classifierRequest: event.classifierRequest,
+    classifierResponseRaw: event.classifierResponseRaw,
+    assistantMessageId: event.assistantMessageId,
+    assistantMessageCreatedAt: event.assistantMessageCreatedAt,
+    error: event.error,
     createdAt,
-  }
+  })
 }
 
-function mapTaskClosureDecision(span: TraceSpan): TimelineItem | null {
+function mapTaskClosureDecision(span: TraceSpan): TaskClosureTimelineItem | null {
   const details = getTaskClosureTraceDetails(span)
   const createdAt = details.assistantMessageCreatedAt ?? span.endTime ?? span.startTime
 
   if (details.called === false) return null
 
-  const label = details.action ?? 'unknown'
-  const text = details.reason ? `Task closure ${label}: ${details.reason}` : `Task closure ${label}`
-  const variant = details.action === 'block' ? 'warning' : 'info'
-
-  return {
-    type: 'system-event',
-    variant,
-    text,
+  return buildTaskClosureTimelineItem({
+    id: `tc-trace-${span.id}`,
+    event: details.event ?? 'task_closure_decision',
+    action: details.action,
+    reason: details.reason ?? '',
+    failureStage: details.failureStage,
+    trimFrom: details.trimFrom,
+    classifierRequest: details.classifierRequest,
+    classifierResponseRaw: details.classifierResponseRaw,
+    assistantMessageId: details.assistantMessageId,
+    assistantMessageCreatedAt: details.assistantMessageCreatedAt,
+    error: details.error,
     createdAt,
-  }
+  })
 }
 
-function mapTaskClosureFailed(span: TraceSpan): TimelineItem {
+function mapTaskClosureFailed(span: TraceSpan): TaskClosureTimelineItem {
   const details = getTaskClosureTraceDetails(span)
-  const reason = details.reason ?? 'task closure failed'
-  return {
-    type: 'system-event',
-    variant: 'warning',
-    text: `Task closure failed: ${reason}`,
+  return buildTaskClosureTimelineItem({
+    id: `tc-trace-${span.id}`,
+    event: details.event ?? 'task_closure_failed',
+    action: details.action,
+    reason: details.reason ?? 'task closure failed',
+    failureStage: details.failureStage,
+    trimFrom: details.trimFrom,
+    classifierRequest: details.classifierRequest,
+    classifierResponseRaw: details.classifierResponseRaw,
+    assistantMessageId: details.assistantMessageId,
+    assistantMessageCreatedAt: details.assistantMessageCreatedAt,
+    error: details.error,
     createdAt: details.assistantMessageCreatedAt ?? span.endTime ?? span.startTime,
+  })
+}
+
+function buildTaskClosureTimelineItem(
+  item: Omit<TaskClosureTimelineItem, 'type'>,
+): TaskClosureTimelineItem {
+  return {
+    type: 'task-closure',
+    ...item,
   }
 }
 
@@ -636,7 +672,8 @@ function findWaitAgentResult(
       const name = block.name as string
       if (name !== 'wait_agent' && name !== 'close_agent') continue
       const input = (block.input as Record<string, unknown>) ?? {}
-      const targetId = (input.agentId as string | undefined) ?? (input.agent_id as string | undefined)
+      const targetId =
+        (input.agentId as string | undefined) ?? (input.agent_id as string | undefined)
       if (targetId !== agentId) continue
       const result = toolResults.get(block.id as string)
       if (!result) continue
@@ -687,8 +724,11 @@ function findSubAgentSpan(
   for (const span of allSpans) {
     const metadata = span.metadata ?? {}
     const data = span.data ?? {}
-    const isSubAgent = span.name === 'sub_agent' || span.name.startsWith('sub_agent:') ||
-      metadata.kind === 'sub_agent' || data.kind === 'sub_agent'
+    const isSubAgent =
+      span.name === 'sub_agent' ||
+      span.name.startsWith('sub_agent:') ||
+      metadata.kind === 'sub_agent' ||
+      data.kind === 'sub_agent'
     if (isSubAgent && (metadata.agentId === agentId || data.agentId === agentId)) {
       return span
     }
@@ -700,7 +740,11 @@ function findSubAgentSpan(
       const meta = span.metadata ?? {}
       if (span.name === 'tool:spawn_agent' && meta.toolUseId === spawnToolCallId) {
         for (const child of span.children ?? []) {
-          if (child.name === 'sub_agent' || child.name.startsWith('sub_agent:') || (child.data ?? {}).kind === 'sub_agent') {
+          if (
+            child.name === 'sub_agent' ||
+            child.name.startsWith('sub_agent:') ||
+            child.data?.kind === 'sub_agent'
+          ) {
             return child
           }
         }
@@ -728,7 +772,11 @@ function extractSubAgentChildToolCalls(
       id: (meta.toolUseId as string) ?? child.id,
       name: child.name.replace('tool:', ''),
       input: (meta.input as Record<string, unknown>) ?? {},
-      result: (meta.result as string) ?? (meta.outputSummary as string) ?? (data.outputSummary as string) ?? undefined,
+      result:
+        (meta.result as string) ??
+        (meta.outputSummary as string) ??
+        (data.outputSummary as string) ??
+        undefined,
       isError: child.status === 'error' ? true : undefined,
       durationMs: child.durationMs,
     })
@@ -744,16 +792,21 @@ function getSubAgentTraceInfo(
   traces: TraceSpan[],
   agentId: string,
   spawnToolCallId?: string,
-): { durationMs?: number; status?: 'completed' | 'errored' | 'running' | 'closed'; output?: string } | null {
+): {
+  durationMs?: number
+  status?: 'completed' | 'errored' | 'running' | 'closed'
+  output?: string
+} | null {
   const span = findSubAgentSpan(traces, agentId, spawnToolCallId)
   if (!span) return null
 
   const data = span.data ?? {}
-  const status = span.status === 'success'
-    ? 'completed' as const
-    : span.status === 'error'
-      ? 'errored' as const
-      : 'running' as const
+  const status =
+    span.status === 'success'
+      ? ('completed' as const)
+      : span.status === 'error'
+        ? ('errored' as const)
+        : ('running' as const)
 
   return {
     durationMs: (data.durationMs as number) ?? span.durationMs ?? undefined,

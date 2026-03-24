@@ -2,6 +2,7 @@ import { ArrowsClockwise, Warning } from '@phosphor-icons/react'
 import { useMemo } from 'react'
 import { AgentMessageBlock } from './AgentMessageBlock'
 import { SubAgentBlock } from './SubAgentBlock'
+import { TaskClosureBlock } from './TaskClosureBlock'
 import { ToolCallBlock } from './ToolCallBlock'
 import { UserMessageBlock } from './UserMessageBlock'
 import {
@@ -17,10 +18,12 @@ interface Props {
   traces?: TraceSpan[]
   taskClosureEvents?: SessionTaskClosureEvent[]
   selectedToolId: string | null
+  selectedTaskClosureId: string | null
   selectedSubAgentId?: string | null
   highlightedAssistantMessageId?: string | null
   highlightedSubAgentId?: string | null
   onSelectTool: (id: string | null) => void
+  onSelectTaskClosure: (id: string | null) => void
   onSelectSubAgent?: (id: string | null) => void
 }
 
@@ -29,11 +32,10 @@ export function TimelineView({
   traces,
   taskClosureEvents,
   selectedToolId,
-  selectedSubAgentId,
+  selectedTaskClosureId,
   highlightedAssistantMessageId,
-  highlightedSubAgentId,
   onSelectTool,
-  onSelectSubAgent,
+  onSelectTaskClosure,
 }: Props) {
   const items = useMemo(
     () => buildTimeline(messages, traces, taskClosureEvents),
@@ -76,6 +78,19 @@ export function TimelineView({
                 durationMs={item.durationMs}
                 selected={selectedToolId === item.id}
                 onSelect={(id) => onSelectTool(selectedToolId === id ? null : id)}
+              />
+            )
+          case 'task-closure':
+            return (
+              <TaskClosureBlock
+                key={item.id}
+                id={item.id}
+                event={item.event}
+                action={item.action}
+                reason={item.reason}
+                error={item.error}
+                selected={selectedTaskClosureId === item.id}
+                onSelect={(id) => onSelectTaskClosure(selectedTaskClosureId === id ? null : id)}
               />
             )
           case 'sub-agent':
@@ -126,6 +141,8 @@ function getTimelineItemKey(item: TimelineItem): string {
       return `assistant-${item.messageId}`
     case 'tool-call':
       return `tool-${item.id}`
+    case 'task-closure':
+      return `task-closure-${item.id}`
     case 'sub-agent':
       return `sub-agent-${item.agentId}`
     case 'system-event':
@@ -150,5 +167,11 @@ function SystemEventBanner({ variant, text }: { variant: 'warning' | 'info'; tex
   )
 }
 
-export type { TimelineItem, Message, SessionTaskClosureEvent, TraceSpan } from './timeline'
+export type {
+  TimelineItem,
+  Message,
+  SessionTaskClosureEvent,
+  TaskClosureTimelineItem,
+  TraceSpan,
+} from './timeline'
 export { buildTimeline, extractFilesTouched } from './timeline'

@@ -87,6 +87,79 @@ describe('TraceSummaryCard', () => {
     expect(html).toContain('1.3s')
   })
 
+  test('renders selected task closure detail with classifier metadata', () => {
+    const html = renderToStaticMarkup(
+      <ContextPanel
+        modelHistory={[]}
+        toolCalls={[]}
+        filesTouched={[]}
+        totalTokens={0}
+        selectedToolId={null}
+        selectedTaskClosure={{
+          type: 'task-closure',
+          id: 'tc-sess-0',
+          event: 'task_closure_decision',
+          action: 'continue',
+          reason: 'still working through remaining checks',
+          trimFrom: 'Last complete milestone',
+          classifierRequest: {
+            system: 'strict classifier',
+            prompt: '<instruction>decide if the task is done</instruction>',
+            maxTokens: 200,
+          },
+          classifierResponseRaw: '{"action":"continue"}',
+          assistantMessageId: 'msg_assistant_1',
+          createdAt: '2026-03-08T00:00:02.000Z',
+        }}
+        onJumpToAssistantMessage={() => {}}
+      />,
+    )
+
+    expect(html).toContain('Task Closure Detail')
+    expect(html).toContain('EVENT')
+    expect(html).toContain('task_closure_decision')
+    expect(html).toContain('ACTION')
+    expect(html).toContain('continue')
+    expect(html).toContain('REASON')
+    expect(html).toContain('still working through remaining checks')
+    expect(html).toContain('ASSISTANT MESSAGE')
+    expect(html).toContain('Jump to message')
+    expect(html).toContain('CLASSIFIER SYSTEM PROMPT')
+    expect(html).toContain('CLASSIFIER PROMPT')
+    expect(html).toContain('CLASSIFIER RESPONSE')
+    expect(html).toContain('{&quot;action&quot;:&quot;continue&quot;}')
+  })
+
+  test('keeps tool detail priority over selected task closure detail', () => {
+    const html = renderToStaticMarkup(
+      <ContextPanel
+        modelHistory={[]}
+        toolCalls={[
+          {
+            id: 'tool_1',
+            name: 'bash',
+            input: { command: 'echo test' },
+            result: 'done',
+          },
+        ]}
+        filesTouched={[]}
+        totalTokens={0}
+        selectedToolId="tool_1"
+        selectedTaskClosure={{
+          type: 'task-closure',
+          id: 'tc-sess-0',
+          event: 'task_closure_failed',
+          reason: 'classifier error',
+          error: 'invalid json',
+          createdAt: '2026-03-08T00:00:02.000Z',
+        }}
+      />,
+    )
+
+    expect(html).toContain('Tool Detail')
+    expect(html).not.toContain('Task Closure Detail')
+  })
+
   test('renders cache summary and savings fields', () => {
     const html = renderToStaticMarkup(
       <ContextPanel
@@ -204,7 +277,9 @@ describe('TraceSummaryCard', () => {
 
     expect(html).toContain('queued_injection')
     expect(html).toContain('Queued injection: 2 message(s)')
-    expect(html).toContain('&lt;queued_messages count=&quot;2&quot;&gt;queued&lt;/queued_messages&gt;')
+    expect(html).toContain(
+      '&lt;queued_messages count=&quot;2&quot;&gt;queued&lt;/queued_messages&gt;',
+    )
     expect(html).toContain('10:31 | 2 images')
   })
 

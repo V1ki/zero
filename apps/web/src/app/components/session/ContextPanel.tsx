@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import type {
   SessionJudgeHistoryResponse,
   SessionJudgeResponse,
@@ -7,13 +7,14 @@ import type {
 import { apiFetch, apiPost } from '../../lib/api'
 import { toolColors } from '../../lib/colors'
 import { formatCost, formatModelHistory, formatNumber, formatTimeAgo } from '../../lib/format'
+import { SubAgentSpanCard } from './SubAgentSpanCard'
 import {
   type SessionTaskClosureEvent,
+  type TaskClosureTimelineItem,
   type TraceSpan,
   getTaskClosureTraceDetails,
 } from './timeline'
 import { evaluateTraceSession } from './trace-eval'
-import { SubAgentSpanCard } from './SubAgentSpanCard'
 
 interface ModelHistoryEntry {
   model: string
@@ -108,6 +109,7 @@ interface Props {
   netSavings?: number
   llmRequests?: LlmRequestEntry[]
   selectedToolId: string | null
+  selectedTaskClosure?: TaskClosureTimelineItem | null
   selectedSubAgentId?: string | null
   traces?: TraceSpan[]
   taskClosureEvents?: SessionTaskClosureEvent[]
@@ -136,7 +138,7 @@ export function ContextPanel({
   netSavings,
   llmRequests = [],
   selectedToolId,
-  selectedSubAgentId,
+  selectedTaskClosure = null,
   traces = [],
   taskClosureEvents = [],
   traceLoading = false,
@@ -144,7 +146,6 @@ export function ContextPanel({
   onJumpToSubAgentInTimeline,
 }: Props) {
   const [tab, setTab] = useState<'summary' | 'trace'>('summary')
-  const [promptExpanded, setPromptExpanded] = useState(false)
   const [relatedMemory, setRelatedMemory] = useState<MemoryResult[]>([])
   const [judgeHistory, setJudgeHistory] = useState<StoredSessionJudgeEntry[]>([])
   const [selectedJudgeSavedAt, setSelectedJudgeSavedAt] = useState<string | null>(null)
@@ -186,7 +187,11 @@ export function ContextPanel({
   const selectedJudgeEntry = useMemo(() => {
     if (judgeHistory.length === 0) return null
     if (!selectedJudgeSavedAt) return judgeHistory[0] ?? null
-    return judgeHistory.find((entry) => entry.savedAt === selectedJudgeSavedAt) ?? judgeHistory[0] ?? null
+    return (
+      judgeHistory.find((entry) => entry.savedAt === selectedJudgeSavedAt) ??
+      judgeHistory[0] ??
+      null
+    )
   }, [judgeHistory, selectedJudgeSavedAt])
   const judgeResult: SessionJudgeResponse | null = selectedJudgeEntry?.run ?? null
 
@@ -203,7 +208,9 @@ export function ContextPanel({
       setJudgeHistoryLoading(true)
       setJudgeHistoryError(null)
       try {
-        const response = await apiFetch<SessionJudgeHistoryResponse>(`/api/sessions/${sessionId}/llm-judge`)
+        const response = await apiFetch<SessionJudgeHistoryResponse>(
+          `/api/sessions/${sessionId}/llm-judge`,
+        )
         const history = response.history ?? []
         setJudgeHistory(history)
         setSelectedJudgeSavedAt((current) => {
@@ -254,7 +261,8 @@ export function ContextPanel({
     try {
       const result = await apiPost<SessionJudgeResponse>(`/api/sessions/${sessionId}/llm-judge`, {})
       await loadJudgeHistory(result.generatedAt)
-    } catch {} finally {
+    } catch {
+    } finally {
       setJudgeLoading(false)
     }
   }, [judgeLoading, loadJudgeHistory, sessionId])
@@ -309,6 +317,15 @@ export function ContextPanel({
     )
   }
 
+  if (selectedTaskClosure) {
+    return (
+      <TaskClosureDetailPanel
+        taskClosure={selectedTaskClosure}
+        onJumpToAssistantMessage={onJumpToAssistantMessage}
+      />
+    )
+  }
+
   return (
     <div className="card p-4 h-full min-h-0 overflow-y-auto animate-fade-up">
       <div className="flex gap-2 mb-4">
@@ -353,19 +370,7 @@ export function ContextPanel({
 
           {systemPrompt && (
             <Section title="System Prompt">
-              <button
-                type="button"
-                onClick={() => setPromptExpanded(!promptExpanded)}
-                className="text-[11px] text-[var(--color-accent)] hover:underline mb-1"
-              >
-                {promptExpanded ? 'Collapse' : 'Expand'} ({systemPrompt.length.toLocaleString()}{' '}
-                chars)
-              </button>
-              {promptExpanded && (
-                <pre className="text-[11px] font-mono text-[var(--color-text-muted)] whitespace-pre-wrap break-all bg-black/20 rounded p-2 max-h-[400px] overflow-y-auto mt-1">
-                  {systemPrompt}
-                </pre>
-              )}
+              <ExpandableTextPanel value={systemPrompt} />
             </Section>
           )}
 
@@ -640,6 +645,123 @@ export function ContextPanel({
   )
 }
 
+function TaskClosureDetailPanel({
+  taskClosure,
+  onJumpToAssistantMessage,
+}: {
+  taskClosure: TaskClosureTimelineItem
+  onJumpToAssistantMessage?: (messageId: string) => void
+}) {
+  const accentClass =
+    taskClosure.event === 'task_closure_failed' || taskClosure.action === 'block'
+      ? 'text-amber-400'
+      : 'text-cyan-400'
+
+  return (
+    <div className="card p-4 h-full min-h-0 overflow-y-auto animate-fade-up">
+      <h3 className="text-[13px] font-semibold text-[var(--color-text-primary)] mb-3">
+        Task Closure Detail
+      </h3>
+      <div className="space-y-3">
+        <DetailField label="EVENT">
+          <p className={`text-[13px] font-mono ${accentClass}`}>{taskClosure.event}</p>
+        </DetailField>
+
+        {taskClosure.action && (
+          <DetailField label="ACTION">
+            <p className="text-[12px] font-mono text-[var(--color-text-secondary)]">
+              {taskClosure.action}
+            </p>
+          </DetailField>
+        )}
+
+        <DetailField label="REASON">
+          <p className="text-[12px] whitespace-pre-wrap break-words text-[var(--color-text-secondary)]">
+            {taskClosure.reason}
+          </p>
+        </DetailField>
+
+        {taskClosure.failureStage && (
+          <DetailField label="FAILURE STAGE">
+            <p className="text-[12px] font-mono text-[var(--color-text-secondary)]">
+              {taskClosure.failureStage}
+            </p>
+          </DetailField>
+        )}
+
+        {taskClosure.error && (
+          <DetailField label="ERROR">
+            <pre className="text-[11px] font-mono text-[var(--color-text-secondary)] whitespace-pre-wrap break-all bg-black/20 rounded p-2 max-h-[220px] overflow-y-auto">
+              {taskClosure.error}
+            </pre>
+          </DetailField>
+        )}
+
+        {taskClosure.trimFrom && (
+          <DetailField label="TRIM FROM">
+            <pre className="text-[11px] font-mono text-[var(--color-text-secondary)] whitespace-pre-wrap break-all bg-black/20 rounded p-2 max-h-[220px] overflow-y-auto">
+              {taskClosure.trimFrom}
+            </pre>
+          </DetailField>
+        )}
+
+        {taskClosure.assistantMessageId && (
+          <DetailField label="ASSISTANT MESSAGE">
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="text-[12px] font-mono text-[var(--color-text-secondary)]">
+                {taskClosure.assistantMessageId}
+              </p>
+              {onJumpToAssistantMessage && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const assistantMessageId = taskClosure.assistantMessageId
+                    if (assistantMessageId) onJumpToAssistantMessage(assistantMessageId)
+                  }}
+                  className="text-[11px] text-[var(--color-accent)] hover:underline"
+                >
+                  Jump to message
+                </button>
+              )}
+            </div>
+          </DetailField>
+        )}
+
+        {taskClosure.classifierRequest?.system && (
+          <DetailField label="CLASSIFIER SYSTEM PROMPT">
+            <ExpandableTextPanel value={taskClosure.classifierRequest.system} />
+          </DetailField>
+        )}
+
+        {taskClosure.classifierRequest?.prompt && (
+          <DetailField label="CLASSIFIER PROMPT">
+            <ExpandableTextPanel value={taskClosure.classifierRequest.prompt} />
+          </DetailField>
+        )}
+
+        {taskClosure.classifierResponseRaw && (
+          <DetailField label="CLASSIFIER RESPONSE">
+            <pre className="text-[11px] font-mono text-[var(--color-text-secondary)] whitespace-pre-wrap break-all bg-black/20 rounded p-2 max-h-[400px] overflow-y-auto">
+              {taskClosure.classifierResponseRaw}
+            </pre>
+          </DetailField>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function DetailField({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div>
+      <span className="text-[10px] font-semibold text-[var(--color-text-disabled)] tracking-wide">
+        {label}
+      </span>
+      <div className="mt-0.5">{children}</div>
+    </div>
+  )
+}
+
 function mapSessionTaskClosureEventToCard(event: SessionTaskClosureEvent) {
   return {
     createdAt: event.ts,
@@ -738,6 +860,27 @@ function PersistedTaskClosureCard({
         </details>
       )}
     </div>
+  )
+}
+
+function ExpandableTextPanel({ value }: { value: string }) {
+  const [expanded, setExpanded] = useState(false)
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setExpanded((current) => !current)}
+        className="text-[11px] text-[var(--color-accent)] hover:underline"
+      >
+        {expanded ? 'Collapse' : 'Expand'} ({value.length.toLocaleString()} chars)
+      </button>
+      {expanded && (
+        <pre className="text-[11px] font-mono text-[var(--color-text-muted)] whitespace-pre-wrap break-all bg-black/20 rounded p-2 max-h-[400px] overflow-y-auto mt-1">
+          {value}
+        </pre>
+      )}
+    </>
   )
 }
 
@@ -901,9 +1044,13 @@ function TraceEvalCard({
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[11px] font-medium text-[var(--color-text-secondary)]">
-                        {entry.run.result.overallScore}/100 · {formatJudgeVerdict(entry.run.result.verdict)}
+                        {entry.run.result.overallScore}/100 ·{' '}
+                        {formatJudgeVerdict(entry.run.result.verdict)}
                       </span>
-                      <span className="text-[10px] text-[var(--color-text-disabled)]" title={entry.savedAt}>
+                      <span
+                        className="text-[10px] text-[var(--color-text-disabled)]"
+                        title={entry.savedAt}
+                      >
                         {index === 0 ? 'latest' : formatTimeAgo(entry.savedAt)}
                       </span>
                     </div>
@@ -1031,7 +1178,10 @@ function JudgeArtifactsPanel({ entry }: { entry: StoredSessionJudgeEntry }) {
           Judge Prompt
         </summary>
         <div className="mt-2 space-y-2">
-          <TracePreview label="system_prompt" value={entry.artifacts.primary.request.systemPrompt} />
+          <TracePreview
+            label="system_prompt"
+            value={entry.artifacts.primary.request.systemPrompt}
+          />
           <TracePreview label="user_prompt" value={entry.artifacts.primary.request.userPrompt} />
           <TracePreview
             label="request_meta"
@@ -1045,7 +1195,10 @@ function JudgeArtifactsPanel({ entry }: { entry: StoredSessionJudgeEntry }) {
           Judge Response
         </summary>
         <div className="mt-2 space-y-2">
-          <TracePreview label="primary_response_raw" value={entry.artifacts.primary.response.rawText} />
+          <TracePreview
+            label="primary_response_raw"
+            value={entry.artifacts.primary.response.rawText}
+          />
           <TracePreview
             label="primary_completion"
             value={JSON.stringify(entry.artifacts.primary.response.completion, null, 2)}
@@ -1194,11 +1347,15 @@ function QueuedInjectionPreview({
                 key={`${message.timestamp}-${index}`}
                 className="rounded bg-white/5 px-1.5 py-0.5"
                 title={
-                  message.mediaTypes.length > 0 ? `media: ${message.mediaTypes.join(', ')}` : undefined
+                  message.mediaTypes.length > 0
+                    ? `media: ${message.mediaTypes.join(', ')}`
+                    : undefined
                 }
               >
                 {formatQueuedTimestamp(message.timestamp)}
-                {message.imageCount > 0 ? ` | ${message.imageCount} image${message.imageCount === 1 ? '' : 's'}` : ''}
+                {message.imageCount > 0
+                  ? ` | ${message.imageCount} image${message.imageCount === 1 ? '' : 's'}`
+                  : ''}
               </span>
             ))}
           </div>
@@ -1223,7 +1380,10 @@ function MemoryInjectionPreview({
       </div>
       <div className="space-y-2 rounded bg-black/20 p-2">
         {memoryInjections.map((memoryInjection, index) => (
-          <div key={`${memoryInjection.layer}-${memoryInjection.source}-${index}`} className="space-y-1">
+          <div
+            key={`${memoryInjection.layer}-${memoryInjection.source}-${index}`}
+            className="space-y-1"
+          >
             <div className="flex items-center gap-2 text-[10px] text-[var(--color-text-secondary)]">
               <span className="rounded bg-white/5 px-1.5 py-0.5">{memoryInjection.layer}</span>
               <span>{memoryInjection.source}</span>
@@ -1244,48 +1404,6 @@ function formatQueuedTimestamp(timestamp: string): string {
 
 function formatDuration(durationMs: number): string {
   return durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`
-}
-
-function TraceTree({ span, depth }: { span: TraceSpan; depth: number }) {
-  return (
-    <div className="space-y-2">
-      <div
-        className="rounded border border-white/8 bg-white/[0.02] p-3"
-        style={{ marginLeft: `${depth * 14}px` }}
-      >
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 min-w-0">
-            <code className="text-[11px] text-[var(--color-text-secondary)] truncate">
-              {span.name}
-            </code>
-            <StatusBadge status={span.status} />
-          </div>
-          <span className="text-[10px] font-mono text-[var(--color-text-disabled)]">
-            {span.durationMs !== undefined ? `${span.durationMs}ms` : 'running'}
-          </span>
-        </div>
-        {span.metadata && Object.keys(span.metadata).length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {Object.entries(span.metadata)
-              .slice(0, 6)
-              .map(([key, value]) => (
-                <span
-                  key={key}
-                  className="rounded bg-black/20 px-2 py-1 text-[10px] text-[var(--color-text-muted)]"
-                  title={`${key}: ${String(value)}`}
-                >
-                  {key}: {formatMetadataValue(value)}
-                </span>
-              ))}
-          </div>
-        )}
-      </div>
-
-      {span.children.map((child) => (
-        <TraceTree key={child.id} span={child} depth={depth + 1} />
-      ))}
-    </div>
-  )
 }
 
 function StatusBadge({ status }: { status: TraceSpan['status'] }) {

@@ -52,6 +52,7 @@ export function ToolCallBlock({
 
   return (
     <div
+      data-tool-call-id={id}
       className={`rounded-lg border transition-colors cursor-pointer ${
         selected
           ? 'border-[var(--color-accent)]/30 bg-white/[0.04]'

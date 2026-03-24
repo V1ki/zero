@@ -7,7 +7,7 @@ import {
 } from '../timeline'
 
 describe('buildTimeline', () => {
-  test('adds task closure decision span as a system event from trace data', () => {
+  test('adds task closure decision span as a dedicated task-closure item from trace data', () => {
     const messages: Message[] = [
       {
         id: 'msg_1',
@@ -63,13 +63,18 @@ describe('buildTimeline', () => {
     ]
 
     const items = buildTimeline(messages, traces)
-    const systemEvent = items.find((item) => item.type === 'system-event')
+    const taskClosure = items.find((item) => item.type === 'task-closure')
 
-    expect(systemEvent).toBeDefined()
-    expect(systemEvent?.text).toBe('Task closure continue: remaining work is required')
+    expect(taskClosure).toBeDefined()
+    if (taskClosure?.type === 'task-closure') {
+      expect(taskClosure.id).toBe('tc-trace-span_2')
+      expect(taskClosure.event).toBe('task_closure_decision')
+      expect(taskClosure.action).toBe('continue')
+      expect(taskClosure.reason).toBe('remaining work is required')
+    }
   })
 
-  test('adds failed span as warning event from trace data', () => {
+  test('adds failed span as a dedicated task-closure item from trace data', () => {
     const items = buildTimeline(
       [],
       [
@@ -98,10 +103,11 @@ describe('buildTimeline', () => {
     )
 
     expect(items).toHaveLength(1)
-    expect(items[0].type).toBe('system-event')
-    if (items[0].type === 'system-event') {
-      expect(items[0].variant).toBe('warning')
-      expect(items[0].text).toBe('Task closure failed: invalid_classifier_output')
+    expect(items[0].type).toBe('task-closure')
+    if (items[0].type === 'task-closure') {
+      expect(items[0].event).toBe('task_closure_failed')
+      expect(items[0].failureStage).toBe('parse_classifier_response')
+      expect(items[0].reason).toBe('invalid_classifier_output')
     }
   })
 
@@ -264,9 +270,11 @@ test('adds session task closure event when traces are unavailable', () => {
 
   const items = buildTimeline([], [], persisted)
   expect(items).toHaveLength(1)
-  expect(items[0].type).toBe('system-event')
-  if (items[0].type === 'system-event') {
-    expect(items[0].text).toContain('Task closure continue')
+  expect(items[0].type).toBe('task-closure')
+  if (items[0].type === 'task-closure') {
+    expect(items[0].id).toBe('tc-sess-0')
+    expect(items[0].action).toBe('continue')
+    expect(items[0].reason).toBe('remaining work is required')
   }
 })
 
@@ -304,7 +312,7 @@ test('orders task closure event after its assistant message when assistant times
   const items = buildTimeline(messages, traces)
   expect(items).toHaveLength(2)
   expect(items[0].type).toBe('agent-text')
-  expect(items[1].type).toBe('system-event')
+  expect(items[1].type).toBe('task-closure')
 })
 
 test('deduplicates session task closure events when matching trace spans exist', () => {
@@ -350,9 +358,9 @@ test('deduplicates session task closure events when matching trace spans exist',
 
   const items = buildTimeline([], traces, persisted)
   expect(items).toHaveLength(1)
-  expect(items[0].type).toBe('system-event')
-  if (items[0].type === 'system-event') {
-    expect(items[0].text).toBe('Task closure failed: invalid_classifier_output')
+  expect(items[0].type).toBe('task-closure')
+  if (items[0].type === 'task-closure') {
+    expect(items[0].reason).toBe('invalid_classifier_output')
   }
 })
 
