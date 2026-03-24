@@ -141,6 +141,34 @@ describe('API Routes (Real)', () => {
     expect(Array.isArray(data.memories)).toBe(true)
   })
 
+  test('GET /api/memory includes inbox and preference memories in all view', async () => {
+    const createdTypes = ['inbox', 'preference'] as const
+
+    for (const type of createdTypes) {
+      const createRes = await app.request('/api/memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type,
+          title: `${type} memory`,
+          content: `${type} content`,
+        }),
+      })
+
+      expect(createRes.status).toBe(200)
+    }
+
+    const res = await app.request('/api/memory')
+    expect(res.status).toBe(200)
+
+    const data = (await res.json()) as { type: string; memories: Array<{ type: string }> }
+    expect(data.type).toBe('all')
+
+    const types = data.memories.map((memory) => memory.type)
+    expect(types).toContain('inbox')
+    expect(types).toContain('preference')
+  })
+
   test('PUT /api/memo updates memo', async () => {
     const res = await app.request('/api/memo', {
       method: 'PUT',

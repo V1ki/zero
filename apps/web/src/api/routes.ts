@@ -1,6 +1,12 @@
 import { loadConfig } from '@zero-os/core'
-import type { MemoryStatus, MemoryType, ModelPricing, SessionStatus } from '@zero-os/shared'
-import { toErrorMessage } from '@zero-os/shared'
+import {
+  ALL_MEMORY_TYPES,
+  toErrorMessage,
+  type MemoryStatus,
+  type MemoryType,
+  type ModelPricing,
+  type SessionStatus,
+} from '@zero-os/shared'
 import { readYaml, writeYaml } from '@zero-os/shared/utils'
 import { GitOps } from '@zero-os/supervisor'
 import { Hono } from 'hono'
@@ -576,9 +582,7 @@ export function createRoutes(zero: ZeroOS) {
         const memories = zero.memoryStore.list(type)
         return c.json({ memories, type })
       }
-      // List all types
-      const allTypes: MemoryType[] = ['session', 'incident', 'runbook', 'decision', 'note']
-      const memories = allTypes.flatMap((t) => zero.memoryStore.list(t))
+      const memories = ALL_MEMORY_TYPES.flatMap((memoryType) => zero.memoryStore.list(memoryType))
       memories.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       return c.json({ memories, type: 'all' })
     })

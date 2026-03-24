@@ -1,7 +1,9 @@
-import { Check, MagnifyingGlass, PencilSimple, X } from '@phosphor-icons/react'
+import { ArrowRight, Check, MagnifyingGlass, PencilSimple, Trash, X } from '@phosphor-icons/react'
+import { useNavigate } from '@tanstack/react-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { ConfirmDialog } from '../components/shared/ConfirmDialog'
 import { Skeleton } from '../components/shared/Skeleton'
-import { apiFetch, apiPut } from '../lib/api'
+import { apiDelete, apiFetch, apiPut } from '../lib/api'
 import { typeBgColors, typeColors } from '../lib/colors'
 import { formatTimeAgo } from '../lib/format'
 
@@ -26,6 +28,7 @@ type SortKey = (typeof SORT_OPTIONS)[number]['key']
 interface MemoryItem {
   id: string
   type: string
+  sessionId?: string
   title: string
   content: string
   createdAt: string
@@ -106,6 +109,7 @@ function MemoryOverview({ memories }: { memories: MemoryItem[] }) {
 }
 
 export function MemoryPage() {
+  const navigate = useNavigate()
   const [selectedType, setSelectedType] = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [sortBy, setSortBy] = useState<SortKey>('newest')
@@ -116,6 +120,7 @@ export function MemoryPage() {
   const [editing, setEditing] = useState(false)
   const [editContent, setEditContent] = useState('')
   const [editSaving, setEditSaving] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   const fetchMemories = useCallback((type: string) => {
@@ -162,11 +167,14 @@ export function MemoryPage() {
     if (!selected) return
     setEditSaving(true)
     try {
-      await apiPut(`/api/memory/${selected.id}`, { content: editContent })
-      setSelected({ ...selected, content: editContent })
-      setMemories((prev) =>
-        prev.map((m) => (m.id === selected.id ? { ...m, content: editContent } : m)),
+      const { memory } = await apiPut<{ memory: MemoryItem }>(
+        `/api/memory/${selected.type}/${selected.id}`,
+        {
+          content: editContent,
+        },
       )
+      setSelected(memory)
+      setMemories((prev) => prev.map((m) => (m.id === selected.id ? memory : m)))
       setEditing(false)
     } catch {
       // keep editing on failure
@@ -180,6 +188,18 @@ export function MemoryPage() {
     setEditContent('')
   }
 
+  async function confirmDelete() {
+    if (!selected) return
+
+    const { id, type } = selected
+    await apiDelete(`/api/memory/${type}/${id}`)
+    setMemories((prev) => prev.filter((memory) => memory.id !== id))
+    setSelected(null)
+    setEditing(false)
+    setEditContent('')
+    setShowDeleteConfirm(false)
+  }
+
   // Apply status filter and sorting
   const filteredMemories = memories
     .filter((m) => statusFilter === 'all' || m.status === statusFilter)
@@ -188,6 +208,7 @@ export function MemoryPage() {
       if (sortBy === 'type') return a.type.localeCompare(b.type)
       return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
     })
+  const sessionDetailId = selected?.type === 'session' ? selected.sessionId : undefined
 
   return (
     <div className="p-6 max-w-[1400px] mx-auto">
@@ -342,14 +363,24 @@ export function MemoryPage() {
                   <ConfidenceDots value={selected.confidence} />
                 </div>
                 {!editing ? (
-                  <button
-                    type="button"
-                    onClick={startEdit}
-                    className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-accent)] hover:bg-white/[0.05] transition-colors"
-                  >
-                    <PencilSimple size={12} />
-                    Edit
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={startEdit}
+                      className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-accent)] hover:bg-white/[0.05] transition-colors"
+                    >
+                      <PencilSimple size={12} />
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowDeleteConfirm(true)}
+                      className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-[var(--color-text-muted)] hover:text-red-400 hover:bg-red-400/10 transition-colors"
+                    >
+                      <Trash size={12} />
+                      Delete
+                    </button>
+                  </div>
                 ) : (
                   <div className="flex items-center gap-1">
                     <button
@@ -375,6 +406,21 @@ export function MemoryPage() {
               <h2 className="text-[16px] font-semibold text-[var(--color-text-primary)] mb-2">
                 {selected.title}
               </h2>
+              {sessionDetailId && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    navigate({
+                      to: '/sessions/$id',
+                      params: { id: sessionDetailId },
+                    })
+                  }
+                  className="mb-3 inline-flex items-center gap-1 text-[12px] text-[var(--color-accent)] hover:underline"
+                >
+                  View Session
+                  <ArrowRight size={12} />
+                </button>
+              )}
               {selected.tags.length > 0 && (
                 <div className="flex flex-wrap gap-1 mb-3">
                   {selected.tags.map((tag) => (
@@ -405,6 +451,20 @@ export function MemoryPage() {
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={showDeleteConfirm}
+        title="Delete memory?"
+        description={
+          selected
+            ? `This will permanently delete “${selected.title}”. This action cannot be undone.`
+            : undefined
+        }
+        confirmText="Delete"
+        danger
+        onConfirm={confirmDelete}
+        onCancel={() => setShowDeleteConfirm(false)}
+      />
     </div>
   )
 }
