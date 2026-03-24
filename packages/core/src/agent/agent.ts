@@ -40,8 +40,8 @@ import {
   TASK_CLOSURE_CLASSIFIER_SYSTEM_PROMPT,
   TASK_CLOSURE_PROMPT,
   type TaskClosureDecision,
-  type TaskClosurePromptContext,
   buildTaskClosureDecisionPrompt,
+  buildTaskClosurePromptContext,
   extractAssistantTail,
   extractAssistantText,
   hasAssistantText,
@@ -374,101 +374,101 @@ export class Agent {
           taskClosureDecision?.action === 'continue' &&
           taskClosureEvaluation.trimmedContent !== undefined
 
-      // Create assistant message — filter secrets from text blocks
-      const filteredContent = this.filterContent(displayContent)
+        // Create assistant message — filter secrets from text blocks
+        const filteredContent = this.filterContent(displayContent)
 
-      const assistantMsg: Message = {
-        id: generateId(),
-        sessionId: this.toolContext.sessionId,
-        role: 'assistant',
-        messageType: 'message',
-        content: filteredContent,
-        model: this.obs.modelLabel ?? response.model,
-        createdAt: now(),
-      }
-      messages.push(assistantMsg)
-      newMessages.push(assistantMsg)
-      onNewMessage?.(assistantMsg)
+        const assistantMsg: Message = {
+          id: generateId(),
+          sessionId: this.toolContext.sessionId,
+          role: 'assistant',
+          messageType: 'message',
+          content: filteredContent,
+          model: this.obs.modelLabel ?? response.model,
+          createdAt: now(),
+        }
+        messages.push(assistantMsg)
+        newMessages.push(assistantMsg)
+        onNewMessage?.(assistantMsg)
 
-      if (taskClosureEvaluation.traceSpanId) {
-        this.obs.tracer?.updateSpan(taskClosureEvaluation.traceSpanId, {
-          data: {
-            closure: {
+        if (taskClosureEvaluation.traceSpanId) {
+          this.obs.tracer?.updateSpan(taskClosureEvaluation.traceSpanId, {
+            data: {
+              closure: {
+                assistantMessageId: assistantMsg.id,
+                assistantMessageCreatedAt: assistantMsg.createdAt,
+              },
+            },
+            metadata: {
               assistantMessageId: assistantMsg.id,
               assistantMessageCreatedAt: assistantMsg.createdAt,
             },
-          },
-          metadata: {
+          })
+          if (taskClosureEvaluation.traceSpanStatus) {
+            this.obs.tracer?.endSpan(
+              taskClosureEvaluation.traceSpanId,
+              taskClosureEvaluation.traceSpanStatus,
+            )
+          }
+        }
+
+        if (taskClosureEvaluation.eventPayload) {
+          const sessionEvent: ClosureLogEntryInput & { spanId?: string } = {
+            ...taskClosureEvaluation.eventPayload,
+            spanId: taskClosureEvaluation.traceSpanId,
             assistantMessageId: assistantMsg.id,
             assistantMessageCreatedAt: assistantMsg.createdAt,
-          },
+          }
+
+          this.obs.bus?.emit('session:update', sessionEvent)
+        }
+
+        // Emit session update event
+        this.obs.bus?.emit('session:update', {
+          sessionId: this.toolContext.sessionId,
+          event: 'assistant_response',
+          model: this.obs.modelLabel ?? response.model,
         })
-        if (taskClosureEvaluation.traceSpanStatus) {
-          this.obs.tracer?.endSpan(
-            taskClosureEvaluation.traceSpanId,
-            taskClosureEvaluation.traceSpanStatus,
-          )
-        }
-      }
 
-      if (taskClosureEvaluation.eventPayload) {
-        const sessionEvent: ClosureLogEntryInput & { spanId?: string } = {
-          ...taskClosureEvaluation.eventPayload,
-          spanId: taskClosureEvaluation.traceSpanId,
-          assistantMessageId: assistantMsg.id,
-          assistantMessageCreatedAt: assistantMsg.createdAt,
-        }
-
-        this.obs.bus?.emit('session:update', sessionEvent)
-      }
-
-      // Emit session update event
-      this.obs.bus?.emit('session:update', {
-        sessionId: this.toolContext.sessionId,
-        event: 'assistant_response',
-        model: this.obs.modelLabel ?? response.model,
-      })
-
-      // If no tool use, check if continuation is needed after queued message response
+        // If no tool use, check if continuation is needed after queued message response
         if (response.stopReason !== 'tool_use') {
-        if (
-          hadQueuedMessages &&
-          !isTaskComplete(response.content) &&
-          continuationCount < CONTEXT_PARAMS.queue.maxContinuationRetries
-        ) {
-          // Task not complete after responding to queued messages — inject continuation prompt
-          const contMsg: Message = {
-            id: generateId(),
-            sessionId: this.toolContext.sessionId,
-            role: 'user',
-            messageType: 'message',
-            content: [{ type: 'text', text: CONTINUATION_PROMPT }],
-            createdAt: now(),
+          if (
+            hadQueuedMessages &&
+            !isTaskComplete(response.content) &&
+            continuationCount < CONTEXT_PARAMS.queue.maxContinuationRetries
+          ) {
+            // Task not complete after responding to queued messages — inject continuation prompt
+            const contMsg: Message = {
+              id: generateId(),
+              sessionId: this.toolContext.sessionId,
+              role: 'user',
+              messageType: 'message',
+              content: [{ type: 'text', text: CONTINUATION_PROMPT }],
+              createdAt: now(),
+            }
+            messages.push(contMsg)
+            newMessages.push(contMsg)
+            continuationCount++
+            hadQueuedMessages = false
+            continue
           }
-          messages.push(contMsg)
-          newMessages.push(contMsg)
-          continuationCount++
-          hadQueuedMessages = false
-          continue
-        }
 
-        if (
-          shouldAutoContinueTaskClosure &&
-          taskClosureRetryCount < CONTEXT_PARAMS.completion.maxTaskClosureRetries
-        ) {
-          const contMsg: Message = {
-            id: generateId(),
-            sessionId: this.toolContext.sessionId,
-            role: 'user',
-            messageType: 'message',
-            content: [{ type: 'text', text: TASK_CLOSURE_PROMPT }],
-            createdAt: now(),
+          if (
+            shouldAutoContinueTaskClosure &&
+            taskClosureRetryCount < CONTEXT_PARAMS.completion.maxTaskClosureRetries
+          ) {
+            const contMsg: Message = {
+              id: generateId(),
+              sessionId: this.toolContext.sessionId,
+              role: 'user',
+              messageType: 'message',
+              content: [{ type: 'text', text: TASK_CLOSURE_PROMPT }],
+              createdAt: now(),
+            }
+            messages.push(contMsg)
+            newMessages.push(contMsg)
+            taskClosureRetryCount++
+            continue
           }
-          messages.push(contMsg)
-          newMessages.push(contMsg)
-          taskClosureRetryCount++
-          continue
-        }
 
           break
         }
@@ -484,196 +484,196 @@ export class Agent {
         }
 
         for (const block of toolUseBlocks) {
-        if (block.type !== 'tool_use') continue
-        const tool = this.toolRegistry.get(block.name)
+          if (block.type !== 'tool_use') continue
+          const tool = this.toolRegistry.get(block.name)
 
-        // Emit tool:call event
-        this.obs.bus?.emit('tool:call', {
-          sessionId: this.toolContext.sessionId,
-          tool: block.name,
-          toolUseId: block.id,
-          input: this.filterToolInput(block.input),
-        })
+          // Emit tool:call event
+          this.obs.bus?.emit('tool:call', {
+            sessionId: this.toolContext.sessionId,
+            tool: block.name,
+            toolUseId: block.id,
+            input: this.filterToolInput(block.input),
+          })
 
-        // Start tool trace span
-        const toolSpan = this.obs.tracer?.startSpan(
-          this.toolContext.sessionId,
-          `tool:${block.name}`,
-          llmSpan?.id,
-          {
-            kind: 'tool_call',
-            agentName: this.config.name,
-            data: {
+          // Start tool trace span
+          const toolSpan = this.obs.tracer?.startSpan(
+            this.toolContext.sessionId,
+            `tool:${block.name}`,
+            llmSpan?.id,
+            {
+              kind: 'tool_call',
+              agentName: this.config.name,
+              data: {
+                tool: block.name,
+                inputSummary: this.stringifyTraceData(this.filterToolInput(block.input)),
+                requestId: response.id,
+              },
+            },
+          )
+          toolContext.currentTraceSpanId = toolSpan?.id
+
+          // Detect malformed tool input (truncated by max_tokens)
+          if (
+            block.type === 'tool_use' &&
+            block.input &&
+            typeof (block.input as Record<string, unknown>).__parse_error === 'string'
+          ) {
+            const parseError = (block.input as Record<string, unknown>).__parse_error as string
+            toolResultBlocks.push({
+              type: 'tool_result',
+              toolUseId: block.id,
+              content: `Tool input JSON was malformed (likely truncated by max_tokens). ${parseError}. Please retry with shorter content or split into multiple calls.`,
+              isError: true,
+            })
+            if (toolSpan) this.obs.tracer?.endSpan(toolSpan.id, 'error')
+            this.obs.bus?.emit('tool:result', {
+              sessionId: this.toolContext.sessionId,
               tool: block.name,
-              inputSummary: this.stringifyTraceData(this.filterToolInput(block.input)),
-              requestId: response.id,
-            },
-          },
-        )
-        toolContext.currentTraceSpanId = toolSpan?.id
-
-        // Detect malformed tool input (truncated by max_tokens)
-        if (
-          block.type === 'tool_use' &&
-          block.input &&
-          typeof (block.input as Record<string, unknown>).__parse_error === 'string'
-        ) {
-          const parseError = (block.input as Record<string, unknown>).__parse_error as string
-          toolResultBlocks.push({
-            type: 'tool_result',
-            toolUseId: block.id,
-            content: `Tool input JSON was malformed (likely truncated by max_tokens). ${parseError}. Please retry with shorter content or split into multiple calls.`,
-            isError: true,
-          })
-          if (toolSpan) this.obs.tracer?.endSpan(toolSpan.id, 'error')
-          this.obs.bus?.emit('tool:result', {
-            sessionId: this.toolContext.sessionId,
-            tool: block.name,
-            success: false,
-            error: parseError,
-          })
-          continue
-        }
-
-        if (!tool) {
-          toolResultBlocks.push({
-            type: 'tool_result',
-            toolUseId: block.id,
-            content: `Unknown tool: ${block.name}`,
-            isError: true,
-          })
-          if (toolSpan) this.obs.tracer?.endSpan(toolSpan.id, 'error')
-          this.obs.bus?.emit('tool:result', {
-            sessionId: this.toolContext.sessionId,
-            tool: block.name,
-            success: false,
-            error: `Unknown tool: ${block.name}`,
-          })
-          continue
-        }
-
-        let result: ToolResult
-        try {
-          result = await tool.run(toolContext, block.input)
-        } catch (error) {
-          const errorMessage = toErrorMessage(error)
-          result = {
-            success: false,
-            output: errorMessage,
-            outputSummary: `Tool execution failed: ${errorMessage.slice(0, 100)}`,
+              success: false,
+              error: parseError,
+            })
+            continue
           }
-        }
 
-        if (toolSpan) {
-          this.obs.tracer?.updateSpan(toolSpan.id, {
-            data: {
-              outputSummary: result.outputSummary,
-            },
-            metadata: {
+          if (!tool) {
+            toolResultBlocks.push({
+              type: 'tool_result',
+              toolUseId: block.id,
+              content: `Unknown tool: ${block.name}`,
+              isError: true,
+            })
+            if (toolSpan) this.obs.tracer?.endSpan(toolSpan.id, 'error')
+            this.obs.bus?.emit('tool:result', {
+              sessionId: this.toolContext.sessionId,
+              tool: block.name,
+              success: false,
+              error: `Unknown tool: ${block.name}`,
+            })
+            continue
+          }
+
+          let result: ToolResult
+          try {
+            result = await tool.run(toolContext, block.input)
+          } catch (error) {
+            const errorMessage = toErrorMessage(error)
+            result = {
+              success: false,
+              output: errorMessage,
+              outputSummary: `Tool execution failed: ${errorMessage.slice(0, 100)}`,
+            }
+          }
+
+          if (toolSpan) {
+            this.obs.tracer?.updateSpan(toolSpan.id, {
+              data: {
+                outputSummary: result.outputSummary,
+              },
+              metadata: {
+                toolUseId: block.id,
+                toolName: block.name,
+                input: this.filterToolInput(block.input),
+                result: result.outputSummary ?? result.output?.slice(0, 500),
+                outputSummary: result.outputSummary,
+              },
+            })
+            this.obs.tracer?.endSpan(toolSpan.id, result.success ? 'success' : 'error', {
               toolUseId: block.id,
               toolName: block.name,
-              input: this.filterToolInput(block.input),
-              result: result.outputSummary ?? result.output?.slice(0, 500),
               outputSummary: result.outputSummary,
-            },
-          })
-          this.obs.tracer?.endSpan(toolSpan.id, result.success ? 'success' : 'error', {
-            toolUseId: block.id,
-            toolName: block.name,
-            outputSummary: result.outputSummary,
-          })
-        }
+            })
+          }
 
-        // Emit tool:result event
-        this.obs.bus?.emit('tool:result', {
-          sessionId: this.toolContext.sessionId,
-          tool: block.name,
-          success: result.success,
-          outputSummary: result.outputSummary,
-        })
-
-        const { content: truncatedOutput, artifactPath } = artifactizeToolOutput(
-          block.name,
-          result.output,
-          { workDir: this.toolContext.workDir, toolUseId: block.id },
-        )
-        if (artifactPath) {
-          this.toolContext.logger.info('tool_output_artifactized', {
+          // Emit tool:result event
+          this.obs.bus?.emit('tool:result', {
+            sessionId: this.toolContext.sessionId,
             tool: block.name,
-            originalChars: result.output.length,
-            artifactPath,
-          })
-        }
-        toolResultBlocks.push({
-          type: 'tool_result',
-          toolUseId: block.id,
-          content: truncatedOutput,
-          isError: !result.success,
-          outputSummary: result.outputSummary,
-        })
-        if (!result.success) {
-          failedToolAttempts.push({
-            toolUseId: block.id,
-            toolName: block.name,
-            input: block.input,
-            output: result.output,
+            success: result.success,
             outputSummary: result.outputSummary,
           })
-        }
+
+          const { content: truncatedOutput, artifactPath } = artifactizeToolOutput(
+            block.name,
+            result.output,
+            { workDir: this.toolContext.workDir, toolUseId: block.id },
+          )
+          if (artifactPath) {
+            this.toolContext.logger.info('tool_output_artifactized', {
+              tool: block.name,
+              originalChars: result.output.length,
+              artifactPath,
+            })
+          }
+          toolResultBlocks.push({
+            type: 'tool_result',
+            toolUseId: block.id,
+            content: truncatedOutput,
+            isError: !result.success,
+            outputSummary: result.outputSummary,
+          })
+          if (!result.success) {
+            failedToolAttempts.push({
+              toolUseId: block.id,
+              toolName: block.name,
+              input: block.input,
+              output: result.output,
+              outputSummary: result.outputSummary,
+            })
+          }
         }
 
         // Add tool results as user message
         if (toolResultBlocks.length > 0) {
-        const toolResultMsg: Message = {
-          id: generateId(),
-          sessionId: this.toolContext.sessionId,
-          role: 'user',
-          messageType: 'message',
-          content: toolResultBlocks,
-          createdAt: now(),
-        }
-        messages.push(toolResultMsg)
-        newMessages.push(toolResultMsg)
-        onNewMessage?.(toolResultMsg)
+          const toolResultMsg: Message = {
+            id: generateId(),
+            sessionId: this.toolContext.sessionId,
+            role: 'user',
+            messageType: 'message',
+            content: toolResultBlocks,
+            createdAt: now(),
+          }
+          messages.push(toolResultMsg)
+          newMessages.push(toolResultMsg)
+          onNewMessage?.(toolResultMsg)
 
-        const memoryHintMsg = await this.buildMemoryHintMessage(
-          failedToolAttempts,
-          userMessage,
-          context.identityMemory,
-        )
-        if (memoryHintMsg) {
-          messages.push(memoryHintMsg)
-          newMessages.push(memoryHintMsg)
-          onNewMessage?.(memoryHintMsg)
-          pendingMemoryInjections = [
-            {
-              layer: 'layer2',
-              source: 'memory_hint',
-              formattedText: this.extractTextFromMessage(memoryHintMsg),
-            },
-          ]
-        }
+          const memoryHintMsg = await this.buildMemoryHintMessage(
+            failedToolAttempts,
+            userMessage,
+            context.identityMemory,
+          )
+          if (memoryHintMsg) {
+            messages.push(memoryHintMsg)
+            newMessages.push(memoryHintMsg)
+            onNewMessage?.(memoryHintMsg)
+            pendingMemoryInjections = [
+              {
+                layer: 'layer2',
+                source: 'memory_hint',
+                formattedText: this.extractTextFromMessage(memoryHintMsg),
+              },
+            ]
+          }
         }
         currentRequestToolResults = this.toRequestToolResults(toolResultBlocks)
 
         // Budget check + compression
         if (context.maxContext && context.maxOutput) {
-        const budget = allocateBudget(context.maxContext, context.maxOutput)
-        if (shouldCompress(estimateConversationTokens(messages), budget.conversation)) {
-          const { compressConversation } = await import('./compress')
-          const result = await compressConversation(
-            messages,
-            budget.conversation,
-            this.adapter,
-            this.toolContext.sessionId,
-          )
-          messages.length = 0
-          messages.push(...result.retainedMessages)
-          this.obs.onContextCompressed?.({
-            summary: result.summary,
-            stats: result.stats,
-          })
-        }
+          const budget = allocateBudget(context.maxContext, context.maxOutput)
+          if (shouldCompress(estimateConversationTokens(messages), budget.conversation)) {
+            const { compressConversation } = await import('./compress')
+            const result = await compressConversation(
+              messages,
+              budget.conversation,
+              this.adapter,
+              this.toolContext.sessionId,
+            )
+            messages.length = 0
+            messages.push(...result.retainedMessages)
+            this.obs.onContextCompressed?.({
+              summary: result.summary,
+              stats: result.stats,
+            })
+          }
         }
 
         // Inject queued messages into the last user message (tool result)
@@ -681,86 +681,86 @@ export class Agent {
         hadQueuedMessages = false
         pendingQueuedInjection = undefined
         if (queued.length > 0 && messages.length > 0) {
-        const lastIdx = messages.length - 1
-        if (messages[lastIdx].role === 'user') {
-          const injected = injectQueuedMessagesWithTrace(messages[lastIdx], queued)
-          messages[lastIdx] = injected.message
-          pendingQueuedInjection = injected.trace
-          hadQueuedMessages = injected.trace !== undefined
-        }
+          const lastIdx = messages.length - 1
+          if (messages[lastIdx].role === 'user') {
+            const injected = injectQueuedMessagesWithTrace(messages[lastIdx], queued)
+            messages[lastIdx] = injected.message
+            pendingQueuedInjection = injected.trace
+            hadQueuedMessages = injected.trace !== undefined
+          }
         }
 
         // Yield to pending message if one arrived during tool execution
         if (shouldInterrupt?.() && !hadQueuedMessages) {
-        const finalRequest: CompletionRequest = {
-          messages,
-          system,
-          stream: true,
-          maxTokens: context.maxOutput ?? 16384,
-        }
-        const finalLlmSpan = this.obs.tracer?.startSpan(
-          this.toolContext.sessionId,
-          'llm_request',
-          rootSpan?.id,
-          {
-            kind: 'llm_request',
-            agentName: this.config.name,
-            data: {
+          const finalRequest: CompletionRequest = {
+            messages,
+            system,
+            stream: true,
+            maxTokens: context.maxOutput ?? 16384,
+          }
+          const finalLlmSpan = this.obs.tracer?.startSpan(
+            this.toolContext.sessionId,
+            'llm_request',
+            rootSpan?.id,
+            {
+              kind: 'llm_request',
+              agentName: this.config.name,
+              data: {
+                turnIndex,
+                parentId: pendingParentRequestId,
+                spawnedByRequestId: this.toolContext.spawnedByRequestId,
+              },
+            },
+          )
+          const finalStart = Date.now()
+          let finalResponse: CompletionResponse
+          try {
+            finalResponse = await this.completeWithStreamFallback(finalRequest, onTextDelta)
+          } catch (error) {
+            if (finalLlmSpan) {
+              this.obs.tracer?.updateSpan(finalLlmSpan.id, {
+                metadata: {
+                  error: toErrorMessage(error),
+                },
+              })
+              this.obs.tracer?.endSpan(finalLlmSpan.id, 'error')
+            }
+            throw error
+          }
+          const finalDurationMs = Date.now() - finalStart
+          this.logLLMRequest(
+            finalRequest,
+            finalResponse,
+            userMessage,
+            finalDurationMs,
+            {
               turnIndex,
               parentId: pendingParentRequestId,
-              spawnedByRequestId: this.toolContext.spawnedByRequestId,
             },
-          },
-        )
-        const finalStart = Date.now()
-        let finalResponse: CompletionResponse
-        try {
-          finalResponse = await this.completeWithStreamFallback(finalRequest, onTextDelta)
-        } catch (error) {
-          if (finalLlmSpan) {
-            this.obs.tracer?.updateSpan(finalLlmSpan.id, {
-              metadata: {
-                error: toErrorMessage(error),
-              },
-            })
-            this.obs.tracer?.endSpan(finalLlmSpan.id, 'error')
-          }
-          throw error
-        }
-        const finalDurationMs = Date.now() - finalStart
-        this.logLLMRequest(
-          finalRequest,
-          finalResponse,
-          userMessage,
-          finalDurationMs,
-          {
-            turnIndex,
-            parentId: pendingParentRequestId,
-          },
-          currentRequestToolResults,
-          pendingQueuedInjection,
-          pendingMemoryInjections,
-          finalLlmSpan?.id,
-        )
-        currentRequestToolResults = []
-        pendingQueuedInjection = undefined
-        pendingMemoryInjections = undefined
-        pendingParentRequestId =
-          finalResponse.stopReason === 'tool_use' ? finalResponse.id : undefined
+            currentRequestToolResults,
+            pendingQueuedInjection,
+            pendingMemoryInjections,
+            finalLlmSpan?.id,
+          )
+          currentRequestToolResults = []
+          pendingQueuedInjection = undefined
+          pendingMemoryInjections = undefined
+          pendingParentRequestId =
+            finalResponse.stopReason === 'tool_use' ? finalResponse.id : undefined
 
-        const finalContent = this.filterContent(finalResponse.content)
-        const finalMsg: Message = {
-          id: generateId(),
-          sessionId: this.toolContext.sessionId,
-          role: 'assistant',
-          messageType: 'message',
-          content: finalContent,
-          model: this.obs.modelLabel ?? finalResponse.model,
-          createdAt: now(),
-        }
-        messages.push(finalMsg)
-        newMessages.push(finalMsg)
-        onNewMessage?.(finalMsg)
+          const finalContent = this.filterContent(finalResponse.content)
+          const finalMsg: Message = {
+            id: generateId(),
+            sessionId: this.toolContext.sessionId,
+            role: 'assistant',
+            messageType: 'message',
+            content: finalContent,
+            model: this.obs.modelLabel ?? finalResponse.model,
+            createdAt: now(),
+          }
+          messages.push(finalMsg)
+          newMessages.push(finalMsg)
+          onNewMessage?.(finalMsg)
           break
         }
       }
@@ -1046,7 +1046,7 @@ export class Agent {
     const assistantTail = extractAssistantTail(response.content)
     if (!assistantText || !assistantTail) return endSkipped('empty_assistant_tail')
 
-    const promptContext = this.buildTaskClosurePromptContext(userMessage, messages)
+    const promptContext = buildTaskClosurePromptContext(messages)
     const prompt = buildTaskClosureDecisionPrompt(
       userMessage,
       assistantText,
@@ -1108,9 +1108,7 @@ export class Agent {
               action: validDecision.action,
               reason: validDecision.reason,
               classifierRequest,
-              ...(validDecision.action === 'continue'
-                ? { trimFrom: validDecision.trimFrom }
-                : {}),
+              ...(validDecision.action === 'continue' ? { trimFrom: validDecision.trimFrom } : {}),
             },
           })
         }
@@ -1215,97 +1213,6 @@ export class Agent {
     }
   }
 
-  private buildTaskClosurePromptContext(
-    userMessage: string,
-    messages: Message[],
-  ): TaskClosurePromptContext {
-    const isResearchTask =
-      /(https?:\/\/|reddit|analy|analysis|research|investig|verify|核验|分析|研究|调查|看看)/i.test(
-        userMessage,
-      )
-    const wantsDepth =
-      /(相关信息|相关线索|尽可能|深入|深挖|详细|交叉验证|多源|in depth|thorough|related info|cross)/i.test(
-        userMessage,
-      )
-
-    const externalSourceDomains = new Set<string>()
-    let externalLookupCount = 0
-    const toolCallSummary: string[] = []
-
-    // Collect all tool_result blocks for quick lookup by toolUseId
-    const toolResults = new Map<string, { isError?: boolean; outputSummary?: string }>()
-    for (const message of messages) {
-      for (const block of message.content) {
-        if (block.type === 'tool_result') {
-          toolResults.set(block.toolUseId, {
-            isError: block.isError,
-            outputSummary: block.outputSummary,
-          })
-        }
-      }
-    }
-
-    for (const message of messages) {
-      for (const block of message.content) {
-        if (block.type !== 'tool_use') continue
-        const toolName = block.name.toLowerCase()
-        const input = block.input as Record<string, unknown>
-        const url = typeof input.url === 'string' ? input.url : ''
-        const looksExternal =
-          toolName === 'fetch' ||
-          toolName.includes('search') ||
-          toolName.includes('browser') ||
-          url.startsWith('http://') ||
-          url.startsWith('https://')
-
-        if (looksExternal) {
-          externalLookupCount++
-          if (url) {
-            try {
-              externalSourceDomains.add(new URL(url).hostname)
-            } catch {}
-          }
-        }
-
-        // Build tool call summary line
-        if (toolCallSummary.length < 10) {
-          const action = typeof input.action === 'string' ? input.action : ''
-          const result = toolResults.get(block.id)
-          const status = result?.isError ? 'error' : 'success'
-          const summary = result?.outputSummary?.slice(0, 80) ?? ''
-
-          let line = block.name
-          if (action) line += `:${action}`
-          line += ` → ${status}`
-          if (summary) line += ` (${summary})`
-          toolCallSummary.push(line)
-        }
-      }
-    }
-
-    let coverageHint = 'general'
-    if (isResearchTask && externalLookupCount === 0) {
-      coverageHint = 'research_no_external_lookup'
-    } else if (isResearchTask && externalLookupCount === 1) {
-      coverageHint = 'research_single_source_or_first_pass'
-    } else if (isResearchTask && externalLookupCount >= 2) {
-      coverageHint = 'research_multi_source_attempted'
-    }
-
-    if (wantsDepth && externalLookupCount < 2) {
-      coverageHint = 'depth_requested_but_multi_source_not_reached'
-    }
-
-    return {
-      isResearchTask,
-      wantsDepth,
-      externalLookupCount,
-      externalSourceDomains: Array.from(externalSourceDomains).slice(0, 6),
-      coverageHint,
-      toolCallSummary,
-    }
-  }
-
   private mapFinishReason(reason?: string): CompletionResponse['stopReason'] {
     if (!reason) return 'end_turn'
     if (reason === 'tool_use' || reason === 'tool_calls') return 'tool_use'
@@ -1367,9 +1274,7 @@ export class Agent {
             ? data.requestId
             : anthropicPayload?.requestId,
       errorType:
-        typeof data.error_type === 'string'
-          ? data.error_type
-          : anthropicPayload?.errorType,
+        typeof data.error_type === 'string' ? data.error_type : anthropicPayload?.errorType,
     }
   }
 
@@ -1654,27 +1559,29 @@ export class Agent {
     })
     if (!matches || matches.length === 0) return undefined
 
-      const hint = [
-        '<memory_hint>',
-        '工具执行失败。以下是相关的历史经验：',
-        ...matches.slice(0, 3).flatMap((match) => [
+    const hint = [
+      '<memory_hint>',
+      '工具执行失败。以下是相关的历史经验：',
+      ...matches
+        .slice(0, 3)
+        .flatMap((match) => [
           `  <memory id="${escapeXml(match.id)}" type="${escapeXml(match.type)}">`,
           `    <title>${escapeXml(match.title)}</title>`,
           `    <content>${escapeXml(match.content)}</content>`,
           '  </memory>',
         ]),
-        '</memory_hint>',
-      ].join('\n')
-      const notificationText = wrapMemoryInjection('layer2', hint)
+      '</memory_hint>',
+    ].join('\n')
+    const notificationText = wrapMemoryInjection('layer2', hint)
 
-      return {
-        id: generateId(),
-        sessionId: this.toolContext.sessionId,
-        role: 'user',
-        messageType: 'notification',
-        content: [{ type: 'text', text: notificationText }],
-        createdAt: now(),
-      }
+    return {
+      id: generateId(),
+      sessionId: this.toolContext.sessionId,
+      role: 'user',
+      messageType: 'notification',
+      content: [{ type: 'text', text: notificationText }],
+      createdAt: now(),
+    }
   }
 
   private filterToolInput(input: Record<string, unknown>): Record<string, unknown> {

@@ -5,6 +5,7 @@ import { buildToolProcessEnv } from './process-env'
 
 interface BashInput {
   command: string
+  description?: string
   timeout?: number
 }
 
@@ -15,6 +16,7 @@ export class BashTool extends BaseTool {
     type: 'object',
     properties: {
       command: { type: 'string', description: 'Shell command to execute' },
+      description: { type: 'string', description: 'Brief description of what this command does' },
       timeout: { type: 'number', description: 'Timeout in milliseconds (default 120000)' },
     },
     required: ['command'],

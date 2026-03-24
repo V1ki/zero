@@ -328,8 +328,7 @@ describe('Agent task closure gate', () => {
       .find((span) => span.name === 'task_closure_decision')
 
     const closureEvent = emitted.find(
-      (entry) =>
-        entry.topic === 'session:update' && entry.data.event === 'task_closure_decision',
+      (entry) => entry.topic === 'session:update' && entry.data.event === 'task_closure_decision',
     )
 
     expect(closureSpan).toBeDefined()
@@ -367,9 +366,11 @@ describe('Agent task closure gate', () => {
       '看看 https://example.com 这个内容, 然后把可能相关的信息也分析下, 尽可能深入',
     )
 
-    expect(adapter.lastClassifierPrompt).toContain('research_task=yes')
-    expect(adapter.lastClassifierPrompt).toContain('depth_requested=yes')
     expect(adapter.lastClassifierPrompt).toContain('研究/分析类任务额外规则')
+    expect(adapter.lastClassifierPrompt).toContain(
+      '<tool_calls_this_turn>\nnone\n</tool_calls_this_turn>',
+    )
+    expect(adapter.lastClassifierPrompt).not.toContain('<task_context>')
   })
 
   test('fails closed when classifier request throws', async () => {

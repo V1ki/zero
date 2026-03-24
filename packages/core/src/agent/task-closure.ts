@@ -1,4 +1,5 @@
-import type { ContentBlock } from '@zero-os/shared'
+import { basename } from 'node:path'
+import type { ContentBlock, Message } from '@zero-os/shared'
 
 export type TaskClosureAction = 'finish' | 'continue' | 'block'
 
@@ -9,12 +10,7 @@ export interface TaskClosureDecision {
 }
 
 export interface TaskClosurePromptContext {
-  isResearchTask: boolean
-  wantsDepth: boolean
-  externalLookupCount: number
-  externalSourceDomains: string[]
-  coverageHint: string
-  toolCallSummary: string[]
+  toolSummary: string
 }
 
 export const TASK_CLOSURE_PROMPT = `<system_notice>
@@ -62,16 +58,8 @@ export function buildTaskClosureDecisionPrompt(
 - 不要重写 assistant 内容，只做判定。
 </instruction>
 
-<task_context>
-research_task=${context?.isResearchTask ? 'yes' : 'no'}
-depth_requested=${context?.wantsDepth ? 'yes' : 'no'}
-external_lookup_count=${context?.externalLookupCount ?? 0}
-external_source_domains=${context?.externalSourceDomains.join(', ') || 'none'}
-coverage_hint=${context?.coverageHint ?? 'unknown'}
-</task_context>
-
 <tool_calls_this_turn>
-${context?.toolCallSummary?.length ? context.toolCallSummary.join('\n') : 'none'}
+${context?.toolSummary || 'none'}
 </tool_calls_this_turn>
 
 <user_message>
@@ -85,6 +73,102 @@ ${assistantText}
 <assistant_tail>
 ${assistantTail}
 </assistant_tail>`
+}
+
+interface ToolResultSummary {
+  isError?: boolean
+  outputSummary?: string
+}
+
+export function buildTaskClosurePromptContext(messages: Message[]): TaskClosurePromptContext {
+  const toolResults = new Map<string, ToolResultSummary>()
+  const toolGroups = new Map<string, string[]>()
+
+  for (const message of messages) {
+    for (const block of message.content) {
+      if (block.type === 'tool_result') {
+        toolResults.set(block.toolUseId, {
+          isError: block.isError,
+          outputSummary: block.outputSummary,
+        })
+      }
+    }
+  }
+
+  for (const message of messages) {
+    for (const block of message.content) {
+      if (block.type !== 'tool_use') continue
+
+      const toolName = block.name.toLowerCase()
+      const detail = extractToolDetail(toolName, block.input, toolResults.get(block.id))
+      const existing = toolGroups.get(toolName)
+      if (existing) {
+        existing.push(detail)
+      } else {
+        toolGroups.set(toolName, [detail])
+      }
+    }
+  }
+
+  const lines = Array.from(toolGroups.entries())
+    .map(([toolName, details]) => formatToolGroup(toolName, details))
+    .filter((line) => line.length > 0)
+
+  return {
+    toolSummary: lines.length > 0 ? lines.join('; ') : 'none',
+  }
+}
+
+export function extractToolDetail(
+  toolName: string,
+  input: Record<string, unknown>,
+  result?: ToolResultSummary,
+): string {
+  const status = formatToolStatus(result)
+
+  switch (toolName.toLowerCase()) {
+    case 'fetch': {
+      return `${extractFetchDomain(input) ?? 'request'} ${status}`
+    }
+    case 'bash': {
+      return `${getTrimmedString(input.description) ?? sanitizeBashSummary(result?.outputSummary) ?? 'command'} ${status}`
+    }
+    case 'read':
+    case 'write':
+    case 'edit': {
+      return `${extractFileName(input) ?? 'unknown file'} ${status}`
+    }
+    default: {
+      const action = getTrimmedString(input.action)
+      return action ? `${action} ${status}` : status
+    }
+  }
+}
+
+export function formatToolGroup(toolName: string, details: string[]): string {
+  if (details.length === 0) return ''
+
+  const normalizedName = toolName.toLowerCase()
+
+  switch (normalizedName) {
+    case 'fetch': {
+      const summary = details.slice(0, 2).join(', ')
+      return details.length > 1 ? `fetch ${summary} 共 ${details.length} 次` : `fetch ${summary}`
+    }
+    case 'bash':
+      return `bash 执行 ${details.slice(0, 4).join(', ')}`
+    case 'read':
+    case 'write':
+    case 'edit': {
+      if (details.length === 1) return `${normalizedName} ${details[0]}`
+
+      const summary = details.slice(0, 4).join(', ')
+      const suffix = details.length > 4 ? ' 等' : ''
+      return `${normalizedName} ${details.length} 个文件: ${summary}${suffix}`
+    }
+    default:
+      return `${normalizedName} ${details.length}次: ${details.slice(0, 4).join(', ')}`
+  }
 }
 
 export function parseTaskClosureDecision(response: string): TaskClosureDecision | null {
@@ -157,4 +241,39 @@ function getLastTextBlockText(content: ContentBlock[]): string {
     if (block?.type === 'text') return block.text
   }
   return ''
+}
+
+function formatToolStatus(result?: ToolResultSummary): string {
+  if (!result) return '…'
+  return result.isError ? '✗' : '✓'
+}
+
+function extractFetchDomain(input: Record<string, unknown>): string | undefined {
+  const url = getTrimmedString(input.url)
+  if (!url) return undefined
+
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return url
+  }
+}
+
+function extractFileName(input: Record<string, unknown>): string | undefined {
+  const path = getTrimmedString(input.path)
+  return path ? basename(path) : undefined
+}
+
+function getTrimmedString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
+function sanitizeBashSummary(summary: string | undefined): string | undefined {
+  const trimmed = getTrimmedString(summary)
+  if (!trimmed) return undefined
+
+  const sanitized = trimmed.replace(/^(?:Executed|Command failed(?:\s*\([^)]*\))?):\s*/, '')
+  return sanitized || trimmed
 }
