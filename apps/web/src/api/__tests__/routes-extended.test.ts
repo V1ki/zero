@@ -225,10 +225,42 @@ describe('API Routes Extended', () => {
 
   test('GET /api/sessions/:id/traces returns traces', async () => {
     const session = zero.sessionManager.create('web')
+    const span = zero.tracer.startSpan(session.data.id, 'task_closure_decision', undefined, {
+      kind: 'closure_decision',
+      data: {
+        closure: {
+          event: 'task_closure_decision',
+          action: 'finish',
+          reason: 'trace_complete',
+          classifierRequest: {
+            system: 'strict classifier',
+            prompt: '<instruction>prompt</instruction>',
+            maxTokens: 200,
+          },
+        },
+      },
+      metadata: {
+        classifierRequest: {
+          system: 'strict classifier',
+          prompt: '<instruction>prompt</instruction>',
+          maxTokens: 200,
+        },
+      },
+    })
+    zero.tracer.endSpan(span.id, 'success')
+
     const res = await app.request(`/api/sessions/${session.data.id}/traces`)
     expect(res.status).toBe(200)
     const data = await res.json()
     expect(Array.isArray(data.traces)).toBe(true)
+    expect(data.traces[0].data.closure.classifierRequest).toEqual({
+      prompt: '<instruction>prompt</instruction>',
+      maxTokens: 200,
+    })
+    expect(data.traces[0].metadata.classifierRequest).toEqual({
+      prompt: '<instruction>prompt</instruction>',
+      maxTokens: 200,
+    })
   })
 
   test('GET /api/sessions/:id/task-closure-events returns trace-projected closure events', async () => {
@@ -257,6 +289,10 @@ describe('API Routes Extended', () => {
     expect(Array.isArray(data.events)).toBe(true)
     expect(data.events[0].event).toBe('task_closure_decision')
     expect(data.events[0].assistantMessageId).toBe('msg_trace_001')
+    expect(data.events[0].classifierRequest).toEqual({
+      prompt: '<instruction>prompt</instruction>',
+      maxTokens: 200,
+    })
   })
 
   test('GET /api/sessions/:id/task-closure-events ignores events log task closure events', async () => {

@@ -21,7 +21,6 @@ export interface SessionTaskClosureEvent {
   action?: 'finish' | 'continue' | 'block'
   reason: string
   classifierRequest: {
-    system: string
     prompt: string
     maxTokens: number
   }
@@ -560,11 +559,7 @@ function isClassifierRequest(
 ): value is SessionTaskClosureEvent['classifierRequest'] {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const candidate = value as Record<string, unknown>
-  return (
-    typeof candidate.system === 'string' &&
-    typeof candidate.prompt === 'string' &&
-    typeof candidate.maxTokens === 'number'
-  )
+  return typeof candidate.prompt === 'string' && typeof candidate.maxTokens === 'number'
 }
 
 function tryParseJsonField(json: string, field: string): string | null {

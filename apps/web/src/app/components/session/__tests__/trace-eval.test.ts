@@ -58,7 +58,6 @@ describe('evaluateTraceSession', () => {
                 assistantMessageId: 'msg_1',
                 assistantMessageCreatedAt: '2026-03-08T00:00:05.200Z',
                 classifierRequest: {
-                  system: 'judge',
                   prompt: 'judge prompt',
                   maxTokens: 200,
                 },
@@ -79,7 +78,6 @@ describe('evaluateTraceSession', () => {
         assistantMessageId: 'msg_1',
         assistantMessageCreatedAt: '2026-03-08T00:00:05.200Z',
         classifierRequest: {
-          system: 'judge',
           prompt: 'judge prompt',
           maxTokens: 200,
         },

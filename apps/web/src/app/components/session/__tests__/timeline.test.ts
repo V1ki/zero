@@ -261,7 +261,6 @@ test('adds session task closure event when traces are unavailable', () => {
       action: 'continue',
       reason: 'remaining work is required',
       classifierRequest: {
-        system: 'strict classifier',
         prompt: '<instruction>prompt</instruction>',
         maxTokens: 200,
       },
@@ -348,7 +347,6 @@ test('deduplicates session task closure events when matching trace spans exist',
       reason: 'invalid_classifier_output',
       failureStage: 'parse_classifier_response',
       classifierRequest: {
-        system: 'strict classifier',
         prompt: '<instruction>prompt</instruction>',
         maxTokens: 200,
       },

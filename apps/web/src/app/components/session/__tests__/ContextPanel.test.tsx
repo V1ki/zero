@@ -21,7 +21,6 @@ describe('TraceSummaryCard', () => {
               reason: 'still researching',
               assistantMessageId: 'msg_assistant_1',
               classifierRequest: {
-                system: 'strict classifier',
                 prompt: '<instruction>research this deeply</instruction>',
                 maxTokens: 200,
               },
@@ -31,7 +30,6 @@ describe('TraceSummaryCard', () => {
             action: 'block',
             reason: 'stale metadata should not win',
             classifierRequest: {
-              system: 'fallback classifier',
               prompt: '<instruction>stale</instruction>',
               maxTokens: 100,
             },
@@ -42,9 +40,9 @@ describe('TraceSummaryCard', () => {
     )
 
     expect(html).toContain('classifier_request')
-    expect(html).toContain('strict classifier')
+    expect(html).toContain('&lt;instruction&gt;research this deeply&lt;/instruction&gt;')
     expect(html).toContain('still researching')
-    expect(html).not.toContain('fallback classifier')
+    expect(html).not.toContain('&lt;instruction&gt;stale&lt;/instruction&gt;')
   })
 
   test('keeps context panel height constrained', () => {
@@ -102,7 +100,6 @@ describe('TraceSummaryCard', () => {
           action: 'continue',
           reason: 'still working through remaining checks',
           classifierRequest: {
-            system: 'strict classifier',
             prompt: '<instruction>decide if the task is done</instruction>',
             maxTokens: 200,
           },
@@ -123,10 +120,10 @@ describe('TraceSummaryCard', () => {
     expect(html).toContain('still working through remaining checks')
     expect(html).toContain('ASSISTANT MESSAGE')
     expect(html).toContain('Jump to message')
-    expect(html).toContain('CLASSIFIER SYSTEM PROMPT')
     expect(html).toContain('CLASSIFIER PROMPT')
     expect(html).toContain('CLASSIFIER RESPONSE')
     expect(html).toContain('{&quot;action&quot;:&quot;continue&quot;}')
+    expect(html).not.toContain('CLASSIFIER SYSTEM PROMPT')
   })
 
   test('keeps tool detail priority over selected task closure detail', () => {
@@ -214,7 +211,6 @@ describe('TraceSummaryCard', () => {
             action: 'finish',
             reason: 'task is done',
             classifierRequest: {
-              system: 'judge',
               prompt: 'judge prompt',
               maxTokens: 200,
             },

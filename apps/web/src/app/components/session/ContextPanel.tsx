@@ -719,12 +719,6 @@ function TaskClosureDetailPanel({
           </DetailField>
         )}
 
-        {taskClosure.classifierRequest?.system && (
-          <DetailField label="CLASSIFIER SYSTEM PROMPT">
-            <ExpandableTextPanel value={taskClosure.classifierRequest.system} />
-          </DetailField>
-        )}
-
         {taskClosure.classifierRequest?.prompt && (
           <DetailField label="CLASSIFIER PROMPT">
             <ExpandableTextPanel value={taskClosure.classifierRequest.prompt} />

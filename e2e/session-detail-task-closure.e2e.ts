@@ -69,7 +69,6 @@ test.describe('Session Detail Task Closure', () => {
           action: 'continue',
           reason: 'Need to verify a remaining edge case before finishing',
           classifierRequest: {
-            system: 'strict classifier',
             prompt: '<instruction>decide if the task is complete</instruction>',
             maxTokens: 200,
           },
@@ -161,7 +160,8 @@ test.describe('Session Detail Task Closure', () => {
 
     await taskClosureCard.click()
     await expect(page.locator('main')).toContainText('Task Closure Detail')
-    await expect(page.locator('main')).toContainText('CLASSIFIER SYSTEM PROMPT')
+    await expect(page.locator('main')).not.toContainText('CLASSIFIER SYSTEM PROMPT')
+    await expect(page.locator('main')).toContainText('CLASSIFIER PROMPT')
     await expect(page.locator('main')).toContainText('CLASSIFIER RESPONSE')
     await expect(page.locator('main')).toContainText('Jump to message')
 

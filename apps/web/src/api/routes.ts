@@ -150,6 +150,56 @@ export function createRoutes(zero: ZeroOS) {
     return zero.sessionManager.getFromDB(id)
   }
 
+  function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+  }
+
+  function sanitizeClassifierRequestForClient(value: unknown) {
+    if (!isRecord(value)) return value
+
+    const { system: _system, ...rest } = value
+    return rest
+  }
+
+  function sanitizeTracePayloadForClient(
+    payload: Record<string, unknown> | undefined,
+  ): Record<string, unknown> | undefined {
+    if (!payload) return payload
+
+    const next = { ...payload }
+
+    if ('classifierRequest' in next) {
+      next.classifierRequest = sanitizeClassifierRequestForClient(next.classifierRequest)
+    }
+
+    if (isRecord(next.closure)) {
+      next.closure = {
+        ...next.closure,
+        classifierRequest: sanitizeClassifierRequestForClient(next.closure.classifierRequest),
+      }
+    }
+
+    return next
+  }
+
+  function sanitizeTraceSpanForClient<
+    T extends { data?: Record<string, unknown>; metadata?: Record<string, unknown>; children: T[] },
+  >(span: T): T {
+    return {
+      ...span,
+      data: sanitizeTracePayloadForClient(span.data),
+      metadata: sanitizeTracePayloadForClient(span.metadata),
+      children: span.children.map((child) => sanitizeTraceSpanForClient(child)),
+    }
+  }
+
+  function sanitizeClosureEntryForClient<T extends { classifierRequest?: unknown }>(entry: T): T {
+    return {
+      ...entry,
+      classifierRequest: sanitizeClassifierRequestForClient(entry.classifierRequest),
+    }
+  }
+
   const app = new Hono()
     .use('*', cors())
 
@@ -457,7 +507,7 @@ export function createRoutes(zero: ZeroOS) {
 
     .get('/api/sessions/:id/traces', (c) => {
       const id = c.req.param('id')
-      const traces = zero.tracer.exportSession(id)
+      const traces = zero.tracer.exportSession(id).map((span) => sanitizeTraceSpanForClient(span))
       return c.json({ traces })
     })
 
@@ -468,7 +518,9 @@ export function createRoutes(zero: ZeroOS) {
         return c.json({ error: 'Session not found' }, 404)
       }
 
-      const entries = zero.observability.readSessionClosures(id)
+      const entries = zero.observability
+        .readSessionClosures(id)
+        .map((entry) => sanitizeClosureEntryForClient(entry))
 
       return c.json({ events: entries })
     })
