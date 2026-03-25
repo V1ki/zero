@@ -5,6 +5,7 @@ import {
   buildDynamicContext,
   buildExecutionModeBlock,
   buildIdentityBlock,
+  buildMemoryPolicyBlock,
   buildOutputStyleBlock,
   buildRetrievedMemoriesBlock,
   buildRoleBlock,
@@ -111,6 +112,20 @@ describe('buildExecutionModeBlock', () => {
     expect(result).toContain('只有在以下情况才暂停并请求用户介入')
     expect(result).toContain('低成本后续验证')
     expect(result).toContain('用户明确要求你列出后续选项')
+  })
+})
+
+describe('buildMemoryPolicyBlock', () => {
+  test('wraps memory policy guidance in <memory_policy> tags', () => {
+    const result = buildMemoryPolicyBlock()
+
+    expect(result).toContain('<memory_policy>')
+    expect(result).toContain('</memory_policy>')
+    expect(result).toContain('只有当信息在未来跨会话仍可能有用时')
+    expect(result).toContain('优先 memory.update')
+    expect(result).toContain('一次性 smoke test')
+    expect(result).toContain('incident：值得复盘和复用的故障案例')
+    expect(result).toContain('默认少写')
   })
 })
 
@@ -475,7 +490,7 @@ describe('buildSystemPrompt', () => {
   const baseComponents = {
     agentName: 'Coder',
     agentDescription: '负责编写代码',
-    tools: [makeTool('Read'), makeTool('Write')],
+    tools: [makeTool('Read'), makeTool('Write'), makeTool('memory')],
     globalIdentity: '全局身份',
     agentIdentity: '代理身份',
   }
@@ -487,6 +502,7 @@ describe('buildSystemPrompt', () => {
     expect(result).toContain('<rules>')
     expect(result).toContain('<execution_mode>')
     expect(result).toContain('<tool_rules>')
+    expect(result).toContain('<memory_policy>')
     expect(result).toContain('<constraints>')
     expect(result).toContain('<safety>')
     expect(result).toContain('<tool_call_style>')
@@ -512,6 +528,15 @@ describe('buildSystemPrompt', () => {
     const result = buildSystemPrompt(baseComponents)
 
     expect(result).not.toContain('<skill_catalog>')
+  })
+
+  test('omits memory_policy when memory tools are unavailable', () => {
+    const result = buildSystemPrompt({
+      ...baseComponents,
+      tools: [makeTool('Read'), makeTool('Write')],
+    })
+
+    expect(result).not.toContain('<memory_policy>')
   })
 
   test('includes runtime info when provided', () => {
@@ -561,11 +586,13 @@ describe('buildSystemPrompt', () => {
     test('includes only core sections', () => {
       const result = buildSystemPrompt({
         ...baseComponents,
+        tools: [makeTool('Read'), makeTool('memory')],
         promptMode: 'minimal',
       })
 
       expect(result).toContain('<role>')
       expect(result).toContain('<tool_rules>')
+      expect(result).toContain('<memory_policy>')
       expect(result).toContain('<constraints>')
       // Full-only sections should be absent
       expect(result).not.toContain('<rules>')

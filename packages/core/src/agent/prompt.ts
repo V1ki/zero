@@ -39,6 +39,9 @@ export function buildSystemPrompt(components: PromptComponents): string {
     ),
   )
   sections.push(buildToolRulesBlock(components.tools))
+  if (hasMemoryTools(components.tools)) {
+    sections.push(buildMemoryPolicyBlock())
+  }
   sections.push(buildConstraintsBlock())
 
   // Full-only sections
@@ -176,6 +179,24 @@ export function buildExecutionModeBlock(): string {
     CONTEXT_PARAMS.budget.executionMode,
     'Execution Mode',
   )
+}
+
+export function buildMemoryPolicyBlock(): string {
+  const policy = `只有当信息在未来跨会话仍可能有用时，才写入 memory。
+一次性测试结果、临时排查过程、低价值进度汇报、短期观察、纯当前会话内有效的信息，不要写入长期记忆。
+写入前先判断：这条信息未来是否可能帮助回答问题、避免重复错误、指导操作或解释决策；如果不能，别写 memory。
+如果值得写入，先用 memory_search 搜索同主题记忆；已有同主题条目时，优先 memory.update，而不是重复 create。
+preference：用户稳定偏好、长期约束、沟通习惯、工具使用偏好。
+decision：明确做出的方案或架构选择，以及为什么这么选；必须包含决策本身和理由。
+runbook：未来可重复执行的操作流程；只有下次照着做会有价值时才记录，内容应偏步骤化。
+incident：值得复盘和复用的故障案例；记录现象、影响、根因、修复或规避方式。不是每个报错都记 incident，只有显著、可复发、后续有参考价值的问题才记录。
+note：不属于上述类型、但值得长期保留的事实、研究结论、环境知识、外部系统经验；一次性 smoke test、低价值验证结果，不要记为 note。
+session：仅用于整场会话总结，不用于记录单个发现。
+inbox：仅用于有保留价值但暂时无法准确分类的内容；如果只是低价值噪音，也不要写 inbox。
+同一主题的后续补充，优先更新已有 memory。
+如果内容只对当前 session 有用，就留在 session 或 trace，不要写长期 memory。
+默认少写，只有长期有用时才写。`
+  return enforceFixedBudget(`<memory_policy>\n${policy}\n</memory_policy>`, 900, 'Memory Policy')
 }
 
 export function buildToolRulesBlock(tools: ToolDefinition[]): string {
@@ -352,6 +373,11 @@ export function buildRuntimeBlock(info: RuntimeInfo): string {
     CONTEXT_PARAMS.budget.runtime,
     'Runtime',
   )
+}
+
+function hasMemoryTools(tools: ToolDefinition[]): boolean {
+  const memoryToolNames = new Set(['memory', 'memory_search', 'memory_get'])
+  return tools.some((tool) => memoryToolNames.has(tool.name.toLowerCase()))
 }
 
 /**
