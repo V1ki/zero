@@ -1,4 +1,8 @@
-import type { MemoryRepository } from '@zero-os/memory'
+import {
+  type MemoryRepository,
+  SESSION_MEMORY_PROMPT,
+  shouldEvaluateSessionMemory,
+} from '@zero-os/memory'
 import type { ModelRouter } from '@zero-os/model'
 import type { MetricsDB, SessionDB, SessionRow } from '@zero-os/observe'
 import { generateSessionId } from '@zero-os/shared'
@@ -264,7 +268,7 @@ export class SessionManager {
       const previous = this.sessions.get(previousSessionId)
       const status = previous?.getStatus()
       if (previous && (status === 'active' || status === 'idle')) {
-        previous.setStatus(previousStatus)
+        this.finalizeSession(previous, previousStatus)
       }
     }
 
@@ -275,6 +279,44 @@ export class SessionManager {
     })
     this.channelSessions.set(key, session.data.id)
     return { session, previousSessionId }
+  }
+
+  finalizeSession(session: Session, finalStatus: 'completed' | 'archived'): void {
+    const status = session.getStatus()
+    if (status === finalStatus) return
+    if ((status === 'completed' || status === 'archived') && finalStatus !== 'archived') return
+
+    const shouldEvaluate =
+      session.isAgentInitialized() &&
+      shouldEvaluateSessionMemory(session.getMessages(), Session.isTopLevelUserTurn)
+
+    if (!shouldEvaluate) {
+      session.setStatus(finalStatus)
+      return
+    }
+
+    const runEvaluation = async () => {
+      try {
+        await session.evaluateSessionMemory(SESSION_MEMORY_PROMPT)
+      } catch (error) {
+        console.warn('[SessionMemory] evaluation failed:', error)
+      } finally {
+        session.setStatus(finalStatus)
+      }
+    }
+
+    if (session.isTurnInProgress()) {
+      void session
+        .waitForTurnComplete()
+        .then(runEvaluation)
+        .catch((error) => {
+          console.warn('[SessionMemory] wait for turn completion failed:', error)
+          session.setStatus(finalStatus)
+        })
+      return
+    }
+
+    void runEvaluation()
   }
 
   /**

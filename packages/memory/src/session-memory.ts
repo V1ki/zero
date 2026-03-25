@@ -1,0 +1,44 @@
+import type { Message } from '@zero-os/shared'
+
+export const SESSION_MEMORY_PROMPT = `<system_notice>
+当前会话即将结束。请回顾整场对话，判断是否需要创建 session 类型的记忆。
+
+判断标准：
+- 如果这场对话只是简单问候、闲聊、或单次简单问答，不需要记忆，直接回复"无需记忆"。
+- 如果对话有实质性内容（解决了问题、完成了任务、进行了有意义的讨论），使用 memory 工具创建一条 session 类型的记忆。
+
+创建 session 记忆时：
+- title：简洁描述这场对话的主题（不要用 sessionId）
+- content：2-5 句话总结对话的目标、关键活动和结果
+- tags：2-4 个语义标签（如 deploy、bug-fix、refactor、research）
+
+注意：
+- 只创建 session 类型的记忆，其他类型（decision、incident、note 等）不在此处处理
+- 保持总结简洁，只保留跨会话有参考价值的信息
+</system_notice>`
+
+export function shouldEvaluateSessionMemory(
+  messages: Message[],
+  isTopLevelUserTurn: (message: Message) => boolean,
+): boolean {
+  const userTurns = messages.filter(isTopLevelUserTurn)
+  if (userTurns.length <= 1) return false
+
+  const toolCallCount = messages.reduce((count, message) => {
+    return count + message.content.filter((block) => block.type === 'tool_use').length
+  }, 0)
+  if (toolCallCount === 0 && userTurns.length <= 2) return false
+
+  const totalTextLength = messages
+    .filter((message) => message.messageType === 'message')
+    .reduce((count, message) => {
+      return (
+        count +
+        message.content.reduce((messageCount, block) => {
+          return messageCount + (block.type === 'text' ? block.text.trim().length : 0)
+        }, 0)
+      )
+    }, 0)
+
+  return totalTextLength >= 200
+}

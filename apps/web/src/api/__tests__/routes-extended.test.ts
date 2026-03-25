@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { Message } from '@zero-os/shared'
 import { getSessionLogRelativeDir } from '@zero-os/shared'
 import { startZeroOS } from '../../../../server/src/main'
 import type { ZeroOS } from '../../../../server/src/main'
@@ -93,6 +94,85 @@ describe('API Routes Extended', () => {
     const getRes = await app.request(`/api/sessions/${session.data.id}`)
     const sessionData = await getRes.json()
     expect(sessionData.status).toBe('archived')
+  })
+
+  test('POST /api/sessions/:id/archive reuses session finalization flow for meaningful sessions', async () => {
+    const session = zero.sessionManager.create('web')
+    session.initAgent({
+      name: 'archive-eval-test',
+      agentInstruction: 'Test archive session evaluation.',
+    })
+    ;(session as unknown as { messages: Message[] }).messages.push(
+      {
+        id: 'archive_user_1',
+        sessionId: session.data.id,
+        role: 'user',
+        messageType: 'message',
+        content: [
+          {
+            type: 'text',
+            text: '请把这次部署排障过程整理清楚，我后面还要回看根因、修复步骤、验证方式和这次处理里做过的关键判断。',
+          },
+        ],
+        createdAt: new Date().toISOString(),
+      },
+      {
+        id: 'archive_tool_1',
+        sessionId: session.data.id,
+        role: 'assistant',
+        messageType: 'message',
+        content: [
+          { type: 'tool_use', id: 'tool_1', name: 'bash', input: { cmd: 'bun run check' } },
+        ],
+        createdAt: new Date().toISOString(),
+      },
+      {
+        id: 'archive_assistant_1',
+        sessionId: session.data.id,
+        role: 'assistant',
+        messageType: 'message',
+        content: [
+          {
+            type: 'text',
+            text: '我已经检查了迁移脚本、环境变量、部署日志和最近的变更，确认问题来自旧 schema 没有升级完整，同时把修复步骤、验证路径、回滚注意事项和后续部署时的检查清单都整理好了。',
+          },
+        ],
+        createdAt: new Date().toISOString(),
+      },
+      {
+        id: 'archive_user_2',
+        sessionId: session.data.id,
+        role: 'user',
+        messageType: 'message',
+        content: [
+          {
+            type: 'text',
+            text: '这次会话已经不只是一个短问题了，我希望 archive 时也能触发总结，让后续接手的人快速知道这次排障做了什么以及最后结论是什么，尤其是根因、修复步骤和验证结果。',
+          },
+        ],
+        createdAt: new Date().toISOString(),
+      },
+    )
+
+    let evaluationCalled = false
+    ;(
+      session as unknown as {
+        evaluateSessionMemory: (prompt: string) => Promise<void>
+      }
+    ).evaluateSessionMemory = async (prompt) => {
+      evaluationCalled = prompt.includes('session 类型的记忆')
+    }
+
+    const res = await app.request(`/api/sessions/${session.data.id}/archive`, {
+      method: 'POST',
+    })
+    expect(res.status).toBe(200)
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(evaluationCalled).toBe(true)
+    expect(session.getStatus()).toBe('archived')
   })
 
   test('POST /api/sessions/:id/archive returns 404 for missing', async () => {
@@ -616,7 +696,11 @@ describe('API Routes Extended', () => {
       expect(data.result.verdict).toBe('mixed')
       expect(data.result.signals.memorySearchCount).toBe(1)
       expect(data.result.signals.duplicateToolCallCount).toBe(1)
-      expect(data.result.dimensions.some((dimension: { key: string }) => dimension.key === 'human_intervention')).toBe(true)
+      expect(
+        data.result.dimensions.some(
+          (dimension: { key: string }) => dimension.key === 'human_intervention',
+        ),
+      ).toBe(true)
       expect(capturedPrompt).toContain('memory_search')
       expect(capturedPrompt).toContain('duplicateCalls')
       expect(capturedPrompt).toContain('totalCost')
@@ -634,7 +718,9 @@ describe('API Routes Extended', () => {
       expect(persisted).toContain('You are a strict evaluator for agent execution traces.')
       expect(persisted).toContain('Evaluate this ZeRo OS session package.')
       expect(persisted).toContain('judge_resp_001')
-      expect(persisted).toContain('Memory usage was appropriate, but duplicate bash checks added cost.')
+      expect(persisted).toContain(
+        'Memory usage was appropriate, but duplicate bash checks added cost.',
+      )
 
       const historyRes = await app.request(`/api/sessions/${session.data.id}/llm-judge`)
       expect(historyRes.status).toBe(200)
@@ -807,7 +893,11 @@ describe('API Routes Extended', () => {
       const data = await res.json()
       expect(data.result.overallScore).toBe(60)
       expect(data.result.dimensions[0].maxScore).toBe(5)
-      expect(data.result.dimensions.some((dimension: { key: string }) => dimension.key === 'human_intervention')).toBe(true)
+      expect(
+        data.result.dimensions.some(
+          (dimension: { key: string }) => dimension.key === 'human_intervention',
+        ),
+      ).toBe(true)
     } finally {
       ;(resolved.adapter as { complete: typeof resolved.adapter.complete }).complete =
         originalComplete

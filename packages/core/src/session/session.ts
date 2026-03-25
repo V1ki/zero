@@ -23,7 +23,7 @@ import type {
   ToolDefinition,
   ToolLogger,
 } from '@zero-os/shared'
-import { Mutex, generateId, generateSessionId, now } from '@zero-os/shared'
+import { Mutex, generateId, generateSessionId, now, toErrorMessage } from '@zero-os/shared'
 import { Agent, type AgentConfig, type AgentContext, type AgentObservability } from '../agent/agent'
 import { AgentControl, type AgentSnapshot } from '../agent/agent-control'
 import { allocateBudget } from '../agent/budget'
@@ -314,6 +314,34 @@ export class Session {
     } finally {
       this.mutex.release(lockId)
       this.persistState()
+    }
+  }
+
+  async evaluateSessionMemory(prompt: string): Promise<void> {
+    if (!this.agent) return
+
+    const traceSpan = this.deps.tracer?.startSpan(this.data.id, 'session_evaluate', undefined, {
+      kind: 'turn',
+      agentName: this.getAgentName(),
+      data: {
+        sessionEvaluate: {
+          prompt,
+        },
+      },
+    })
+
+    try {
+      await this.handleMessage(prompt)
+      if (traceSpan) {
+        this.deps.tracer?.endSpan(traceSpan.id, 'success')
+      }
+    } catch (error) {
+      if (traceSpan) {
+        this.deps.tracer?.endSpan(traceSpan.id, 'error', {
+          error: toErrorMessage(error),
+        })
+      }
+      throw error
     }
   }
 
@@ -976,7 +1004,7 @@ export class Session {
     return messages.filter((message) => Session.isTopLevelUserTurn(message)).length
   }
 
-  private static isTopLevelUserTurn(message: Message): boolean {
+  static isTopLevelUserTurn(message: Message): boolean {
     if (message.role !== 'user') return false
     if (message.messageType !== 'message') return false
     if (message.content.some((block) => block.type === 'tool_result')) return false

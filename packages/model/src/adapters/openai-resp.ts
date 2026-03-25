@@ -452,6 +452,7 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
       text: { verbosity: 'medium' },
       include: ['reasoning.encrypted_content'],
       prompt_cache_key: this.computePromptCacheKey(req),
+      service_tier: 'priority'
     }
   }
 

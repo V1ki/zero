@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { ModelRouter } from '@zero-os/model'
 import type { ProviderAdapter } from '@zero-os/model'
-import type { SystemConfig } from '@zero-os/shared'
+import type { Message, SystemConfig } from '@zero-os/shared'
 import { BashTool } from '../../tool/bash'
 import { ReadTool } from '../../tool/read'
 import { ToolRegistry } from '../../tool/registry'
@@ -56,6 +56,60 @@ function createToolRegistry() {
 
 function createManager() {
   return new SessionManager(createRouter(), createToolRegistry())
+}
+
+function createDeferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((res) => {
+    resolve = res
+  })
+  return { promise, resolve }
+}
+
+function makeMessage(
+  role: Message['role'],
+  text: string,
+  overrides: Partial<Message> = {},
+): Message {
+  return {
+    id: `msg_${role}_${Math.random().toString(36).slice(2)}`,
+    sessionId: 'sess_manager_test',
+    role,
+    messageType: 'message',
+    content: [{ type: 'text', text }],
+    createdAt: new Date().toISOString(),
+    ...overrides,
+  }
+}
+
+function seedMeaningfulSession(session: unknown): void {
+  const typedSession = session as { messages: Message[] }
+  typedSession.messages.push(
+    makeMessage(
+      'user',
+      '请帮我把这次部署失败的问题排查清楚，我需要知道根因、修复步骤和回归验证方式，还希望你把这次处理里用到的关键判断依据、检查命令和复盘结论都整理出来。',
+    ),
+    {
+      id: 'assistant_tool',
+      sessionId: 'sess_manager_test',
+      role: 'assistant',
+      messageType: 'message',
+      content: [{ type: 'tool_use', id: 'tool_1', name: 'bash', input: { cmd: 'bun run check' } }],
+      createdAt: new Date().toISOString(),
+    },
+    makeMessage(
+      'assistant',
+      '我已经检查了迁移脚本、环境变量和部署日志，问题来源于旧 schema 没有完成升级，同时整理了修复和验证步骤，并把失败链路、需要复核的配置、回滚风险和后续部署时的注意事项也梳理出来了。',
+    ),
+    makeMessage(
+      'user',
+      '那就把这次处理过程总结清楚，后面我还会回头看这次排障和修复是怎么做的。我希望这次会话本身就能留下足够多的信息，后续别人接手也能快速理解问题背景和处理结果。',
+    ),
+    makeMessage(
+      'assistant',
+      '已经完成修复并验证通过，也把关键原因、修改点和回归检查项总结出来，后续可以直接复用这次会话里的结论。这已经不只是一次短问答，而是一整次完整的排障、修复和验证过程。',
+    ),
+  )
 }
 
 describe('SessionManager', () => {
@@ -197,6 +251,144 @@ describe('SessionManager', () => {
     expect(rotated.previousSessionId).toBe(firstId)
     expect(manager.get(firstId)?.getStatus()).toBe('archived')
     expect(rotated.session.data.id).not.toBe(firstId)
+  })
+
+  test('startNewForChannel: skips session memory evaluation for short sessions', async () => {
+    const manager = createManager()
+    const first = manager.getOrCreateForChannel('web', 'short-session')
+    first.session.initAgent({
+      name: 'manager-short-session',
+      agentInstruction: 'Test session memory rotation.',
+    })
+
+    let evaluationCalled = false
+    ;(
+      first.session as unknown as {
+        evaluateSessionMemory: (prompt: string) => Promise<void>
+      }
+    ).evaluateSessionMemory = async () => {
+      evaluationCalled = true
+    }
+
+    manager.startNewForChannel('web', 'short-session')
+
+    await Promise.resolve()
+    expect(evaluationCalled).toBe(false)
+    expect(first.session.getStatus()).toBe('completed')
+  })
+
+  test('startNewForChannel: evaluates meaningful sessions before completing them', async () => {
+    const manager = createManager()
+    const first = manager.getOrCreateForChannel('web', 'meaningful-session')
+    first.session.initAgent({
+      name: 'manager-meaningful-session',
+      agentInstruction: 'Test session memory rotation.',
+    })
+    seedMeaningfulSession(first.session)
+
+    const gate = createDeferred<void>()
+    let receivedPrompt: string | undefined
+    ;(
+      first.session as unknown as {
+        evaluateSessionMemory: (prompt: string) => Promise<void>
+      }
+    ).evaluateSessionMemory = async (prompt) => {
+      receivedPrompt = prompt
+      await gate.promise
+    }
+
+    manager.startNewForChannel('web', 'meaningful-session')
+
+    expect(receivedPrompt).toContain('session 类型的记忆')
+    expect(first.session.getStatus()).toBe('active')
+
+    gate.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(first.session.getStatus()).toBe('completed')
+  })
+
+  test('startNewForChannel: still completes session when evaluation fails', async () => {
+    const manager = createManager()
+    const first = manager.getOrCreateForChannel('web', 'failed-eval-session')
+    first.session.initAgent({
+      name: 'manager-failed-eval-session',
+      agentInstruction: 'Test session memory rotation.',
+    })
+    seedMeaningfulSession(first.session)
+
+    ;(
+      first.session as unknown as {
+        evaluateSessionMemory: () => Promise<void>
+      }
+    ).evaluateSessionMemory = async () => {
+      throw new Error('boom')
+    }
+
+    const originalWarn = console.warn
+    console.warn = () => {}
+
+    try {
+      manager.startNewForChannel('web', 'failed-eval-session')
+
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(first.session.getStatus()).toBe('completed')
+    } finally {
+      console.warn = originalWarn
+    }
+  })
+
+  test('startNewForChannel: waits for in-flight turn before running session memory evaluation', async () => {
+    const manager = createManager()
+    const first = manager.getOrCreateForChannel('web', 'busy-session')
+    first.session.initAgent({
+      name: 'manager-busy-session',
+      agentInstruction: 'Test session memory rotation.',
+    })
+    seedMeaningfulSession(first.session)
+
+    const waitGate = createDeferred<void>()
+    let waited = false
+    let evaluationCalled = false
+
+    ;(
+      first.session as unknown as {
+        isTurnInProgress: () => boolean
+        waitForTurnComplete: () => Promise<void>
+        evaluateSessionMemory: () => Promise<void>
+      }
+    ).isTurnInProgress = () => true
+    ;(
+      first.session as unknown as {
+        waitForTurnComplete: () => Promise<void>
+      }
+    ).waitForTurnComplete = async () => {
+      waited = true
+      await waitGate.promise
+    }
+    ;(
+      first.session as unknown as {
+        evaluateSessionMemory: () => Promise<void>
+      }
+    ).evaluateSessionMemory = async () => {
+      evaluationCalled = true
+    }
+
+    manager.startNewForChannel('web', 'busy-session')
+
+    await Promise.resolve()
+    expect(waited).toBe(true)
+    expect(evaluationCalled).toBe(false)
+    expect(first.session.getStatus()).toBe('active')
+
+    waitGate.resolve()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(evaluationCalled).toBe(true)
+    expect(first.session.getStatus()).toBe('completed')
   })
 
   test('remove cleans up channel mapping', () => {

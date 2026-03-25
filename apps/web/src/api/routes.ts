@@ -1,11 +1,11 @@
 import { loadConfig } from '@zero-os/core'
 import {
   ALL_MEMORY_TYPES,
-  toErrorMessage,
   type MemoryStatus,
   type MemoryType,
   type ModelPricing,
   type SessionStatus,
+  toErrorMessage,
 } from '@zero-os/shared'
 import { readYaml, writeYaml } from '@zero-os/shared/utils'
 import { GitOps } from '@zero-os/supervisor'
@@ -578,7 +578,7 @@ export function createRoutes(zero: ZeroOS) {
       if (!session) {
         return c.json({ error: 'Session not found' }, 404)
       }
-      session.setStatus('archived')
+      zero.sessionManager.finalizeSession(session, 'archived')
       return c.json({ ok: true })
     })
 
