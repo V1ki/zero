@@ -17,6 +17,7 @@ export class AnthropicAdapter implements ProviderAdapter {
   private static readonly DEFAULT_THINKING_TOKENS = 512
   private static readonly MIN_THINKING_TOKENS = 1024
   private static readonly REQUEST_CACHE_CONTROL = { type: 'ephemeral' } as const
+  private static readonly TOOL_ID_RE = /^[a-zA-Z0-9_-]+$/
   private static readonly CLAUDE_CODE_SYSTEM_PROMPT =
     "You are Claude Code, Anthropic's official CLI for Claude."
   private client: Anthropic
@@ -180,6 +181,11 @@ export class AnthropicAdapter implements ProviderAdapter {
     return blocks.length > 0 ? blocks : undefined
   }
 
+  private sanitizeToolId(id: string): string {
+    if (AnthropicAdapter.TOOL_ID_RE.test(id)) return id
+    return id.replace(/[^a-zA-Z0-9_-]/g, '-')
+  }
+
   private convertMessages(req: CompletionRequest): Anthropic.MessageParam[] {
     const messages: Anthropic.MessageParam[] = []
 
@@ -201,7 +207,7 @@ export class AnthropicAdapter implements ProviderAdapter {
           } else if (block.type === 'tool_result') {
             parts.push({
               type: 'tool_result',
-              tool_use_id: block.toolUseId,
+              tool_use_id: this.sanitizeToolId(block.toolUseId),
               content: block.content,
               is_error: block.isError,
             })
@@ -216,7 +222,7 @@ export class AnthropicAdapter implements ProviderAdapter {
           } else if (block.type === 'tool_use') {
             parts.push({
               type: 'tool_use',
-              id: block.id,
+              id: this.sanitizeToolId(block.id),
               name: block.name,
               input: block.input,
             })

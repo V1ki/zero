@@ -267,6 +267,8 @@ function createSecrets(): Map<string, string> {
   ])
 }
 
+const ANTHROPIC_TOOL_ID_RE = /^[a-zA-Z0-9_-]+$/
+
 describe('Cross-provider tool ID compatibility', () => {
   test('Anthropic toolu_* IDs convert through OpenAI Chat without crashing', () => {
     const adapter = createOpenAIChatAdapter()
@@ -324,20 +326,61 @@ describe('Cross-provider tool ID compatibility', () => {
     })
   })
 
-  test('Composite call_*|fc_* IDs convert through Anthropic without crashing', () => {
+  test('Composite call_*|fc_* IDs are sanitized for Anthropic compatibility', () => {
     const adapter = createAnthropicAdapter()
     const toolId = `call_${generateId()}|fc_${generateId()}`
+    const sanitizedToolId = toolId.replace(/[^a-zA-Z0-9_-]/g, '-')
 
     const converted = getAnthropicHarness(adapter).convertMessages(makeRequest(makeToolConversation(toolId)))
 
     expect(converted[1].content[1]).toMatchObject({
       type: 'tool_use',
-      id: toolId,
+      id: sanitizedToolId,
     })
     expect(converted[2].content[0]).toMatchObject({
       type: 'tool_result',
-      tool_use_id: toolId,
+      tool_use_id: sanitizedToolId,
     })
+    expect(ANTHROPIC_TOOL_ID_RE.test(String(converted[1].content[1].id))).toBe(true)
+    expect(ANTHROPIC_TOOL_ID_RE.test(String(converted[2].content[0].tool_use_id))).toBe(true)
+  })
+
+  test('Anthropic preserves already valid tool IDs', () => {
+    const adapter = createAnthropicAdapter()
+    const toolIds = [`toolu_${generateId()}`, `call_${generateId()}`]
+
+    for (const toolId of toolIds) {
+      const converted = getAnthropicHarness(adapter).convertMessages(
+        makeRequest(makeToolConversation(toolId)),
+      )
+
+      expect(converted[1].content[1]).toMatchObject({
+        type: 'tool_use',
+        id: toolId,
+      })
+      expect(converted[2].content[0]).toMatchObject({
+        type: 'tool_result',
+        tool_use_id: toolId,
+      })
+    }
+  })
+
+  test('Anthropic sanitizes every unsupported character in tool IDs', () => {
+    const adapter = createAnthropicAdapter()
+    const toolId = `call:${generateId()}/fc.${generateId()}#result`
+    const sanitizedToolId = toolId.replace(/[^a-zA-Z0-9_-]/g, '-')
+
+    const converted = getAnthropicHarness(adapter).convertMessages(makeRequest(makeToolConversation(toolId)))
+
+    expect(converted[1].content[1]).toMatchObject({
+      type: 'tool_use',
+      id: sanitizedToolId,
+    })
+    expect(converted[2].content[0]).toMatchObject({
+      type: 'tool_result',
+      tool_use_id: sanitizedToolId,
+    })
+    expect(ANTHROPIC_TOOL_ID_RE.test(sanitizedToolId)).toBe(true)
   })
 
   test('Composite call_*|fc_* IDs convert through OpenAI Chat without crashing', () => {
