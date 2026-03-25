@@ -46,7 +46,6 @@ import {
   extractAssistantText,
   hasAssistantText,
   parseTaskClosureDecision,
-  stripAssistantTrimFrom,
 } from './task-closure'
 import { artifactizeToolOutput } from './truncate'
 
@@ -135,7 +134,6 @@ interface TaskClosureEvaluation {
   eventPayload: SessionTaskClosureEvent | null
   traceSpanId?: string
   traceSpanStatus?: 'success' | 'error'
-  trimmedContent?: ContentBlock[]
 }
 
 type SessionTaskClosureEvent =
@@ -147,7 +145,6 @@ type SessionTaskClosureEvent =
       reason: string
       classifierRequest: TaskClosureClassifierRequest
       classifierResponse?: TaskClosureClassifierResponse
-      trimFrom?: string
     }
   | {
       sessionId: string
@@ -369,10 +366,8 @@ export class Agent {
           )
         }
         const taskClosureDecision = taskClosureEvaluation.decision
-        const displayContent = taskClosureEvaluation.trimmedContent ?? response.content
-        const shouldAutoContinueTaskClosure =
-          taskClosureDecision?.action === 'continue' &&
-          taskClosureEvaluation.trimmedContent !== undefined
+        const displayContent = response.content
+        const shouldAutoContinueTaskClosure = taskClosureDecision?.action === 'continue'
 
         // Create assistant message — filter secrets from text blocks
         const filteredContent = this.filterContent(displayContent)
@@ -1078,14 +1073,7 @@ export class Agent {
 
       const text = extractAssistantText(result.content)
       const parsedDecision = parseTaskClosureDecision(text)
-      const trimmedContent =
-        parsedDecision?.action === 'continue'
-          ? (stripAssistantTrimFrom(response.content, parsedDecision.trimFrom) ?? undefined)
-          : undefined
-      const validDecision =
-        parsedDecision && (parsedDecision.action !== 'continue' || trimmedContent)
-          ? parsedDecision
-          : null
+      const validDecision = parsedDecision
 
       if (validDecision) {
         if (taskClosureSpan) {
@@ -1097,9 +1085,6 @@ export class Agent {
                 reason: validDecision.reason,
                 classifierRequest,
                 classifierResponse: result,
-                ...(validDecision.action === 'continue'
-                  ? { trimFrom: validDecision.trimFrom }
-                  : {}),
               },
             },
             metadata: {
@@ -1108,7 +1093,6 @@ export class Agent {
               action: validDecision.action,
               reason: validDecision.reason,
               classifierRequest,
-              ...(validDecision.action === 'continue' ? { trimFrom: validDecision.trimFrom } : {}),
             },
           })
         }
@@ -1122,11 +1106,9 @@ export class Agent {
             reason: validDecision.reason,
             classifierRequest,
             classifierResponse: result,
-            ...(validDecision.action === 'continue' ? { trimFrom: validDecision.trimFrom } : {}),
           },
           traceSpanId: taskClosureSpan?.id,
           traceSpanStatus: 'success',
-          trimmedContent,
         }
       }
 

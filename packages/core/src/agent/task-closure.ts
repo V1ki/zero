@@ -6,7 +6,6 @@ export type TaskClosureAction = 'finish' | 'continue' | 'block'
 export interface TaskClosureDecision {
   action: TaskClosureAction
   reason: string
-  trimFrom: string
 }
 
 export interface TaskClosurePromptContext {
@@ -50,11 +49,9 @@ export function buildTaskClosureDecisionPrompt(
 - 用户让你“看看某个帖子/链接，并把可能相关的信息也分析下”，而 assistant 只总结了当前内容或一两个来源，然后说“如果你愿意我还可以继续查更多相关信息/来源”，这通常应判为 continue，不是 finish。
 
 返回 JSON，不要其他内容：
-{"action":"finish|continue|block","reason":"简短原因","trimFrom":"当 action=continue 时，需要从 assistant 最后一个 text block 中裁掉的精确原文起始片段；否则返回空字符串"}
+{"action":"finish|continue|block","reason":"简短原因"}
 
 要求：
-- trimFrom 必须是 assistant 原文中实际存在的精确子串。
-- 如果 action 不是 continue，trimFrom 必须为空字符串。
 - 不要重写 assistant 内容，只做判定。
 </instruction>
 
@@ -179,18 +176,13 @@ export function parseTaskClosureDecision(response: string): TaskClosureDecision 
     const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>
     const action = parsed.action
     const reason = parsed.reason
-    const trimFrom = parsed.trimFrom
 
     if (action !== 'finish' && action !== 'continue' && action !== 'block') return null
     if (typeof reason !== 'string') return null
-    if (typeof trimFrom !== 'string') return null
-    if (action === 'continue' && trimFrom.length === 0) return null
-    if (action !== 'continue' && trimFrom !== '') return null
 
     return {
       action,
       reason,
-      trimFrom,
     }
   } catch {
     return null
@@ -203,32 +195,6 @@ export function extractAssistantTail(content: ContentBlock[], maxChars = 1200): 
   const lastText = getLastTextBlockText(content)
   if (!lastText) return ''
   return lastText.length <= maxChars ? lastText : lastText.slice(-maxChars)
-}
-
-export function stripAssistantTrimFrom(
-  content: ContentBlock[],
-  trimFrom: string,
-): ContentBlock[] | null {
-  if (!trimFrom) return null
-
-  for (let index = content.length - 1; index >= 0; index--) {
-    const block = content[index]
-    if (!block || block.type !== 'text') continue
-
-    const cutIndex = block.text.lastIndexOf(trimFrom)
-    if (cutIndex < 0) continue
-
-    const stripped = block.text.slice(0, cutIndex).trimEnd()
-    const next = [...content]
-    if (stripped.length === 0) {
-      next.splice(index, 1)
-    } else {
-      next[index] = { ...block, text: stripped }
-    }
-    return next
-  }
-
-  return null
 }
 
 export function hasAssistantText(content: ContentBlock[]): boolean {

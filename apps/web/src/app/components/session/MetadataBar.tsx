@@ -71,8 +71,8 @@ export function MetadataBar({
   return (
     <div className="card p-4 animate-fade-up">
       {/* Title row */}
-      <div className="flex items-start justify-between gap-4 mb-2">
-        <div>
+      <div className="mb-2 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
           <h2 className="text-[16px] font-semibold text-[var(--color-text-primary)]">
             {summary || sessionId}
           </h2>
@@ -82,7 +82,7 @@ export function MetadataBar({
             <Clock size={12} className="inline -mt-0.5" /> {formatTimeRange(createdAt, updatedAt)}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
           <button
             type="button"
             onClick={() => setShowDeleteConfirm(true)}

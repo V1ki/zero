@@ -13,7 +13,7 @@ import {
 import { dirname, join, relative } from 'node:path'
 import { type SessionStatus, getSessionLogRelativeDir, now } from '@zero-os/shared'
 import type { CompletionResponse, StopReason, ToolResultBlock } from '@zero-os/shared'
-import { collapseTraceEntries, type TraceEntry } from './trace'
+import { type TraceEntry, collapseTraceEntries } from './trace'
 import {
   projectSessionClosuresFromTraceEntries,
   projectSessionRequestsFromTraceEntries,
@@ -135,7 +135,6 @@ export interface TaskClosureDecisionLogEntry {
   assistantMessageCreatedAt?: string
   classifierRequest: TaskClosureClassifierRequest
   classifierResponse?: TaskClosureClassifierResponse
-  trimFrom?: string
 }
 
 export interface TaskClosureFailedLogEntry {
@@ -448,7 +447,9 @@ export class ObservabilityStore {
     )
   }
 
-  private normalizeQueuedInjection(queuedInjection: unknown): RequestQueuedInjectionEntry | undefined {
+  private normalizeQueuedInjection(
+    queuedInjection: unknown,
+  ): RequestQueuedInjectionEntry | undefined {
     if (!queuedInjection || typeof queuedInjection !== 'object' || Array.isArray(queuedInjection)) {
       return undefined
     }
@@ -469,20 +470,19 @@ export class ObservabilityStore {
     return {
       count,
       formattedText,
-      messages: messages.filter(
-        (message): message is RequestQueuedInjectionMessageEntry =>
-          Boolean(
-            message &&
-              typeof message === 'object' &&
-              typeof (message as RequestQueuedInjectionMessageEntry).timestamp === 'string' &&
-              typeof (message as RequestQueuedInjectionMessageEntry).content === 'string' &&
-              typeof (message as RequestQueuedInjectionMessageEntry).imageCount === 'number' &&
-              Number.isFinite((message as RequestQueuedInjectionMessageEntry).imageCount) &&
-              Array.isArray((message as RequestQueuedInjectionMessageEntry).mediaTypes) &&
-              (message as RequestQueuedInjectionMessageEntry).mediaTypes.every(
-                (mediaType) => typeof mediaType === 'string',
-              ),
-          ),
+      messages: messages.filter((message): message is RequestQueuedInjectionMessageEntry =>
+        Boolean(
+          message &&
+            typeof message === 'object' &&
+            typeof (message as RequestQueuedInjectionMessageEntry).timestamp === 'string' &&
+            typeof (message as RequestQueuedInjectionMessageEntry).content === 'string' &&
+            typeof (message as RequestQueuedInjectionMessageEntry).imageCount === 'number' &&
+            Number.isFinite((message as RequestQueuedInjectionMessageEntry).imageCount) &&
+            Array.isArray((message as RequestQueuedInjectionMessageEntry).mediaTypes) &&
+            (message as RequestQueuedInjectionMessageEntry).mediaTypes.every(
+              (mediaType) => typeof mediaType === 'string',
+            ),
+        ),
       ),
     }
   }

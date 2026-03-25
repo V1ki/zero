@@ -697,14 +697,6 @@ function TaskClosureDetailPanel({
           </DetailField>
         )}
 
-        {taskClosure.trimFrom && (
-          <DetailField label="TRIM FROM">
-            <pre className="text-[11px] font-mono text-[var(--color-text-secondary)] whitespace-pre-wrap break-all bg-black/20 rounded p-2 max-h-[220px] overflow-y-auto">
-              {taskClosure.trimFrom}
-            </pre>
-          </DetailField>
-        )}
-
         {taskClosure.assistantMessageId && (
           <DetailField label="ASSISTANT MESSAGE">
             <div className="flex items-center gap-2 flex-wrap">
@@ -769,7 +761,6 @@ function mapSessionTaskClosureEventToCard(event: SessionTaskClosureEvent) {
     action: event.event === 'task_closure_decision' ? event.action : undefined,
     reason: event.reason,
     failureStage: event.event === 'task_closure_failed' ? event.failureStage : undefined,
-    trimFrom: event.event === 'task_closure_decision' ? event.trimFrom : undefined,
     classifierRequest: event.classifierRequest,
     classifierResponseRaw:
       event.event === 'task_closure_failed' ? event.classifierResponseRaw : undefined,
@@ -840,7 +831,7 @@ function PersistedTaskClosureCard({
           </p>
         )}
       </div>
-      {(card.classifierRequest || card.trimFrom || card.classifierResponseRaw || card.error) && (
+      {(card.classifierRequest || card.classifierResponseRaw || card.error) && (
         <details className="mt-2 rounded bg-black/15 p-2">
           <summary className="cursor-pointer text-[10px] text-[var(--color-accent)] select-none">
             Task Closure Details
@@ -852,7 +843,6 @@ function PersistedTaskClosureCard({
                 value={JSON.stringify(card.classifierRequest, null, 2)}
               />
             )}
-            {card.trimFrom && <TracePreview label="trim_from" value={card.trimFrom} />}
             {card.classifierResponseRaw && (
               <TracePreview label="classifier_response_raw" value={card.classifierResponseRaw} />
             )}
@@ -1244,7 +1234,6 @@ export function TraceSummaryCard({ span }: { span: TraceSpan }) {
     action,
     reason,
     failureStage,
-    trimFrom,
     classifierResponseRaw,
     assistantMessageId,
     classifierRequest,
@@ -1290,7 +1279,7 @@ export function TraceSummaryCard({ span }: { span: TraceSpan }) {
           </p>
         )}
       </div>
-      {(classifierRequest || trimFrom || classifierResponseRaw || error) && (
+      {(classifierRequest || classifierResponseRaw || error) && (
         <details className="mt-2 rounded bg-black/15 p-2">
           <summary className="cursor-pointer text-[10px] text-[var(--color-accent)] select-none">
             Task Closure Details
@@ -1302,7 +1291,6 @@ export function TraceSummaryCard({ span }: { span: TraceSpan }) {
                 value={JSON.stringify(classifierRequest, null, 2)}
               />
             )}
-            {trimFrom && <TracePreview label="trim_from" value={trimFrom} />}
             {classifierResponseRaw && (
               <TracePreview label="classifier_response_raw" value={classifierResponseRaw} />
             )}

@@ -101,7 +101,6 @@ describe('TraceSummaryCard', () => {
           event: 'task_closure_decision',
           action: 'continue',
           reason: 'still working through remaining checks',
-          trimFrom: 'Last complete milestone',
           classifierRequest: {
             system: 'strict classifier',
             prompt: '<instruction>decide if the task is done</instruction>',

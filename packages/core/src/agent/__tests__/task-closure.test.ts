@@ -10,26 +10,20 @@ import {
   formatToolGroup,
   hasAssistantText,
   parseTaskClosureDecision,
-  stripAssistantTrimFrom,
 } from '../task-closure'
 
 describe('parseTaskClosureDecision', () => {
   test('parses valid JSON surrounded by extra text', () => {
-    expect(
-      parseTaskClosureDecision(
-        'result: {"action":"continue","reason":"后续仍必要","trimFrom":"如果你愿意"}',
-      ),
-    ).toEqual({
-      action: 'continue',
-      reason: '后续仍必要',
-      trimFrom: '如果你愿意',
-    })
+    expect(parseTaskClosureDecision('result: {"action":"continue","reason":"后续仍必要"}')).toEqual(
+      {
+        action: 'continue',
+        reason: '后续仍必要',
+      },
+    )
   })
 
-  test('rejects continue decisions without trimFrom', () => {
-    expect(
-      parseTaskClosureDecision('{"action":"continue","reason":"后续仍必要","trimFrom":""}'),
-    ).toBeNull()
+  test('rejects decisions without a reason', () => {
+    expect(parseTaskClosureDecision('{"action":"continue"}')).toBeNull()
   })
 })
 
@@ -51,18 +45,6 @@ describe('assistant text helpers', () => {
     ]
 
     expect(extractAssistantTail(content, 3)).toBe('def')
-  })
-
-  test('stripAssistantTrimFrom trims only the last matching text block', () => {
-    const content: ContentBlock[] = [
-      { type: 'text', text: '保留段落' },
-      { type: 'text', text: '结论。\n\n如果你愿意，我可以继续查证。' },
-    ]
-
-    expect(stripAssistantTrimFrom(content, '如果你愿意，我可以继续查证。')).toEqual([
-      { type: 'text', text: '保留段落' },
-      { type: 'text', text: '结论。' },
-    ])
   })
 
   test('hasAssistantText ignores whitespace-only text blocks', () => {

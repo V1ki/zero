@@ -26,7 +26,6 @@ export interface SessionTaskClosureEvent {
     maxTokens: number
   }
   failureStage?: 'parse_classifier_response' | 'request_classifier'
-  trimFrom?: string
   classifierResponseRaw?: string
   assistantMessageId?: string
   assistantMessageCreatedAt?: string
@@ -40,7 +39,6 @@ export interface TaskClosureTimelineItem {
   action?: SessionTaskClosureEvent['action']
   reason: string
   failureStage?: SessionTaskClosureEvent['failureStage']
-  trimFrom?: string
   classifierRequest?: SessionTaskClosureEvent['classifierRequest']
   classifierResponseRaw?: string
   assistantMessageId?: string
@@ -69,7 +67,6 @@ interface TaskClosureTraceDetails {
   action?: SessionTaskClosureEvent['action']
   reason?: string
   failureStage?: SessionTaskClosureEvent['failureStage']
-  trimFrom?: string
   classifierRequest?: SessionTaskClosureEvent['classifierRequest']
   classifierResponseRaw?: string
   assistantMessageId?: string
@@ -378,7 +375,6 @@ function mapSessionTaskClosureEvent(
     action: event.action,
     reason: event.reason,
     failureStage: event.failureStage,
-    trimFrom: event.trimFrom,
     classifierRequest: event.classifierRequest,
     classifierResponseRaw: event.classifierResponseRaw,
     assistantMessageId: event.assistantMessageId,
@@ -400,7 +396,6 @@ function mapTaskClosureDecision(span: TraceSpan): TaskClosureTimelineItem | null
     action: details.action,
     reason: details.reason ?? '',
     failureStage: details.failureStage,
-    trimFrom: details.trimFrom,
     classifierRequest: details.classifierRequest,
     classifierResponseRaw: details.classifierResponseRaw,
     assistantMessageId: details.assistantMessageId,
@@ -418,7 +413,6 @@ function mapTaskClosureFailed(span: TraceSpan): TaskClosureTimelineItem {
     action: details.action,
     reason: details.reason ?? 'task closure failed',
     failureStage: details.failureStage,
-    trimFrom: details.trimFrom,
     classifierRequest: details.classifierRequest,
     classifierResponseRaw: details.classifierResponseRaw,
     assistantMessageId: details.assistantMessageId,
@@ -522,7 +516,6 @@ export function getTaskClosureTraceDetails(span: TraceSpan): TaskClosureTraceDet
     failureStage:
       asFailureStage(asString(closure?.failureStage)) ??
       asFailureStage(asString(metadata.failureStage)),
-    trimFrom: asString(closure?.trimFrom) ?? asString(metadata.trimFrom),
     classifierRequest: resolveClassifierRequest(
       closure?.classifierRequest,
       metadata.classifierRequest,

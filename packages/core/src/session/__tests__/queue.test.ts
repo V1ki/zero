@@ -161,7 +161,7 @@ class QueueResumeAdapter implements ProviderAdapter {
     if (!hasTools && isTaskClosureClassifierRequest(request)) {
       return createTextResponse(
         'resp_classifier',
-        '{"action":"finish","reason":"task is complete","trimFrom":""}',
+        '{"action":"finish","reason":"task is complete"}',
       )
     }
 

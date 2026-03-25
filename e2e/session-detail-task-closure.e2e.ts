@@ -68,7 +68,6 @@ test.describe('Session Detail Task Closure', () => {
           event: 'task_closure_decision',
           action: 'continue',
           reason: 'Need to verify a remaining edge case before finishing',
-          trimFrom: 'Verified integration tests',
           classifierRequest: {
             system: 'strict classifier',
             prompt: '<instruction>decide if the task is complete</instruction>',
@@ -180,5 +179,40 @@ test.describe('Session Detail Task Closure', () => {
     await page.keyboard.press('Escape')
     await expect(page.locator('main')).not.toContainText('Tool Detail')
     await expect(page.locator('main')).toContainText('Summary')
+  })
+
+  test('stacks detail content on narrow viewports without horizontal overflow', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await mockTaskClosureSession(page)
+    await page.goto(`/sessions/${sessionId}`)
+
+    const deleteButton = page.getByRole('button', { name: 'Delete' })
+    const archiveButton = page.getByRole('button', { name: 'Archive' })
+    const taskClosureCard = page.locator('[data-task-closure-id="tc-sess-0"]')
+
+    await expect(deleteButton).toBeVisible()
+    await expect(archiveButton).toBeVisible()
+    await expect(taskClosureCard).toBeVisible()
+
+    await taskClosureCard.click()
+    await expect(page.locator('main')).toContainText('Task Closure Detail')
+    await expect(page.locator('main')).not.toContainText('TRIM FROM')
+    await expect(page.locator('main')).not.toContainText('trim_from')
+
+    const layout = await page.evaluate(() => ({
+      canScrollX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    }))
+    expect(layout.canScrollX).toBe(false)
+
+    const taskClosureBox = await taskClosureCard.boundingBox()
+    const detailHeaderBox = await page.getByText('Task Closure Detail').boundingBox()
+
+    expect(taskClosureBox).not.toBeNull()
+    expect(detailHeaderBox).not.toBeNull()
+    expect(detailHeaderBox?.y ?? 0).toBeGreaterThan(
+      (taskClosureBox?.y ?? 0) + (taskClosureBox?.height ?? 0),
+    )
   })
 })

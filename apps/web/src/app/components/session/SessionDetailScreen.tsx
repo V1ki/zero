@@ -120,8 +120,6 @@ interface SessionDetailScreenProps {
   emptyState?: ReactNode
 }
 
-const DETAIL_PANE_HEIGHT = 'calc(100vh - 280px)'
-
 export function SessionDetailScreen({
   sessionId,
   topContent,
@@ -479,7 +477,7 @@ export function SessionDetailScreen({
             ))}
           </div>
         </div>
-        <div className="grid grid-cols-[65fr_35fr] gap-4">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[65fr_35fr]">
           <div className="space-y-3">
             {Array.from({ length: 4 }, (_, index) => `session-message-${index}`).map((key) => (
               <div key={key} className="card p-4">
@@ -538,11 +536,11 @@ export function SessionDetailScreen({
         onDeleted={goBack}
       />
 
-      <div
-        className="grid grid-cols-[65fr_35fr] gap-4 mt-4 min-h-0 items-stretch"
-        style={{ height: DETAIL_PANE_HEIGHT }}
-      >
-        <div ref={timelineRef} className="min-h-0 overflow-y-auto pr-2">
+      <div className="mt-4 grid min-h-0 grid-cols-1 items-stretch gap-4 lg:grid-cols-[65fr_35fr] lg:h-[calc(100vh-280px)]">
+        <div
+          ref={timelineRef}
+          className="min-h-[320px] overflow-visible pr-0 lg:min-h-0 lg:overflow-y-auto lg:pr-2"
+        >
           {session.messages.length === 0 ? (
             <div className="card p-8 text-center text-[13px] text-[var(--color-text-muted)]">
               No messages in this session.

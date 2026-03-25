@@ -98,7 +98,7 @@ class TaskClosureAdapter implements ProviderAdapter {
 
       if (this.mode === 'block') {
         return createTextResponse(
-          '{"action":"block","reason":"缺少登录态","trimFrom":""}',
+          '{"action":"block","reason":"缺少登录态"}',
           'classifier reasoning for block',
         )
       }
@@ -111,14 +111,13 @@ class TaskClosureAdapter implements ProviderAdapter {
           JSON.stringify({
             action: 'continue',
             reason: '后续核验仍属于当前任务',
-            trimFrom: OPTIONAL_TAIL,
           }),
           'classifier reasoning for continue',
         )
       }
 
       return createTextResponse(
-        '{"action":"finish","reason":"当前回复应直接结束","trimFrom":""}',
+        '{"action":"finish","reason":"当前回复应直接结束"}',
         'classifier reasoning for finish',
       )
     }
@@ -205,9 +204,7 @@ describe('Agent task closure gate', () => {
     const assistantMessages = messages.filter((message) => message.role === 'assistant')
 
     expect(assistantMessages).toHaveLength(2)
-    expect(getTextFromMessage(assistantMessages[0])).toBe(
-      '我先给你一个初步判断：这帖更像高信息密度的传闻汇总，不能直接当事实依据。',
-    )
+    expect(getTextFromMessage(assistantMessages[0])).toBe(INITIAL_REPLY)
     expect(getTextFromMessage(assistantMessages[1])).toBe(CONTINUED_REPLY)
     expect(adapter.normalCalls).toBe(2)
     expect(adapter.classifierCalls).toBe(2)
@@ -297,7 +294,6 @@ describe('Agent task closure gate', () => {
       prompt: expect.stringContaining('帮我看看这帖值不值得信'),
       maxTokens: 200,
     })
-    expect(taskClosureSpan?.metadata?.trimFrom).toContain('如果你愿意')
   })
 
   test('emits task closure session events with the trace span id', async () => {
@@ -416,7 +412,6 @@ describe('Agent task closure gate', () => {
         event: 'task_closure_decision',
         action: 'continue',
         reason: '后续核验仍属于当前任务',
-        trimFrom: OPTIONAL_TAIL,
         assistantMessageId: expect.any(String),
         assistantMessageCreatedAt: expect.any(String),
         classifierResponse: {
@@ -431,7 +426,6 @@ describe('Agent task closure gate', () => {
               text: JSON.stringify({
                 action: 'continue',
                 reason: '后续核验仍属于当前任务',
-                trimFrom: OPTIONAL_TAIL,
               }),
             },
           ],

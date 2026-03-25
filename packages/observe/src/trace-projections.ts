@@ -260,7 +260,6 @@ export function projectSessionClosuresFromTraceEntries(entries: TraceEntry[]): C
         action: action as 'finish' | 'continue' | 'block',
         reason,
         classifierResponse: closure.classifierResponse as ClosureLogEntry['classifierResponse'],
-        trimFrom: asString(closure.trimFrom),
       })
       continue
     }
