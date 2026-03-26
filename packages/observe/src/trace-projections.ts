@@ -27,6 +27,71 @@ function asStringArray(value: unknown): string[] | undefined {
   return value.filter((item): item is string => typeof item === 'string')
 }
 
+function asTokens(value: unknown): { input: number; output: number } | undefined {
+  const record = asRecord(value)
+  if (!record) return undefined
+
+  const input = asNumber(record.input)
+  const output = asNumber(record.output)
+  if (input === undefined && output === undefined) return undefined
+
+  return {
+    input: input ?? 0,
+    output: output ?? 0,
+  }
+}
+
+function asSelectedMemories(
+  value: unknown,
+): Array<{ id: string; type: string; title: string; score?: number }> | undefined {
+  if (!Array.isArray(value)) return undefined
+
+  const selectedMemories = value.flatMap((item) => {
+    const record = asRecord(item)
+    const id = asString(record?.id)
+    const type = asString(record?.type)
+    const title = asString(record?.title)
+    if (!id || !type || !title) return []
+
+    return [
+      {
+        id,
+        type,
+        title,
+        score: asNumber(record?.score),
+      },
+    ]
+  })
+
+  return selectedMemories.length > 0 ? selectedMemories : undefined
+}
+
+function asSearchSummaries(
+  value: unknown,
+): Array<{ query: string; resultCount: number; topResultTitle?: string }> | undefined {
+  if (!Array.isArray(value)) return undefined
+
+  const searchSummaries = value.flatMap((item) => {
+    const record = asRecord(item)
+    const query = asString(record?.query)
+    const resultCount = asNumber(record?.resultCount)
+    if (!query || resultCount === undefined) return []
+
+    const results = Array.isArray(record?.results) ? record.results : []
+    const topResultTitle = asString(asRecord(results[0])?.title)
+
+    return [
+      {
+        query,
+        resultCount,
+        topResultTitle,
+      },
+    ]
+  })
+
+  return searchSummaries.length > 0 ? searchSummaries : undefined
+}
+
 function compactRecord(
   entries: Record<string, unknown | undefined>,
 ): Record<string, unknown> | undefined {
@@ -379,22 +444,32 @@ export function projectSessionDecisionsFromTraceEntries(entries: TraceEntry[]): 
         if (need === undefined) continue
 
         const queries = asStringArray(decision.queries) ?? []
+        const selectedMemoryIds = asStringArray(decision.selectedMemoryIds) ?? []
         const searches = Array.isArray(decision.searches) ? decision.searches : []
         const searchResultCount = searches.reduce((count, search) => {
           const resultCount = asNumber(asRecord(search)?.resultCount)
           return count + (resultCount ?? 0)
         }, 0)
+        const response = asString(decision.response)
+        const rationale = response ? truncateDecisionRationale(response).rationale : undefined
 
         results.push({
           ...base,
           decisionType: 'memory_retrieval',
-          outcome: need ? 'retrieve' : 'skip',
+          outcome: need ? (selectedMemoryIds.length > 0 ? 'injected' : 'empty') : 'skipped',
           detail: compactRecord({
             need,
             queries,
             searchResultCount,
-            selectedMemoryIds: asStringArray(decision.selectedMemoryIds),
+            selectedMemoryIds,
+            selectedMemories: asSelectedMemories(decision.selectedMemories),
+            usedFallbackSelection: asBoolean(decision.usedFallbackSelection),
+            layer: asString(metadata.layer),
+            tokens: asTokens(decision.tokens),
+            cost: asNumber(decision.cost),
+            searches: asSearchSummaries(decision.searches),
           }),
+          rationale,
           ts: asString(request?.ts) ?? entry.endTime ?? entry.startTime,
         })
         continue

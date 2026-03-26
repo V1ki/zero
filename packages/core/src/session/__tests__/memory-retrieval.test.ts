@@ -8,6 +8,7 @@ import type {
   CompletionResponse,
   MemorySearchOptions,
   Message,
+  Session as SessionData,
   StreamEvent,
   SystemConfig,
 } from '@zero-os/shared'
@@ -401,5 +402,114 @@ describe('Session memory retrieval', () => {
     expect(capturedContexts[1]?.dynamicContext ?? '').not.toContain('Twitter 访问偏好')
     expect(capturedContexts[0]?.injectedMemoryIds?.get('mem_twitter')).toBe('Twitter 访问偏好')
     expect(capturedContexts[1]?.injectedMemoryIds?.get('mem_twitter')).toBe('Twitter 访问偏好')
+  })
+
+  test('restored sessions initialize injected memory tracking before retrieval', async () => {
+    const router = createRouter()
+    const tracer = new Tracer()
+    const data: SessionData = {
+      id: 'sess_restore_memory_retrieval',
+      createdAt: '2026-03-26T00:00:00.000Z',
+      updatedAt: '2026-03-26T00:00:00.000Z',
+      source: 'web',
+      status: 'active',
+      currentModel: 'gpt-5.3-codex-medium',
+      modelHistory: [
+        {
+          model: 'gpt-5.3-codex-medium',
+          from: '2026-03-26T00:00:00.000Z',
+          to: null,
+        },
+      ],
+      tags: [],
+    }
+    const session = Session.restore(data, [], router, new ToolRegistry(), {
+      identityMemory: '用户曾经要求优先使用浏览器插件',
+      tracer,
+      memoryRetriever: {
+        async retrieve() {
+          return []
+        },
+        async retrieveScored() {
+          return [
+            {
+              memory: {
+                id: 'mem_twitter',
+                type: 'preference',
+                title: 'Twitter 访问偏好',
+                content: 'x.com 需要登录，优先使用 browser skill。',
+                createdAt: '2026-03-01T00:00:00.000Z',
+                updatedAt: '2026-03-01T00:00:00.000Z',
+                status: 'verified',
+                confidence: 0.98,
+                tags: ['twitter'],
+                related: [],
+              },
+              score: 0.91,
+              scoreBreakdown: {
+                keyword: 0,
+                recency: 1,
+                vector: 0.91,
+              },
+            },
+          ]
+        },
+      } as unknown as MemoryRetriever,
+    })
+
+    session.initAgent({
+      name: 'memory-agent',
+      agentInstruction: 'memory test agent',
+    })
+
+    const fakeResolvedModel: ResolvedModel = {
+      providerName: 'fake',
+      modelName: 'fake-model',
+      modelConfig: {
+        modelId: 'fake-model',
+        maxContext: 400000,
+        maxOutput: 128000,
+        capabilities: ['tools'],
+        tags: [],
+      },
+      providerConfig: {
+        apiType: 'openai_chat_completions',
+        baseUrl: 'https://example.invalid',
+        auth: { type: 'api_key', apiKeyRef: 'openai_codex_api_key' },
+        models: {},
+      },
+      adapter: new LoopRetrievalAdapter(),
+    }
+
+    let capturedContext:
+      | {
+          dynamicContext?: string
+          injectedMemoryIds?: Map<string, string>
+        }
+      | undefined
+    ;(session as unknown as { activeModel: ResolvedModel }).activeModel = fakeResolvedModel
+    ;(
+      session as unknown as {
+        agent: {
+          run: (
+            context: { dynamicContext?: string; injectedMemoryIds?: Map<string, string> },
+            userMessage: string,
+            images?: unknown,
+            onNewMessage?: (message: Message) => void,
+          ) => Promise<Message[]>
+        }
+      }
+    ).agent = {
+      async run(context) {
+        capturedContext = context
+        return []
+      },
+    }
+
+    await session.handleMessage('恢复后的会话继续分析这个链接 https://x.com/openai/status/123')
+
+    expect(capturedContext?.dynamicContext).toContain('Twitter 访问偏好')
+    expect(capturedContext?.injectedMemoryIds).toBeInstanceOf(Map)
+    expect(capturedContext?.injectedMemoryIds?.get('mem_twitter')).toBe('Twitter 访问偏好')
   })
 })

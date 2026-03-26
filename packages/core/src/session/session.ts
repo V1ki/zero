@@ -916,6 +916,7 @@ export class Session {
       lastSnapshotContext: null,
       nextTurnIndex: Session.deriveNextTurnIndex(data.id, messages, deps.observability),
       pendingAgentRefresh: false,
+      injectedMemoryIds: new Map<string, string>(),
     })
     session.restoreSnapshotStateFromLogger()
     session.deps.observability?.syncSessionActiveState(session.data.id, session.data.status)

@@ -68,6 +68,37 @@ interface MemoryInjectionEntry {
   formattedText: string
 }
 
+interface MemoryRetrievalSearchSummary {
+  query: string
+  resultCount: number
+  topResultTitle?: string
+}
+
+interface MemoryRetrievalSelectedMemory {
+  id: string
+  type: string
+  title: string
+  score?: number
+}
+
+interface MemoryRetrievalTokens {
+  input: number
+  output: number
+}
+
+interface MemoryRetrievalDetail {
+  need?: boolean
+  layer?: string
+  queries: string[]
+  searches: MemoryRetrievalSearchSummary[]
+  searchResultCount?: number
+  selectedMemoryIds: string[]
+  selectedMemories: MemoryRetrievalSelectedMemory[]
+  usedFallbackSelection: boolean
+  tokens?: MemoryRetrievalTokens
+  cost?: number
+}
+
 interface LlmRequestEntry {
   id: string
   turnIndex?: number
@@ -329,6 +360,10 @@ export function ContextPanel({
   }
 
   if (selectedDecision) {
+    if (selectedDecision.decisionType === 'memory_retrieval') {
+      return <MemoryRetrievalDetailPanel decision={selectedDecision} />
+    }
+
     return <DecisionDetailPanel decision={selectedDecision} />
   }
 
@@ -768,6 +803,118 @@ function TaskClosureDetailPanel({
   )
 }
 
+export function MemoryRetrievalDetailPanel({
+  decision,
+}: {
+  decision: DecisionTimelineItem
+}) {
+  const detail = readMemoryRetrievalDetail(decision.detail)
+
+  return (
+    <div className="card p-4 h-full min-h-0 overflow-y-auto animate-fade-up">
+      <h3 className="text-[13px] font-semibold text-[var(--color-text-primary)] mb-3">
+        Memory Retrieval Detail
+      </h3>
+      <div className="space-y-3">
+        <DetailField label="OUTCOME">
+          <DecisionOutcomeBadge decisionType="memory_retrieval" outcome={decision.outcome} />
+        </DetailField>
+
+        {detail.layer && (
+          <DetailField label="LAYER">
+            <p className="text-[12px] font-mono text-[var(--color-text-secondary)]">
+              {detail.layer}
+            </p>
+          </DetailField>
+        )}
+
+        {detail.queries.length > 0 && (
+          <DetailField label="QUERIES">
+            <div className="flex flex-wrap gap-1.5">
+              {detail.queries.map((query) => (
+                <code
+                  key={query}
+                  className="rounded bg-black/20 px-2 py-1 text-[11px] text-[var(--color-text-secondary)]"
+                >
+                  {query}
+                </code>
+              ))}
+            </div>
+          </DetailField>
+        )}
+
+        {detail.searches.length > 0 && (
+          <DetailField label="SEARCHES">
+            <div className="space-y-2">
+              {detail.searches.map((search, index) => (
+                <div key={`${search.query}-${index}`} className="rounded bg-black/15 p-2">
+                  <p className="text-[11px] font-mono text-[var(--color-text-secondary)]">
+                    {search.query}
+                  </p>
+                  <p className="mt-1 text-[11px] text-[var(--color-text-muted)]">
+                    {search.resultCount} result{search.resultCount === 1 ? '' : 's'}
+                    {search.topResultTitle ? ` · top: ${search.topResultTitle}` : ''}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </DetailField>
+        )}
+
+        {detail.selectedMemories.length > 0 && (
+          <DetailField label="SELECTED MEMORIES">
+            <div className="space-y-2">
+              {detail.selectedMemories.map((memory) => (
+                <div key={memory.id} className="rounded bg-black/15 p-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <code className="text-[11px] text-[var(--color-accent)]">{memory.id}</code>
+                    <span className="text-[11px] text-[var(--color-text-secondary)]">
+                      {memory.title}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[11px] text-[var(--color-text-muted)]">
+                    {memory.type}
+                    {memory.score !== undefined ? ` · score ${memory.score.toFixed(2)}` : ''}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </DetailField>
+        )}
+
+        {detail.usedFallbackSelection && (
+          <DetailField label="FALLBACK">
+            <p className="text-[12px] text-amber-300">
+              Agent 输出无法可靠解析，使用了 fallback selection。
+            </p>
+          </DetailField>
+        )}
+
+        <DetailField label="COST">
+          <p className="text-[12px] font-mono text-[var(--color-text-secondary)]">
+            {decision.durationMs !== undefined ? formatDuration(decision.durationMs) : 'n/a'}
+            {' · '}
+            {detail.tokens ? `${detail.tokens.input}+${detail.tokens.output} tokens` : '0+0 tokens'}
+            {' · '}
+            {detail.cost !== undefined ? `$${formatCost(detail.cost)}` : '$0.0000'}
+          </p>
+        </DetailField>
+
+        {decision.rationale && (
+          <DetailField label="AGENT REASONING">
+            <div className="space-y-2">
+              <p className="text-[12px] whitespace-pre-wrap break-words text-[var(--color-text-secondary)]">
+                {truncateInline(decision.rationale, 180)}
+              </p>
+              <ExpandableTextPanel value={decision.rationale} />
+            </div>
+          </DetailField>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function DecisionDetailPanel({
   decision,
 }: {
@@ -955,19 +1102,37 @@ function PersistedTaskClosureCard({
   )
 }
 
-function PersistedDecisionCard({
+export function PersistedDecisionCard({
   card,
 }: {
   card: ReturnType<typeof mapSessionDecisionEventToCard>
 }) {
+  const isMemoryRetrieval = card.decisionType === 'memory_retrieval'
+  const memoryDetail = isMemoryRetrieval ? readMemoryRetrievalDetail(card.detail) : undefined
+  const searchCount = memoryDetail ? getMemoryRetrievalSearchCount(memoryDetail) : 0
+  const selectedCount = memoryDetail ? getMemoryRetrievalSelectedCount(memoryDetail) : 0
+
   return (
-    <div className="rounded border border-white/8 bg-white/[0.02] p-3">
+    <div
+      className={`rounded border p-3 ${
+        isMemoryRetrieval
+          ? 'border-emerald-400/15 bg-emerald-400/[0.04]'
+          : 'border-white/8 bg-white/[0.02]'
+      }`}
+    >
       <div className="flex items-center justify-between gap-3 mb-1.5">
         <div className="flex items-center gap-2">
-          <code className="text-[11px] text-cyan-300">{card.decisionType}</code>
-          <span className="rounded px-1.5 py-0.5 text-[10px] text-cyan-200 bg-cyan-400/10">
-            {card.outcome}
-          </span>
+          <code
+            className={`text-[11px] ${isMemoryRetrieval ? 'text-emerald-300' : 'text-cyan-300'}`}
+          >
+            {card.decisionType}
+          </code>
+          <DecisionOutcomeBadge decisionType={card.decisionType} outcome={card.outcome} />
+          {memoryDetail?.layer === 'layer2' && (
+            <span className="rounded px-1.5 py-0.5 text-[10px] text-amber-200 bg-amber-400/10">
+              memory_hint
+            </span>
+          )}
         </div>
         <span className="text-[10px] font-mono text-[var(--color-text-disabled)]">
           {formatTimeAgo(card.createdAt)}
@@ -977,6 +1142,12 @@ function PersistedDecisionCard({
         <p>
           <span className="text-[var(--color-text-disabled)]">source_kind:</span> {card.sourceKind}
         </p>
+        {isMemoryRetrieval && (
+          <p>
+            <span className="text-[var(--color-text-disabled)]">activity:</span> {searchCount}{' '}
+            search{searchCount === 1 ? '' : 'es'} · {selectedCount} selected
+          </p>
+        )}
         {card.durationMs !== undefined && (
           <p>
             <span className="text-[var(--color-text-disabled)]">duration:</span>{' '}
@@ -1553,6 +1724,139 @@ function formatDuration(durationMs: number): string {
 
 function truncateInline(value: string, limit = 120): string {
   return value.length > limit ? `${value.slice(0, limit - 1)}...` : value
+}
+
+function DecisionOutcomeBadge({
+  decisionType,
+  outcome,
+}: {
+  decisionType: DecisionTimelineItem['decisionType']
+  outcome: string
+}) {
+  return (
+    <span
+      className={`rounded px-1.5 py-0.5 text-[10px] font-mono ${getDecisionOutcomeBadgeClass(decisionType, outcome)}`}
+    >
+      {outcome}
+    </span>
+  )
+}
+
+function getDecisionOutcomeBadgeClass(
+  decisionType: DecisionTimelineItem['decisionType'],
+  outcome: string,
+): string {
+  if (decisionType === 'memory_retrieval') {
+    if (outcome === 'injected') return 'bg-emerald-400/10 text-emerald-300'
+    if (outcome === 'empty') return 'bg-slate-400/10 text-slate-300'
+    if (outcome === 'skipped') return 'bg-white/5 text-[var(--color-text-muted)]'
+  }
+
+  return 'bg-cyan-400/10 text-cyan-200'
+}
+
+function readMemoryRetrievalDetail(detail?: Record<string, unknown>): MemoryRetrievalDetail {
+  const record = detail ?? {}
+
+  return {
+    need: typeof record.need === 'boolean' ? record.need : undefined,
+    layer: typeof record.layer === 'string' ? record.layer : undefined,
+    queries: toStringArray(record.queries),
+    searches: toMemoryRetrievalSearchSummaries(record.searches),
+    searchResultCount:
+      typeof record.searchResultCount === 'number' && Number.isFinite(record.searchResultCount)
+        ? record.searchResultCount
+        : undefined,
+    selectedMemoryIds: toStringArray(record.selectedMemoryIds),
+    selectedMemories: toMemoryRetrievalSelectedMemories(record.selectedMemories),
+    usedFallbackSelection: record.usedFallbackSelection === true,
+    tokens: toMemoryRetrievalTokens(record.tokens),
+    cost: typeof record.cost === 'number' && Number.isFinite(record.cost) ? record.cost : undefined,
+  }
+}
+
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is string => typeof item === 'string')
+}
+
+function toMemoryRetrievalSearchSummaries(value: unknown): MemoryRetrievalSearchSummary[] {
+  if (!Array.isArray(value)) return []
+
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object') return []
+    const summary = item as Record<string, unknown>
+    if (
+      typeof summary.query !== 'string' ||
+      typeof summary.resultCount !== 'number' ||
+      !Number.isFinite(summary.resultCount)
+    ) {
+      return []
+    }
+
+    return [
+      {
+        query: summary.query,
+        resultCount: summary.resultCount,
+        topResultTitle:
+          typeof summary.topResultTitle === 'string' ? summary.topResultTitle : undefined,
+      },
+    ]
+  })
+}
+
+function toMemoryRetrievalSelectedMemories(value: unknown): MemoryRetrievalSelectedMemory[] {
+  if (!Array.isArray(value)) return []
+
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object') return []
+    const memory = item as Record<string, unknown>
+    if (
+      typeof memory.id !== 'string' ||
+      typeof memory.type !== 'string' ||
+      typeof memory.title !== 'string'
+    ) {
+      return []
+    }
+
+    return [
+      {
+        id: memory.id,
+        type: memory.type,
+        title: memory.title,
+        score:
+          typeof memory.score === 'number' && Number.isFinite(memory.score)
+            ? memory.score
+            : undefined,
+      },
+    ]
+  })
+}
+
+function toMemoryRetrievalTokens(value: unknown): MemoryRetrievalTokens | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const tokens = value as Record<string, unknown>
+  const input =
+    typeof tokens.input === 'number' && Number.isFinite(tokens.input) ? tokens.input : undefined
+  const output =
+    typeof tokens.output === 'number' && Number.isFinite(tokens.output) ? tokens.output : undefined
+
+  if (input === undefined && output === undefined) return undefined
+
+  return {
+    input: input ?? 0,
+    output: output ?? 0,
+  }
+}
+
+function getMemoryRetrievalSearchCount(detail: MemoryRetrievalDetail): number {
+  return detail.searches.length > 0 ? detail.searches.length : detail.queries.length
+}
+
+function getMemoryRetrievalSelectedCount(detail: MemoryRetrievalDetail): number {
+  return detail.selectedMemories.length > 0
+    ? detail.selectedMemories.length
+    : detail.selectedMemoryIds.length
 }
 
 function StatusBadge({ status }: { status: TraceSpan['status'] }) {

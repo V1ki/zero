@@ -417,11 +417,13 @@ describe('ObservabilityStore', () => {
         status: 'success',
         metadata: {
           purpose: 'memory_retrieval_decision',
+          layer: 'layer1',
         },
         data: {
           memoryRetrievalDecision: {
             need: false,
-            queries: ['recent deploy rollback'],
+            queries: [],
+            response: '{"result":[]}',
           },
           request: {
             ts: '2026-03-16T01:35:03.000Z',
@@ -505,12 +507,14 @@ describe('ObservabilityStore', () => {
     })
     expect(entries[1]).toMatchObject({
       decisionType: 'memory_retrieval',
-      outcome: 'skip',
+      outcome: 'skipped',
       detail: {
         need: false,
-        queries: ['recent deploy rollback'],
+        queries: [],
         searchResultCount: 0,
+        layer: 'layer1',
       },
+      rationale: '{"result":[]}',
     })
     expect(entries[2]).toMatchObject({
       decisionType: 'tool_selection',
@@ -526,6 +530,89 @@ describe('ObservabilityStore', () => {
       outcome: 'finish',
       rationale: 'All requested checks are complete.',
     })
+  })
+
+  test('readSessionDecisions derives injected, empty, and skipped memory retrieval outcomes', () => {
+    const store = new ObservabilityStore(testDir)
+    const sessionId = 'sess_20260316_0145_memory_outcomes'
+
+    writeSessionTraceEntries(testDir, sessionId, [
+      {
+        spanId: 'span_memory_injected',
+        sessionId,
+        kind: 'llm_request',
+        name: 'llm_request',
+        startTime: '2026-03-16T01:45:00.000Z',
+        endTime: '2026-03-16T01:45:01.000Z',
+        durationMs: 1000,
+        status: 'success',
+        metadata: {
+          purpose: 'memory_retrieval_decision',
+          layer: 'layer1',
+        },
+        data: {
+          memoryRetrievalDecision: {
+            need: true,
+            queries: ['deploy rollback'],
+            selectedMemoryIds: ['mem_1'],
+          },
+          request: {
+            ts: '2026-03-16T01:45:01.000Z',
+          },
+        },
+      },
+      {
+        spanId: 'span_memory_empty',
+        sessionId,
+        kind: 'llm_request',
+        name: 'llm_request',
+        startTime: '2026-03-16T01:45:02.000Z',
+        endTime: '2026-03-16T01:45:03.000Z',
+        durationMs: 1000,
+        status: 'success',
+        metadata: {
+          purpose: 'memory_retrieval_decision',
+          layer: 'layer2',
+        },
+        data: {
+          memoryRetrievalDecision: {
+            need: true,
+            queries: ['browser login'],
+            selectedMemoryIds: [],
+          },
+          request: {
+            ts: '2026-03-16T01:45:03.000Z',
+          },
+        },
+      },
+      {
+        spanId: 'span_memory_skipped',
+        sessionId,
+        kind: 'llm_request',
+        name: 'llm_request',
+        startTime: '2026-03-16T01:45:04.000Z',
+        endTime: '2026-03-16T01:45:05.000Z',
+        durationMs: 1000,
+        status: 'success',
+        metadata: {
+          purpose: 'memory_retrieval_decision',
+          layer: 'layer1',
+        },
+        data: {
+          memoryRetrievalDecision: {
+            need: false,
+            queries: [],
+          },
+          request: {
+            ts: '2026-03-16T01:45:05.000Z',
+          },
+        },
+      },
+    ])
+
+    const entries = store.readSessionDecisions(sessionId)
+
+    expect(entries.map((entry) => entry.outcome)).toEqual(['injected', 'empty', 'skipped'])
   })
 
   test('readSessionDecisions marks truncated tool-selection rationale explicitly', () => {

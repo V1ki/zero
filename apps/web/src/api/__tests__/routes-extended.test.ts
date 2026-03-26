@@ -511,13 +511,36 @@ describe('API Routes Extended', () => {
       kind: 'llm_request',
       metadata: {
         purpose: 'memory_retrieval_decision',
+        layer: 'layer2',
       },
       data: {
         memoryRetrievalDecision: {
           need: true,
           queries: ['deployment rollback runbook'],
-          searches: [{ resultCount: 2 }],
+          searches: [
+            {
+              query: 'deployment rollback runbook',
+              resultCount: 2,
+              results: [{ title: 'Deploy rollback runbook' }],
+            },
+          ],
           selectedMemoryIds: ['mem_1'],
+          selectedMemories: [
+            {
+              id: 'mem_1',
+              type: 'runbook',
+              title: 'Deploy rollback runbook',
+              score: 0.92,
+            },
+          ],
+          usedFallbackSelection: false,
+          tokens: { input: 14, output: 9 },
+          cost: 0.0042,
+          response:
+            'Need the rollback memory for grounding.\n{"result":[{"id":"mem_1","reason":"matches rollback request"}]}',
+        },
+        request: {
+          ts: '2026-03-08T00:00:02.500Z',
         },
       },
     })
@@ -569,35 +592,74 @@ describe('API Routes Extended', () => {
     const data = await res.json()
     expect(data.sessionId).toBe(session.data.id)
     expect(Array.isArray(data.decisions)).toBe(true)
-    expect(data.decisions.map((entry: { decisionType: string }) => entry.decisionType)).toEqual([
-      'context_compression',
-      'memory_retrieval',
-      'tool_selection',
-      'task_closure',
-    ])
-    expect(data.decisions[0]).toMatchObject({
+    expect(data.decisions).toHaveLength(4)
+    expect(data.decisions.map((entry: { decisionType: string }) => entry.decisionType)).toEqual(
+      expect.arrayContaining([
+        'context_compression',
+        'memory_retrieval',
+        'tool_selection',
+        'task_closure',
+      ]),
+    )
+    const compressionDecision = data.decisions.find(
+      (entry: { decisionType: string }) => entry.decisionType === 'context_compression',
+    )
+    const memoryDecision = data.decisions.find(
+      (entry: { decisionType: string }) => entry.decisionType === 'memory_retrieval',
+    )
+    const toolDecision = data.decisions.find(
+      (entry: { decisionType: string }) => entry.decisionType === 'tool_selection',
+    )
+    const closureDecision = data.decisions.find(
+      (entry: { decisionType: string }) => entry.decisionType === 'task_closure',
+    )
+
+    expect(compressionDecision).toMatchObject({
       decisionType: 'context_compression',
       context: {
         currentTokens: 14000,
         conversationBudget: 12000,
       },
     })
-    expect(data.decisions[1]).toMatchObject({
+    expect(memoryDecision).toMatchObject({
       decisionType: 'memory_retrieval',
-      outcome: 'retrieve',
+      outcome: 'injected',
+      rationale: expect.stringContaining('Need the rollback memory for grounding.'),
       detail: {
         need: true,
         queries: ['deployment rollback runbook'],
         searchResultCount: 2,
         selectedMemoryIds: ['mem_1'],
+        selectedMemories: [
+          {
+            id: 'mem_1',
+            type: 'runbook',
+            title: 'Deploy rollback runbook',
+            score: 0.92,
+          },
+        ],
+        usedFallbackSelection: false,
+        layer: 'layer2',
+        tokens: {
+          input: 14,
+          output: 9,
+        },
+        cost: 0.0042,
+        searches: [
+          {
+            query: 'deployment rollback runbook',
+            resultCount: 2,
+            topResultTitle: 'Deploy rollback runbook',
+          },
+        ],
       },
     })
-    expect(data.decisions[2]).toMatchObject({
+    expect(toolDecision).toMatchObject({
       decisionType: 'tool_selection',
       outcome: 'read, bash',
       rationale: 'Need the file contents before running a command.',
     })
-    expect(data.decisions[3]).toMatchObject({
+    expect(closureDecision).toMatchObject({
       decisionType: 'task_closure',
       outcome: 'continue',
       rationale: 'Need one more validation step.',
