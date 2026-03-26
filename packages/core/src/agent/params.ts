@@ -59,14 +59,16 @@ export const CONTEXT_PARAMS = {
 
   /** Memory retrieval */
   retrieval: {
-    topN: 5,
-    confidenceThreshold: 0.6,
-    maxQueries: 3,
+    topN: 8,
+    confidenceThreshold: 0.5,
     perMemoryMaxTokens: 400,
     vectorWeight: 0.8,
     recencyWeight: 0.2,
     recencyHalfLifeDays: 30,
-    minScore: 0.15,
+    minScore: 0.3,
+    agentMaxIterations: 3,
+    agentMaxOutputTokens: 512,
+    agentMaxSelectedMemories: 3,
   },
 
   /** SubAgent context */

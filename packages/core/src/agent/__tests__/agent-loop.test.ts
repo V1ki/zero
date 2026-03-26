@@ -1,0 +1,290 @@
+import { describe, expect, test } from 'bun:test'
+import type { ProviderAdapter } from '@zero-os/model'
+import type {
+  CompletionRequest,
+  CompletionResponse,
+  StreamEvent,
+  ToolLogger,
+} from '@zero-os/shared'
+import { EMPTY_RESPONSE_RETRY_PROMPT } from '../../constants'
+import { AgentLoop, type ToolExecutor } from '../agent-loop'
+
+class ScriptedAdapter implements ProviderAdapter {
+  readonly apiType = 'fake-agent-loop'
+  private cursor = 0
+
+  constructor(private readonly responses: CompletionResponse[]) {}
+
+  async complete(_request: CompletionRequest): Promise<CompletionResponse> {
+    const response = this.responses[this.cursor]
+    this.cursor++
+    if (!response) {
+      throw new Error('No scripted response available')
+    }
+    return response
+  }
+
+  async *stream(_request: CompletionRequest): AsyncIterable<StreamEvent> {
+    yield {
+      type: 'done',
+      data: { finishReason: 'end_turn' },
+    }
+  }
+
+  async healthCheck(): Promise<boolean> {
+    return true
+  }
+}
+
+const logger: ToolLogger = {
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+}
+
+function createLoop(
+  responses: CompletionResponse[],
+  toolExecutor: ToolExecutor,
+  overrides: Partial<ConstructorParameters<typeof AgentLoop>[0]> = {},
+) {
+  return new AgentLoop(
+    {
+      adapter: new ScriptedAdapter(responses),
+      sessionId: 'sess-agent-loop',
+      toolExecutor,
+      system: 'test system',
+      tools: [
+        {
+          name: 'noop',
+          description: 'Noop tool',
+          parameters: {
+            type: 'object',
+            properties: {},
+          },
+        },
+      ],
+      stream: false,
+      logger,
+      ...overrides,
+    },
+    {
+      onEndTurn: () => ({ action: 'break' }),
+    },
+  )
+}
+
+describe('AgentLoop', () => {
+  test('returns user and assistant messages for a direct end_turn response', async () => {
+    const loop = createLoop(
+      [
+        {
+          id: 'resp_final',
+          content: [{ type: 'text', text: 'done' }],
+          stopReason: 'end_turn',
+          usage: { input: 2, output: 2 },
+          model: 'fake-model',
+        },
+      ],
+      {
+        has: () => true,
+        execute: async () => ({ success: true, output: 'ok', outputSummary: 'ok' }),
+      },
+    )
+
+    const messages = await loop.run('hello', [])
+
+    expect(messages.map((message) => message.role)).toEqual(['user', 'assistant'])
+    expect(messages[1]?.content).toEqual([{ type: 'text', text: 'done' }])
+  })
+
+  test('loops through tool_use, tool_result, then final assistant reply', async () => {
+    const toolCalls: string[] = []
+    const loop = createLoop(
+      [
+        {
+          id: 'resp_tool',
+          content: [{ type: 'tool_use', id: 'call_1', name: 'noop', input: {} }],
+          stopReason: 'tool_use',
+          usage: { input: 3, output: 1 },
+          model: 'fake-model',
+        },
+        {
+          id: 'resp_final',
+          content: [{ type: 'text', text: 'finished' }],
+          stopReason: 'end_turn',
+          usage: { input: 4, output: 2 },
+          model: 'fake-model',
+        },
+      ],
+      {
+        has: (toolName) => toolName === 'noop',
+        execute: async (toolName) => {
+          toolCalls.push(toolName)
+          return {
+            success: true,
+            output: 'tool output',
+            outputSummary: 'tool output',
+          }
+        },
+      },
+    )
+
+    const messages = await loop.run('run tool', [])
+
+    expect(toolCalls).toEqual(['noop'])
+    expect(
+      messages.some((message) => message.content.some((block) => block.type === 'tool_result')),
+    ).toBe(true)
+    expect(messages.at(-1)?.content).toEqual([{ type: 'text', text: 'finished' }])
+  })
+
+  test('stops when maxIterations is reached', async () => {
+    const loop = createLoop(
+      [
+        {
+          id: 'resp_tool',
+          content: [{ type: 'tool_use', id: 'call_1', name: 'noop', input: {} }],
+          stopReason: 'tool_use',
+          usage: { input: 3, output: 1 },
+          model: 'fake-model',
+        },
+      ],
+      {
+        has: () => true,
+        execute: async () => ({
+          success: true,
+          output: 'tool output',
+          outputSummary: 'tool output',
+        }),
+      },
+      { maxIterations: 1 },
+    )
+
+    const messages = await loop.run('run tool', [])
+
+    expect(messages).toHaveLength(3)
+    expect(messages.at(-1)?.content[0]).toMatchObject({
+      type: 'tool_result',
+      content: 'tool output',
+    })
+  })
+
+  test('retries once on empty responses before succeeding', async () => {
+    const loop = createLoop(
+      [
+        {
+          id: 'resp_empty',
+          content: [],
+          stopReason: 'end_turn',
+          usage: { input: 0, output: 0 },
+          model: 'fake-model',
+        },
+        {
+          id: 'resp_final',
+          content: [{ type: 'text', text: 'recovered' }],
+          stopReason: 'end_turn',
+          usage: { input: 3, output: 1 },
+          model: 'fake-model',
+        },
+      ],
+      {
+        has: () => true,
+        execute: async () => ({ success: true, output: 'ok', outputSummary: 'ok' }),
+      },
+    )
+
+    const messages = await loop.run('hello', [])
+
+    expect(messages.map((message) => message.role)).toEqual(['user', 'user', 'assistant'])
+    expect(messages[1]?.content).toEqual([{ type: 'text', text: EMPTY_RESPONSE_RETRY_PROMPT }])
+    expect(messages.at(-1)?.content).toEqual([{ type: 'text', text: 'recovered' }])
+  })
+
+  test('converts malformed tool input into a tool_result error without executing the tool', async () => {
+    let executeCount = 0
+    const loop = createLoop(
+      [
+        {
+          id: 'resp_tool',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'call_bad',
+              name: 'noop',
+              input: { __parse_error: 'Malformed JSON' },
+            },
+          ],
+          stopReason: 'tool_use',
+          usage: { input: 3, output: 1 },
+          model: 'fake-model',
+        },
+        {
+          id: 'resp_final',
+          content: [{ type: 'text', text: 'done' }],
+          stopReason: 'end_turn',
+          usage: { input: 3, output: 1 },
+          model: 'fake-model',
+        },
+      ],
+      {
+        has: () => true,
+        execute: async () => {
+          executeCount++
+          return { success: true, output: 'ok', outputSummary: 'ok' }
+        },
+      },
+    )
+
+    const messages = await loop.run('hello', [])
+    const toolResultMessage = messages.find((message) =>
+      message.content.some((block) => block.type === 'tool_result'),
+    )
+
+    expect(executeCount).toBe(0)
+    expect(toolResultMessage?.content).toEqual([
+      expect.objectContaining({
+        type: 'tool_result',
+        isError: true,
+        content: expect.stringContaining('Tool input JSON was malformed'),
+      }),
+    ])
+  })
+
+  test('converts unknown tools into tool_result errors', async () => {
+    const loop = createLoop(
+      [
+        {
+          id: 'resp_tool',
+          content: [{ type: 'tool_use', id: 'call_unknown', name: 'missing', input: {} }],
+          stopReason: 'tool_use',
+          usage: { input: 3, output: 1 },
+          model: 'fake-model',
+        },
+        {
+          id: 'resp_final',
+          content: [{ type: 'text', text: 'done' }],
+          stopReason: 'end_turn',
+          usage: { input: 3, output: 1 },
+          model: 'fake-model',
+        },
+      ],
+      {
+        has: () => false,
+        execute: async () => ({ success: true, output: 'ok', outputSummary: 'ok' }),
+      },
+    )
+
+    const messages = await loop.run('hello', [])
+    const toolResultMessage = messages.find((message) =>
+      message.content.some((block) => block.type === 'tool_result'),
+    )
+
+    expect(toolResultMessage?.content).toEqual([
+      expect.objectContaining({
+        type: 'tool_result',
+        isError: true,
+        content: 'Unknown tool: missing',
+      }),
+    ])
+  })
+})

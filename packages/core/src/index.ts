@@ -23,9 +23,18 @@ export { ToolRegistry } from './tool/registry'
 
 // Agent
 export { Agent } from './agent/agent'
+export { AgentLoop } from './agent/agent-loop'
 export { AgentControl } from './agent/agent-control'
 export { loadRoles, resolveRole, getBuiltinRoles } from './agent/roles'
 export type { AgentConfig, AgentContext } from './agent/agent'
+export type {
+  AgentLoopConfig,
+  AgentLoopHooks,
+  FailedToolAttempt,
+  LoopIterationContext,
+  ToolExecutionResult,
+  ToolExecutor,
+} from './agent/agent-loop'
 export type { AgentSnapshot, AgentState } from './agent/agent-control'
 export type { RoleDefinition } from './agent/roles'
 

@@ -93,6 +93,10 @@ export function buildDynamicContext(ctx: DynamicContext): string {
   return `<system-reminder>\n${parts.join('\n')}\n</system-reminder>`
 }
 
+export function wrapMemoryInjection(layer: 'layer1' | 'layer2', content: string): string {
+  return [`<memory_inject layer="${layer}">`, content, '</memory_inject>'].join('\n')
+}
+
 export function buildRoleBlock(
   agentName: string,
   agentDescription: string,
@@ -131,9 +135,8 @@ export function buildRetrievedMemoriesBlock(
   if (memories.length === 0) return ''
 
   const items = memories.map((memory) => {
-    const score = Number.isFinite(memory.score) ? memory.score.toFixed(2) : '0.00'
     return [
-      `  <memory id="${escapeXml(memory.id)}" type="${escapeXml(memory.type)}" score="${score}">`,
+      `  <memory id="${escapeXml(memory.id)}" type="${escapeXml(memory.type)}">`,
       `    <title>${escapeXml(memory.title)}</title>`,
       `    <content>${escapeXml(memory.content)}</content>`,
       '  </memory>',
@@ -158,11 +161,7 @@ export function buildOutputStyleBlock(): string {
   - 当前 channel 的富文本、图片等格式能力，以 channel capabilities 为准；不要自行假设必须改走别的发送方式
 
 如果你通过 read、fetch 或其他工具拿到了用户要看的内容，必须在回复中直接写出来、整理出来或总结出来，不能只停留在工具调用结果里。`
-  return enforceFixedBudget(
-    `<output_style>\n${style}\n</output_style>`,
-    300,
-    'Output Style',
-  )
+  return enforceFixedBudget(`<output_style>\n${style}\n</output_style>`, 300, 'Output Style')
 }
 
 export function buildExecutionModeBlock(): string {

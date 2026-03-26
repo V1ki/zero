@@ -6,6 +6,8 @@ export interface RetrievalDecision {
 /**
  * Build the prompt for the retrieval decision LLM call.
  * Combines "should we retrieve?" and "what queries?" into one call.
+ *
+ * @deprecated Replaced by the loop-driven memory retrieval agent in `retrieval-agent.ts`.
  */
 export function buildRetrievalDecisionPrompt(userMessage: string, identitySummary: string): string {
   return `<instruction>
@@ -45,6 +47,8 @@ ${userMessage}
 /**
  * Parse the LLM response into a RetrievalDecision.
  * Handles malformed responses gracefully (defaults to need=false).
+ *
+ * @deprecated Replaced by the loop-driven memory retrieval agent in `retrieval-agent.ts`.
  */
 export function parseRetrievalDecision(response: string): RetrievalDecision {
   try {

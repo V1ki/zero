@@ -309,7 +309,8 @@ describe('buildDynamicContext', () => {
 
   test('includes retrieved memories when present', () => {
     const result = buildDynamicContext({
-      retrievedMemories: '<retrieved_memories>\n  <memory id="m1" type="note">demo</memory>\n</retrieved_memories>',
+      retrievedMemories:
+        '<retrieved_memories>\n  <memory id="m1" type="note">demo</memory>\n</retrieved_memories>',
     })
 
     expect(result).toContain('<system-reminder>')
@@ -334,7 +335,7 @@ describe('buildRetrievedMemoriesBlock', () => {
     expect(buildRetrievedMemoriesBlock([])).toBe('')
   })
 
-  test('renders XML with id, type, title, content, score', () => {
+  test('renders XML with id, type, title, and content', () => {
     const result = buildRetrievedMemoriesBlock([
       {
         id: 'mem_1',
@@ -348,7 +349,7 @@ describe('buildRetrievedMemoriesBlock', () => {
     expect(result).toContain('<retrieved_memories>')
     expect(result).toContain('id="mem_1"')
     expect(result).toContain('type="preference"')
-    expect(result).toContain('score="0.85"')
+    expect(result).not.toContain('score=')
     expect(result).toContain('<title>Twitter 访问偏好</title>')
     expect(result).toContain('browser &lt;skill&gt;')
   })

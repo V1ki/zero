@@ -33,6 +33,7 @@ import {
   buildDynamicContext,
   buildRetrievedMemoriesBlock,
   buildSystemPrompt,
+  wrapMemoryInjection,
 } from '../agent/prompt'
 import { CONTINUATION_PROMPT, type QueuedMessage } from '../agent/queue'
 import { buildSnapshot } from '../agent/snapshot'
@@ -41,10 +42,6 @@ import { loadBootstrapFiles } from '../bootstrap/loader'
 import { EMPTY_RESPONSE_RETRY_PROMPT } from '../constants'
 import { loadSkills } from '../skill/loader'
 import type { ToolRegistry } from '../tool/registry'
-
-function wrapMemoryInjection(layer: 'layer1' | 'layer2', content: string): string {
-  return [`<memory_inject layer="${layer}">`, content, '</memory_inject>'].join('\n')
-}
 
 /**
  * Dependencies injected into Session for observability, memory, and eventing.
@@ -115,6 +112,7 @@ export class Session {
   private lastSnapshotContext: SnapshotContext | null = null
   private nextTurnIndex = 1
   private pendingAgentRefresh = false
+  private injectedMemoryIds = new Map<string, string>()
   /** Channel capabilities for system prompt injection */
   private channelCapabilities?: ChannelCapabilities
 
@@ -622,6 +620,7 @@ export class Session {
       identityMemory: this.deps.identityMemory,
       dynamicContext: dynamicCtx,
       requestMemoryInjections,
+      injectedMemoryIds: this.injectedMemoryIds,
       conversationHistory,
       tools,
       maxContext: currentModel?.modelConfig.maxContext,
@@ -649,24 +648,6 @@ export class Session {
 
     // Snapshot message count so we can rollback on transient failure
     const messageCountBefore = this.messages.length
-    const prefaceMessages: Message[] = []
-    if (requestMemoryInjections) {
-      for (const memoryInjection of requestMemoryInjections) {
-        const memoryNotification: Message = {
-          id: generateId(),
-          sessionId: this.data.id,
-          role: 'user',
-          messageType: 'notification',
-          content: [{ type: 'text', text: memoryInjection.formattedText }],
-          createdAt: now(),
-        }
-        this.messages.push(memoryNotification)
-        this.data.updatedAt = memoryNotification.createdAt
-        options?.onProgress?.(memoryNotification)
-        prefaceMessages.push(memoryNotification)
-      }
-    }
-
     let newMessages: Message[]
     try {
       newMessages = await agent.run(
@@ -707,7 +688,7 @@ export class Session {
       messageCount: this.messages.length,
     })
 
-    return [...prefaceMessages, ...newMessages]
+    return newMessages
   }
 
   private async retrieveMemories(userMessage: string): Promise<string | undefined> {
@@ -723,6 +704,7 @@ export class Session {
       memoryRetriever: this.deps.memoryRetriever,
       identitySummary: this.deps.identityMemory ?? '',
       userMessage,
+      previouslyInjectedIds: this.injectedMemoryIds,
       logger: this.logger,
       failureEvent: 'memory_retrieval_failed',
       trace: {
@@ -739,6 +721,10 @@ export class Session {
       },
     })
     if (!memories || memories.length === 0) return undefined
+
+    for (const memory of memories) {
+      this.injectedMemoryIds.set(memory.id, memory.title)
+    }
 
     return buildRetrievedMemoriesBlock(memories)
   }

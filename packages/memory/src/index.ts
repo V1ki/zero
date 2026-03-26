@@ -8,6 +8,15 @@ export { MemoryLifecycle } from './lifecycle'
 export { SESSION_MEMORY_PROMPT, shouldEvaluateSessionMemory } from './session-memory'
 export { buildRetrievalDecisionPrompt, parseRetrievalDecision } from './retrieval-decision'
 export type { RetrievalDecision } from './retrieval-decision'
+export {
+  runMemoryRetrievalAgent,
+  runMemoryRetrievalAgentDetailed,
+} from './retrieval-agent'
+export type {
+  MemoryRetrievalAgentOptions,
+  MemoryRetrievalAgentRun,
+  RetrievedMemoryMatch,
+} from './retrieval-agent'
 export { EmbeddingClient } from './embedding'
 export type { EmbeddingConfig, EmbeddingProvider } from './embedding'
 export { VectorIndex } from './vector-index'

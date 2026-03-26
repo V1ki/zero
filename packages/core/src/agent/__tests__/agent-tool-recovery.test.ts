@@ -134,29 +134,40 @@ class FailingFetchTool extends BaseTool {
 
 class MemoryHintAdapter implements ProviderAdapter {
   readonly apiType = 'fake-memory-hint'
-  private mainCallCount = 0
-  decisionPrompts: string[] = []
+  private completeCalls = 0
+  retrievalUserMessages: string[] = []
+  retrievalSystems: string[] = []
 
   async complete(req: CompletionRequest): Promise<CompletionResponse> {
-    const promptText =
+    const userText =
       req.messages[0]?.content
         .filter((block) => block.type === 'text')
         .map((block) => (block as { type: 'text'; text: string }).text)
         .join('\n') ?? ''
+    this.completeCalls++
 
-    if (promptText.includes('<instruction>') && promptText.includes('工具执行失败')) {
-      this.decisionPrompts.push(promptText)
+    if (this.completeCalls === 2) {
+      this.retrievalUserMessages.push(userText)
+      if (req.system) {
+        this.retrievalSystems.push(req.system)
+      }
       return {
-        id: 'resp_retrieval_decision',
-        content: [{ type: 'text', text: '{"need": true, "queries": ["x.com browser login"]}' }],
-        stopReason: 'end_turn',
+        id: 'resp_retrieval_tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_memory_search_1',
+            name: 'memory_search',
+            input: { query: 'x.com browser login' },
+          },
+        ],
+        stopReason: 'tool_use',
         usage: { input: 6, output: 5 },
         model: 'fake-model',
       }
     }
 
-    this.mainCallCount++
-    if (this.mainCallCount === 1) {
+    if (this.completeCalls === 1) {
       return {
         id: 'resp_tool_use',
         content: [
@@ -169,6 +180,21 @@ class MemoryHintAdapter implements ProviderAdapter {
         ],
         stopReason: 'tool_use',
         usage: { input: 10, output: 5 },
+        model: 'fake-model',
+      }
+    }
+
+    if (this.completeCalls === 3) {
+      return {
+        id: 'resp_retrieval_final',
+        content: [
+          {
+            type: 'text',
+            text: '{"result":[{"id":"mem_x","reason":"x.com 访问需要 browser 经验"}]}',
+          },
+        ],
+        stopReason: 'end_turn',
+        usage: { input: 5, output: 4 },
         model: 'fake-model',
       }
     }
@@ -262,7 +288,8 @@ describe('Agent tool recovery', () => {
         {
           layer: 'layer1',
           source: 'retrieved_memories',
-          formattedText: '<memory_inject layer="layer1"><retrieved_memories>demo</retrieved_memories></memory_inject>',
+          formattedText:
+            '<memory_inject layer="layer1"><retrieved_memories>demo</retrieved_memories></memory_inject>',
         },
       ],
     }
@@ -476,7 +503,7 @@ describe('Agent tool recovery', () => {
             query: 'x.com browser login',
             mode: 'scored',
             options: expect.objectContaining({
-              minScore: 0.15,
+              minScore: 0.3,
             }),
             resultCount: 1,
             results: [
@@ -512,9 +539,80 @@ describe('Agent tool recovery', () => {
         selectedCount: 1,
       }),
     )
-    expect(adapter.decisionPrompts).toHaveLength(1)
-    expect(adapter.decisionPrompts[0]).toContain('用户当前请求：Analyze this x.com link')
-    expect(adapter.decisionPrompts[0]).toContain('tool: fetch')
-    expect(adapter.decisionPrompts[0]).toContain('error_summary: Fetch error: login required')
+    expect(adapter.retrievalUserMessages).toHaveLength(1)
+    expect(adapter.retrievalSystems).toHaveLength(1)
+    expect(adapter.retrievalSystems[0]).toContain('<already_injected_memories>')
+    expect(adapter.retrievalSystems[0]).toContain('（无）')
+    expect(adapter.retrievalUserMessages[0]).toContain('用户当前请求：Analyze this x.com link')
+    expect(adapter.retrievalUserMessages[0]).toContain('tool: fetch')
+    expect(adapter.retrievalUserMessages[0]).toContain('error_summary: Fetch error: login required')
+  })
+
+  test('run: layer2 memory hints reuse injected memory ids to avoid duplicate injection', async () => {
+    const adapter = new MemoryHintAdapter()
+    const registry = new ToolRegistry()
+    registry.register(new FailingFetchTool())
+
+    const toolContext: ToolContext = {
+      sessionId: 'test-session',
+      workDir: process.cwd(),
+      logger: {
+        info: () => {},
+        warn: () => {},
+        error: () => {},
+      },
+      memoryRetriever: {
+        async retrieve() {
+          return []
+        },
+        async retrieveScored() {
+          return [
+            {
+              memory: {
+                id: 'mem_x',
+                type: 'decision',
+                title: 'Twitter requires browser',
+                content: 'x.com 需要登录，优先使用 browser skill。',
+                createdAt: '2026-03-01T00:00:00.000Z',
+                updatedAt: '2026-03-01T00:00:00.000Z',
+                status: 'verified',
+                confidence: 0.95,
+                tags: ['twitter'],
+                related: [],
+              },
+              score: 0.92,
+              scoreBreakdown: {
+                keyword: 0,
+                recency: 1,
+                vector: 0.92,
+              },
+            },
+          ]
+        },
+      },
+    }
+
+    const agent = new Agent(
+      {
+        name: 'test-agent',
+        agentInstruction: 'Test prompt',
+      },
+      adapter,
+      registry,
+      toolContext,
+    )
+
+    const context: AgentContext = {
+      systemPrompt: 'Test prompt',
+      conversationHistory: [],
+      tools: registry.getDefinitions(),
+      injectedMemoryIds: new Map([['mem_x', 'Twitter requires browser']]),
+    }
+
+    const messages = await agent.run(context, 'Analyze this x.com link')
+
+    expect(messages.find((message) => message.messageType === 'notification')).toBeUndefined()
+    expect(adapter.retrievalSystems).toHaveLength(1)
+    expect(adapter.retrievalSystems[0]).toContain('- mem_x: Twitter requires browser')
   })
 })
