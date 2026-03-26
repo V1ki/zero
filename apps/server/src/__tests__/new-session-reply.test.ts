@@ -25,4 +25,26 @@ describe('buildNewSessionReply', () => {
       }),
     ).toBe('New conversation started. Unknown model: gpt-does-not-exist')
   })
+
+  test('includes previous session id when provided', () => {
+    expect(buildNewSessionReply('openai-codex/gpt-5.4-medium', undefined, 'sess_abc123')).toBe(
+      'New conversation started with model: openai-codex/gpt-5.4-medium\nPrevious session: sess_abc123',
+    )
+  })
+
+  test('includes previous session id on model switch failure', () => {
+    expect(
+      buildNewSessionReply(
+        'openai-codex/gpt-5.3-codex-medium',
+        { success: false, message: 'Unknown model: gpt-does-not-exist' },
+        'sess_xyz789',
+      ),
+    ).toBe('New conversation started. Unknown model: gpt-does-not-exist\nPrevious session: sess_xyz789')
+  })
+
+  test('omits previous session line when no previous session', () => {
+    expect(buildNewSessionReply('openai-codex/gpt-5.4-medium', undefined, undefined)).toBe(
+      'New conversation started with model: openai-codex/gpt-5.4-medium',
+    )
+  })
 })

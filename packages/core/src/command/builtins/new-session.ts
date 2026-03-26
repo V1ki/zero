@@ -16,11 +16,13 @@ function parseNewSessionArgs(content: string): NewSessionArgs | null {
 export function buildNewSessionReply(
   currentModel: string,
   modelResult?: { success: boolean; message: string },
+  previousSessionId?: string,
 ): string {
+  const prev = previousSessionId ? `\nPrevious session: ${previousSessionId}` : ''
   if (!modelResult || modelResult.success) {
-    return `New conversation started with model: ${currentModel}`
+    return `New conversation started with model: ${currentModel}${prev}`
   }
-  return `New conversation started. ${modelResult.message}`
+  return `New conversation started. ${modelResult.message}${prev}`
 }
 
 export const newSessionCommand: Command = {
@@ -35,7 +37,7 @@ export const newSessionCommand: Command = {
       }
     }
 
-    const { session } = ctx.sessionManager.startNewForChannel(ctx.source, ctx.chatId, {
+    const { session, previousSessionId } = ctx.sessionManager.startNewForChannel(ctx.source, ctx.chatId, {
       channelName: ctx.channelName,
     })
 
@@ -54,7 +56,7 @@ export const newSessionCommand: Command = {
 
     return {
       handled: true,
-      reply: buildNewSessionReply(session.data.currentModel, modelResult),
+      reply: buildNewSessionReply(session.data.currentModel, modelResult, previousSessionId),
     }
   },
 }
