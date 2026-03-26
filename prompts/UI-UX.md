@@ -354,8 +354,9 @@ Dashboard 根据系统状态自适应：
 │  │  └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘   │  │
 │  └───────────────────────────────────────────────────────────┘  │
 │  ┌─ 时间线 ─────────────────────────────┬─ 上下文面板 ──────┐  │
-│  │  (对话 + 工具调用完整时间线)          │  (选中工具时       │  │
-│  │                                       │   显示详情)        │  │
+│  │  (对话 + 工具调用 + 决策事件 +        │  (默认 Summary /   │  │
+│  │   Task Closure 时间线)                │   Trace；选中项时   │  │
+│  │                                       │   显示详情)         │  │
 │  └───────────────────────────────────────┴───────────────────┘  │
 └────────────────────────────────────────────────────────────────┘
 ```
@@ -369,7 +370,7 @@ Dashboard 根据系统状态自适应：
 
 #### 时间线主体（左侧 65%）
 
-三种消息块视觉区分：
+四种消息块视觉区分：
 
 ```
 User 消息:
@@ -384,6 +385,11 @@ Agent 消息:
   背景: rgba(255, 255, 255, 0.03)
   边框: 1px solid rgba(255, 255, 255, 0.06)
   默认折叠输出，点击展开
+
+决策块:
+  背景: rgba(255, 255, 255, 0.03)
+  边框: 1px solid rgba(34, 211, 238, 0.12)
+  用于展示 context_compression / memory_retrieval / tool_selection
 ```
 
 工具调用块结构：
@@ -409,6 +415,8 @@ Agent 消息:
 
 全宽，左边框和文字用状态色，非常醒目。
 
+Task Closure 不并入通用 decision lane，仍保留独立块，避免和已有 closure 详情重复。
+
 #### 上下文面板（右侧 35%）
 
 默认显示 Session 摘要：
@@ -419,7 +427,16 @@ Agent 消息:
 - Files Touched（涉及的文件列表）
 - Related Memory（关联记忆链接）
 
-点击工具调用时切换为该调用的完整详情（输入参数 + 输出结果的原始数据）。
+默认面板带 `Summary / Trace` 两个 tab：
+
+- `Summary`：Session 摘要、模型用量、工具分布、关联记忆等。
+- `Trace`：按区块展示 `Decisions`、`Task Closure`、`Full Trace`。
+
+点击时间线中的不同块时，右侧切换为对应详情：
+
+- 工具块：输入参数 + 输出结果
+- 决策块：`decision_type` / `outcome` / `source_kind` / `duration` / `rationale` / `context` / `detail`
+- Task Closure：`action` / `reason` / classifier 请求与响应
 
 #### 实时 Session
 
@@ -777,7 +794,7 @@ Memory 和 Session 的使用方式完全不同。Session 是线性的时间线�
 | `requests` | 当前 Session 的 LLM 请求台账 | model / tokens / cost |
 | `snapshots` | 当前 Session 的上下文快照台账 | trigger / tools / messages_before |
 
-切换时表格列动态变化。全局 Logs 入口默认落在 `events` 视图；进入某个 Session 后，再暴露 `trace`、`requests`、`snapshots` 这些 Session 级记录。当前这些 Session 视图优先从 `trace.jsonl` 投影，旧 ledger 文件只作为兼容 fallback。
+切换时表格列动态变化。全局 Logs 入口默认落在 `events` 视图；进入某个 Session 后，再暴露 `trace`、`requests`、`snapshots` 这些 Session 级记录。当前这些 Session 视图优先从 `trace.jsonl` 投影，旧 ledger 文件只作为兼容 fallback。Decision 视图暂不在全局 Logs 页单独展开，而是在 Session Detail 的 Trace tab 中展示。
 
 **级别用颜色标记**。`error` 行整行微弱红色背景（`red-400` 5% 不透明度），`warn` 用 `amber-400` 5%，`info` 无背景。在密集的日志表格里，颜色是最快的扫描锚点。
 

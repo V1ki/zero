@@ -13,6 +13,7 @@ export interface SnapshotParams {
   messagesBefore?: number
   messagesAfter?: number
   compressedRange?: string
+  decisionContext?: SnapshotEntry['decisionContext']
 }
 
 /**

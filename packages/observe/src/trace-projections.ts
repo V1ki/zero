@@ -1,5 +1,6 @@
 import type {
   ClosureLogEntry,
+  DecisionLogEntry,
   RequestLogEntry,
   RequestMemoryInjectionEntry,
   RequestQueuedInjectionEntry,
@@ -11,13 +12,61 @@ import type {
 import type { TraceEntry } from './trace'
 import { asRecord, asString } from './utils'
 
+const MAX_DECISION_RATIONALE_LENGTH = 1500
+
 function asNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function asBoolean(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined
 }
 
 function asStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined
   return value.filter((item): item is string => typeof item === 'string')
+}
+
+function compactRecord(
+  entries: Record<string, unknown | undefined>,
+): Record<string, unknown> | undefined {
+  const next = Object.fromEntries(
+    Object.entries(entries).filter(([, value]) => value !== undefined),
+  )
+  return Object.keys(next).length > 0 ? next : undefined
+}
+
+function asCompressionDecisionContext(
+  value: unknown,
+): SnapshotEntry['decisionContext'] | undefined {
+  const record = asRecord(value)
+  if (!record) return undefined
+
+  const currentTokens = asNumber(record.currentTokens)
+  const conversationBudget = asNumber(record.conversationBudget)
+
+  if (currentTokens === undefined || conversationBudget === undefined) {
+    return undefined
+  }
+
+  return {
+    currentTokens,
+    conversationBudget,
+  }
+}
+
+function truncateDecisionRationale(value: string): { rationale: string; truncated: boolean } {
+  if (value.length <= MAX_DECISION_RATIONALE_LENGTH) {
+    return {
+      rationale: value,
+      truncated: false,
+    }
+  }
+
+  return {
+    rationale: `${value.slice(0, MAX_DECISION_RATIONALE_LENGTH - 3)}...`,
+    truncated: true,
+  }
 }
 
 function asToolCalls(value: unknown): RequestToolCallEntry[] {
@@ -213,6 +262,7 @@ export function projectSessionSnapshotsFromTraceEntries(entries: TraceEntry[]): 
           messagesBefore: asNumber(snapshot.messagesBefore),
           messagesAfter: asNumber(snapshot.messagesAfter),
           compressedRange: asString(snapshot.compressedRange),
+          decisionContext: asCompressionDecisionContext(snapshot.decisionContext),
           ts: asString(snapshot.ts) ?? entry.endTime ?? entry.startTime,
         },
       ]
@@ -279,6 +329,123 @@ export function projectSessionClosuresFromTraceEntries(entries: TraceEntry[]): C
         error: asString(closure.error),
       })
     }
+  }
+
+  return sortByTs(results)
+}
+
+export function projectSessionDecisionsFromTraceEntries(entries: TraceEntry[]): DecisionLogEntry[] {
+  const results: DecisionLogEntry[] = []
+
+  for (const entry of entries) {
+    const base = {
+      id: entry.spanId,
+      sessionId: entry.sessionId,
+      agentName: entry.agentName,
+      durationMs: entry.durationMs,
+      parentSpanId: entry.parentSpanId,
+      sourceKind: entry.kind,
+    } satisfies Omit<DecisionLogEntry, 'decisionType' | 'outcome' | 'ts'>
+
+    if (entry.kind === 'snapshot') {
+      const snapshot = asRecord(asRecord(entry.data)?.snapshot)
+      if (!snapshot || asString(snapshot.trigger) !== 'context_compression') continue
+      const decisionContext = asCompressionDecisionContext(snapshot.decisionContext)
+
+      results.push({
+        ...base,
+        decisionType: 'context_compression',
+        outcome: 'compress',
+        context: decisionContext ? compactRecord(decisionContext) : undefined,
+        detail: compactRecord({
+          messagesBefore: asNumber(snapshot.messagesBefore),
+          messagesAfter: asNumber(snapshot.messagesAfter),
+          compressedRange: asString(snapshot.compressedRange),
+        }),
+        ts: asString(snapshot.ts) ?? entry.endTime ?? entry.startTime,
+      })
+      continue
+    }
+
+    if (entry.kind === 'llm_request') {
+      const metadata = asRecord(entry.metadata)
+      const request = asRecord(asRecord(entry.data)?.request)
+
+      if (metadata && asString(metadata.purpose) === 'memory_retrieval_decision') {
+        const decision = asRecord(asRecord(entry.data)?.memoryRetrievalDecision)
+        if (!decision) continue
+
+        const need = asBoolean(decision.need)
+        if (need === undefined) continue
+
+        const queries = asStringArray(decision.queries) ?? []
+        const searches = Array.isArray(decision.searches) ? decision.searches : []
+        const searchResultCount = searches.reduce((count, search) => {
+          const resultCount = asNumber(asRecord(search)?.resultCount)
+          return count + (resultCount ?? 0)
+        }, 0)
+
+        results.push({
+          ...base,
+          decisionType: 'memory_retrieval',
+          outcome: need ? 'retrieve' : 'skip',
+          detail: compactRecord({
+            need,
+            queries,
+            searchResultCount,
+            selectedMemoryIds: asStringArray(decision.selectedMemoryIds),
+          }),
+          ts: asString(request?.ts) ?? entry.endTime ?? entry.startTime,
+        })
+        continue
+      }
+
+      const stopReason = asString(request?.stopReason)
+      const reasoningContent = asString(request?.reasoningContent)
+
+      if (stopReason === 'tool_use' && reasoningContent) {
+        const selectedTools = asStringArray(request?.toolNames) ?? []
+        const toolCount = asNumber(request?.toolUseCount) ?? selectedTools.length
+        const { rationale, truncated } = truncateDecisionRationale(reasoningContent)
+
+        results.push({
+          ...base,
+          decisionType: 'tool_selection',
+          outcome: selectedTools.length > 0 ? selectedTools.join(', ') : 'tool_use',
+          detail: compactRecord({
+            selectedTools,
+            toolCount,
+            rationaleTruncated: truncated ? true : undefined,
+          }),
+          rationale,
+          ts: asString(request?.ts) ?? entry.endTime ?? entry.startTime,
+        })
+      }
+
+      continue
+    }
+
+    if (entry.kind !== 'closure_decision') continue
+
+    const closure = asRecord(asRecord(entry.data)?.closure)
+    if (!closure || asString(closure.event) !== 'task_closure_decision') continue
+
+    const action = asString(closure.action)
+    const reason = asString(closure.reason)
+    if (!action || !reason) continue
+
+    const classifierModel = asString(asRecord(closure.classifierResponse)?.model)
+
+    results.push({
+      ...base,
+      decisionType: 'task_closure',
+      outcome: action,
+      detail: compactRecord({
+        classifierModel,
+      }),
+      rationale: reason,
+      ts: asString(closure.ts) ?? entry.endTime ?? entry.startTime,
+    })
   }
 
   return sortByTs(results)

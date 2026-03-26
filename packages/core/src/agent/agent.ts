@@ -7,6 +7,7 @@ import type {
   RequestMemoryInjectionEntry,
   RequestToolCallEntry,
   RequestToolResultEntry,
+  SnapshotEntry,
   TaskClosureClassifierResponse,
   Tracer,
 } from '@zero-os/observe'
@@ -117,6 +118,7 @@ export interface AgentObservability {
   onContextCompressed?: (event: {
     summary: string
     stats: CompressionResult['stats']
+    decisionContext: NonNullable<SnapshotEntry['decisionContext']>
   }) => void
 }
 
@@ -654,7 +656,8 @@ export class Agent {
         // Budget check + compression
         if (context.maxContext && context.maxOutput) {
           const budget = allocateBudget(context.maxContext, context.maxOutput)
-          if (shouldCompress(estimateConversationTokens(messages), budget.conversation)) {
+          const currentTokens = estimateConversationTokens(messages)
+          if (shouldCompress(currentTokens, budget.conversation)) {
             const { compressConversation } = await import('./compress')
             const result = await compressConversation(
               messages,
@@ -667,6 +670,10 @@ export class Agent {
             this.obs.onContextCompressed?.({
               summary: result.summary,
               stats: result.stats,
+              decisionContext: {
+                currentTokens,
+                conversationBudget: budget.conversation,
+              },
             })
           }
         }

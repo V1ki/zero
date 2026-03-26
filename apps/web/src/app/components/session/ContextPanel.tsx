@@ -9,9 +9,12 @@ import { toolColors } from '../../lib/colors'
 import { formatCost, formatModelHistory, formatNumber, formatTimeAgo } from '../../lib/format'
 import { SubAgentSpanCard } from './SubAgentSpanCard'
 import {
+  type DecisionTimelineItem,
+  type SessionDecisionEvent,
   type SessionTaskClosureEvent,
   type TaskClosureTimelineItem,
   type TraceSpan,
+  filterDisplayableDecisions,
   getTaskClosureTraceDetails,
 } from './timeline'
 import { evaluateTraceSession } from './trace-eval'
@@ -109,9 +112,11 @@ interface Props {
   netSavings?: number
   llmRequests?: LlmRequestEntry[]
   selectedToolId: string | null
+  selectedDecision?: DecisionTimelineItem | null
   selectedTaskClosure?: TaskClosureTimelineItem | null
   selectedSubAgentId?: string | null
   traces?: TraceSpan[]
+  decisions?: SessionDecisionEvent[]
   taskClosureEvents?: SessionTaskClosureEvent[]
   traceLoading?: boolean
   onJumpToAssistantMessage?: (messageId: string) => void
@@ -138,8 +143,10 @@ export function ContextPanel({
   netSavings,
   llmRequests = [],
   selectedToolId,
+  selectedDecision = null,
   selectedTaskClosure = null,
   traces = [],
+  decisions = [],
   taskClosureEvents = [],
   traceLoading = false,
   onJumpToAssistantMessage,
@@ -173,6 +180,10 @@ export function ContextPanel({
   const taskClosureCards = useMemo(
     () => taskClosureEvents.map(mapSessionTaskClosureEventToCard),
     [taskClosureEvents],
+  )
+  const decisionCards = useMemo(
+    () => filterDisplayableDecisions(decisions).map(mapSessionDecisionEventToCard),
+    [decisions],
   )
   const traceEval = useMemo(
     () =>
@@ -315,6 +326,10 @@ export function ContextPanel({
         </div>
       </div>
     )
+  }
+
+  if (selectedDecision) {
+    return <DecisionDetailPanel decision={selectedDecision} />
   }
 
   if (selectedTaskClosure) {
@@ -590,6 +605,22 @@ export function ContextPanel({
 
       {tab === 'trace' && (
         <div className="space-y-4">
+          <Section title="Decisions">
+            {traceLoading ? (
+              <p className="text-[12px] text-[var(--color-text-disabled)]">Loading trace…</p>
+            ) : decisionCards.length === 0 ? (
+              <p className="text-[12px] text-[var(--color-text-disabled)]">
+                No decision events for this session.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {decisionCards.map((card, index) => (
+                  <PersistedDecisionCard key={`${card.id}-${index}`} card={card} />
+                ))}
+              </div>
+            )}
+          </Section>
+
           <Section title="Task Closure">
             {traceLoading ? (
               <p className="text-[12px] text-[var(--color-text-disabled)]">Loading trace…</p>
@@ -737,6 +768,69 @@ function TaskClosureDetailPanel({
   )
 }
 
+function DecisionDetailPanel({
+  decision,
+}: {
+  decision: DecisionTimelineItem
+}) {
+  return (
+    <div className="card p-4 h-full min-h-0 overflow-y-auto animate-fade-up">
+      <h3 className="text-[13px] font-semibold text-[var(--color-text-primary)] mb-3">
+        Decision Detail
+      </h3>
+      <div className="space-y-3">
+        <DetailField label="DECISION TYPE">
+          <p className="text-[13px] font-mono text-cyan-300">{decision.decisionType}</p>
+        </DetailField>
+
+        <DetailField label="OUTCOME">
+          <p className="text-[12px] font-mono text-[var(--color-text-secondary)]">
+            {decision.outcome}
+          </p>
+        </DetailField>
+
+        <DetailField label="SOURCE KIND">
+          <p className="text-[12px] font-mono text-[var(--color-text-secondary)]">
+            {decision.sourceKind}
+          </p>
+        </DetailField>
+
+        {decision.durationMs !== undefined && (
+          <DetailField label="DURATION">
+            <p className="text-[12px] font-mono text-[var(--color-text-secondary)]">
+              {formatDuration(decision.durationMs)}
+            </p>
+          </DetailField>
+        )}
+
+        {decision.rationale && (
+          <DetailField label="RATIONALE">
+            <pre className="text-[11px] font-mono text-[var(--color-text-secondary)] whitespace-pre-wrap break-all bg-black/20 rounded p-2 max-h-[320px] overflow-y-auto">
+              {decision.rationale}
+            </pre>
+          </DetailField>
+        )}
+
+        {decision.context && (
+          <DetailField label="CONTEXT">
+            <pre className="text-[11px] font-mono text-[var(--color-text-secondary)] whitespace-pre-wrap break-all bg-black/20 rounded p-2 max-h-[320px] overflow-y-auto">
+              {JSON.stringify(decision.context, null, 2)}
+            </pre>
+          </DetailField>
+        )}
+
+        {decision.detail && (
+          <DetailField label="DETAIL">
+            <pre className="text-[11px] font-mono text-[var(--color-text-secondary)] whitespace-pre-wrap break-all bg-black/20 rounded p-2 max-h-[320px] overflow-y-auto">
+              {JSON.stringify(decision.detail, null, 2)}
+            </pre>
+          </DetailField>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function DetailField({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div>
@@ -761,6 +855,20 @@ function mapSessionTaskClosureEventToCard(event: SessionTaskClosureEvent) {
     assistantMessageId: event.assistantMessageId,
     assistantMessageCreatedAt: event.assistantMessageCreatedAt,
     error: event.event === 'task_closure_failed' ? event.error : undefined,
+  }
+}
+
+function mapSessionDecisionEventToCard(event: SessionDecisionEvent) {
+  return {
+    id: event.id,
+    createdAt: event.ts,
+    decisionType: event.decisionType,
+    outcome: event.outcome,
+    sourceKind: event.sourceKind,
+    context: event.context,
+    detail: event.detail,
+    rationale: event.rationale,
+    durationMs: event.durationMs,
   }
 }
 
@@ -840,6 +948,61 @@ function PersistedTaskClosureCard({
             {card.classifierResponseRaw && (
               <TracePreview label="classifier_response_raw" value={card.classifierResponseRaw} />
             )}
+          </div>
+        </details>
+      )}
+    </div>
+  )
+}
+
+function PersistedDecisionCard({
+  card,
+}: {
+  card: ReturnType<typeof mapSessionDecisionEventToCard>
+}) {
+  return (
+    <div className="rounded border border-white/8 bg-white/[0.02] p-3">
+      <div className="flex items-center justify-between gap-3 mb-1.5">
+        <div className="flex items-center gap-2">
+          <code className="text-[11px] text-cyan-300">{card.decisionType}</code>
+          <span className="rounded px-1.5 py-0.5 text-[10px] text-cyan-200 bg-cyan-400/10">
+            {card.outcome}
+          </span>
+        </div>
+        <span className="text-[10px] font-mono text-[var(--color-text-disabled)]">
+          {formatTimeAgo(card.createdAt)}
+        </span>
+      </div>
+      <div className="space-y-1 text-[11px] text-[var(--color-text-secondary)]">
+        <p>
+          <span className="text-[var(--color-text-disabled)]">source_kind:</span> {card.sourceKind}
+        </p>
+        {card.durationMs !== undefined && (
+          <p>
+            <span className="text-[var(--color-text-disabled)]">duration:</span>{' '}
+            {formatDuration(card.durationMs)}
+          </p>
+        )}
+        {card.rationale && (
+          <p>
+            <span className="text-[var(--color-text-disabled)]">rationale:</span>{' '}
+            {truncateInline(card.rationale)}
+          </p>
+        )}
+      </div>
+      {(card.context || card.detail || card.rationale) && (
+        <details className="mt-2 rounded bg-black/15 p-2">
+          <summary className="cursor-pointer text-[10px] text-[var(--color-accent)] select-none">
+            Decision Details
+          </summary>
+          <div className="mt-2 space-y-2">
+            {card.context && (
+              <TracePreview label="context" value={JSON.stringify(card.context, null, 2)} />
+            )}
+            {card.detail && (
+              <TracePreview label="detail" value={JSON.stringify(card.detail, null, 2)} />
+            )}
+            {card.rationale && <TracePreview label="rationale" value={card.rationale} />}
           </div>
         </details>
       )}
@@ -1386,6 +1549,10 @@ function formatQueuedTimestamp(timestamp: string): string {
 
 function formatDuration(durationMs: number): string {
   return durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`
+}
+
+function truncateInline(value: string, limit = 120): string {
+  return value.length > limit ? `${value.slice(0, limit - 1)}...` : value
 }
 
 function StatusBadge({ status }: { status: TraceSpan['status'] }) {

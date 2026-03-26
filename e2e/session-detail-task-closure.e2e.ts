@@ -81,7 +81,7 @@ test.describe('Session Detail Task Closure', () => {
 
     await page.route(
       new RegExp(
-        `/api/sessions/${sessionId}(?:/traces|/task-closure-events|/requests|/llm-judge)?$`,
+        `/api/sessions/${sessionId}(?:/traces|/task-closure-events|/requests|/decisions|/llm-judge)?$`,
       ),
       async (route) => {
         if (route.request().method() !== 'GET') {
@@ -123,6 +123,15 @@ test.describe('Session Detail Task Closure', () => {
             status: 200,
             contentType: 'application/json',
             body: JSON.stringify({ requests: [] }),
+          })
+          return
+        }
+
+        if (pathname === `/api/sessions/${sessionId}/decisions`) {
+          await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({ decisions: [] }),
           })
           return
         }

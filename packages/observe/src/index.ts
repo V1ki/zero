@@ -12,6 +12,8 @@ export type {
   SnapshotEntry,
   ClosureLogEntry,
   ClosureLogEntryInput,
+  DecisionType,
+  DecisionLogEntry,
   TaskClosureClassifierResponse,
 } from './observability-store'
 export { MetricsDB } from './metrics'
@@ -33,6 +35,7 @@ export type { SessionRow } from './session-db'
 export { Tracer } from './trace'
 export type { TraceEntry, TraceKind, TraceSpan, TraceStatus } from './trace'
 export {
+  projectSessionDecisionsFromTraceEntries,
   projectSessionClosuresFromTraceEntries,
   projectSessionRequestsFromTraceEntries,
   projectSessionSnapshotsFromTraceEntries,

@@ -9,6 +9,8 @@ import { ContextPanel } from './ContextPanel'
 import { MetadataBar } from './MetadataBar'
 import { TimelineView } from './TimelineView'
 import {
+  type DecisionTimelineItem,
+  type SessionDecisionEvent,
   type SessionTaskClosureEvent,
   type TaskClosureTimelineItem,
   type TraceSpan,
@@ -131,10 +133,12 @@ export function SessionDetailScreen({
   const [session, setSession] = useState<SessionDetail | null>(null)
   const [traces, setTraces] = useState<TraceSpan[]>([])
   const [taskClosureEvents, setTaskClosureEvents] = useState<SessionTaskClosureEvent[]>([])
+  const [decisions, setDecisions] = useState<SessionDecisionEvent[]>([])
   const [llmRequests, setLlmRequests] = useState<SessionRequestEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [traceLoading, setTraceLoading] = useState(true)
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null)
+  const [selectedDecisionId, setSelectedDecisionId] = useState<string | null>(null)
   const [selectedTaskClosureId, setSelectedTaskClosureId] = useState<string | null>(null)
   const [selectedSubAgentId, setSelectedSubAgentId] = useState<string | null>(null)
   const [highlightedAssistantMessageId, setHighlightedAssistantMessageId] = useState<string | null>(
@@ -153,6 +157,7 @@ export function SessionDetailScreen({
     messageCount: 0,
     traceCount: 0,
     taskClosureCount: 0,
+    decisionCount: 0,
   })
 
   const fetchSession = useCallback(
@@ -179,22 +184,28 @@ export function SessionDetailScreen({
         apiFetch<{ requests: SessionRequestEntry[] }>(`/api/sessions/${sessionId}/requests`, {
           signal: controller.signal,
         }),
+        apiFetch<{ decisions: SessionDecisionEvent[] }>(`/api/sessions/${sessionId}/decisions`, {
+          signal: controller.signal,
+        }),
       ])
-        .then(([data, traceResponse, taskClosureResponse, requestResponse]) => {
+        .then(([data, traceResponse, taskClosureResponse, requestResponse, decisionResponse]) => {
           if (requestId !== requestIdRef.current) return
 
           const nextTraces = traceResponse.traces ?? []
           const nextTaskClosureEvents = taskClosureResponse.events ?? []
+          const nextDecisions = decisionResponse.decisions ?? []
           const previousSnapshot = lastTimelineSnapshotRef.current
           const isSameSession = previousSnapshot.sessionId === data.id
           const timelineExpanded =
             data.messages.length > previousSnapshot.messageCount ||
             nextTraces.length > previousSnapshot.traceCount ||
-            nextTaskClosureEvents.length > previousSnapshot.taskClosureCount
+            nextTaskClosureEvents.length > previousSnapshot.taskClosureCount ||
+            nextDecisions.length > previousSnapshot.decisionCount
 
           setSession(data)
           setTraces(nextTraces)
           setTaskClosureEvents(nextTaskClosureEvents)
+          setDecisions(nextDecisions)
           setLlmRequests(requestResponse.requests ?? [])
 
           lastTimelineSnapshotRef.current = {
@@ -202,6 +213,7 @@ export function SessionDetailScreen({
             messageCount: data.messages.length,
             traceCount: nextTraces.length,
             taskClosureCount: nextTaskClosureEvents.length,
+            decisionCount: nextDecisions.length,
           }
 
           if (wasAtBottomRef.current && (!isSameSession || timelineExpanded)) {
@@ -218,12 +230,14 @@ export function SessionDetailScreen({
             setSession(null)
             setTraces([])
             setTaskClosureEvents([])
+            setDecisions([])
             setLlmRequests([])
             lastTimelineSnapshotRef.current = {
               sessionId: null,
               messageCount: 0,
               traceCount: 0,
               taskClosureCount: 0,
+              decisionCount: 0,
             }
           }
         })
@@ -240,6 +254,7 @@ export function SessionDetailScreen({
     if (previousSessionIdRef.current === sessionId) return
     previousSessionIdRef.current = sessionId
     setSelectedToolId(null)
+    setSelectedDecisionId(null)
     setSelectedTaskClosureId(null)
     setSelectedSubAgentId(null)
     setHighlightedAssistantMessageId(null)
@@ -249,6 +264,7 @@ export function SessionDetailScreen({
   useEffect(() => {
     if (!sessionId) {
       abortRef.current?.abort()
+      setDecisions([])
       setLoading(false)
       setTraceLoading(false)
       return
@@ -299,8 +315,8 @@ export function SessionDetailScreen({
   }
 
   const timelineItems = useMemo(
-    () => (session ? buildTimeline(session.messages, traces, taskClosureEvents) : []),
-    [session, traces, taskClosureEvents],
+    () => (session ? buildTimeline(session.messages, traces, taskClosureEvents, decisions) : []),
+    [session, traces, taskClosureEvents, decisions],
   )
 
   const toolCalls = useMemo(() => {
@@ -353,13 +369,31 @@ export function SessionDetailScreen({
     )
   }, [selectedTaskClosureId, timelineItems])
 
+  const selectedDecision = useMemo(() => {
+    if (!selectedDecisionId) return null
+    return (
+      timelineItems.find(
+        (item): item is DecisionTimelineItem =>
+          item.type === 'decision' && item.id === selectedDecisionId,
+      ) ?? null
+    )
+  }, [selectedDecisionId, timelineItems])
+
   const handleSelectTool = useCallback((toolId: string | null) => {
     setSelectedToolId(toolId)
+    setSelectedDecisionId(null)
+    setSelectedTaskClosureId(null)
+  }, [])
+
+  const handleSelectDecision = useCallback((decisionId: string | null) => {
+    setSelectedDecisionId(decisionId)
+    setSelectedToolId(null)
     setSelectedTaskClosureId(null)
   }, [])
 
   const handleSelectTaskClosure = useCallback((taskClosureId: string | null) => {
     setSelectedTaskClosureId(taskClosureId)
+    setSelectedDecisionId(null)
     setSelectedToolId(null)
   }, [])
 
@@ -418,6 +452,7 @@ export function SessionDetailScreen({
       el.scrollBy({ top: -scrollAmount, behavior: 'smooth' })
     } else if (e.key === 'Escape') {
       setSelectedToolId(null)
+      setSelectedDecisionId(null)
       setSelectedTaskClosureId(null)
     } else if (e.key === 'g' && lastKeyRef.current === 'g') {
       el.scrollTo({ top: 0, behavior: 'smooth' })
@@ -550,12 +585,15 @@ export function SessionDetailScreen({
               messages={session.messages}
               traces={traces}
               taskClosureEvents={taskClosureEvents}
+              decisions={decisions}
               selectedToolId={selectedToolId}
+              selectedDecisionId={selectedDecisionId}
               selectedTaskClosureId={selectedTaskClosureId}
               selectedSubAgentId={selectedSubAgentId}
               highlightedAssistantMessageId={highlightedAssistantMessageId}
               highlightedSubAgentId={highlightedSubAgentId}
               onSelectTool={handleSelectTool}
+              onSelectDecision={handleSelectDecision}
               onSelectTaskClosure={handleSelectTaskClosure}
               onSelectSubAgent={handleSelectSubAgent}
             />
@@ -582,9 +620,11 @@ export function SessionDetailScreen({
           netSavings={session.netSavings}
           llmRequests={llmRequests}
           selectedToolId={selectedToolId}
+          selectedDecision={selectedDecision}
           selectedTaskClosure={selectedTaskClosure}
           selectedSubAgentId={selectedSubAgentId}
           traces={traces}
+          decisions={decisions}
           taskClosureEvents={taskClosureEvents}
           traceLoading={traceLoading}
           onJumpToAssistantMessage={jumpToAssistantMessage}

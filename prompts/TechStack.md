@@ -76,6 +76,7 @@ zero-os/
 │   │   │   ├── observability-store.ts #   事件流 + trace 投影视图存取
 │   │   │   ├── metrics.ts        #   SQLite 聚合
 │   │   │   ├── trace.ts          #   Session Trace 持久化与导出
+│   │   │   ├── trace-projections.ts # trace -> requests/snapshots/closures/decisions 投影
 │   │   │   └── secret-filter.ts  #   输出过滤（密钥脱敏）
 │   │   └── package.json
 │   │

@@ -1,20 +1,20 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
-import { type MemoryRetriever } from '@zero-os/memory'
+import type { MemoryRetriever } from '@zero-os/memory'
 import type { ModelRouter, ModelSwitchResult, ResolvedModel } from '@zero-os/model'
 import type {
-  ObservabilityStore,
   MetricsDB,
-  RequestMemoryInjectionEntry,
+  ObservabilityStore,
   RequestLogEntry,
+  RequestMemoryInjectionEntry,
   SessionDB,
   SnapshotEntry,
   Tracer,
 } from '@zero-os/observe'
 import type {
-  CompressionResult,
   ChannelCapabilities,
+  CompressionResult,
   Message,
   SecretFilter,
   Session as SessionData,
@@ -28,13 +28,13 @@ import { Agent, type AgentConfig, type AgentContext, type AgentObservability } f
 import { AgentControl, type AgentSnapshot } from '../agent/agent-control'
 import { allocateBudget } from '../agent/budget'
 import { estimateConversationTokens } from '../agent/context'
+import { retrieveMemoriesWithDecision } from '../agent/memory-retrieval'
 import {
   buildDynamicContext,
   buildRetrievedMemoriesBlock,
   buildSystemPrompt,
 } from '../agent/prompt'
 import { CONTINUATION_PROMPT, type QueuedMessage } from '../agent/queue'
-import { retrieveMemoriesWithDecision } from '../agent/memory-retrieval'
 import { buildSnapshot } from '../agent/snapshot'
 import { TASK_CLOSURE_PROMPT } from '../agent/task-closure'
 import { loadBootstrapFiles } from '../bootstrap/loader'
@@ -259,7 +259,7 @@ export class Session {
       pricing: resolved?.modelConfig.pricing,
       getCurrentSnapshotId: () => this.currentSnapshotId,
       onContextCompressed: (event) => {
-        this.logCompressionSnapshot(event.summary, event.stats)
+        this.logCompressionSnapshot(event.summary, event.stats, event.decisionContext)
       },
     }
 
@@ -479,6 +479,7 @@ export class Session {
       messagesBefore: extra.messagesBefore,
       messagesAfter: extra.messagesAfter,
       compressedRange: extra.compressedRange,
+      decisionContext: extra.decisionContext,
     })
 
     if (!this.deps.tracer) {
@@ -513,6 +514,7 @@ export class Session {
             messagesBefore: snapshot.messagesBefore,
             messagesAfter: snapshot.messagesAfter,
             compressedRange: snapshot.compressedRange,
+            decisionContext: snapshot.decisionContext,
           },
         },
       },
@@ -552,7 +554,11 @@ export class Session {
     this.writeSnapshot(trigger, context)
   }
 
-  private logCompressionSnapshot(summary: string, stats: CompressionResult['stats']): void {
+  private logCompressionSnapshot(
+    summary: string,
+    stats: CompressionResult['stats'],
+    decisionContext?: SnapshotEntry['decisionContext'],
+  ): void {
     const context = this.getCurrentSnapshotContext()
     if (!context) return
 
@@ -561,6 +567,7 @@ export class Session {
       messagesBefore: stats.messagesBefore,
       messagesAfter: stats.messagesAfter,
       compressedRange: stats.compressedRange,
+      decisionContext,
     })
   }
 
@@ -787,7 +794,10 @@ export class Session {
         )
         this.messages.length = 0
         this.messages.push(...compResult.retainedMessages)
-        this.logCompressionSnapshot(compResult.summary, compResult.stats)
+        this.logCompressionSnapshot(compResult.summary, compResult.stats, {
+          currentTokens,
+          conversationBudget: newBudget.conversation,
+        })
       }
     }
 

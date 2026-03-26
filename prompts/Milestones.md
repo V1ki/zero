@@ -68,7 +68,7 @@ M1 (基础层)
 4. YAML 工具可往返解析 config.yaml fixture。
 5. 文件锁可获取/释放，并发竞争时正确阻塞。
 6. case 转换正确处理 camelCase ↔ snake_case（含嵌套对象、数组）。
-7. observability store 负责写入全局事件流并从 `trace.jsonl` 投影请求/快照视图；每行都是合法 JSON。
+7. observability store 负责写入全局事件流并从 `trace.jsonl` 投影请求、快照、closure、decision 视图；每行都是合法 JSON。
 8. secret-filter 可从任意字符串中擦除已知密钥值。
 9. SQLite metrics 可建表 + 从 JSONL fixture 执行基础聚合查询。
 

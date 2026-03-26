@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { ProviderAdapter } from '@zero-os/model'
-import { Tracer } from '@zero-os/observe'
+import { type SnapshotEntry, Tracer } from '@zero-os/observe'
 import type {
   CompletionRequest,
   CompletionResponse,
@@ -100,7 +100,11 @@ describe('Agent snapshot linking', () => {
     const registry = new ToolRegistry()
     registry.register(new NoopTool())
 
-    const compressionEvents: Array<{ summary: string; stats: { compressedRange?: string } }> = []
+    const compressionEvents: Array<{
+      summary: string
+      stats: { compressedRange?: string }
+      decisionContext: NonNullable<SnapshotEntry['decisionContext']>
+    }> = []
     let currentSnapshotId = 'snap_initial'
     const tracer = new Tracer()
 
@@ -150,6 +154,9 @@ describe('Agent snapshot linking', () => {
     expect(compressionEvents).toHaveLength(1)
     expect(compressionEvents[0]?.summary).toBe('compressed summary')
     expect(compressionEvents[0]?.stats.compressedRange).toBeTruthy()
+    expect(compressionEvents[0]?.decisionContext.currentTokens).toBeGreaterThan(
+      compressionEvents[0]?.decisionContext.conversationBudget ?? 0,
+    )
   })
 })
 

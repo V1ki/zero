@@ -1,4 +1,10 @@
-import { asRecord, asString, flattenTraceSpans } from '@zero-os/observe'
+import {
+  type DecisionLogEntry,
+  type DecisionType,
+  asRecord,
+  asString,
+  flattenTraceSpans,
+} from '@zero-os/observe'
 
 export interface ContentBlock {
   type: string
@@ -43,6 +49,25 @@ export interface TaskClosureTimelineItem {
   assistantMessageId?: string
   assistantMessageCreatedAt?: string
   error?: string
+  createdAt: string
+}
+
+export type SessionDecisionType = DecisionType
+
+export type SessionDecisionEvent = Omit<DecisionLogEntry, 'sourceKind'> & {
+  sourceKind: string
+}
+
+export interface DecisionTimelineItem {
+  type: 'decision'
+  id: string
+  decisionType: SessionDecisionType
+  outcome: string
+  context?: Record<string, unknown>
+  detail?: Record<string, unknown>
+  rationale?: string
+  durationMs?: number
+  sourceKind: string
   createdAt: string
 }
 
@@ -101,6 +126,7 @@ export type TimelineItem =
       durationMs?: number
       createdAt: string
     }
+  | DecisionTimelineItem
   | TaskClosureTimelineItem
   | { type: 'system-event'; variant: 'warning' | 'info'; text: string; createdAt: string }
   | {
@@ -121,6 +147,7 @@ export function buildTimeline(
   messages: Message[],
   traces: TraceSpan[] = [],
   taskClosureEvents: SessionTaskClosureEvent[] = [],
+  decisions: SessionDecisionEvent[] = [],
 ): TimelineItem[] {
   const items: TimelineItem[] = []
   const toolResults = new Map<string, { content: string; isError: boolean }>()
@@ -317,6 +344,7 @@ export function buildTimeline(
     items.push(notification)
   }
 
+  items.push(...buildDecisionEvents(decisions))
   items.push(...buildTaskClosureEvents(traces, taskClosureEvents))
   return items.sort((left, right) => left.createdAt.localeCompare(right.createdAt))
 }
@@ -346,6 +374,27 @@ function buildTaskClosureEvents(
     (event, index) => mapSessionTaskClosureEvent(event, index),
   )
   return [...traceItems, ...sessionItems]
+}
+
+function buildDecisionEvents(decisions: SessionDecisionEvent[]): DecisionTimelineItem[] {
+  return filterDisplayableDecisions(decisions).map((decision) => ({
+    type: 'decision',
+    id: decision.id,
+    decisionType: decision.decisionType,
+    outcome: decision.outcome,
+    context: decision.context,
+    detail: decision.detail,
+    rationale: decision.rationale,
+    durationMs: decision.durationMs,
+    sourceKind: decision.sourceKind,
+    createdAt: decision.ts,
+  }))
+}
+
+export function filterDisplayableDecisions(
+  decisions: SessionDecisionEvent[],
+): SessionDecisionEvent[] {
+  return decisions.filter((decision) => decision.decisionType !== 'task_closure')
 }
 
 export function filterDuplicateTaskClosureEvents(

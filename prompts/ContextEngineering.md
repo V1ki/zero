@@ -503,7 +503,11 @@ function shouldCompress(
 interface CompressionResult {
   summary: string           // 压缩摘要，作为第一条 user 消息注入
   retainedMessages: Message[]
-  snapshot: Snapshot         // 记录压缩事件
+  stats: {
+    messagesBefore: number
+    messagesAfter: number
+    compressedRange?: string
+  }
 }
 
 async function compressConversation(
@@ -535,15 +539,15 @@ async function compressConversation(
   // 2. 用便宜模型生成摘要
   const summary = await generateSummary(toSummarize, compressionModel)
 
-  // 3. 产生 Snapshot
-  const snapshot = buildSnapshot({
-    trigger: 'context_compression',
-    messagesBefore: messages.length,
-    messagesAfter: retained.length + 1, // +1 for summary
-    compressedRange: `msg_1 ~ msg_${splitIndex}`,
-  })
-
-  return { summary, retainedMessages: retained, snapshot }
+  return {
+    summary,
+    retainedMessages: retained,
+    stats: {
+      messagesBefore: messages.length,
+      messagesAfter: retained.length + 1, // +1 for summary
+      compressedRange: `0..${splitIndex - 1}`,
+    },
+  }
 }
 ```
 
@@ -585,7 +589,12 @@ const summaryMessage: Message = {
 
 ### 压缩与 Snapshot 的关系
 
-每次压缩产生一条新的 Snapshot（写入 `trace.jsonl` 的 snapshot span；旧 `snapshots.jsonl` 仅保留兼容 fallback），记录压缩前后的消息数量、压缩范围、摘要内容。这样事后回放 Session 时可以完整还原：Snapshot 链 + 请求链 = 完整的上下文演进历史。
+每次压缩产生一条新的 Snapshot（写入 `trace.jsonl` 的 snapshot span；旧 `snapshots.jsonl` 仅保留兼容 fallback），记录压缩前后的消息数量、压缩范围、摘要内容。Session 层还会把压缩决策的上下文一并写入 `decision_context`，至少包含：
+
+- `current_tokens`：压缩前估算的当前对话 token 数
+- `conversation_budget`：本轮会话区预算
+
+这样事后回放 Session 时不仅能看到“压缩发生了”，还能知道“为什么会压缩”。
 
 ---
 

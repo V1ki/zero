@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'bun:test'
 import {
   type Message,
+  type SessionDecisionEvent,
   type SessionTaskClosureEvent,
   type TraceSpan,
   buildTimeline,
+  filterDisplayableDecisions,
 } from '../timeline'
 
 describe('buildTimeline', () => {
@@ -250,6 +252,84 @@ describe('buildTimeline', () => {
       expect(items[1].text).toContain('<memory_inject layer="layer2">')
       expect(items[1].createdAt).toBe('2026-03-08T00:00:00.000Z')
     }
+  })
+
+  test('adds projected decision items and keeps task_closure decisions out of the decision lane', () => {
+    const decisions: SessionDecisionEvent[] = [
+      {
+        id: 'decision_compress',
+        sessionId: 'sess_1',
+        ts: '2026-03-08T00:00:01.000Z',
+        decisionType: 'context_compression',
+        outcome: 'compress',
+        detail: {
+          messagesBefore: 14,
+          messagesAfter: 8,
+        },
+        sourceKind: 'snapshot',
+      },
+      {
+        id: 'decision_tools',
+        sessionId: 'sess_1',
+        ts: '2026-03-08T00:00:02.000Z',
+        decisionType: 'tool_selection',
+        outcome: 'read, bash',
+        detail: {
+          selectedTools: ['read', 'bash'],
+        },
+        rationale: 'Need to inspect first, then validate in shell.',
+        sourceKind: 'llm_request',
+      },
+      {
+        id: 'decision_task_closure',
+        sessionId: 'sess_1',
+        ts: '2026-03-08T00:00:03.000Z',
+        decisionType: 'task_closure',
+        outcome: 'finish',
+        rationale: 'Already represented by task closure events.',
+        sourceKind: 'closure_decision',
+      },
+    ]
+
+    const items = buildTimeline([], [], [], decisions)
+    const decisionItems = items.filter((item) => item.type === 'decision')
+
+    expect(decisionItems).toHaveLength(2)
+    expect(decisionItems.map((item) => item.type === 'decision' && item.id)).toEqual([
+      'decision_compress',
+      'decision_tools',
+    ])
+    expect(decisionItems[1]).toMatchObject({
+      type: 'decision',
+      decisionType: 'tool_selection',
+      outcome: 'read, bash',
+      rationale: 'Need to inspect first, then validate in shell.',
+    })
+  })
+
+  test('reuses the shared display filter for non-task-closure decisions', () => {
+    const decisions: SessionDecisionEvent[] = [
+      {
+        id: 'decision_memory',
+        sessionId: 'sess_1',
+        ts: '2026-03-08T00:00:01.000Z',
+        decisionType: 'memory_retrieval',
+        outcome: 'retrieve',
+        sourceKind: 'llm_request',
+      },
+      {
+        id: 'decision_task_closure',
+        sessionId: 'sess_1',
+        ts: '2026-03-08T00:00:02.000Z',
+        decisionType: 'task_closure',
+        outcome: 'finish',
+        sourceKind: 'closure_decision',
+      },
+    ]
+
+    expect(filterDisplayableDecisions(decisions).map((decision) => decision.id)).toEqual([
+      'decision_memory',
+    ])
   })
 })
 

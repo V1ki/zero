@@ -13,9 +13,10 @@ import {
 import { dirname, join, relative } from 'node:path'
 import { type SessionStatus, getSessionLogRelativeDir, now } from '@zero-os/shared'
 import type { CompletionResponse, StopReason, ToolResultBlock } from '@zero-os/shared'
-import { type TraceEntry, collapseTraceEntries } from './trace'
+import { type TraceEntry, type TraceKind, collapseTraceEntries } from './trace'
 import {
   projectSessionClosuresFromTraceEntries,
+  projectSessionDecisionsFromTraceEntries,
   projectSessionRequestsFromTraceEntries,
   projectSessionSnapshotsFromTraceEntries,
 } from './trace-projections'
@@ -106,6 +107,10 @@ export interface SnapshotEntry {
   messagesBefore?: number
   messagesAfter?: number
   compressedRange?: string
+  decisionContext?: {
+    currentTokens: number
+    conversationBudget: number
+  }
   ts: string
 }
 
@@ -156,6 +161,27 @@ export type ClosureLogEntry = TaskClosureDecisionLogEntry | TaskClosureFailedLog
 export type ClosureLogEntryInput =
   | Omit<TaskClosureDecisionLogEntry, 'ts'>
   | Omit<TaskClosureFailedLogEntry, 'ts'>
+
+export type DecisionType =
+  | 'context_compression'
+  | 'memory_retrieval'
+  | 'tool_selection'
+  | 'task_closure'
+
+export interface DecisionLogEntry {
+  id: string
+  sessionId: string
+  agentName?: string
+  ts: string
+  durationMs?: number
+  parentSpanId?: string
+  sourceKind: TraceKind
+  decisionType: DecisionType
+  outcome: string
+  context?: Record<string, unknown>
+  detail?: Record<string, unknown>
+  rationale?: string
+}
 
 /**
  * Observability store for global events and trace-backed session projections.
@@ -301,6 +327,13 @@ export class ObservabilityStore {
    */
   readSessionClosures(sessionId: string): ClosureLogEntry[] {
     return projectSessionClosuresFromTraceEntries(this.readSessionTraceEntries(sessionId))
+  }
+
+  /**
+   * Read projected decisions for a session from trace.jsonl.
+   */
+  readSessionDecisions(sessionId: string): DecisionLogEntry[] {
+    return projectSessionDecisionsFromTraceEntries(this.readSessionTraceEntries(sessionId))
   }
 
   /**

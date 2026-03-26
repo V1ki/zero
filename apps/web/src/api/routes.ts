@@ -505,6 +505,20 @@ export function createRoutes(zero: ZeroOS) {
       })
     })
 
+    .get('/api/sessions/:id/decisions', (c) => {
+      const id = c.req.param('id')
+      const session = getSessionRow(id)
+      if (!session) {
+        return c.json({ error: 'Session not found' }, 404)
+      }
+
+      const decisions = zero.observability.readSessionDecisions(id)
+      return c.json({
+        sessionId: id,
+        decisions,
+      })
+    })
+
     .get('/api/sessions/:id/traces', (c) => {
       const id = c.req.param('id')
       const traces = zero.tracer.exportSession(id).map((span) => sanitizeTraceSpanForClient(span))

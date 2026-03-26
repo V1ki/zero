@@ -126,6 +126,51 @@ describe('TraceSummaryCard', () => {
     expect(html).not.toContain('CLASSIFIER SYSTEM PROMPT')
   })
 
+  test('renders selected decision detail with rationale, context, and detail payloads', () => {
+    const html = renderToStaticMarkup(
+      <ContextPanel
+        modelHistory={[]}
+        toolCalls={[]}
+        filesTouched={[]}
+        totalTokens={0}
+        selectedToolId={null}
+        selectedDecision={{
+          type: 'decision',
+          id: 'decision_1',
+          decisionType: 'tool_selection',
+          outcome: 'read, bash',
+          sourceKind: 'llm_request',
+          rationale: 'Inspect the file first, then run the validation command.',
+          context: {
+            currentTokens: 12000,
+          },
+          detail: {
+            selectedTools: ['read', 'bash'],
+            toolCount: 2,
+          },
+          durationMs: 850,
+          createdAt: '2026-03-08T00:00:02.000Z',
+        }}
+      />,
+    )
+
+    expect(html).toContain('Decision Detail')
+    expect(html).toContain('DECISION TYPE')
+    expect(html).toContain('tool_selection')
+    expect(html).toContain('OUTCOME')
+    expect(html).toContain('read, bash')
+    expect(html).toContain('SOURCE KIND')
+    expect(html).toContain('llm_request')
+    expect(html).toContain('DURATION')
+    expect(html).toContain('850ms')
+    expect(html).toContain('RATIONALE')
+    expect(html).toContain('Inspect the file first, then run the validation command.')
+    expect(html).toContain('CONTEXT')
+    expect(html).toContain('&quot;currentTokens&quot;: 12000')
+    expect(html).toContain('DETAIL')
+    expect(html).toContain('&quot;selectedTools&quot;')
+  })
+
   test('keeps tool detail priority over selected task closure detail', () => {
     const html = renderToStaticMarkup(
       <ContextPanel

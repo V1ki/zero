@@ -357,6 +357,10 @@ describe('ObservabilityStore', () => {
             model: 'trace-model',
             systemPrompt: 'trace system prompt',
             tools: ['read', 'bash'],
+            decisionContext: {
+              currentTokens: 12000,
+              conversationBudget: 10000,
+            },
           },
         },
       },
@@ -366,6 +370,214 @@ describe('ObservabilityStore', () => {
     expect(entries).toHaveLength(1)
     expect(entries[0].id).toBe('snap_trace_001')
     expect(entries[0].systemPrompt).toBe('trace system prompt')
+    expect(entries[0].decisionContext).toEqual({
+      currentTokens: 12000,
+      conversationBudget: 10000,
+    })
+  })
+
+  test('readSessionDecisions projects compression, retrieval, tool selection, and task closure', () => {
+    const store = new ObservabilityStore(testDir)
+    const sessionId = 'sess_20260316_0135_web_trace'
+
+    writeSessionTraceEntries(testDir, sessionId, [
+      {
+        spanId: 'span_snapshot_decision',
+        sessionId,
+        kind: 'snapshot',
+        name: 'snapshot:context_compression',
+        startTime: '2026-03-16T01:35:00.000Z',
+        endTime: '2026-03-16T01:35:01.000Z',
+        durationMs: 1000,
+        status: 'success',
+        data: {
+          snapshot: {
+            id: 'snap_trace_decision_001',
+            trigger: 'context_compression',
+            model: 'trace-model',
+            systemPrompt: 'trace system prompt',
+            decisionContext: {
+              currentTokens: 18000,
+              conversationBudget: 16000,
+            },
+            messagesBefore: 24,
+            messagesAfter: 12,
+            compressedRange: '4-18',
+          },
+        },
+      },
+      {
+        spanId: 'span_memory_decision',
+        sessionId,
+        kind: 'llm_request',
+        name: 'llm_request',
+        startTime: '2026-03-16T01:35:02.000Z',
+        endTime: '2026-03-16T01:35:03.000Z',
+        durationMs: 1000,
+        status: 'success',
+        metadata: {
+          purpose: 'memory_retrieval_decision',
+        },
+        data: {
+          memoryRetrievalDecision: {
+            need: false,
+            queries: ['recent deploy rollback'],
+          },
+          request: {
+            ts: '2026-03-16T01:35:03.000Z',
+          },
+        },
+      },
+      {
+        spanId: 'span_tool_decision',
+        sessionId,
+        kind: 'llm_request',
+        name: 'llm_request',
+        startTime: '2026-03-16T01:35:04.000Z',
+        endTime: '2026-03-16T01:35:05.000Z',
+        durationMs: 1000,
+        status: 'success',
+        data: {
+          request: {
+            id: 'req_trace_decision_001',
+            turnIndex: 1,
+            sessionId,
+            model: 'trace-model',
+            provider: 'trace-provider',
+            userPrompt: 'inspect and fix',
+            response: 'using tools',
+            stopReason: 'tool_use',
+            toolUseCount: 2,
+            toolNames: ['read', 'bash'],
+            reasoningContent: 'Need to inspect the file before running the command.',
+            toolCalls: [],
+            toolResults: [],
+            tokens: { input: 10, output: 20 },
+            cost: 0.12,
+            ts: '2026-03-16T01:35:05.000Z',
+          },
+        },
+      },
+      {
+        spanId: 'span_closure_decision',
+        sessionId,
+        kind: 'closure_decision',
+        name: 'task_closure_decision',
+        startTime: '2026-03-16T01:35:06.000Z',
+        endTime: '2026-03-16T01:35:07.000Z',
+        durationMs: 1000,
+        status: 'success',
+        data: {
+          closure: {
+            event: 'task_closure_decision',
+            action: 'finish',
+            reason: 'All requested checks are complete.',
+            classifierRequest: {
+              system: 'trace system',
+              prompt: 'trace prompt',
+              maxTokens: 200,
+            },
+          },
+        },
+      },
+    ])
+
+    const entries = store.readSessionDecisions(sessionId)
+    expect(entries).toHaveLength(4)
+    expect(entries.map((entry) => entry.decisionType)).toEqual([
+      'context_compression',
+      'memory_retrieval',
+      'tool_selection',
+      'task_closure',
+    ])
+    expect(entries[0]).toMatchObject({
+      decisionType: 'context_compression',
+      outcome: 'compress',
+      context: {
+        currentTokens: 18000,
+        conversationBudget: 16000,
+      },
+      detail: {
+        messagesBefore: 24,
+        messagesAfter: 12,
+        compressedRange: '4-18',
+      },
+    })
+    expect(entries[1]).toMatchObject({
+      decisionType: 'memory_retrieval',
+      outcome: 'skip',
+      detail: {
+        need: false,
+        queries: ['recent deploy rollback'],
+        searchResultCount: 0,
+      },
+    })
+    expect(entries[2]).toMatchObject({
+      decisionType: 'tool_selection',
+      outcome: 'read, bash',
+      detail: {
+        selectedTools: ['read', 'bash'],
+        toolCount: 2,
+      },
+    })
+    expect(entries[2]?.rationale).toBe('Need to inspect the file before running the command.')
+    expect(entries[3]).toMatchObject({
+      decisionType: 'task_closure',
+      outcome: 'finish',
+      rationale: 'All requested checks are complete.',
+    })
+  })
+
+  test('readSessionDecisions marks truncated tool-selection rationale explicitly', () => {
+    const store = new ObservabilityStore(testDir)
+    const sessionId = 'sess_20260316_0140_web_trace'
+    const longReasoning = 'inspect-first '.repeat(130)
+
+    writeSessionTraceEntries(testDir, sessionId, [
+      {
+        spanId: 'span_tool_decision_long',
+        sessionId,
+        kind: 'llm_request',
+        name: 'llm_request',
+        startTime: '2026-03-16T01:40:00.000Z',
+        endTime: '2026-03-16T01:40:01.000Z',
+        durationMs: 1000,
+        status: 'success',
+        data: {
+          request: {
+            id: 'req_trace_decision_long_001',
+            turnIndex: 1,
+            sessionId,
+            model: 'trace-model',
+            provider: 'trace-provider',
+            userPrompt: 'inspect and fix',
+            response: 'using tools',
+            stopReason: 'tool_use',
+            toolUseCount: 2,
+            toolNames: ['read', 'bash'],
+            reasoningContent: longReasoning,
+            toolCalls: [],
+            toolResults: [],
+            tokens: { input: 10, output: 20 },
+            cost: 0.12,
+            ts: '2026-03-16T01:40:01.000Z',
+          },
+        },
+      },
+    ])
+
+    const entries = store.readSessionDecisions(sessionId)
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({
+      decisionType: 'tool_selection',
+      detail: {
+        selectedTools: ['read', 'bash'],
+        toolCount: 2,
+        rationaleTruncated: true,
+      },
+    })
+    expect(entries[0]?.rationale).toEndWith('...')
+    expect(entries[0]?.rationale).toHaveLength(1500)
   })
 
   test('readAllSnapshots includes trace-only session snapshots', () => {
@@ -591,15 +803,24 @@ describe('ObservabilityStore', () => {
     mkdirSync(sessionDir, { recursive: true })
     appendFileSync(
       join(sessionDir, 'llm-judge.jsonl'),
-      [
-        JSON.stringify({ savedAt: '2026-03-16T02:00:00.000Z', run: { result: { overallScore: 60 } } }),
+      `${[
+        JSON.stringify({
+          savedAt: '2026-03-16T02:00:00.000Z',
+          run: { result: { overallScore: 60 } },
+        }),
         '{not-json',
-        JSON.stringify({ savedAt: '2026-03-16T03:00:00.000Z', run: { result: { overallScore: 90 } } }),
-      ].join('\n') + '\n',
+        JSON.stringify({
+          savedAt: '2026-03-16T03:00:00.000Z',
+          run: { result: { overallScore: 90 } },
+        }),
+      ].join('\n')}\n`,
       'utf-8',
     )
 
-    const history = store.readSessionJudges<{ savedAt: string; run: { result: { overallScore: number } } }>(sessionId)
+    const history = store.readSessionJudges<{
+      savedAt: string
+      run: { result: { overallScore: number } }
+    }>(sessionId)
     expect(history).toHaveLength(2)
     expect(history[0].savedAt).toBe('2026-03-16T03:00:00.000Z')
     expect(history[0].run.result.overallScore).toBe(90)

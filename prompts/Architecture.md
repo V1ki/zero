@@ -448,11 +448,27 @@ System Prompt、tools 等上下文信息不随每次请求重复记录，只在�
   "compressed_summary": "用户在讨论 ZeRo OS 架构设计，已完成安全策略和模型层...",
   "messages_before": 42,
   "messages_after": 8,
+  "compressed_range": "0..33",
+  "decision_context": {
+    "current_tokens": 18000,
+    "conversation_budget": 16000
+  },
   "ts": "2026-02-27T11:30:00Z"
 }
 ```
 
 要复现任何一次请求的完整上下文：请求记录 + 对应快照 + `parent_id` 链条上的历史 prompt/response。
+
+**决策视图**（从 `trace.jsonl` 投影，不新增 `decisions.jsonl`）：
+
+Decision 不是新的存储文件，而是 Session 级的结构化投影视图。当前实现从已有 span 数据提取四类决策：
+
+- `context_compression`：来自 `snapshot` span（`trigger='context_compression'`），包含压缩前后消息数、压缩范围，以及 `decision_context`（`current_tokens` / `conversation_budget`）。
+- `memory_retrieval`：来自带 `purpose='memory_retrieval_decision'` 的 `llm_request` span，包含 `need`、查询词和检索结果计数。
+- `tool_selection`：来自 `stop_reason='tool_use'` 的 `llm_request` span，包含已选工具、工具数量和截断后的 `reasoning_content`。
+- `task_closure`：来自 `closure_decision` span，包含 `action` 和 `reason`。
+
+Session 级读取会在请求、快照、closure 之外额外暴露 decision 投影，用于 UI 和 API 的“why”视角，而不改变 trace 原始存储结构。
 
 Token 用量和费用汇总到观测性 Metrics 中，支持按模型、Provider、Session、时间维度统计。
 

@@ -1,12 +1,14 @@
 import { ArrowsClockwise, Warning } from '@phosphor-icons/react'
 import { useMemo } from 'react'
 import { AgentMessageBlock } from './AgentMessageBlock'
+import { DecisionBlock } from './DecisionBlock'
 import { SubAgentBlock } from './SubAgentBlock'
 import { TaskClosureBlock } from './TaskClosureBlock'
 import { ToolCallBlock } from './ToolCallBlock'
 import { UserMessageBlock } from './UserMessageBlock'
 import {
   type Message,
+  type SessionDecisionEvent,
   type SessionTaskClosureEvent,
   type TimelineItem,
   type TraceSpan,
@@ -17,12 +19,15 @@ interface Props {
   messages: Message[]
   traces?: TraceSpan[]
   taskClosureEvents?: SessionTaskClosureEvent[]
+  decisions?: SessionDecisionEvent[]
   selectedToolId: string | null
+  selectedDecisionId: string | null
   selectedTaskClosureId: string | null
   selectedSubAgentId?: string | null
   highlightedAssistantMessageId?: string | null
   highlightedSubAgentId?: string | null
   onSelectTool: (id: string | null) => void
+  onSelectDecision: (id: string | null) => void
   onSelectTaskClosure: (id: string | null) => void
   onSelectSubAgent?: (id: string | null) => void
 }
@@ -31,15 +36,18 @@ export function TimelineView({
   messages,
   traces,
   taskClosureEvents,
+  decisions,
   selectedToolId,
+  selectedDecisionId,
   selectedTaskClosureId,
   highlightedAssistantMessageId,
   onSelectTool,
+  onSelectDecision,
   onSelectTaskClosure,
 }: Props) {
   const items = useMemo(
-    () => buildTimeline(messages, traces, taskClosureEvents),
-    [messages, traces, taskClosureEvents],
+    () => buildTimeline(messages, traces, taskClosureEvents, decisions),
+    [messages, traces, taskClosureEvents, decisions],
   )
 
   return (
@@ -78,6 +86,18 @@ export function TimelineView({
                 durationMs={item.durationMs}
                 selected={selectedToolId === item.id}
                 onSelect={(id) => onSelectTool(selectedToolId === id ? null : id)}
+              />
+            )
+          case 'decision':
+            return (
+              <DecisionBlock
+                key={item.id}
+                id={item.id}
+                decisionType={item.decisionType}
+                outcome={item.outcome}
+                detail={item.detail}
+                selected={selectedDecisionId === item.id}
+                onSelect={(id) => onSelectDecision(selectedDecisionId === id ? null : id)}
               />
             )
           case 'task-closure':
@@ -141,6 +161,8 @@ function getTimelineItemKey(item: TimelineItem): string {
       return `assistant-${item.messageId}`
     case 'tool-call':
       return `tool-${item.id}`
+    case 'decision':
+      return `decision-${item.id}`
     case 'task-closure':
       return `task-closure-${item.id}`
     case 'sub-agent':
@@ -168,8 +190,10 @@ function SystemEventBanner({ variant, text }: { variant: 'warning' | 'info'; tex
 }
 
 export type {
+  DecisionTimelineItem,
   TimelineItem,
   Message,
+  SessionDecisionEvent,
   SessionTaskClosureEvent,
   TaskClosureTimelineItem,
   TraceSpan,

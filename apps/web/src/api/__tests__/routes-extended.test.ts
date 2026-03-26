@@ -480,6 +480,130 @@ describe('API Routes Extended', () => {
     ])
   })
 
+  test('GET /api/sessions/:id/decisions returns trace-projected decisions', async () => {
+    const session = zero.sessionManager.create('web')
+
+    const compressionSpan = zero.tracer.startSpan(
+      session.data.id,
+      'snapshot:context_compression',
+      undefined,
+      {
+        kind: 'snapshot',
+        data: {
+          snapshot: {
+            id: 'snap_route_decision_001',
+            trigger: 'context_compression',
+            systemPrompt: 'trace system prompt',
+            decisionContext: {
+              currentTokens: 14000,
+              conversationBudget: 12000,
+            },
+            messagesBefore: 20,
+            messagesAfter: 10,
+            compressedRange: '4-14',
+          },
+        },
+      },
+    )
+    zero.tracer.endSpan(compressionSpan.id, 'success')
+
+    const retrievalSpan = zero.tracer.startSpan(session.data.id, 'llm_request', undefined, {
+      kind: 'llm_request',
+      metadata: {
+        purpose: 'memory_retrieval_decision',
+      },
+      data: {
+        memoryRetrievalDecision: {
+          need: true,
+          queries: ['deployment rollback runbook'],
+          searches: [{ resultCount: 2 }],
+          selectedMemoryIds: ['mem_1'],
+        },
+      },
+    })
+    zero.tracer.endSpan(retrievalSpan.id, 'success')
+
+    const toolSpan = zero.tracer.startSpan(session.data.id, 'llm_request', undefined, {
+      kind: 'llm_request',
+      data: {
+        request: {
+          id: 'req_route_decision_001',
+          turnIndex: 1,
+          sessionId: session.data.id,
+          model: 'openai-codex/gpt-5.4-medium',
+          provider: 'openai-codex',
+          userPrompt: 'Investigate the issue',
+          response: 'Using tools now',
+          stopReason: 'tool_use',
+          toolUseCount: 2,
+          toolNames: ['read', 'bash'],
+          reasoningContent: 'Need the file contents before running a command.',
+          toolCalls: [],
+          toolResults: [],
+          tokens: { input: 12, output: 18 },
+          cost: 0.14,
+        },
+      },
+    })
+    zero.tracer.endSpan(toolSpan.id, 'success')
+
+    const closureSpan = zero.tracer.startSpan(session.data.id, 'task_closure_decision', undefined, {
+      kind: 'closure_decision',
+      data: {
+        closure: {
+          event: 'task_closure_decision',
+          action: 'continue',
+          reason: 'Need one more validation step.',
+          classifierRequest: {
+            system: 'strict classifier',
+            prompt: '<instruction>prompt</instruction>',
+            maxTokens: 200,
+          },
+        },
+      },
+    })
+    zero.tracer.endSpan(closureSpan.id, 'success')
+
+    const res = await app.request(`/api/sessions/${session.data.id}/decisions`)
+    expect(res.status).toBe(200)
+    const data = await res.json()
+    expect(data.sessionId).toBe(session.data.id)
+    expect(Array.isArray(data.decisions)).toBe(true)
+    expect(data.decisions.map((entry: { decisionType: string }) => entry.decisionType)).toEqual([
+      'context_compression',
+      'memory_retrieval',
+      'tool_selection',
+      'task_closure',
+    ])
+    expect(data.decisions[0]).toMatchObject({
+      decisionType: 'context_compression',
+      context: {
+        currentTokens: 14000,
+        conversationBudget: 12000,
+      },
+    })
+    expect(data.decisions[1]).toMatchObject({
+      decisionType: 'memory_retrieval',
+      outcome: 'retrieve',
+      detail: {
+        need: true,
+        queries: ['deployment rollback runbook'],
+        searchResultCount: 2,
+        selectedMemoryIds: ['mem_1'],
+      },
+    })
+    expect(data.decisions[2]).toMatchObject({
+      decisionType: 'tool_selection',
+      outcome: 'read, bash',
+      rationale: 'Need the file contents before running a command.',
+    })
+    expect(data.decisions[3]).toMatchObject({
+      decisionType: 'task_closure',
+      outcome: 'continue',
+      rationale: 'Need one more validation step.',
+    })
+  })
+
   test('POST /api/sessions/:id/llm-judge returns parsed judge result and prompt signals', async () => {
     const session = zero.sessionManager.create('web')
 
