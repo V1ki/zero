@@ -2,39 +2,15 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { loadConfig } from '@zero-os/core'
 import { readYaml, writeYaml } from '@zero-os/shared'
-import type { ModelConfig, ProviderConfig, SystemConfig } from '@zero-os/shared'
+import type { SystemConfig } from '@zero-os/shared'
 
 const CHATGPT_PROVIDER = 'chatgpt'
 const CHATGPT_OAUTH_TOKEN_REF = 'chatgpt_oauth_token'
-
-const CHATGPT_MODELS = ['gpt-5.3-codex-medium', 'gpt-5.4-medium'] as const
-
-const DEFAULT_MODEL_TEMPLATES: Record<(typeof CHATGPT_MODELS)[number], ModelConfig> = {
-  'gpt-5.3-codex-medium': {
-    modelId: 'gpt-5.3-codex-medium',
-    maxContext: 400000,
-    maxOutput: 128000,
-    capabilities: ['tools', 'vision', 'reasoning'],
-    tags: ['powerful', 'coding'],
-    pricing: {
-      input: 1.75,
-      output: 14.0,
-      cacheRead: 0.175,
-    },
-  },
-  'gpt-5.4-medium': {
-    modelId: 'gpt-5.4-medium',
-    maxContext: 400000,
-    maxOutput: 128000,
-    capabilities: ['tools', 'vision', 'reasoning'],
-    tags: ['powerful', 'coding'],
-    pricing: {
-      input: 1.75,
-      output: 14.0,
-      cacheRead: 0.175,
-    },
-  },
-}
+const CHATGPT_DEFAULT_MODEL = 'chatgpt/gpt-5.4'
+const REMOVED_CHATGPT_MODEL_NAMES = new Set(['gpt-5.3-codex-medium', 'gpt-5.4-medium'])
+const REMOVED_CHATGPT_MODEL_REFS = new Set(
+  [...REMOVED_CHATGPT_MODEL_NAMES].map((modelName) => `${CHATGPT_PROVIDER}/${modelName}`),
+)
 
 function getZeroDir() {
   return process.env.ZERO_DATA_DIR ?? join(process.cwd(), '.zero')
@@ -49,64 +25,74 @@ function loadRawConfig(): Record<string, unknown> {
   return readYaml<Record<string, unknown>>(configPath)
 }
 
-function modelToYaml(model: ModelConfig): Record<string, unknown> {
-  return {
-    model_id: model.modelId,
-    max_context: model.maxContext,
-    max_output: model.maxOutput,
-    capabilities: [...model.capabilities],
-    tags: [...model.tags],
-    ...(model.pricing
-      ? {
-          pricing: {
-            input: model.pricing.input,
-            output: model.pricing.output,
-            ...(model.pricing.cacheWrite !== undefined
-              ? { cache_write: model.pricing.cacheWrite }
-              : {}),
-            ...(model.pricing.cacheRead !== undefined
-              ? { cache_read: model.pricing.cacheRead }
-              : {}),
-          },
-        }
-      : {}),
-  }
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function deriveModelTemplate(
-  config: SystemConfig,
-  modelName: keyof typeof DEFAULT_MODEL_TEMPLATES,
-): ModelConfig {
-  const bareModelId = DEFAULT_MODEL_TEMPLATES[modelName].modelId
+function isRemovedChatgptModelRef(value: unknown): value is string {
+  return typeof value === 'string' && REMOVED_CHATGPT_MODEL_REFS.has(value)
+}
 
-  for (const provider of Object.values(config.providers)) {
-    for (const model of Object.values(provider.models)) {
-      if (model.modelId === bareModelId) {
-        return {
-          modelId: model.modelId,
-          maxContext: model.maxContext,
-          maxOutput: model.maxOutput,
-          capabilities: [...model.capabilities],
-          tags: [...model.tags],
-          ...(model.pricing ? { pricing: { ...model.pricing } } : {}),
-        }
-      }
+function isRemovedChatgptModelEntry(name: string, value: unknown): boolean {
+  if (REMOVED_CHATGPT_MODEL_NAMES.has(name) || REMOVED_CHATGPT_MODEL_REFS.has(name)) {
+    return true
+  }
+
+  if (!isRecord(value)) {
+    return false
+  }
+
+  const modelId = value.model_id
+  return (
+    (typeof modelId === 'string' && REMOVED_CHATGPT_MODEL_NAMES.has(modelId)) ||
+    isRemovedChatgptModelRef(modelId)
+  )
+}
+
+function hasNamedModel(provider: unknown, modelName: string): boolean {
+  if (!isRecord(provider) || !isRecord(provider.models)) {
+    return false
+  }
+
+  return Object.entries(provider.models).some(([name, model]) => {
+    if (name === modelName) {
+      return true
+    }
+
+    return isRecord(model) && model.model_id === modelName
+  })
+}
+
+function collectBareRemovedChatgptReferences(providers: Record<string, unknown>): Set<string> {
+  const bareReferences = new Set<string>()
+
+  for (const modelName of REMOVED_CHATGPT_MODEL_NAMES) {
+    const chatgptHasModel = hasNamedModel(providers[CHATGPT_PROVIDER], modelName)
+    const otherProviderHasModel = Object.entries(providers).some(([providerName, provider]) => {
+      return providerName !== CHATGPT_PROVIDER && hasNamedModel(provider, modelName)
+    })
+
+    if (chatgptHasModel && !otherProviderHasModel) {
+      bareReferences.add(modelName)
     }
   }
 
-  const fallback = DEFAULT_MODEL_TEMPLATES[modelName]
-  return {
-    modelId: fallback.modelId,
-    maxContext: fallback.maxContext,
-    maxOutput: fallback.maxOutput,
-    capabilities: [...fallback.capabilities],
-    tags: [...fallback.tags],
-    ...(fallback.pricing ? { pricing: { ...fallback.pricing } } : {}),
-  }
+  return bareReferences
 }
 
-export function getChatgptProviderName() {
-  return CHATGPT_PROVIDER
+function isRemovedChatgptReference(
+  value: unknown,
+  bareRemovedReferences: Set<string>,
+): value is string {
+  if (isRemovedChatgptModelRef(value)) {
+    return true
+  }
+
+  if (typeof value !== 'string') {
+    return false
+  }
+
+  return bareRemovedReferences.has(value)
 }
 
 export function getChatgptOAuthTokenRef() {
@@ -119,7 +105,6 @@ export function getConfigPath() {
 
 export function ensureChatgptProviderConfig(): { changed: boolean; config: SystemConfig } {
   const configPath = getConfigPath()
-  const existingConfig = loadConfig(configPath)
   const raw = loadRawConfig()
   let changed = false
   if (!raw.providers || typeof raw.providers !== 'object') {
@@ -128,15 +113,11 @@ export function ensureChatgptProviderConfig(): { changed: boolean; config: Syste
   }
   const providers = raw.providers as Record<string, unknown>
 
-  const hadProvider = !!providers[CHATGPT_PROVIDER]
   if (!providers[CHATGPT_PROVIDER] || typeof providers[CHATGPT_PROVIDER] !== 'object') {
     providers[CHATGPT_PROVIDER] = {}
     changed = true
   }
   const provider = providers[CHATGPT_PROVIDER] as Record<string, unknown>
-  if (!hadProvider) {
-    changed = true
-  }
 
   if (provider.api_type !== 'openai_responses') {
     provider.api_type = 'openai_responses'
@@ -164,7 +145,8 @@ export function ensureChatgptProviderConfig(): { changed: boolean; config: Syste
   }
 
   if ('api_key_ref' in auth) {
-    auth.api_key_ref = undefined
+    const { api_key_ref: _apiKeyRef, ...nextAuth } = auth
+    provider.auth = nextAuth
     changed = true
   }
 
@@ -173,37 +155,34 @@ export function ensureChatgptProviderConfig(): { changed: boolean; config: Syste
     changed = true
   }
   const models = provider.models as Record<string, unknown>
-  const renamePairs = [
-    ['chatgpt/gpt-5.3-codex-medium', 'gpt-5.3-codex-medium'],
-    ['chatgpt/gpt-5.4-medium', 'gpt-5.4-medium'],
-  ] as const
-  for (const [oldName, newName] of renamePairs) {
-    if (models[oldName] && !models[newName]) {
-      models[newName] = models[oldName]
-      delete models[oldName]
-      changed = true
-    } else if (models[oldName]) {
-      delete models[oldName]
-      changed = true
+  const bareRemovedReferences = collectBareRemovedChatgptReferences(providers)
+
+  for (const [modelName, model] of Object.entries(models)) {
+    if (!isRemovedChatgptModelEntry(modelName, model)) {
+      continue
     }
 
-    if (raw.default_model === newName) {
-      raw.default_model = oldName
-      changed = true
-    }
+    delete models[modelName]
+    changed = true
+  }
 
-    if (Array.isArray(raw.fallback_chain)) {
-      const nextFallback = raw.fallback_chain.map((value) => (value === newName ? oldName : value))
-      if (JSON.stringify(nextFallback) !== JSON.stringify(raw.fallback_chain)) {
-        raw.fallback_chain = nextFallback
-        changed = true
-      }
+  if (isRemovedChatgptReference(raw.default_model, bareRemovedReferences)) {
+    raw.default_model = CHATGPT_DEFAULT_MODEL
+    changed = true
+  }
+
+  if (Array.isArray(raw.fallback_chain)) {
+    const nextFallback = raw.fallback_chain.filter(
+      (value) => !isRemovedChatgptReference(value, bareRemovedReferences),
+    )
+    if (JSON.stringify(nextFallback) !== JSON.stringify(raw.fallback_chain)) {
+      raw.fallback_chain = nextFallback
+      changed = true
     }
   }
 
-  for (const modelName of CHATGPT_MODELS) {
-    if (models[modelName]) continue
-    models[modelName] = modelToYaml(deriveModelTemplate(existingConfig, modelName))
+  if (isRemovedChatgptReference(raw.task_closure_model, bareRemovedReferences)) {
+    raw.task_closure_model = CHATGPT_DEFAULT_MODEL
     changed = true
   }
 
@@ -215,12 +194,4 @@ export function ensureChatgptProviderConfig(): { changed: boolean; config: Syste
     changed,
     config: loadConfig(configPath),
   }
-}
-
-export function getChatgptModelNames(): string[] {
-  return [...CHATGPT_MODELS]
-}
-
-export function getChatgptProviderSummary(config: SystemConfig): ProviderConfig | undefined {
-  return config.providers[CHATGPT_PROVIDER]
 }

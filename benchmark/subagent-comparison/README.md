@@ -19,7 +19,7 @@ The suite uses the real project config from `.zero/config.yaml`, resolves secret
 By default the runner benchmarks both configured models:
 
 - `claude-opus-4-6`
-- `gpt-5.4-medium`
+- `chatgpt/gpt-5.4`
 
 ## Scenarios
 
@@ -54,7 +54,7 @@ bun run benchmark/subagent-comparison/src/runner.ts --runs=3
 
 ## CLI Options
 
-- `--models=claude-opus-4-6,gpt-5.4-medium`
+- `--models=claude-opus-4-6,chatgpt/gpt-5.4`
 - `--scenarios=all` or a comma-separated subset
 - `--runs=1`
 

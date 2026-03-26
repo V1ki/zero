@@ -370,7 +370,7 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
       baseUrl: 'https://chatgpt.com/backend-api/codex',
       auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
       modelConfig: {
-        modelId: 'gpt-5.3-codex-medium',
+        modelId: 'gpt-5.4',
         maxContext: 128000,
         maxOutput: 8192,
         capabilities: [],
@@ -393,7 +393,7 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
 
     expect(body.max_output_tokens).toBeUndefined()
     expect(body.stream).toBe(true)
-    expect(body.model).toBe('gpt-5.3-codex-medium')
+    expect(body.model).toBe('gpt-5.4')
   })
 
   test('parseResponse: text output parsed correctly', () => {
@@ -502,7 +502,7 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
       baseUrl: 'https://chatgpt.com/backend-api/codex',
       auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
       modelConfig: {
-        modelId: 'gpt-5.4-medium',
+        modelId: 'gpt-5.4',
         maxContext: 128000,
         maxOutput: 8192,
         capabilities: [],
@@ -529,7 +529,7 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
           '',
           'data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_123"}}',
           '',
-          'data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.4-medium","status":"completed","usage":{}}}',
+          'data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.4","status":"completed","usage":{}}}',
           '',
         ].join('\n'),
         {

@@ -35,7 +35,7 @@ export function Sidebar({ collapsed = false }: SidebarProps) {
   const { toggleChatDrawer, toggleSidebar, sidebarCollapsed, addToast } = useUIStore()
   const navigate = useNavigate()
   const location = useLocation()
-  const [currentModel, setCurrentModel] = useState('openai-codex/gpt-5.3-codex-medium')
+  const [currentModel, setCurrentModel] = useState<string | null>(null)
   const [models, setModels] = useState<string[]>([])
   const [showModelPicker, setShowModelPicker] = useState(false)
   const pickerRef = useRef<HTMLDivElement>(null)
@@ -137,7 +137,7 @@ export function Sidebar({ collapsed = false }: SidebarProps) {
               onClick={() => setShowModelPicker((v) => !v)}
               className="flex items-center gap-1 text-[11px] font-mono text-[var(--color-text-muted)] hover:text-[var(--color-accent)] transition-colors w-full text-left"
             >
-              <span className="truncate flex-1">{currentModel}</span>
+              <span className="truncate flex-1">{currentModel ?? 'Loading model...'}</span>
               <CaretDown
                 size={10}
                 className={`shrink-0 transition-transform ${showModelPicker ? 'rotate-180' : ''}`}

@@ -110,7 +110,7 @@ export interface AgentObservability {
   }
   /** Provider name for logging, e.g. "openai-codex" */
   providerName?: string
-  /** Provider-qualified model label, e.g. "openai-codex/gpt-5.4-medium" */
+  /** Provider-qualified model label, e.g. "chatgpt/gpt-5.4" */
   modelLabel?: string
   /** ModelPricing from config for cost calculation */
   pricing?: import('@zero-os/shared').ModelPricing

@@ -98,8 +98,8 @@ describe.skipIf(!RUN_REAL_API)('ModelRouter (Real API)', () => {
           baseUrl: 'https://chatgpt.com/backend-api/codex',
           auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
           models: {
-            'gpt-5.4-medium': {
-              modelId: 'gpt-5.4-medium',
+            'gpt-5.4': {
+              modelId: 'gpt-5.4',
               maxContext: 400000,
               maxOutput: 128000,
               capabilities: ['tools'],
@@ -108,8 +108,8 @@ describe.skipIf(!RUN_REAL_API)('ModelRouter (Real API)', () => {
           },
         },
       },
-      defaultModel: 'gpt-5.4-medium',
-      fallbackChain: ['gpt-5.4-medium'],
+      defaultModel: 'gpt-5.4',
+      fallbackChain: ['gpt-5.4'],
       schedules: [],
       fuseList: [],
     }
@@ -119,7 +119,7 @@ describe.skipIf(!RUN_REAL_API)('ModelRouter (Real API)', () => {
 
     const result = router.switchModel('missing-model')
     expect(result.success).toBe(false)
-    expect(result.message).toContain('  - chatgpt/gpt-5.4-medium')
-    expect(result.message).not.toContain('chatgpt/chatgpt/gpt-5.4-medium')
+    expect(result.message).toContain('  - chatgpt/gpt-5.4')
+    expect(result.message).not.toContain('chatgpt/chatgpt/gpt-5.4')
   })
 })

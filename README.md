@@ -137,7 +137,7 @@ providers:
       api_key_ref: openai_codex_api_key
     models:
       gpt5:
-        model_id: gpt-5.3-codex-medium
+        model_id: gpt-5.4
         max_context: 400000
         max_output: 128000
         capabilities:

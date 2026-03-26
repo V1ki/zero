@@ -2,7 +2,7 @@ import { createBenchmarkHarness } from './harness'
 import { printSummary, reportProgress, writeReports } from './reporter'
 import { scenarios, scenariosByName } from './scenarios'
 
-const DEFAULT_MODELS = ['claude-opus-4-6', 'gpt-5.4-medium']
+export const DEFAULT_MODELS = ['claude-opus-4-6', 'chatgpt/gpt-5.4']
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2))
@@ -57,7 +57,7 @@ async function main(): Promise<void> {
   console.log(`Generated ${summary.length} summary row(s).`)
 }
 
-function parseArgs(argv: string[]): {
+export function parseArgs(argv: string[]): {
   models: string[]
   scenarios: string
   runs: number
@@ -96,7 +96,7 @@ function parseArgs(argv: string[]): {
   return { models, scenarios: scenarioArg, runs }
 }
 
-function resolveScenarios(scenarioArg: string) {
+export function resolveScenarios(scenarioArg: string) {
   if (scenarioArg === 'all') {
     return scenarios
   }
@@ -118,11 +118,13 @@ function resolveScenarios(scenarioArg: string) {
   return selected
 }
 
-function splitCsv(value: string): string[] {
+export function splitCsv(value: string): string[] {
   return value
     .split(',')
     .map((entry) => entry.trim())
     .filter(Boolean)
 }
 
-await main()
+if (import.meta.main) {
+  await main()
+}

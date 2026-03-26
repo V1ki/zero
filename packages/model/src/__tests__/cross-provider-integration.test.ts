@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { join } from 'node:path'
 import type {
   CompletionRequest,
   ContentBlock,
@@ -7,11 +8,10 @@ import type {
   ToolDefinition,
 } from '@zero-os/shared'
 import { generateId, now } from '@zero-os/shared'
-import { join } from 'node:path'
 import { getMasterKey } from '../../../secrets/src/keychain'
 import { Vault } from '../../../secrets/src/vault'
-import { type ProviderAdapter } from '../adapters/base'
 import { AnthropicAdapter } from '../adapters/anthropic'
+import type { ProviderAdapter } from '../adapters/base'
 import { OpenAIChatAdapter } from '../adapters/openai-chat'
 import { OpenAIResponsesAdapter } from '../adapters/openai-resp'
 import { ModelRouter } from '../router'
@@ -154,7 +154,7 @@ function createChatGptAdapter(): OpenAIResponsesAdapter {
     baseUrl: 'https://chatgpt.com/backend-api/codex',
     auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
     modelConfig: {
-      modelId: 'gpt-5.3-codex-medium',
+      modelId: 'gpt-5.4',
       maxContext: 400000,
       maxOutput: 128000,
       capabilities: ['tools', 'vision', 'reasoning'],
@@ -207,8 +207,8 @@ function createRouterConfig(): SystemConfig {
         baseUrl: 'https://chatgpt.com/backend-api/codex',
         auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
         models: {
-          'gpt-5.3-codex-medium': {
-            modelId: 'gpt-5.3-codex-medium',
+          'gpt-5.4': {
+            modelId: 'gpt-5.4',
             maxContext: 400000,
             maxOutput: 128000,
             capabilities: ['tools', 'vision', 'reasoning'],
@@ -221,7 +221,7 @@ function createRouterConfig(): SystemConfig {
     fallbackChain: [
       'anthropic/claude-sonnet-4-6',
       'openai-codex/gpt-5.3-codex-medium',
-      'chatgpt/gpt-5.3-codex-medium',
+      'chatgpt/gpt-5.4',
       'openai-codex/gpt-5.3-codex-medium-backup',
     ],
     schedules: [],
@@ -470,7 +470,7 @@ describe.skipIf(!HAS_VAULT)('Cross-provider Integration (Real API)', () => {
         'Summarize the handoff so far in one short sentence.',
       ).messages
 
-      let thirdTarget = 'chatgpt/gpt-5.3-codex-medium'
+      let thirdTarget = 'chatgpt/gpt-5.4'
       let expectedProvider = 'chatgpt'
 
       if (HAS_CHATGPT) {
