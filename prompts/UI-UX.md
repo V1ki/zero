@@ -1254,7 +1254,7 @@ Dashboard 里有费用概览（聚合数字），Metrics 是展开版——时�
 
 **工具调用**：在消息区显示折叠的工具调用块，样式和 Session 回放一致——但因为空间小，默认只显示工具名和一行摘要。
 
-**Session 管理**：Drawer 对应一个 `source: web` 的 Session。关闭 Drawer 不结束 Session，重新打开时恢复上下文。`/new` 命令创建新 Session。
+**Session 管理**：Drawer 对应一个 `source: web` 的 Session。关闭 Drawer 不结束 Session，重新打开时恢复上下文。`/new` 命令创建新 Session，`/session` 返回当前 Session 的状态和用量摘要。
 
 ### 排队消息反馈
 

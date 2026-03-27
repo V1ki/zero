@@ -82,6 +82,24 @@ test.describe('Chat Drawer', () => {
     await expect(drawer).toContainText('Web Channel · openai-codex/gpt-5.4-medium')
   })
 
+  test('/session shows session summary in the drawer', async ({ page }) => {
+    await page.goto('/')
+    await page.locator('aside button').filter({ hasText: 'Chat' }).click()
+
+    const drawer = page.locator('.fixed.right-0.top-0.h-full.w-\\[360px\\]')
+    const textarea = page.getByPlaceholder('Send a message...')
+
+    await textarea.fill('/session')
+    await textarea.press('Enter')
+
+    await expect(drawer).toContainText('Session Info')
+    await expect(drawer).toContainText('ID:')
+    await expect(drawer).toContainText('Model:')
+    await expect(drawer).toContainText('Messages:')
+    await expect(drawer).toContainText('Tool calls:')
+    await expect(drawer).toContainText('Cost:')
+  })
+
   test('can type a message', async ({ page }) => {
     await page.goto('/')
     await page.locator('aside button').filter({ hasText: 'Chat' }).click()

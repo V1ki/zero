@@ -16,13 +16,18 @@ describe('telegram menu sync definitions', () => {
       scope: { type: 'default' },
       languageCode: '',
     })
-    expect(targets[0].commands.map((c) => c.command)).toEqual(['new', 'model'])
+    expect(targets[0].commands.map((c) => c.command)).toEqual(['new', 'model', 'session'])
 
     expect(targets[1].options).toEqual({
       scope: { type: 'all_private_chats' },
       languageCode: '',
     })
-    expect(targets[1].commands.map((c) => c.command)).toEqual(['new', 'model', 'restart'])
+    expect(targets[1].commands.map((c) => c.command)).toEqual([
+      'new',
+      'model',
+      'session',
+      'restart',
+    ])
   })
 
   test('menu button defaults to commands', () => {

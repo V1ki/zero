@@ -1322,6 +1322,7 @@ session:
 
 1. `/new [model]` — 创建新 Session，可选指定模型。
 2. `/model [model]` — 携带参数则切换当前 Session 使用的模型；不携带参数则返回当前模型名称。
+3. `/session` — 返回当前 Session 的基础信息、时间范围、消息统计、工具调用次数和 token/费用汇总。
 
 ---
 

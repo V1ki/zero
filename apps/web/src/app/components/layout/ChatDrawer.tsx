@@ -14,6 +14,12 @@ interface ChatMessage {
   severity?: string
 }
 
+export function shouldRenderAssistantAsPlainText(content: string): boolean {
+  if (!content.includes('\n')) return false
+
+  return !/(^|\n)\s*(#{1,6}\s|\d+\.\s|[-*+]\s|>\s|```|\|.+\|)/m.test(content)
+}
+
 function createChatMessage(message: Omit<ChatMessage, 'id'>): ChatMessage {
   return { id: crypto.randomUUID(), ...message }
 }
@@ -299,9 +305,15 @@ export function ChatDrawer() {
               }`}
             >
               {msg.role === 'assistant' ? (
-                <div className="prose prose-invert prose-sm max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                </div>
+                shouldRenderAssistantAsPlainText(msg.content) ? (
+                  <div className="whitespace-pre-wrap break-words text-[var(--color-text-secondary)]">
+                    {msg.content}
+                  </div>
+                ) : (
+                  <div className="prose prose-invert prose-sm max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                  </div>
+                )
               ) : (
                 msg.content
               )}

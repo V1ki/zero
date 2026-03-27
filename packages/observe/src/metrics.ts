@@ -177,6 +177,9 @@ export class MetricsDB {
       CREATE INDEX IF NOT EXISTS idx_operations_tool ON operations(tool)
     `)
     this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_operations_session ON operations(session_id)
+    `)
+    this.db.run(`
       CREATE INDEX IF NOT EXISTS idx_repairs_created ON repairs(created_at)
     `)
   }
@@ -360,6 +363,21 @@ export class MetricsDB {
       requestCount: number
     }
     return row
+  }
+
+  /**
+   * Count tool operations for a session.
+   */
+  sessionToolCallCount(sessionId: string): number {
+    const row = this.db
+      .query(
+        `SELECT COUNT(*) as count
+         FROM operations
+         WHERE session_id = ?`,
+      )
+      .get(sessionId) as { count: number } | null
+
+    return row?.count ?? 0
   }
 
   /**

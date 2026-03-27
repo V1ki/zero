@@ -6,6 +6,7 @@ import type {
   Session,
   SessionManager,
 } from '@zero-os/core'
+import type { MetricsDB } from '@zero-os/observe'
 import {
   collectAssistantReply,
   describeError,
@@ -26,6 +27,7 @@ export interface MessageHandlerDeps {
   sessionManager: SessionManager
   commandRouter: CommandRouter
   channelAdapter: ChannelAdapter
+  metrics?: MetricsDB
   channelCapabilities?: ChannelCapabilities
   isShuttingDown: () => boolean
   /** Server-level pre-command hook (for /restart etc). Return true if handled. */
@@ -64,6 +66,7 @@ export async function handleChannelMessage(
       messageId,
       metadata: msg.metadata,
       sessionManager: deps.sessionManager,
+      metrics: deps.metrics,
       channelCapabilities: deps.channelCapabilities,
       agentConfig: {
         name: deps.agentName,

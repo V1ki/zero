@@ -104,6 +104,36 @@ describe('MetricsDB', () => {
     expect(stats[0].successRate).toBe(0.5)
   })
 
+  test('sessionToolCallCount returns per-session operation totals', () => {
+    db.recordOperation({
+      sessionId: 'sess_001',
+      tool: 'read',
+      event: 'tool_call',
+      success: true,
+      durationMs: 20,
+      createdAt: new Date().toISOString(),
+    })
+    db.recordOperation({
+      sessionId: 'sess_001',
+      tool: 'bash',
+      event: 'tool_call',
+      success: true,
+      durationMs: 30,
+      createdAt: new Date().toISOString(),
+    })
+    db.recordOperation({
+      sessionId: 'sess_002',
+      tool: 'write',
+      event: 'tool_call',
+      success: true,
+      durationMs: 40,
+      createdAt: new Date().toISOString(),
+    })
+
+    expect(db.sessionToolCallCount('sess_001')).toBe(4)
+    expect(db.sessionToolCallCount('sess_missing')).toBe(0)
+  })
+
   test('costByDay returns daily aggregation', () => {
     const daily = db.costByDay('30d')
     expect(daily.length).toBeGreaterThanOrEqual(1)
@@ -210,8 +240,8 @@ describe('MetricsDB', () => {
     const today = expectDefined(
       rates.find((r) => r.period === new Date().toISOString().slice(0, 10)),
     )
-    expect(today.successRate).toBe(0.5)
-    expect(today.total).toBe(2)
+    expect(today.successRate).toBe(0.8)
+    expect(today.total).toBe(5)
   })
 
   test('avgDurationByDay returns average operation duration', () => {
@@ -220,7 +250,7 @@ describe('MetricsDB', () => {
     const today = expectDefined(
       durations.find((d) => d.period === new Date().toISOString().slice(0, 10)),
     )
-    expect(today.avgMs).toBeCloseTo(72.5, 0)
+    expect(today.avgMs).toBeCloseTo(47, 0)
   })
 
   test('costByDayModel returns per-model daily cost', () => {

@@ -782,6 +782,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
             sessionManager,
             commandRouter,
             channelAdapter: feishuAdapter,
+            metrics,
             channelCapabilities: feishuChannel.getCapabilities(),
             isShuttingDown: () => shuttingDown,
           })
@@ -815,6 +816,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
           sessionManager,
           commandRouter,
           channelAdapter: telegramAdapter,
+          metrics,
           channelCapabilities: telegramChannel.getCapabilities(),
           isShuttingDown: () => shuttingDown,
         })

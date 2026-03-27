@@ -27,6 +27,10 @@ export function buildTelegramDefaultCommands(): TelegramBotCommand[] {
       command: 'model',
       description: 'Show or switch model (/model [name])',
     },
+    {
+      command: 'session',
+      description: 'Show current session info (/session)',
+    },
   ]
 }
 

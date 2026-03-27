@@ -1,4 +1,4 @@
-import { loadConfig } from '@zero-os/core'
+import { buildSessionInfoReply, loadConfig, parseSessionArgs } from '@zero-os/core'
 import {
   ALL_MEMORY_TYPES,
   type MemoryStatus,
@@ -612,6 +612,7 @@ export function createRoutes(zero: ZeroOS) {
       }
 
       const body = await c.req.json<{ message: string; sessionId?: string }>()
+      const isSessionCommand = parseSessionArgs(body.message) !== null
 
       let session = body.sessionId ? zero.sessionManager.get(body.sessionId) : undefined
 
@@ -621,6 +622,14 @@ export function createRoutes(zero: ZeroOS) {
           name: 'zero-web',
           agentInstruction:
             'You are ZeRo OS, an AI agent system running on macOS. Be helpful, concise, and accurate.',
+        })
+      }
+
+      if (isSessionCommand) {
+        return c.json({
+          sessionId: session.data.id,
+          reply: buildSessionInfoReply(session, zero.metrics),
+          messages: [],
         })
       }
 

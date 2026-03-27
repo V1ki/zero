@@ -47,10 +47,13 @@ export type { InterruptedSessionRef } from './session/manager'
 // Command
 export {
   buildNewSessionReply,
+  buildSessionInfoReply,
   CommandRouter,
   newSessionCommand,
   modelCommand,
+  parseSessionArgs,
   registerBuiltinCommands,
+  sessionCommand,
 } from './command'
 export type { Command, CommandArgs, CommandContext, CommandResult } from './command'
 

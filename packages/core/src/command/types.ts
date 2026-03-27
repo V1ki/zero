@@ -1,3 +1,4 @@
+import type { MetricsDB } from '@zero-os/observe'
 import type { ChannelCapabilities, SessionSource } from '@zero-os/shared'
 import type { SessionManager } from '../session/manager'
 
@@ -20,6 +21,8 @@ export interface CommandContext {
   metadata?: Record<string, unknown>
   /** Session manager */
   sessionManager: SessionManager
+  /** Metrics database for session usage lookups */
+  metrics?: MetricsDB
   /** Agent configuration for session initialization */
   agentConfig?: {
     name: string

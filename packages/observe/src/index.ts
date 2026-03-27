@@ -22,6 +22,7 @@ export type {
   CostByPeriod,
   CostByDayModel,
   CacheHitRate,
+  SessionStatsSummary,
   TaskSuccessRate,
   AvgDuration,
   RepairEntry,

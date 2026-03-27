@@ -483,6 +483,24 @@ describe('API Routes (Real)', () => {
     expect(data.reply.length).toBeGreaterThan(0)
   }, 60_000) // Real AI call may take time
 
+  test('POST /api/chat handles /session without calling the model', async () => {
+    const res = await app.request('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: '/session' }),
+    })
+
+    expect(res.status).toBe(200)
+    const data = (await res.json()) as { sessionId: string; reply: string; messages: unknown[] }
+    expect(data.sessionId).toBeTruthy()
+    expect(data.messages).toEqual([])
+    expect(data.reply).toContain('Session Info')
+    expect(data.reply).toContain('ID:')
+    expect(data.reply).toContain('Model:')
+    expect(data.reply).toContain('Requests:')
+    expect(data.reply).toContain('Tool calls:')
+  })
+
   test('POST /api/chat returns 503 while shutdown is in progress', async () => {
     const originalIsShuttingDown = zero.isShuttingDown
     zero.isShuttingDown = () => true
