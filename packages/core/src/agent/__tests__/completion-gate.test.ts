@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ProviderAdapter } from '@zero-os/model'
+import { MEMORY_NUDGE_PROMPT } from '@zero-os/memory'
 import { ObservabilityStore, Tracer } from '@zero-os/observe'
 import type {
   CompletionRequest,
@@ -10,7 +11,9 @@ import type {
   Message,
   StreamEvent,
   ToolContext,
+  ToolResult,
 } from '@zero-os/shared'
+import { BaseTool } from '../../tool/base'
 import { ToolRegistry } from '../../tool/registry'
 import { Agent, type AgentContext } from '../agent'
 import { TASK_CLOSURE_PROMPT } from '../task-closure'
@@ -145,6 +148,186 @@ class TaskClosureAdapter implements ProviderAdapter {
   }
 }
 
+class NoopTool extends BaseTool {
+  name = 'noop'
+  description = 'Returns a short success payload'
+  parameters = { type: 'object', properties: {} }
+
+  protected async execute(_ctx: ToolContext, _input: unknown): Promise<ToolResult> {
+    return { success: true, output: 'ok', outputSummary: 'ok' }
+  }
+}
+
+class MemoryToolStub extends BaseTool {
+  name = 'memory'
+  description = 'Stores a memory entry'
+  parameters = {
+    type: 'object',
+    properties: {
+      action: { type: 'string' },
+      type: { type: 'string' },
+      title: { type: 'string' },
+      content: { type: 'string' },
+    },
+    required: ['action'],
+  }
+
+  protected async execute(_ctx: ToolContext, _input: unknown): Promise<ToolResult> {
+    return { success: true, output: 'memory ok', outputSummary: 'memory ok' }
+  }
+}
+
+class FailingMemoryToolStub extends BaseTool {
+  name = 'memory'
+  description = 'Fails to store a memory entry'
+  parameters = {
+    type: 'object',
+    properties: {
+      action: { type: 'string' },
+      type: { type: 'string' },
+      title: { type: 'string' },
+      content: { type: 'string' },
+    },
+    required: ['action'],
+  }
+
+  protected async execute(_ctx: ToolContext, _input: unknown): Promise<ToolResult> {
+    return { success: false, output: 'memory failed', outputSummary: 'memory failed' }
+  }
+}
+
+type MemoryNudgeMode =
+  | 'skip'
+  | 'write-on-nudge'
+  | 'write-fails-on-nudge'
+  | 'already-written'
+  | 'delete-before-finish'
+
+class MemoryNudgeAdapter implements ProviderAdapter {
+  readonly apiType = 'fake-memory-nudge'
+  normalCalls = 0
+  classifierCalls = 0
+  nudgeCalls = 0
+
+  constructor(private readonly mode: MemoryNudgeMode) {}
+
+  async complete(request: CompletionRequest): Promise<CompletionResponse> {
+    if (isTaskClosureClassifierRequest(request)) {
+      this.classifierCalls++
+      return createTextResponse(
+        '{"action":"finish","reason":"当前回复应直接结束"}',
+        'classifier reasoning for finish',
+      )
+    }
+
+    this.normalCalls++
+    const lastUserText = getLastUserText(request)
+    if (lastUserText.includes(MEMORY_NUDGE_PROMPT)) {
+      this.nudgeCalls++
+      if (this.mode === 'write-on-nudge' || this.mode === 'write-fails-on-nudge') {
+        return {
+          id: 'resp_nudge_memory',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'call_memory_1',
+              name: 'memory',
+              input: {
+                action: 'create',
+                type: 'note',
+                title: '跨会话结论',
+                content: '记录一个长期有用的结论',
+              },
+            },
+          ],
+          stopReason: 'tool_use',
+          usage: { input: 5, output: 5 },
+          model: 'fake-model',
+        }
+      }
+
+      return createTextResponse('无需记忆')
+    }
+
+    if (this.mode === 'already-written') {
+      if (this.normalCalls === 1) {
+        return {
+          id: 'resp_memory_tool',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'call_memory_existing',
+              name: 'memory',
+              input: {
+                action: 'create',
+                type: 'decision',
+                title: '已有决策',
+                content: '这轮里已经写过 memory',
+              },
+            },
+          ],
+          stopReason: 'tool_use',
+          usage: { input: 5, output: 5 },
+          model: 'fake-model',
+        }
+      }
+
+      return createTextResponse('这轮工作已经完成')
+    }
+
+    if (this.mode === 'delete-before-finish') {
+      if (this.normalCalls === 1) {
+        return {
+          id: 'resp_memory_delete',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'call_memory_delete',
+              name: 'memory',
+              input: {
+                action: 'delete',
+                path: '.zero/memory/note/test.md',
+              },
+            },
+          ],
+          stopReason: 'tool_use',
+          usage: { input: 5, output: 5 },
+          model: 'fake-model',
+        }
+      }
+
+      return createTextResponse('这轮工作已经完成')
+    }
+
+    if (this.normalCalls === 1) {
+      return {
+        id: 'resp_tool_use',
+        content: [{ type: 'tool_use', id: 'call_noop_1', name: 'noop', input: {} }],
+        stopReason: 'tool_use',
+        usage: { input: 10, output: 5 },
+        model: 'fake-model',
+      }
+    }
+
+    if (
+      (this.mode === 'write-on-nudge' || this.mode === 'write-fails-on-nudge') &&
+      this.normalCalls === 4
+    ) {
+      return createTextResponse('已记录这条长期记忆')
+    }
+
+    return createTextResponse('这轮工作已经完成')
+  }
+
+  async *stream(_request: CompletionRequest): AsyncIterable<StreamEvent> {
+    yield* failStream(new Error('stream not supported in test'))
+  }
+
+  async healthCheck(): Promise<boolean> {
+    return true
+  }
+}
+
 function createToolContext(): ToolContext {
   return {
     sessionId: 'test-session',
@@ -194,7 +377,7 @@ describe('Agent task closure gate', () => {
     const registry = new ToolRegistry()
     const adapter = new TaskClosureAdapter('continue')
     const agent = new Agent(
-      { name: 'test-agent', agentInstruction: 'Test prompt' },
+      { name: 'test-agent', agentInstruction: 'Test prompt', promptMode: 'minimal' },
       adapter,
       registry,
       createToolContext(),
@@ -491,7 +674,7 @@ describe('Agent task closure gate', () => {
     const registry = new ToolRegistry()
     const adapter = new TaskClosureAdapter('continue')
     const agent = new Agent(
-      { name: 'test-agent', agentInstruction: 'Test prompt' },
+      { name: 'test-agent', agentInstruction: 'Test prompt', promptMode: 'minimal' },
       adapter,
       registry,
       createToolContext(),
@@ -506,6 +689,176 @@ describe('Agent task closure gate', () => {
     expect(existsSync(join(sessionDir, 'closure.jsonl'))).toBe(false)
     expect(observability.readSessionRequests('test-session')).toHaveLength(2)
     expect(observability.readSessionClosures('test-session')).toHaveLength(2)
+  })
+
+  test('nudges for memory after a substantive turn with no prior memory tool call', async () => {
+    const registry = new ToolRegistry()
+    registry.register(new NoopTool())
+    const adapter = new MemoryNudgeAdapter('skip')
+    const tracer = new Tracer()
+    const agent = new Agent(
+      { name: 'test-agent', agentInstruction: 'Test prompt' },
+      adapter,
+      registry,
+      createToolContext(),
+      { tracer },
+    )
+
+    const messages = await agent.run(createContext(registry), '完成一个需要先查再总结的任务')
+    const assistantMessages = messages.filter((message) => message.role === 'assistant')
+    const memoryNudgeSpan = tracer
+      .exportSession('test-session')
+      .flatMap(flattenTraceSpans)
+      .find((span) => span.name === 'memory_nudge')
+
+    expect(assistantMessages).toHaveLength(3)
+    expect(getTextFromMessage(assistantMessages[1])).toBe('这轮工作已经完成')
+    expect(getTextFromMessage(assistantMessages[2])).toBe('无需记忆')
+    expect(adapter.nudgeCalls).toBe(1)
+    expect(memoryNudgeSpan?.data).toMatchObject({
+      memoryNudge: {
+        prompt: MEMORY_NUDGE_PROMPT,
+        iteration: 2,
+      },
+    })
+    expect(memoryNudgeSpan?.metadata).toMatchObject({
+      purpose: 'memory_nudge',
+      iteration: 2,
+      memoryWritten: false,
+    })
+  })
+
+  test('marks memory_nudge trace as written when the nudge leads to memory.create', async () => {
+    const registry = new ToolRegistry()
+    registry.register(new NoopTool())
+    registry.register(new MemoryToolStub())
+    const adapter = new MemoryNudgeAdapter('write-on-nudge')
+    const tracer = new Tracer()
+    const agent = new Agent(
+      { name: 'test-agent', agentInstruction: 'Test prompt' },
+      adapter,
+      registry,
+      createToolContext(),
+      { tracer },
+    )
+
+    await agent.run(createContext(registry), '完成一个需要先查再总结的任务')
+
+    const memoryNudgeSpan = tracer
+      .exportSession('test-session')
+      .flatMap(flattenTraceSpans)
+      .find((span) => span.name === 'memory_nudge')
+
+    expect(adapter.nudgeCalls).toBe(1)
+    expect(memoryNudgeSpan?.metadata).toMatchObject({
+      purpose: 'memory_nudge',
+      memoryWritten: true,
+    })
+  })
+
+  test('does not nudge again when memory was already written earlier in the turn', async () => {
+    const registry = new ToolRegistry()
+    registry.register(new MemoryToolStub())
+    const adapter = new MemoryNudgeAdapter('already-written')
+    const tracer = new Tracer()
+    const agent = new Agent(
+      { name: 'test-agent', agentInstruction: 'Test prompt' },
+      adapter,
+      registry,
+      createToolContext(),
+      { tracer },
+    )
+
+    await agent.run(createContext(registry), '先记下这次决策, 再结束')
+
+    const memoryNudgeSpan = tracer
+      .exportSession('test-session')
+      .flatMap(flattenTraceSpans)
+      .find((span) => span.name === 'memory_nudge')
+
+    expect(adapter.nudgeCalls).toBe(0)
+    expect(memoryNudgeSpan).toBeUndefined()
+  })
+
+  test('still nudges after a non-write memory action like delete', async () => {
+    const registry = new ToolRegistry()
+    registry.register(new MemoryToolStub())
+    const adapter = new MemoryNudgeAdapter('delete-before-finish')
+    const tracer = new Tracer()
+    const agent = new Agent(
+      { name: 'test-agent', agentInstruction: 'Test prompt' },
+      adapter,
+      registry,
+      createToolContext(),
+      { tracer },
+    )
+
+    const messages = await agent.run(createContext(registry), '先清理旧记忆, 再结束')
+    const assistantMessages = messages.filter((message) => message.role === 'assistant')
+    const memoryNudgeSpan = tracer
+      .exportSession('test-session')
+      .flatMap(flattenTraceSpans)
+      .find((span) => span.name === 'memory_nudge')
+
+    expect(assistantMessages).toHaveLength(3)
+    expect(adapter.nudgeCalls).toBe(1)
+    expect(memoryNudgeSpan?.metadata).toMatchObject({
+      purpose: 'memory_nudge',
+      memoryWritten: false,
+    })
+  })
+
+  test('keeps memory_nudge trace as not written when memory.create fails', async () => {
+    const registry = new ToolRegistry()
+    registry.register(new NoopTool())
+    registry.register(new FailingMemoryToolStub())
+    const adapter = new MemoryNudgeAdapter('write-fails-on-nudge')
+    const tracer = new Tracer()
+    const agent = new Agent(
+      { name: 'test-agent', agentInstruction: 'Test prompt' },
+      adapter,
+      registry,
+      createToolContext(),
+      { tracer },
+    )
+
+    await agent.run(createContext(registry), '完成一个需要先查再总结的任务')
+
+    const memoryNudgeSpan = tracer
+      .exportSession('test-session')
+      .flatMap(flattenTraceSpans)
+      .find((span) => span.name === 'memory_nudge')
+
+    expect(adapter.nudgeCalls).toBe(1)
+    expect(memoryNudgeSpan?.metadata).toMatchObject({
+      purpose: 'memory_nudge',
+      memoryWritten: false,
+    })
+  })
+
+  test('does not nudge in minimal prompt mode', async () => {
+    const registry = new ToolRegistry()
+    registry.register(new NoopTool())
+    const adapter = new MemoryNudgeAdapter('skip')
+    const tracer = new Tracer()
+    const agent = new Agent(
+      { name: 'test-agent', agentInstruction: 'Test prompt', promptMode: 'minimal' },
+      adapter,
+      registry,
+      createToolContext(),
+      { tracer },
+    )
+
+    const messages = await agent.run(createContext(registry), '完成一个需要先查再总结的任务')
+    const assistantMessages = messages.filter((message) => message.role === 'assistant')
+    const memoryNudgeSpan = tracer
+      .exportSession('test-session')
+      .flatMap(flattenTraceSpans)
+      .find((span) => span.name === 'memory_nudge')
+
+    expect(assistantMessages).toHaveLength(2)
+    expect(adapter.nudgeCalls).toBe(0)
+    expect(memoryNudgeSpan).toBeUndefined()
   })
 })
 

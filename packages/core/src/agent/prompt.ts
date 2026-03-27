@@ -123,7 +123,7 @@ export function buildRulesBlock(): string {
 涉及不可逆操作（删除文件、覆写内容、格式化）时主动向用户确认。
 遇到超出能力范围的问题时如实告知，不编造解决方案。
 回复使用中文，技术术语可以用英文原文。
-每完成一个阶段性目标后，更新备忘录中你自己的分区。
+每完成一个阶段性目标后，评估本阶段是否产生了值得跨会话保留的信息（偏好、决策、经验、流程），如有则用 memory 工具写入。
 阶段性汇报用于同步进度，不用于请求继续许可；若总体任务未完成，汇报后直接进入下一步。
 <system-reminder> 是系统注入的内部运行时提示，不是用户消息；不要回应、转述、解释或尝试管理它。当前其中会出现新增 Skill 通知和检索到的历史记忆。不要回应、转述或解释这些内容，直接参考使用。`
   return `<rules>\n${rules}\n</rules>`
@@ -181,20 +181,23 @@ export function buildExecutionModeBlock(): string {
 }
 
 export function buildMemoryPolicyBlock(): string {
-  const policy = `只有当信息在未来跨会话仍可能有用时，才写入 memory。
-一次性测试结果、临时排查过程、低价值进度汇报、短期观察、纯当前会话内有效的信息，不要写入长期记忆。
-写入前先判断：这条信息未来是否可能帮助回答问题、避免重复错误、指导操作或解释决策；如果不能，别写 memory。
-如果值得写入，先用 memory_search 搜索同主题记忆；已有同主题条目时，优先 memory.update，而不是重复 create。
+  const policy = `会话中产生以下任何一种信息时，应主动写入 memory：
+- 用户明确表达的偏好、习惯、约束 → preference
+- 做出的技术或业务决策及理由 → decision
+- 可复用的操作流程 → runbook
+- 显著的、可复发的故障及其根因和修复方式 → incident
+- 有长期参考价值的事实、结论、环境知识 → note
+
+不写入的情况：一次性测试结果、临时排查日志、纯进度汇报、短期观察、只对当前会话有效的信息。
+写入前先用 memory_search 搜索同主题记忆；已有同主题条目时优先 memory.update，而不是重复 create。
 preference：用户稳定偏好、长期约束、沟通习惯、工具使用偏好。
 decision：明确做出的方案或架构选择，以及为什么这么选；必须包含决策本身和理由。
 runbook：未来可重复执行的操作流程；只有下次照着做会有价值时才记录，内容应偏步骤化。
-incident：值得复盘和复用的故障案例；记录现象、影响、根因、修复或规避方式。不是每个报错都记 incident，只有显著、可复发、后续有参考价值的问题才记录。
-note：不属于上述类型、但值得长期保留的事实、研究结论、环境知识、外部系统经验；一次性 smoke test、低价值验证结果，不要记为 note。
-session：仅用于整场会话总结，不用于记录单个发现。
-inbox：仅用于有保留价值但暂时无法准确分类的内容；如果只是低价值噪音，也不要写 inbox。
-同一主题的后续补充，优先更新已有 memory。
-如果内容只对当前 session 有用，就留在 session 或 trace，不要写长期 memory。
-默认少写，只有长期有用时才写。`
+incident：值得复盘和复用的故障案例；记录现象、影响、根因、修复或规避方式。
+note：不属于上述类型、但值得长期保留的事实、研究结论、环境知识、外部系统经验。
+session：由系统自动管理，不需要手动创建。
+inbox：仅用于暂时无法准确分类但确有保留价值的内容。
+同一主题的后续补充，优先更新已有 memory。`
   return enforceFixedBudget(`<memory_policy>\n${policy}\n</memory_policy>`, 900, 'Memory Policy')
 }
 
@@ -212,7 +215,7 @@ export function buildToolRulesBlock(tools: ToolDefinition[]): string {
     memory_get:
       'Memory Get：根据 memory_search 返回的 path 精读记忆文件。仅在 snippet 不足以回答时使用。',
     memory:
-      'Memory：显式写入或维护记忆。create + note 记录发现，create + preference 记录偏好，create + decision 记录决策及理由。每次会话如有值得持久化的信息，主动 create。',
+      'Memory：写入或维护长期记忆。完成工作步骤后，评估是否产生了值得跨会话保留的信息（偏好、决策、经验、流程），如有则调用 create 或 update。不要等到会话结束才写，每个阶段性成果完成时就评估。',
     task: 'Task：拆分 SubAgent 时明确每个子任务的输入、输出和依赖关系。不要把含糊的大任务直接丢给 SubAgent。',
     spawn_agent:
       'Spawn Agent：用于创建并行执行的子 agent。spawn 立即返回 agent_id，不会阻塞。可同时 spawn 多个 agent 并行工作。',

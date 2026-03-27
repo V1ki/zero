@@ -17,6 +17,16 @@ export const SESSION_MEMORY_PROMPT = `<system_notice>
 - 保持总结简洁，只保留跨会话有参考价值的信息
 </system_notice>`
 
+export const MEMORY_NUDGE_PROMPT = `<system_notice>
+当前阶段已完成。请快速评估：本次交互是否产生了值得跨会话保留的信息？
+- 用户偏好或习惯 → memory create preference
+- 技术/业务决策及理由 → memory create decision
+- 可复用操作流程 → memory create runbook
+- 值得复盘的故障案例 → memory create incident
+- 其他长期有参考价值的事实或结论 → memory create note
+如果没有值得保留的信息，直接结束即可，不需要回复。
+</system_notice>`
+
 export function shouldEvaluateSessionMemory(
   messages: Message[],
   isTopLevelUserTurn: (message: Message) => boolean,

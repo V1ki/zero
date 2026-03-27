@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
-import type { MemoryRetriever } from '@zero-os/memory'
+import { MEMORY_NUDGE_PROMPT, type MemoryRetriever } from '@zero-os/memory'
 import type { ModelRouter, ModelSwitchResult, ResolvedModel } from '@zero-os/model'
 import type {
   MetricsDB,
@@ -1023,6 +1023,7 @@ export class Session {
     return (
       text === EMPTY_RESPONSE_RETRY_PROMPT ||
       text === CONTINUATION_PROMPT ||
+      text === MEMORY_NUDGE_PROMPT ||
       text === TASK_CLOSURE_PROMPT ||
       text.startsWith('<queued_message>') ||
       text.startsWith('<queued_messages ')

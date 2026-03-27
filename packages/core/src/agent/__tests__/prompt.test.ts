@@ -121,11 +121,11 @@ describe('buildMemoryPolicyBlock', () => {
 
     expect(result).toContain('<memory_policy>')
     expect(result).toContain('</memory_policy>')
-    expect(result).toContain('只有当信息在未来跨会话仍可能有用时')
+    expect(result).toContain('会话中产生以下任何一种信息时，应主动写入 memory')
     expect(result).toContain('优先 memory.update')
-    expect(result).toContain('一次性 smoke test')
+    expect(result).toContain('临时排查日志')
     expect(result).toContain('incident：值得复盘和复用的故障案例')
-    expect(result).toContain('默认少写')
+    expect(result).toContain('session：由系统自动管理，不需要手动创建')
   })
 })
 
@@ -148,7 +148,7 @@ describe('buildToolRulesBlock', () => {
     expect(result).toContain('支持语义搜索')
     expect(result).toContain('Memory Get：根据 memory_search 返回的 path')
     expect(result).toContain('仅在 snippet 不足以回答时使用')
-    expect(result).toContain('主动 create')
+    expect(result).toContain('每个阶段性成果完成时就评估')
     // Should not contain rules for tools not in the list
     expect(result).not.toContain('Write：')
     expect(result).not.toContain('Edit：')

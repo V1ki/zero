@@ -87,4 +87,10 @@ export const CONTEXT_PARAMS = {
     maxTaskClosureRetries: 5,
     maxEmptyResponseRetries: 1,
   },
+
+  /** Prompt the agent to evaluate non-session memory writes at turn end */
+  memoryNudge: {
+    minIterations: 2,
+    maxNudgesPerTurn: 1,
+  },
 } as const

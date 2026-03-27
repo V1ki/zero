@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { ProviderAdapter } from '@zero-os/model'
 import { computeCost } from '@zero-os/model'
+import { MEMORY_NUDGE_PROMPT } from '@zero-os/memory'
 import type {
   ClosureLogEntryInput,
   MetricsDB,
@@ -307,12 +308,15 @@ export class Agent {
   }): AgentLoopHooks {
     let continuationCount = 0
     let taskClosureRetryCount = 0
+    let memoryNudgeCount = 0
     let hadQueuedMessages = false
+    let memoryWriteSucceededThisTurn = false
     let pendingParentRequestId: string | undefined
     let currentRequestToolResults: RequestToolResultEntry[] = []
     let pendingQueuedInjection: QueuedInjectionTrace | undefined
     let pendingMemoryInjections = cloneMemoryInjections(options.context.requestMemoryInjections)
     let currentRequestSpanId: string | undefined
+    let activeMemoryNudgeSpanId: string | undefined
 
     const toolSpanIds = new Map<string, string>()
     const toolNamesByUseId = new Map<string, string>()
@@ -376,6 +380,14 @@ export class Agent {
         pendingParentRequestId = response.stopReason === 'tool_use' ? response.id : undefined
       },
       onCompletionError: (_request, error) => {
+        if (activeMemoryNudgeSpanId) {
+          this.obs.tracer?.endSpan(activeMemoryNudgeSpanId, 'error', {
+            error: toErrorMessage(error),
+            memoryWritten: memoryWriteSucceededThisTurn,
+          })
+          activeMemoryNudgeSpanId = undefined
+        }
+
         if (currentRequestSpanId) {
           this.obs.tracer?.updateSpan(currentRequestSpanId, {
             metadata: {
@@ -468,6 +480,49 @@ export class Agent {
           }
         }
 
+        const promptMode = this.config.promptMode ?? 'full'
+        if (
+          !memoryWriteSucceededThisTurn &&
+          !this.toolContext.spawnedByRequestId &&
+          promptMode === 'full' &&
+          ctx.iteration >= CONTEXT_PARAMS.memoryNudge.minIterations &&
+          memoryNudgeCount < CONTEXT_PARAMS.memoryNudge.maxNudgesPerTurn
+        ) {
+          memoryNudgeCount++
+          activeMemoryNudgeSpanId =
+            this.obs.tracer?.startSpan(
+              this.toolContext.sessionId,
+              'memory_nudge',
+              currentRequestSpanId,
+              {
+                kind: 'closure_decision',
+                agentName: this.config.name,
+                data: {
+                  memoryNudge: {
+                    prompt: MEMORY_NUDGE_PROMPT,
+                    iteration: ctx.iteration,
+                  },
+                },
+                metadata: {
+                  purpose: 'memory_nudge',
+                  iteration: ctx.iteration,
+                },
+              },
+            )?.id ?? activeMemoryNudgeSpanId
+
+          return {
+            action: 'continue' as const,
+            continuationMessage: this.buildLoopUserMessage(MEMORY_NUDGE_PROMPT),
+          }
+        }
+
+        if (activeMemoryNudgeSpanId) {
+          this.obs.tracer?.endSpan(activeMemoryNudgeSpanId, 'success', {
+            memoryWritten: memoryWriteSucceededThisTurn,
+          })
+          activeMemoryNudgeSpanId = undefined
+        }
+
         return { action: 'break' as const }
       },
       onToolCallStart: (toolName, toolUseId, input) => {
@@ -501,6 +556,16 @@ export class Agent {
         options.executionState.currentTraceSpanId = toolSpan?.id
       },
       onToolCallEnd: (toolName, toolUseId, input, result) => {
+        if (toolName === 'memory' && result.success) {
+          const action =
+            typeof input === 'object' && input !== null && 'action' in input
+              ? (input as { action?: unknown }).action
+              : undefined
+          if (action === 'create' || action === 'update') {
+            memoryWriteSucceededThisTurn = true
+          }
+        }
+
         const toolSpanId = toolSpanIds.get(toolUseId)
         if (toolSpanId) {
           this.obs.tracer?.updateSpan(toolSpanId, {

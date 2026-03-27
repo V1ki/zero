@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { MEMORY_NUDGE_PROMPT } from '@zero-os/memory'
 import { ModelRouter } from '@zero-os/model'
 import type { TraceSpan } from '@zero-os/observe'
 import type { Message, SystemConfig } from '@zero-os/shared'
@@ -165,5 +166,18 @@ describe('Session.evaluateSessionMemory', () => {
     expect(endedSpans).toHaveLength(1)
     expect(endedSpans[0]?.status).toBe('error')
     expect(String(endedSpans[0]?.metadata?.error)).toContain('evaluation failed')
+  })
+
+  test('treats MEMORY_NUDGE_PROMPT as internal control text rather than a top-level user turn', () => {
+    const internalMessage = makeStoredMessage('user', MEMORY_NUDGE_PROMPT)
+    const visibleMessage = makeStoredMessage('user', '这是用户正常输入')
+
+    expect(Session.isTopLevelUserTurn(internalMessage)).toBe(false)
+    expect(Session.isTopLevelUserTurn(visibleMessage)).toBe(true)
+  })
+
+  test('describes the nudge as a completed phase rather than a fully finished task', () => {
+    expect(MEMORY_NUDGE_PROMPT).toContain('当前阶段已完成')
+    expect(MEMORY_NUDGE_PROMPT).not.toContain('任务已完成')
   })
 })
