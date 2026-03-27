@@ -82,14 +82,7 @@ function getSessionUsageStats(
   return metrics?.sessionStats(sessionId) ?? ZERO_STATS
 }
 
-export function parseSessionArgs(content: string): SessionCommandArgs | null {
-  return /^\/session(?:@\S+)?$/i.test(content.trim()) ? {} : null
-}
-
-export function buildSessionInfoReply(
-  session: SessionInfoTarget,
-  metrics?: MetricsDB,
-): string {
+function buildSessionInfoBody(session: SessionInfoTarget, metrics?: MetricsDB): string {
   const messages = session.getMessages()
   const turns = messages.filter((message) => Session.isTopLevelUserTurn(message)).length
   const fallbackToolCalls = countToolCallsFromMessages(messages)
@@ -101,7 +94,6 @@ export function buildSessionInfoReply(
     new Date(session.data.updatedAt).getTime() - new Date(session.data.createdAt).getTime()
 
   return [
-    'Session Info',
     '-------------------------',
     formatRow('ID', session.data.id),
     formatRow('Model', session.data.currentModel),
@@ -127,6 +119,21 @@ export function buildSessionInfoReply(
   ].join('\n')
 }
 
+export function parseSessionArgs(content: string): SessionCommandArgs | null {
+  return /^\/session(?:@\S+)?$/i.test(content.trim()) ? {} : null
+}
+
+export function buildSessionInfoReply(
+  session: SessionInfoTarget,
+  metrics?: MetricsDB,
+): string {
+  return ['Session Info', buildSessionInfoBody(session, metrics)].join('\n')
+}
+
+function buildFeishuSessionInfoReply(session: SessionInfoTarget, metrics?: MetricsDB): string {
+  return ['Session Info', '', '```', buildSessionInfoBody(session, metrics), '```'].join('\n')
+}
+
 export const sessionCommand: Command = {
   name: '/session',
   description: 'Show the current session status and usage summary.',
@@ -140,7 +147,10 @@ export const sessionCommand: Command = {
 
     return {
       handled: true,
-      reply: buildSessionInfoReply(session, ctx.metrics),
+      reply:
+        ctx.source === 'feishu'
+          ? buildFeishuSessionInfoReply(session, ctx.metrics)
+          : buildSessionInfoReply(session, ctx.metrics),
     }
   },
 }

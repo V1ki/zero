@@ -351,4 +351,31 @@ describe('builtin commands', () => {
     expect(result.reply).toContain('Requests:     0')
     expect(result.reply).toContain('Cost:         $0.0000')
   })
+
+  test('/session wraps the details in a code block for feishu replies', async () => {
+    const mockSession: MockSession = {
+      data: {
+        id: 'sess_session_3',
+        currentModel: 'chatgpt/gpt-5.4',
+        createdAt: '2026-03-27T20:10:56',
+        updatedAt: '2026-03-27T21:08:58',
+      },
+      switchModel: async () => ({ success: true, message: 'ok' }),
+      initAgent: () => {},
+      setChannelCapabilities: () => {},
+      listModels: () => [],
+      getMessages: () => [],
+    }
+
+    const sessionManager = {
+      getOrCreateForChannel: () => ({ session: mockSession, isNew: false }),
+    } as unknown as SessionManager
+
+    const result = await sessionCommand.execute({}, createContext(sessionManager, 'feishu'))
+
+    expect(result.handled).toBe(true)
+    expect(result.reply).toContain('Session Info\n\n```')
+    expect(result.reply).toContain('ID:           sess_session_3')
+    expect(result.reply).toContain('```')
+  })
 })
