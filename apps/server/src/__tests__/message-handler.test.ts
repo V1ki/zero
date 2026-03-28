@@ -5,6 +5,34 @@ import type { ChannelAdapter } from '../channel-adapter'
 import { handleChannelMessage, type MessageHandlerDeps } from '../message-handler'
 
 describe('handleChannelMessage', () => {
+  const createDefaultDeps = (
+    session: {
+      data: { id: string }
+      isAgentInitialized: () => boolean
+      setChannelCapabilities: () => void
+      initAgent: () => void
+      handleMessage: (content: string, options?: { images?: IncomingMessage['images'] }) => Promise<unknown>
+    },
+    channelAdapter: ChannelAdapter,
+  ) => {
+    const sessionManager = {
+      getOrCreateForChannel: () => ({ session, isNew: false }),
+    } as unknown as MessageHandlerDeps['sessionManager']
+
+    const commandRouter = new CommandRouter()
+
+    return {
+      channelType: 'feishu' as const,
+      channelName: 'feishu',
+      agentName: 'ZeRo OS',
+      agentInstruction: 'test instruction',
+      sessionManager,
+      commandRouter,
+      channelAdapter,
+      isShuttingDown: () => false,
+    }
+  }
+
   test('appends downloaded file info before passing content to the session', async () => {
     let handledContent: string | null = null
     let handledImages: IncomingMessage['images'] | undefined
@@ -129,5 +157,139 @@ describe('handleChannelMessage', () => {
     )
 
     expect(seenMetrics).toBe(metrics)
+  })
+
+  test('prompts user to resend when transient failure rolled back', async () => {
+    const replies: string[] = []
+    const session = {
+      data: { id: 'sess_test' },
+      isAgentInitialized: () => true,
+      setChannelCapabilities: () => {},
+      initAgent: () => {},
+      handleMessage: async () => {
+        const err = new Error('overloaded_error')
+        ;(err as Error & { rolledBack?: boolean }).rolledBack = true
+        throw err
+      },
+    }
+
+    const channelAdapter: ChannelAdapter = {
+      reply: async (_chatId: string, text: string) => {
+        replies.push(text)
+      },
+      showTyping: async () => ({
+        clear: async () => {},
+      }),
+    }
+
+    await handleChannelMessage(
+      {
+        channelType: 'telegram',
+        senderId: 'user_test',
+        content: 'hello',
+        timestamp: new Date('2026-03-23T00:00:00.000Z').toISOString(),
+        metadata: {
+          chatId: 'chat_test',
+          messageId: 'msg_test',
+        },
+      },
+      {
+        ...createDefaultDeps(session, channelAdapter),
+        channelType: 'telegram',
+        channelName: 'telegram',
+      },
+    )
+
+    expect(replies).toContain(
+      '⚠️ AI 服务暂时过载（已重试 3 次仍未恢复），消息已回滚。请稍后重新发送。',
+    )
+  })
+
+  test('prompts user to continue when transient failure kept partial work', async () => {
+    const replies: string[] = []
+    const session = {
+      data: { id: 'sess_test' },
+      isAgentInitialized: () => true,
+      setChannelCapabilities: () => {},
+      initAgent: () => {},
+      handleMessage: async () => {
+        const err = new Error('overloaded_error')
+        ;(err as Error & { rolledBack?: boolean }).rolledBack = false
+        throw err
+      },
+    }
+
+    const channelAdapter: ChannelAdapter = {
+      reply: async (_chatId: string, text: string) => {
+        replies.push(text)
+      },
+      showTyping: async () => ({
+        clear: async () => {},
+      }),
+    }
+
+    await handleChannelMessage(
+      {
+        channelType: 'telegram',
+        senderId: 'user_test',
+        content: 'hello',
+        timestamp: new Date('2026-03-23T00:00:00.000Z').toISOString(),
+        metadata: {
+          chatId: 'chat_test',
+          messageId: 'msg_test',
+        },
+      },
+      {
+        ...createDefaultDeps(session, channelAdapter),
+        channelType: 'telegram',
+        channelName: 'telegram',
+      },
+    )
+
+    expect(replies).toContain('⚠️ AI 服务暂时过载，已完成的工作已保留。请发送新消息继续。')
+  })
+
+  test('prompts user to continue when partial work is kept during non-transient failure', async () => {
+    const replies: string[] = []
+    const session = {
+      data: { id: 'sess_test' },
+      isAgentInitialized: () => true,
+      setChannelCapabilities: () => {},
+      initAgent: () => {},
+      handleMessage: async () => {
+        const err = new Error('some non transient failure')
+        ;(err as Error & { rolledBack?: boolean }).rolledBack = false
+        throw err
+      },
+    }
+
+    const channelAdapter: ChannelAdapter = {
+      reply: async (_chatId: string, text: string) => {
+        replies.push(text)
+      },
+      showTyping: async () => ({
+        clear: async () => {},
+      }),
+    }
+
+    await handleChannelMessage(
+      {
+        channelType: 'telegram',
+        senderId: 'user_test',
+        content: 'hello',
+        timestamp: new Date('2026-03-23T00:00:00.000Z').toISOString(),
+        metadata: {
+          chatId: 'chat_test',
+          messageId: 'msg_test',
+        },
+      },
+      {
+        ...createDefaultDeps(session, channelAdapter),
+        channelType: 'telegram',
+        channelName: 'telegram',
+      },
+    )
+
+    expect(replies).toContain('处理中断，已完成的工作已保留。请发送新消息继续。')
   })
 })

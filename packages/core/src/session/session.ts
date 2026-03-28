@@ -664,19 +664,38 @@ export class Session {
       // Rollback messages added during this failed turn so the user can cleanly retry.
       // Preserve any 'queued' messages that were pushed concurrently by handleMessage —
       // they belong to the user, not to the failed agent turn.
+      let rolledBack = true
       if (this.messages.length > messageCountBefore) {
         const added = this.messages.slice(messageCountBefore)
-        this.messages.length = messageCountBefore
-        for (const msg of added) {
-          if (msg.messageType === 'queued') {
-            this.messages.push(msg)
+        const hasCompletedWork = added.some(
+          (msg) => msg.role === 'assistant' && msg.messageType === 'message',
+        )
+
+        if (!hasCompletedWork) {
+          this.messages.length = messageCountBefore
+          for (const msg of added) {
+            if (msg.messageType === 'queued') {
+              this.messages.push(msg)
+            }
           }
+
+          this.deps.bus?.emit('session:update', {
+            sessionId: this.data.id,
+            event: 'message_rollback',
+            messageCount: this.messages.length,
+          })
+        } else {
+          rolledBack = false
+          this.deps.bus?.emit('session:update', {
+            sessionId: this.data.id,
+            event: 'message_partial_failure',
+            messageCount: this.messages.length,
+          })
         }
-        this.deps.bus?.emit('session:update', {
-          sessionId: this.data.id,
-          event: 'message_rollback',
-          messageCount: this.messages.length,
-        })
+      }
+
+      if (error instanceof Error) {
+        ;(error as Error & { rolledBack?: boolean }).rolledBack = rolledBack
       }
       throw error
     }

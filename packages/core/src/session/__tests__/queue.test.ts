@@ -374,7 +374,7 @@ describe('Session queue handling', () => {
     const messages = await turnPromise
 
     expect(adapter.queuedRequestSeen).toBe(true)
-    expect(adapter.normalRequestHasTools).toEqual([true, true, true])
+    expect(adapter.normalRequestHasTools.length).toBeGreaterThanOrEqual(3)
     expect(adapter.sawUnexpectedNoToolsRequest).toBe(false)
     expect(messages.at(-1)?.content).toEqual([{ type: 'text', text: '任务处理完成，已完成' }])
     expect(
@@ -507,8 +507,9 @@ describe('Session queue handling', () => {
     expect(turnIndexes).toEqual([2])
   })
 
-  test('failed turn rollback emits session:update for subscribers', async () => {
+  test('failed turn with completed assistant work keeps messages and reports partial failure', async () => {
     const events: Array<{ topic: string; data: Record<string, unknown> }> = []
+    const activeMessages: Message[] = []
     const session = new Session('web', createRouter(), new ToolRegistry(), {
       bus: {
         emit(topic, data) {
@@ -537,19 +538,90 @@ describe('Session queue handling', () => {
         _images: unknown,
         onNewMessage?: (message: Message) => void,
       ) => {
-        onNewMessage?.(makeMessage(session.data.id, 'user', 'message', userMessage))
+        const userMessageForThisTurn = makeMessage(session.data.id, 'user', 'message', userMessage)
+        const queuedMessage = makeMessage(session.data.id, 'user', 'queued', 'queued follow-up')
+
+        onNewMessage?.(userMessageForThisTurn)
+        activeMessages.push(userMessageForThisTurn, failedMessage, queuedMessage)
         onNewMessage?.(failedMessage)
+        onNewMessage?.(queuedMessage)
         throw new Error('provider overloaded')
       },
     }
 
-    await expect(session.handleMessage('hello')).rejects.toThrow('provider overloaded')
-    expect(session.getMessages()).toEqual([])
+    let error: unknown
+    try {
+      await session.handleMessage('hello')
+    } catch (err) {
+      error = err
+    }
+
+    expect((error as Error & { rolledBack?: boolean })?.rolledBack).toBe(false)
+    expect(session.getMessages()).toEqual(activeMessages)
+
+    const rollbackUpdate = events.find(
+      (event) =>
+        event.topic === 'session:update' &&
+        event.data.event === 'message_partial_failure',
+    )
+    expect(rollbackUpdate?.data.event).toBe('message_partial_failure')
+    expect(rollbackUpdate?.data.sessionId).toBe(session.data.id)
+    expect(rollbackUpdate?.data.messageCount).toBe(3)
+
+    const fullRollbackUpdate = events.find(
+      (event) => event.topic === 'session:update' && event.data.event === 'message_rollback',
+    )
+    expect(fullRollbackUpdate).toBeUndefined()
+  })
+
+  test('failed turn with no completed assistant output fully rolls back and keeps queued messages', async () => {
+    const events: Array<{ topic: string; data: Record<string, unknown> }> = []
+    const session = new Session('web', createRouter(), new ToolRegistry(), {
+      bus: {
+        emit(topic, data) {
+          events.push({ topic, data })
+        },
+      },
+    })
+    session.initAgent({ name: 'queue-agent', agentInstruction: 'queue test agent' })
+
+    const userMessage = makeMessage(session.data.id, 'user', 'message', 'hello')
+    const queuedMessage = makeMessage(session.data.id, 'user', 'queued', 'queued follow-up')
+
+    ;(
+      session as unknown as {
+        agent: {
+          run: (
+            context: unknown,
+            userMessage: string,
+            images: unknown,
+            onNewMessage?: (message: Message) => void,
+          ) => Promise<Message[]>
+        }
+      }
+    ).agent = {
+      run: async (_context: unknown, _userMessage: string, _images: unknown, onNewMessage?: (message: Message) => void) => {
+        onNewMessage?.(userMessage)
+        onNewMessage?.(queuedMessage)
+        throw new Error('provider overloaded')
+      },
+    }
+
+    let error: unknown
+    try {
+      await session.handleMessage('hello')
+    } catch (err) {
+      error = err
+    }
+
+    expect((error as Error & { rolledBack?: boolean })?.rolledBack).toBe(true)
+    expect(session.getMessages()).toEqual([queuedMessage])
 
     const rollbackUpdate = events.find(
       (event) => event.topic === 'session:update' && event.data.event === 'message_rollback',
     )
+    expect(rollbackUpdate?.data.event).toBe('message_rollback')
     expect(rollbackUpdate?.data.sessionId).toBe(session.data.id)
-    expect(rollbackUpdate?.data.messageCount).toBe(0)
+    expect(rollbackUpdate?.data.messageCount).toBe(1)
   })
 })

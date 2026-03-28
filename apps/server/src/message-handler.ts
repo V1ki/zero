@@ -323,11 +323,17 @@ export async function handleChannelMessage(
       errorMessage.includes('Overloaded') ||
       /\b(429|503|529)\b/.test(errorMessage)
 
+    const rolledBack = (err as { rolledBack?: boolean })?.rolledBack !== false
+
     const userReply = sessionWasArchived
       ? 'Session corrupted and has been reset. Please resend your message.'
       : isTransient
-        ? '⚠️ AI 服务暂时过载（已重试 3 次仍未恢复），消息已回滚。请稍后重新发送。'
-        : 'An error occurred processing your message.'
+        ? rolledBack
+          ? '⚠️ AI 服务暂时过载（已重试 3 次仍未恢复），消息已回滚。请稍后重新发送。'
+          : '⚠️ AI 服务暂时过载，已完成的工作已保留。请发送新消息继续。'
+        : rolledBack
+          ? 'An error occurred processing your message.'
+          : '处理中断，已完成的工作已保留。请发送新消息继续。'
 
     try {
       const activeStreaming = streaming
