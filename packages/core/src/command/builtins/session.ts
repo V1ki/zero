@@ -15,6 +15,21 @@ interface SessionInfoTarget {
   getMessages(): Message[]
 }
 
+interface SessionInfoViewModel {
+  id: string
+  model: string
+  created: string
+  updated: string
+  duration: string
+  messages: string
+  turns: string
+  requests: string
+  toolCalls: string
+  tokens: string
+  cache: string
+  cost: string
+}
+
 const ZERO_STATS: SessionStatsSummary = {
   totalCost: 0,
   totalTokens: 0,
@@ -82,7 +97,10 @@ function getSessionUsageStats(
   return metrics?.sessionStats(sessionId) ?? ZERO_STATS
 }
 
-function buildSessionInfoBody(session: SessionInfoTarget, metrics?: MetricsDB): string {
+function buildSessionInfoViewModel(
+  session: SessionInfoTarget,
+  metrics?: MetricsDB,
+): SessionInfoViewModel {
   const messages = session.getMessages()
   const turns = messages.filter((message) => Session.isTopLevelUserTurn(message)).length
   const fallbackToolCalls = countToolCallsFromMessages(messages)
@@ -93,30 +111,20 @@ function buildSessionInfoBody(session: SessionInfoTarget, metrics?: MetricsDB): 
   const durationMs =
     new Date(session.data.updatedAt).getTime() - new Date(session.data.createdAt).getTime()
 
-  return [
-    '-------------------------',
-    formatRow('ID', session.data.id),
-    formatRow('Model', session.data.currentModel),
-    '-------------------------',
-    formatRow('Created', formatTimestamp(session.data.createdAt)),
-    formatRow('Updated', formatTimestamp(session.data.updatedAt)),
-    formatRow('Duration', formatSessionDuration(durationMs)),
-    '-------------------------',
-    formatRow('Messages', formatNumber(messages.length)),
-    formatRow('Turns', formatNumber(turns)),
-    formatRow('Requests', formatNumber(stats.requestCount)),
-    formatRow('Tool calls', formatNumber(toolCalls)),
-    '-------------------------',
-    formatRow(
-      'Tokens',
-      `${formatNumber(stats.inputTokens)} in / ${formatNumber(stats.outputTokens)} out`,
-    ),
-    formatRow(
-      'Cache',
-      `${formatNumber(stats.cacheWriteTokens)} write / ${formatNumber(stats.cacheReadTokens)} read (${Math.round(stats.cacheHitRate * 100)}% hit)`,
-    ),
-    formatRow('Cost', formatCost(stats.totalCost)),
-  ].join('\n')
+  return {
+    id: session.data.id,
+    model: session.data.currentModel,
+    created: formatTimestamp(session.data.createdAt),
+    updated: formatTimestamp(session.data.updatedAt),
+    duration: formatSessionDuration(durationMs),
+    messages: formatNumber(messages.length),
+    turns: formatNumber(turns),
+    requests: formatNumber(stats.requestCount),
+    toolCalls: formatNumber(toolCalls),
+    tokens: `${formatNumber(stats.inputTokens)} in / ${formatNumber(stats.outputTokens)} out`,
+    cache: `${formatNumber(stats.cacheWriteTokens)} write / ${formatNumber(stats.cacheReadTokens)} read (${Math.round(stats.cacheHitRate * 100)}% hit)`,
+    cost: formatCost(stats.totalCost),
+  }
 }
 
 export function parseSessionArgs(content: string): SessionCommandArgs | null {
@@ -127,11 +135,51 @@ export function buildSessionInfoReply(
   session: SessionInfoTarget,
   metrics?: MetricsDB,
 ): string {
-  return ['Session Info', buildSessionInfoBody(session, metrics)].join('\n')
+  const info = buildSessionInfoViewModel(session, metrics)
+
+  return [
+    'Session Info',
+    '-------------------------',
+    formatRow('ID', info.id),
+    formatRow('Model', info.model),
+    '-------------------------',
+    formatRow('Created', info.created),
+    formatRow('Updated', info.updated),
+    formatRow('Duration', info.duration),
+    '-------------------------',
+    formatRow('Messages', info.messages),
+    formatRow('Turns', info.turns),
+    formatRow('Requests', info.requests),
+    formatRow('Tool calls', info.toolCalls),
+    '-------------------------',
+    formatRow('Tokens', info.tokens),
+    formatRow('Cache', info.cache),
+    formatRow('Cost', info.cost),
+  ].join('\n')
 }
 
 function buildFeishuSessionInfoReply(session: SessionInfoTarget, metrics?: MetricsDB): string {
-  return ['Session Info', '', '```', buildSessionInfoBody(session, metrics), '```'].join('\n')
+  const info = buildSessionInfoViewModel(session, metrics)
+
+  return [
+    'Session Info',
+    '',
+    `**ID:** ${info.id}`,
+    `**Model:** ${info.model}`,
+    '',
+    `**Created:** ${info.created}`,
+    `**Updated:** ${info.updated}`,
+    `**Duration:** ${info.duration}`,
+    '',
+    `**Messages:** ${info.messages}`,
+    `**Turns:** ${info.turns}`,
+    `**Requests:** ${info.requests}`,
+    `**Tool calls:** ${info.toolCalls}`,
+    '',
+    `**Tokens:** ${info.tokens}`,
+    `**Cache:** ${info.cache}`,
+    `**Cost:** ${info.cost}`,
+  ].join('\n')
 }
 
 export const sessionCommand: Command = {

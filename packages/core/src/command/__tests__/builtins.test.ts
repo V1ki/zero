@@ -347,12 +347,12 @@ describe('builtin commands', () => {
     const result = await sessionCommand.execute({}, createContext(sessionManager, 'feishu'))
 
     expect(result.handled).toBe(true)
-    expect(result.reply).toContain('Tool calls:   2')
-    expect(result.reply).toContain('Requests:     0')
-    expect(result.reply).toContain('Cost:         $0.0000')
+    expect(result.reply).toContain('**Tool calls:** 2')
+    expect(result.reply).toContain('**Requests:** 0')
+    expect(result.reply).toContain('**Cost:** $0.0000')
   })
 
-  test('/session wraps the details in a code block for feishu replies', async () => {
+  test('/session formats feishu replies as a mobile-friendly markdown summary', async () => {
     const mockSession: MockSession = {
       data: {
         id: 'sess_session_3',
@@ -374,8 +374,9 @@ describe('builtin commands', () => {
     const result = await sessionCommand.execute({}, createContext(sessionManager, 'feishu'))
 
     expect(result.handled).toBe(true)
-    expect(result.reply).toContain('Session Info\n\n```')
-    expect(result.reply).toContain('ID:           sess_session_3')
-    expect(result.reply).toContain('```')
+    expect(result.reply).toContain('Session Info')
+    expect(result.reply).toContain('**ID:** sess_session_3')
+    expect(result.reply).toContain('**Model:** chatgpt/gpt-5.4')
+    expect(result.reply).not.toContain('```')
   })
 })
