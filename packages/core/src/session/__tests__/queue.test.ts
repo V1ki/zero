@@ -158,6 +158,7 @@ class QueueResumeAdapter implements ProviderAdapter {
 
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
     const hasTools = Boolean(request.tools?.length)
+
     if (!hasTools && isTaskClosureClassifierRequest(request)) {
       return createTextResponse(
         'resp_classifier',
@@ -238,6 +239,32 @@ function makeMessage(
     role,
     messageType,
     content: [{ type: 'text', text }],
+    createdAt: now(),
+  }
+}
+
+function makeToolUseMessage(
+  sessionId: string,
+  toolUseId: string,
+  toolName = 'hold',
+): Message {
+  return {
+    id: generateId(),
+    sessionId,
+    role: 'assistant',
+    messageType: 'message',
+    content: [{ type: 'tool_use', id: toolUseId, name: toolName, input: {} }],
+    createdAt: now(),
+  }
+}
+
+function makeToolResultMessage(sessionId: string, toolUseId: string, output: string): Message {
+  return {
+    id: generateId(),
+    sessionId,
+    role: 'user',
+    messageType: 'message',
+    content: [{ type: 'tool_result', toolUseId, content: output }],
     createdAt: now(),
   }
 }
@@ -374,7 +401,7 @@ describe('Session queue handling', () => {
     const messages = await turnPromise
 
     expect(adapter.queuedRequestSeen).toBe(true)
-    expect(adapter.normalRequestHasTools.length).toBeGreaterThanOrEqual(3)
+    expect(adapter.normalRequestHasTools).toEqual([true, true, true, true])
     expect(adapter.sawUnexpectedNoToolsRequest).toBe(false)
     expect(messages.at(-1)?.content).toEqual([{ type: 'text', text: '任务处理完成，已完成' }])
     expect(
@@ -509,7 +536,8 @@ describe('Session queue handling', () => {
 
   test('failed turn with completed assistant work keeps messages and reports partial failure', async () => {
     const events: Array<{ topic: string; data: Record<string, unknown> }> = []
-    const activeMessages: Message[] = []
+    const completedTurnMessages: Message[] = []
+
     const session = new Session('web', createRouter(), new ToolRegistry(), {
       bus: {
         emit(topic, data) {
@@ -518,8 +546,9 @@ describe('Session queue handling', () => {
       },
     })
     session.initAgent({ name: 'queue-agent', agentInstruction: 'queue test agent' })
+    const assistantToolUseMessage = makeToolUseMessage(session.data.id, 'call_hold_1')
+    const toolResultMessage = makeToolResultMessage(session.data.id, 'call_hold_1', 'tool result')
 
-    const failedMessage = makeMessage(session.data.id, 'assistant', 'message', 'partial output')
     ;(
       session as unknown as {
         agent: {
@@ -539,12 +568,10 @@ describe('Session queue handling', () => {
         onNewMessage?: (message: Message) => void,
       ) => {
         const userMessageForThisTurn = makeMessage(session.data.id, 'user', 'message', userMessage)
-        const queuedMessage = makeMessage(session.data.id, 'user', 'queued', 'queued follow-up')
-
         onNewMessage?.(userMessageForThisTurn)
-        activeMessages.push(userMessageForThisTurn, failedMessage, queuedMessage)
-        onNewMessage?.(failedMessage)
-        onNewMessage?.(queuedMessage)
+        completedTurnMessages.push(userMessageForThisTurn, assistantToolUseMessage, toolResultMessage)
+        onNewMessage?.(assistantToolUseMessage)
+        onNewMessage?.(toolResultMessage)
         throw new Error('provider overloaded')
       },
     }
@@ -557,7 +584,7 @@ describe('Session queue handling', () => {
     }
 
     expect((error as Error & { rolledBack?: boolean })?.rolledBack).toBe(false)
-    expect(session.getMessages()).toEqual(activeMessages)
+    expect(session.getMessages()).toEqual(completedTurnMessages)
 
     const rollbackUpdate = events.find(
       (event) =>

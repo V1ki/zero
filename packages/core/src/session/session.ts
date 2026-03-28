@@ -661,7 +661,9 @@ export class Session {
         { turnIndex: this.allocateTurnIndex() },
       )
     } catch (error) {
-      // Rollback messages added during this failed turn so the user can cleanly retry.
+      // On failure, preserve completed assistant output when present; otherwise roll back
+      // the in-turn user input and keep queued messages for follow-up delivery.
+      // This allows partial work to be retained while still keeping failure handling clear.
       // Preserve any 'queued' messages that were pushed concurrently by handleMessage —
       // they belong to the user, not to the failed agent turn.
       let rolledBack = true
