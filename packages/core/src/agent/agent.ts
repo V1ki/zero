@@ -409,6 +409,7 @@ export class Agent {
         const shouldEvaluateTaskClosure =
           !this.toolContext.spawnedByRequestId &&
           !hadQueuedMessages &&
+          memoryNudgeCount === 0 &&
           hasAssistantText(response.content) &&
           extractAssistantTail(response.content).length > 0
 

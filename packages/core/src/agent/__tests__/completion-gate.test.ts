@@ -202,6 +202,7 @@ type MemoryNudgeMode =
   | 'write-fails-on-nudge'
   | 'already-written'
   | 'delete-before-finish'
+  | 'continue-after-nudge'
 
 class MemoryNudgeAdapter implements ProviderAdapter {
   readonly apiType = 'fake-memory-nudge'
@@ -214,6 +215,15 @@ class MemoryNudgeAdapter implements ProviderAdapter {
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
     if (isTaskClosureClassifierRequest(request)) {
       this.classifierCalls++
+      if (this.mode === 'continue-after-nudge') {
+        const prompt = getTextFromRequest(request)
+        if (prompt.includes(OPTIONAL_TAIL)) {
+          return createTextResponse(
+            '{"action":"continue","reason":"后续核验仍属于当前任务"}',
+            'classifier reasoning for continue',
+          )
+        }
+      }
       return createTextResponse(
         '{"action":"finish","reason":"当前回复应直接结束"}',
         'classifier reasoning for finish',
@@ -222,6 +232,15 @@ class MemoryNudgeAdapter implements ProviderAdapter {
 
     this.normalCalls++
     const lastUserText = getLastUserText(request)
+    if (this.mode === 'continue-after-nudge') {
+      if (lastUserText.includes(TASK_CLOSURE_PROMPT)) {
+        return createTextResponse('这轮工作已经完成')
+      }
+      if (lastUserText.includes(MEMORY_NUDGE_PROMPT)) {
+        return createTextResponse(INITIAL_REPLY)
+      }
+      return createTextResponse(INITIAL_REPLY)
+    }
     if (lastUserText.includes(MEMORY_NUDGE_PROMPT)) {
       this.nudgeCalls++
       if (this.mode === 'write-on-nudge' || this.mode === 'write-fails-on-nudge') {
@@ -754,6 +773,39 @@ describe('Agent task closure gate', () => {
       purpose: 'memory_nudge',
       memoryWritten: true,
     })
+  })
+
+  test('skips task closure evaluation after a memory nudge continuation', async () => {
+    const registry = new ToolRegistry()
+    const adapter = new MemoryNudgeAdapter('continue-after-nudge')
+    const tracer = new Tracer()
+    const agent = new Agent(
+      { name: 'test-agent', agentInstruction: 'Test prompt' },
+      adapter,
+      registry,
+      createToolContext(),
+      { tracer },
+    )
+
+    const messages = await agent.run(
+      createContext(registry),
+      '先给这个结论做完整核验, 然后再收尾',
+    )
+    const assistantMessages = messages.filter((message) => message.role === 'assistant')
+    const taskClosureSpans = tracer
+      .exportSession('test-session')
+      .flatMap(flattenTraceSpans)
+      .filter((span) => span.name === 'task_closure_decision')
+    const memoryNudgeSpan = tracer
+      .exportSession('test-session')
+      .flatMap(flattenTraceSpans)
+      .find((span) => span.name === 'memory_nudge')
+
+    expect(assistantMessages).toHaveLength(3)
+    expect(adapter.normalCalls).toBe(3)
+    expect(adapter.classifierCalls).toBe(2)
+    expect(taskClosureSpans).toHaveLength(2)
+    expect(memoryNudgeSpan).toBeDefined()
   })
 
   test('does not nudge again when memory was already written earlier in the turn', async () => {
