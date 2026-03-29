@@ -327,7 +327,9 @@ export class Agent {
         return [{ type: 'text', text: options.context.dynamicContext }, ...content]
       },
       onNewMessage: (message) => {
-        options.onNewMessage?.(message)
+        if (memoryNudgeCount === 0) {
+          options.onNewMessage?.(message)
+        }
 
         if (message.role === 'assistant') {
           this.obs.bus?.emit('session:update', {
@@ -398,6 +400,7 @@ export class Agent {
         }
       },
       onTextDelta: (delta, meta) => {
+        if (memoryNudgeCount > 0) return
         options.onTextDelta?.(delta, meta)
       },
       onEndTurn: async (response, ctx) => {
