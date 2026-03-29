@@ -16,7 +16,7 @@ import type {
 import { BaseTool } from '../../tool/base'
 import { ToolRegistry } from '../../tool/registry'
 import { Agent, type AgentContext } from '../agent'
-import { TASK_CLOSURE_PROMPT } from '../task-closure'
+import { buildTaskClosurePrompt } from '../task-closure'
 
 async function* failStream(error: Error): AsyncIterable<StreamEvent> {
   yield* []
@@ -65,12 +65,12 @@ function getTextFromRequest(request: CompletionRequest): string {
     .join('\n')
 }
 
-function getLastUserText(request: CompletionRequest): string {
+function getLastUserMessage(request: CompletionRequest): Message | undefined {
   for (let index = request.messages.length - 1; index >= 0; index--) {
     const message = request.messages[index]
-    if (message.role === 'user') return getTextFromMessage(message)
+    if (message.role === 'user') return message
   }
-  return ''
+  return undefined
 }
 
 function isTaskClosureClassifierRequest(request: CompletionRequest): boolean {
@@ -84,6 +84,7 @@ class TaskClosureAdapter implements ProviderAdapter {
   classifierCalls = 0
   lastClassifierPrompt = ''
   lastClassifierSystem = ''
+  lastTaskClosurePrompt = ''
 
   constructor(private readonly mode: ClassifierMode) {}
 
@@ -127,8 +128,12 @@ class TaskClosureAdapter implements ProviderAdapter {
 
     this.normalCalls++
 
-    const lastUserText = getLastUserText(request)
-    if (lastUserText.includes(TASK_CLOSURE_PROMPT)) {
+    const lastUserMessage = getLastUserMessage(request)
+    if (
+      lastUserMessage?.messageType === 'control' &&
+      lastUserMessage.controlKind === 'task_closure'
+    ) {
+      this.lastTaskClosurePrompt = getTextFromMessage(lastUserMessage)
       return createTextResponse(CONTINUED_REPLY)
     }
 
@@ -231,17 +236,26 @@ class MemoryNudgeAdapter implements ProviderAdapter {
     }
 
     this.normalCalls++
-    const lastUserText = getLastUserText(request)
+    const lastUserMessage = getLastUserMessage(request)
     if (this.mode === 'continue-after-nudge') {
-      if (lastUserText.includes(TASK_CLOSURE_PROMPT)) {
+      if (
+        lastUserMessage?.messageType === 'control' &&
+        lastUserMessage.controlKind === 'task_closure'
+      ) {
         return createTextResponse('这轮工作已经完成')
       }
-      if (lastUserText.includes(MEMORY_NUDGE_PROMPT)) {
+      if (
+        lastUserMessage?.messageType === 'control' &&
+        lastUserMessage.controlKind === 'memory_nudge'
+      ) {
         return createTextResponse(INITIAL_REPLY)
       }
       return createTextResponse(INITIAL_REPLY)
     }
-    if (lastUserText.includes(MEMORY_NUDGE_PROMPT)) {
+    if (
+      lastUserMessage?.messageType === 'control' &&
+      lastUserMessage.controlKind === 'memory_nudge'
+    ) {
       this.nudgeCalls++
       if (this.mode === 'write-on-nudge' || this.mode === 'write-fails-on-nudge') {
         return {
@@ -404,12 +418,57 @@ describe('Agent task closure gate', () => {
 
     const messages = await agent.run(createContext(registry), '帮我看看这帖值不值得信')
     const assistantMessages = messages.filter((message) => message.role === 'assistant')
+    const controlMessages = messages.filter((message) => message.messageType === 'control')
 
     expect(assistantMessages).toHaveLength(2)
     expect(getTextFromMessage(assistantMessages[0])).toBe(INITIAL_REPLY)
     expect(getTextFromMessage(assistantMessages[1])).toBe(CONTINUED_REPLY)
+    expect(controlMessages).toHaveLength(1)
+    expect(controlMessages[0]).toMatchObject({
+      messageType: 'control',
+      controlKind: 'task_closure',
+    })
     expect(adapter.normalCalls).toBe(2)
     expect(adapter.classifierCalls).toBe(2)
+  })
+
+  test('injects classifier reason into the continuation prompt', async () => {
+    const registry = new ToolRegistry()
+    const adapter = new TaskClosureAdapter('continue')
+    const agent = new Agent(
+      { name: 'test-agent', agentInstruction: 'Test prompt', promptMode: 'minimal' },
+      adapter,
+      registry,
+      createToolContext(),
+    )
+
+    await agent.run(createContext(registry), '帮我看看这帖值不值得信')
+
+    expect(adapter.lastTaskClosurePrompt).toContain(
+      '<classifier_reason>后续核验仍属于当前任务</classifier_reason>',
+    )
+  })
+
+  test('marks task closure continuation messages with control metadata', async () => {
+    const registry = new ToolRegistry()
+    const adapter = new TaskClosureAdapter('continue')
+    const agent = new Agent(
+      { name: 'test-agent', agentInstruction: 'Test prompt', promptMode: 'minimal' },
+      adapter,
+      registry,
+      createToolContext(),
+    )
+
+    const messages = await agent.run(createContext(registry), '帮我看看这帖值不值得信')
+    const controlMessage = messages.find((message) => message.controlKind === 'task_closure')
+
+    expect(controlMessage).toBeDefined()
+    expect(controlMessage).toMatchObject({
+      role: 'user',
+      messageType: 'control',
+      controlKind: 'task_closure',
+      content: [{ type: 'text', text: buildTaskClosurePrompt('后续核验仍属于当前任务') }],
+    })
   })
 
   test('does not auto-continue when user explicitly asks for next-step options', async () => {

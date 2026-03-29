@@ -262,7 +262,8 @@ export class AgentLoop {
       id: generateId(),
       sessionId: this.config.sessionId,
       role: 'user',
-      messageType: 'message',
+      messageType: 'control',
+      controlKind: 'empty_retry',
       content: [{ type: 'text', text }],
       createdAt: now(),
     }

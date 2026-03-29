@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
-import { MEMORY_NUDGE_PROMPT, type MemoryRetriever } from '@zero-os/memory'
+import type { MemoryRetriever } from '@zero-os/memory'
 import type { ModelRouter, ModelSwitchResult, ResolvedModel } from '@zero-os/model'
 import type {
   MetricsDB,
@@ -35,11 +35,9 @@ import {
   buildSystemPrompt,
   wrapMemoryInjection,
 } from '../agent/prompt'
-import { CONTINUATION_PROMPT, type QueuedMessage } from '../agent/queue'
+import type { QueuedMessage } from '../agent/queue'
 import { buildSnapshot } from '../agent/snapshot'
-import { TASK_CLOSURE_PROMPT } from '../agent/task-closure'
 import { loadBootstrapFiles } from '../bootstrap/loader'
-import { EMPTY_RESPONSE_RETRY_PROMPT } from '../constants'
 import { loadSkills } from '../skill/loader'
 import type { ToolRegistry } from '../tool/registry'
 
@@ -1028,27 +1026,6 @@ export class Session {
     if (message.messageType !== 'message') return false
     if (message.content.some((block) => block.type === 'tool_result')) return false
 
-    const hasVisibleContent = message.content.some(
-      (block) => block.type === 'text' || block.type === 'image',
-    )
-    if (!hasVisibleContent) return false
-
-    const textBlocks = message.content
-      .filter((block) => block.type === 'text')
-      .map((block) => block.text)
-    if (textBlocks.length === 0) return true
-
-    return !textBlocks.every((text) => Session.isInternalControlText(text))
-  }
-
-  private static isInternalControlText(text: string): boolean {
-    return (
-      text === EMPTY_RESPONSE_RETRY_PROMPT ||
-      text === CONTINUATION_PROMPT ||
-      text === MEMORY_NUDGE_PROMPT ||
-      text === TASK_CLOSURE_PROMPT ||
-      text.startsWith('<queued_message>') ||
-      text.startsWith('<queued_messages ')
-    )
+    return message.content.some((block) => block.type === 'text' || block.type === 'image')
   }
 }

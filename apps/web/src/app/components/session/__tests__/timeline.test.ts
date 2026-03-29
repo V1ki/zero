@@ -188,6 +188,27 @@ describe('buildTimeline', () => {
     }
   })
 
+  test('renders control messages as system events', () => {
+    const messages: Message[] = [
+      {
+        id: 'msg_control',
+        role: 'user',
+        messageType: 'control',
+        controlKind: 'task_closure',
+        content: [{ type: 'text', text: '<system_notice>继续完成当前任务</system_notice>' }],
+        createdAt: '2026-03-08T00:00:01.000Z',
+      },
+    ]
+
+    const items = buildTimeline(messages)
+    expect(items).toHaveLength(1)
+    expect(items[0].type).toBe('system-event')
+    if (items[0].type === 'system-event') {
+      expect(items[0].variant).toBe('info')
+      expect(items[0].text).toContain('继续完成当前任务')
+    }
+  })
+
   test('anchors memory inject notifications after the triggering user message', () => {
     const messages: Message[] = [
       {

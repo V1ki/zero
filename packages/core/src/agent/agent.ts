@@ -17,6 +17,7 @@ import type {
   CompletionResponse,
   CompressionResult,
   ContentBlock,
+  ControlKind,
   Message,
   SecretFilter,
   ToolContext,
@@ -39,9 +40,9 @@ import {
 } from './queue'
 import {
   TASK_CLOSURE_CLASSIFIER_SYSTEM_PROMPT,
-  TASK_CLOSURE_PROMPT,
   type TaskClosureDecision,
   buildTaskClosureDecisionPrompt,
+  buildTaskClosurePrompt,
   buildTaskClosurePromptContext,
   extractAssistantTail,
   extractAssistantText,
@@ -474,7 +475,10 @@ export class Agent {
           hadQueuedMessages = false
           return {
             action: 'continue' as const,
-            continuationMessage: this.buildLoopUserMessage(CONTINUATION_PROMPT),
+            continuationMessage: this.buildLoopUserMessage(
+              CONTINUATION_PROMPT,
+              'continuation',
+            ),
           }
         }
 
@@ -485,7 +489,10 @@ export class Agent {
           taskClosureRetryCount++
           return {
             action: 'continue' as const,
-            continuationMessage: this.buildLoopUserMessage(TASK_CLOSURE_PROMPT),
+            continuationMessage: this.buildLoopUserMessage(
+              buildTaskClosurePrompt(taskClosureEvaluation.decision.reason),
+              'task_closure',
+            ),
           }
         }
 
@@ -521,7 +528,7 @@ export class Agent {
 
           return {
             action: 'continue' as const,
-            continuationMessage: this.buildLoopUserMessage(MEMORY_NUDGE_PROMPT),
+            continuationMessage: this.buildLoopUserMessage(MEMORY_NUDGE_PROMPT, 'memory_nudge'),
           }
         }
 
@@ -704,12 +711,13 @@ export class Agent {
     }
   }
 
-  private buildLoopUserMessage(text: string): Message {
+  private buildLoopUserMessage(text: string, controlKind: ControlKind): Message {
     return {
       id: generateId(),
       sessionId: this.toolContext.sessionId,
       role: 'user',
-      messageType: 'message',
+      messageType: 'control',
+      controlKind,
       content: [{ type: 'text', text }],
       createdAt: now(),
     }

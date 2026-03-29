@@ -168,8 +168,11 @@ describe('Session.evaluateSessionMemory', () => {
     expect(String(endedSpans[0]?.metadata?.error)).toContain('evaluation failed')
   })
 
-  test('treats MEMORY_NUDGE_PROMPT as internal control text rather than a top-level user turn', () => {
-    const internalMessage = makeStoredMessage('user', MEMORY_NUDGE_PROMPT)
+  test('excludes control messages from top-level user turns', () => {
+    const internalMessage = makeStoredMessage('user', MEMORY_NUDGE_PROMPT, {
+      messageType: 'control',
+      controlKind: 'memory_nudge',
+    })
     const visibleMessage = makeStoredMessage('user', '这是用户正常输入')
 
     expect(Session.isTopLevelUserTurn(internalMessage)).toBe(false)

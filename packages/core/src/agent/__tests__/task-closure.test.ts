@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { now } from '@zero-os/shared'
 import type { ContentBlock, Message } from '@zero-os/shared'
 import {
+  buildTaskClosurePrompt,
   buildTaskClosureDecisionPrompt,
   buildTaskClosurePromptContext,
   extractAssistantTail,
@@ -24,6 +25,29 @@ describe('parseTaskClosureDecision', () => {
 
   test('rejects decisions without a reason', () => {
     expect(parseTaskClosureDecision('{"action":"continue"}')).toBeNull()
+  })
+})
+
+describe('buildTaskClosurePrompt', () => {
+  test('injects the classifier reason inside classifier_reason tags', () => {
+    const prompt = buildTaskClosurePrompt('后续核验仍属于当前任务')
+
+    expect(prompt).toContain(
+      '<classifier_reason>后续核验仍属于当前任务</classifier_reason>',
+    )
+  })
+
+  test('preserves the core continuation guidance from the static notice', () => {
+    const prompt = buildTaskClosurePrompt('需要继续')
+
+    expect(prompt).toContain('不要把它们交还给用户选择')
+  })
+
+  test('wraps the notice in system_notice tags', () => {
+    const prompt = buildTaskClosurePrompt('需要继续')
+
+    expect(prompt.startsWith('<system_notice>')).toBe(true)
+    expect(prompt.endsWith('</system_notice>')).toBe(true)
   })
 })
 

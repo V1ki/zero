@@ -228,6 +228,8 @@ describe('AgentLoop', () => {
     const messages = await loop.run('hello', [])
 
     expect(messages.map((message) => message.role)).toEqual(['user', 'user', 'assistant'])
+    expect(messages[1]?.messageType).toBe('control')
+    expect(messages[1]?.controlKind).toBe('empty_retry')
     expect(messages[1]?.content).toEqual([{ type: 'text', text: EMPTY_RESPONSE_RETRY_PROMPT }])
     expect(messages.at(-1)?.content).toEqual([{ type: 'text', text: 'recovered' }])
   })

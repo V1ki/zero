@@ -15,6 +15,7 @@ export interface Message {
   id: string
   role: string
   messageType: string
+  controlKind?: string
   content: ContentBlock[]
   model?: string
   createdAt: string
@@ -171,6 +172,22 @@ export function buildTimeline(
   }
 
   for (const msg of messages) {
+    if (msg.messageType === 'control') {
+      const text = msg.content
+        .filter((b) => b.type === 'text')
+        .map((b) => b.text as string)
+        .join('\n')
+      if (text) {
+        items.push({
+          type: 'system-event',
+          variant: 'info',
+          text,
+          createdAt: msg.createdAt,
+        })
+      }
+      continue
+    }
+
     if (msg.messageType === 'notification') {
       const text = msg.content
         .filter((b) => b.type === 'text')

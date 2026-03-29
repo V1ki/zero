@@ -12,13 +12,16 @@ export interface TaskClosurePromptContext {
   toolSummary: string
 }
 
-export const TASK_CLOSURE_PROMPT = `<system_notice>
+export function buildTaskClosurePrompt(reason: string): string {
+  return `<system_notice>
 你刚才已经给出了一个阶段性结果，但把当前任务的必要后续动作写成了可选下一步。
 如果这些动作仍属于回答当前问题的必要组成部分，请直接继续执行，不要把它们交还给用户选择。
 只有在你确实缺少用户提供的信息、授权、凭据、登录态，或下一步涉及不可逆外部操作时，才说明真实阻塞并停止。
 不要用“如果你愿意”“如果你要”“要不要我继续”“我下一步可以”或类似可选分支菜单收尾。
 当前进度可参考上方的工具调用历史。
+<classifier_reason>${reason}</classifier_reason>
 </system_notice>`
+}
 
 export const TASK_CLOSURE_CLASSIFIER_SYSTEM_PROMPT =
   '你是一个严格的任务收尾判定器。你只输出合法 JSON，不要输出解释、代码块或额外文本。'

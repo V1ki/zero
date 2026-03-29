@@ -1,6 +1,8 @@
 export type MessageRole = 'user' | 'assistant' | 'system'
 
-export type MessageType = 'message' | 'notification' | 'queued'
+export type MessageType = 'message' | 'notification' | 'queued' | 'control'
+
+export type ControlKind = 'task_closure' | 'continuation' | 'memory_nudge' | 'empty_retry'
 
 export type ContentBlockType = 'text' | 'tool_use' | 'tool_result' | 'image'
 
@@ -39,6 +41,7 @@ export interface Message {
   sessionId: string
   role: MessageRole
   messageType: MessageType
+  controlKind?: ControlKind
   content: ContentBlock[]
   model?: string
   createdAt: string
