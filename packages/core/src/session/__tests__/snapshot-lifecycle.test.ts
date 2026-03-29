@@ -128,7 +128,7 @@ function installTurnCapturingAgent(session: Session, turnIndexes: number[]): voi
         onTextDelta?: unknown,
         shouldInterrupt?: unknown,
         getQueuedMessages?: unknown,
-        requestLogMeta?: { turnIndex?: number },
+        requestLogMeta?: { turnIndex?: number; userMessageEntry?: Message },
       ) => Promise<Message[]>
     }
   }
@@ -142,7 +142,7 @@ function installTurnCapturingAgent(session: Session, turnIndexes: number[]): voi
       _onTextDelta?: unknown,
       _shouldInterrupt?: unknown,
       _getQueuedMessages?: unknown,
-      requestLogMeta?: { turnIndex?: number },
+      requestLogMeta?: { turnIndex?: number; userMessageEntry?: Message },
     ) => {
       turnIndexes.push(requestLogMeta?.turnIndex ?? -1)
       const user = makeMessage(session.data.id, 'user', userMessage)

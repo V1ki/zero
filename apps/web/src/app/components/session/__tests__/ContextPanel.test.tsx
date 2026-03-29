@@ -228,6 +228,7 @@ describe('TraceSummaryCard', () => {
     expect(html).toContain('SEARCHES')
     expect(html).toContain('2 results · top: Deploy rollback runbook')
     expect(html).toContain('SELECTED MEMORIES')
+    expect(html).toContain('type="button"')
     expect(html).toContain('mem_1')
     expect(html).toContain('Deploy rollback runbook')
     expect(html).toContain('score 0.92')
@@ -512,5 +513,84 @@ describe('TraceSummaryCard', () => {
 
     expect(html).not.toContain('queued_injection')
     expect(html).not.toContain('Queued injection:')
+  })
+
+  test('renders the matching injection preview for a selected memory retrieval decision', () => {
+    const html = renderToStaticMarkup(
+      <ContextPanel
+        sessionId="sess_1"
+        modelHistory={[]}
+        toolCalls={[]}
+        filesTouched={[]}
+        totalTokens={0}
+        selectedToolId={null}
+        selectedDecision={{
+          type: 'decision',
+          id: 'decision_memory_2',
+          decisionType: 'memory_retrieval',
+          outcome: 'injected',
+          sourceKind: 'llm_request',
+          createdAt: '2026-03-08T00:00:02.000Z',
+          detail: {
+            layer: 'layer1',
+            turnIndex: 2,
+            selectedMemories: [
+              {
+                id: 'mem_2',
+                type: 'note',
+                title: 'Deploy note',
+              },
+            ],
+          },
+        }}
+        llmRequests={[
+          {
+            id: 'req_1',
+            turnIndex: 1,
+            model: 'gpt-test',
+            provider: 'openai',
+            userPrompt: 'first',
+            response: 'ok',
+            stopReason: 'end_turn',
+            toolUseCount: 0,
+            tokens: { input: 1, output: 1 },
+            cost: 0.001,
+            ts: '2026-03-08T00:00:01.000Z',
+            memoryInjections: [
+              {
+                layer: 'layer1',
+                source: 'retrieved_memories',
+                formattedText: '<memory_inject layer="layer1">wrong turn</memory_inject>',
+              },
+            ],
+          },
+          {
+            id: 'req_2',
+            turnIndex: 2,
+            model: 'gpt-test',
+            provider: 'openai',
+            userPrompt: 'second',
+            response: 'ok',
+            stopReason: 'end_turn',
+            toolUseCount: 0,
+            tokens: { input: 1, output: 1 },
+            cost: 0.001,
+            ts: '2026-03-08T00:00:02.100Z',
+            memoryInjections: [
+              {
+                layer: 'layer1',
+                source: 'retrieved_memories',
+                formattedText: '<memory_inject layer="layer1">matched turn</memory_inject>',
+              },
+            ],
+          },
+        ]}
+      />,
+    )
+
+    expect(html).toContain('INJECTION PREVIEW')
+    expect(html).toContain('retrieved_memories')
+    expect(html).toContain('Expand (58 chars)')
+    expect(html).not.toContain('wrong turn')
   })
 })

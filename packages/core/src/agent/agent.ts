@@ -186,7 +186,7 @@ export class Agent {
     onTextDelta?: (delta: string, meta: { role: 'assistant'; turnId: string }) => void,
     shouldInterrupt?: () => boolean,
     getQueuedMessages?: () => QueuedMessage[],
-    requestLogMeta?: { turnIndex?: number },
+    requestLogMeta?: { turnIndex?: number; userMessageEntry?: Message },
   ): Promise<Message[]> {
     const history = prepareConversationHistory(context.conversationHistory)
     const turnIndex = requestLogMeta?.turnIndex ?? 1
@@ -242,7 +242,12 @@ export class Agent {
         }),
       )
 
-      const newMessages = await loop.run(userMessage, history, userImages)
+      const newMessages = await loop.run(
+        userMessage,
+        history,
+        userImages,
+        requestLogMeta?.userMessageEntry,
+      )
 
       if (rootSpan) {
         this.obs.tracer?.endSpan(rootSpan.id, 'success', {

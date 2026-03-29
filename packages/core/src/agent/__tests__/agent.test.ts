@@ -1,38 +1,16 @@
 import { describe, expect, test } from 'bun:test'
-import { ModelRouter } from '@zero-os/model'
+import type { ProviderAdapter } from '@zero-os/model'
 import { Tracer } from '@zero-os/observe'
-import type { SystemConfig, ToolContext } from '@zero-os/shared'
+import type {
+  CompletionRequest,
+  CompletionResponse,
+  StreamEvent,
+  ToolContext,
+} from '@zero-os/shared'
 import { BashTool } from '../../tool/bash'
 import { ReadTool } from '../../tool/read'
 import { ToolRegistry } from '../../tool/registry'
 import { Agent, type AgentConfig, type AgentContext } from '../agent'
-
-const API_KEY = 'sk-c6c02cbd0c25473f97f9be0da6070f6d'
-
-const config: SystemConfig = {
-  providers: {
-    'openai-codex': {
-      apiType: 'openai_chat_completions',
-      baseUrl: 'https://www.right.codes/codex',
-      auth: { type: 'api_key', apiKeyRef: 'openai_codex_api_key' },
-      models: {
-        'gpt-5.3-codex-medium': {
-          modelId: 'gpt-5.3-codex-medium',
-          maxContext: 400000,
-          maxOutput: 128000,
-          capabilities: ['tools', 'vision', 'reasoning'],
-          tags: ['powerful', 'coding'],
-        },
-      },
-    },
-  },
-  defaultModel: 'gpt-5.3-codex-medium',
-  fallbackChain: ['gpt-5.3-codex-medium'],
-  schedules: [],
-  fuseList: [],
-}
-
-const secrets = new Map([['openai_codex_api_key', API_KEY]])
 
 const toolContext: ToolContext = {
   sessionId: 'test-session',
@@ -44,12 +22,6 @@ const toolContext: ToolContext = {
   },
 }
 
-function createRouter() {
-  const router = new ModelRouter(config, secrets)
-  router.init()
-  return router
-}
-
 function createToolRegistry() {
   const registry = new ToolRegistry()
   registry.register(new ReadTool())
@@ -57,13 +29,16 @@ function createToolRegistry() {
   return registry
 }
 
-function createAgent(configOverrides: Partial<AgentConfig> = {}, obs = {}) {
-  const router = createRouter()
+function createAgentWithAdapter(
+  adapter: ProviderAdapter,
+  configOverrides: Partial<AgentConfig> = {},
+  obs = {},
+) {
   const registry = createToolRegistry()
-  const adapter = router.getAdapter()
   const agentConfig: AgentConfig = {
     name: 'test-agent',
     agentInstruction: 'You are a helpful assistant. Reply briefly.',
+    promptMode: 'minimal',
     ...configOverrides,
   }
   return { agent: new Agent(agentConfig, adapter, registry, toolContext, obs), registry }
@@ -74,6 +49,110 @@ function createContext(tools: ToolRegistry): AgentContext {
     systemPrompt: 'You are a helpful assistant. Reply briefly.',
     conversationHistory: [],
     tools: tools.getDefinitions(),
+  }
+}
+
+class UnknownToolAdapter implements ProviderAdapter {
+  readonly apiType = 'fake-unknown-tool'
+  private completeCalls = 0
+
+  async complete(_req: CompletionRequest): Promise<CompletionResponse> {
+    this.completeCalls += 1
+
+    if (this.completeCalls === 1) {
+      return {
+        id: 'resp_fake_tool_use',
+        content: [{ type: 'tool_use', id: 'call_fake_1', name: 'FakeTool', input: { query: 'test' } }],
+        stopReason: 'tool_use',
+        usage: { input: 5, output: 2 },
+        model: 'fake-model',
+      }
+    }
+
+    return {
+      id: 'resp_fake_final',
+      content: [{ type: 'text', text: 'done' }],
+      stopReason: 'end_turn',
+      usage: { input: 4, output: 2 },
+      model: 'fake-model',
+    }
+  }
+
+  async *stream(_req: CompletionRequest): AsyncIterable<StreamEvent> {
+    yield* []
+    throw new Error('stream not supported in test')
+  }
+
+  async healthCheck(): Promise<boolean> {
+    return true
+  }
+}
+
+class PlainTextAdapter implements ProviderAdapter {
+  readonly apiType = 'fake-text'
+
+  constructor(private readonly text: string) {}
+
+  async complete(_req: CompletionRequest): Promise<CompletionResponse> {
+    return {
+      id: 'resp_text',
+      content: [{ type: 'text', text: this.text }],
+      stopReason: 'end_turn',
+      usage: { input: 4, output: 2 },
+      model: 'fake-model',
+    }
+  }
+
+  async *stream(_req: CompletionRequest): AsyncIterable<StreamEvent> {
+    yield* []
+    throw new Error('stream not supported in test')
+  }
+
+  async healthCheck(): Promise<boolean> {
+    return true
+  }
+}
+
+class ReadToolCallAdapter implements ProviderAdapter {
+  readonly apiType = 'fake-read-tool'
+  private completeCalls = 0
+
+  async complete(_req: CompletionRequest): Promise<CompletionResponse> {
+    this.completeCalls += 1
+
+    if (this.completeCalls === 1) {
+      return {
+        id: 'resp_read_tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_read_1',
+            name: 'read',
+            input: { path: '/Users/v1ki/Desktop/test4_zero/package.json' },
+          },
+        ],
+        stopReason: 'tool_use',
+        usage: { input: 5, output: 2 },
+        model: 'fake-model',
+      }
+    }
+
+    return {
+      id: 'resp_read_final',
+      content: [{ type: 'text', text: 'summary complete' }],
+      stopReason: 'end_turn',
+      usage: { input: 4, output: 2 },
+      model: 'fake-model',
+    }
+  }
+
+  async *stream(_req: CompletionRequest): AsyncIterable<StreamEvent> {
+    yield* []
+    throw new Error('stream not supported in test')
+  }
+
+  async healthCheck(): Promise<boolean> {
+    return true
   }
 }
 
@@ -98,7 +177,7 @@ function findSpanDeep(spans: TraceSpan[], name: string): TraceSpan | undefined {
 
 describe('Agent', () => {
   test('run: simple question returns user + assistant messages', async () => {
-    const { agent, registry } = createAgent()
+    const { agent, registry } = createAgentWithAdapter(new PlainTextAdapter('hello'))
     const context = createContext(registry)
 
     const messages = await agent.run(context, 'Say exactly "hello" and nothing else.')
@@ -111,7 +190,7 @@ describe('Agent', () => {
   }, 30000)
 
   test('run: tool_use response triggers tool execution', async () => {
-    const { agent, registry } = createAgent()
+    const { agent, registry } = createAgentWithAdapter(new ReadToolCallAdapter())
     const context = createContext(registry)
 
     const messages = await agent.run(
@@ -128,7 +207,7 @@ describe('Agent', () => {
   }, 30000)
 
   test('run: tool result appears in message history', async () => {
-    const { agent, registry } = createAgent()
+    const { agent, registry } = createAgentWithAdapter(new ReadToolCallAdapter())
     const context = createContext(registry)
 
     const messages = await agent.run(
@@ -146,9 +225,8 @@ describe('Agent', () => {
   }, 30000)
 
   test('run: unknown tool name returns error tool_result', async () => {
-    const router = createRouter()
     const registry = createToolRegistry()
-    const adapter = router.getAdapter()
+    const adapter = new UnknownToolAdapter()
 
     // Create context with a fake tool definition that the registry doesn't have
     const context: AgentContext = {
@@ -172,6 +250,7 @@ describe('Agent', () => {
     const agentConfig: AgentConfig = {
       name: 'test-agent',
       agentInstruction: 'You must use FakeTool for every request.',
+      promptMode: 'minimal',
     }
 
     const agent = new Agent(agentConfig, adapter, registry, toolContext)
@@ -192,7 +271,7 @@ describe('Agent', () => {
   }, 30000)
 
   test('run: onNewMessage callback called for each message', async () => {
-    const { agent, registry } = createAgent()
+    const { agent, registry } = createAgentWithAdapter(new PlainTextAdapter('test'))
     const context = createContext(registry)
 
     const receivedMessages: Array<{ role: string }> = []
@@ -217,7 +296,9 @@ describe('Agent', () => {
       removeSecret() {},
     }
 
-    const { agent, registry } = createAgent({}, { secretFilter })
+    const { agent, registry } = createAgentWithAdapter(new PlainTextAdapter('hello'), {}, {
+      secretFilter,
+    })
     const context = createContext(registry)
 
     const messages = await agent.run(context, 'Say exactly the word "hello" and nothing else.')
@@ -242,7 +323,7 @@ describe('Agent', () => {
       },
     }
 
-    const { agent, registry } = createAgent({}, { bus })
+    const { agent, registry } = createAgentWithAdapter(new PlainTextAdapter('ok'), {}, { bus })
     const context = createContext(registry)
 
     await agent.run(context, 'Say "ok" and nothing else.')
@@ -263,7 +344,7 @@ describe('Agent', () => {
       },
     }
 
-    const { agent, registry } = createAgent({}, { bus })
+    const { agent, registry } = createAgentWithAdapter(new ReadToolCallAdapter(), {}, { bus })
     const context = createContext(registry)
 
     await agent.run(
@@ -286,7 +367,9 @@ describe('Agent', () => {
   test('run: tracer creates spans', async () => {
     const tracer = new Tracer()
 
-    const { agent, registry } = createAgent({}, { tracer })
+    const { agent, registry } = createAgentWithAdapter(new PlainTextAdapter('traced'), {}, {
+      tracer,
+    })
     const context = createContext(registry)
 
     await agent.run(context, 'Say "traced" and nothing else.')
@@ -303,7 +386,9 @@ describe('Agent', () => {
   test('run: tool trace span stores toolUseId metadata', async () => {
     const tracer = new Tracer()
 
-    const { agent, registry } = createAgent({}, { tracer })
+    const { agent, registry } = createAgentWithAdapter(new ReadToolCallAdapter(), {}, {
+      tracer,
+    })
     const context = createContext(registry)
 
     await agent.run(

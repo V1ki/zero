@@ -5,13 +5,18 @@ import type { ChannelAdapter } from '../channel-adapter'
 import { handleChannelMessage, type MessageHandlerDeps } from '../message-handler'
 
 describe('handleChannelMessage', () => {
+  type SessionHandleMessageOptions = {
+    images?: IncomingMessage['images']
+    onTextDelta?: (delta: string, meta: { turnId: string }) => void
+  }
+
   const createDefaultDeps = (
     session: {
       data: { id: string }
       isAgentInitialized: () => boolean
       setChannelCapabilities: () => void
       initAgent: () => void
-      handleMessage: (content: string, options?: { images?: IncomingMessage['images'] }) => Promise<unknown>
+      handleMessage: (content: string, options?: SessionHandleMessageOptions) => Promise<unknown>
     },
     channelAdapter: ChannelAdapter,
   ) => {
@@ -295,7 +300,7 @@ describe('handleChannelMessage', () => {
 
   test('streaming completes with existing text when partial work is kept (memory_nudge failure)', async () => {
     const replies: string[] = []
-    let streamCompleted: string | null = null
+    let streamCompleted: string | undefined
     let streamAborted = false
     const session = {
       data: { id: 'sess_test' },
@@ -304,7 +309,7 @@ describe('handleChannelMessage', () => {
       initAgent: () => {},
       handleMessage: async (
         _content: string,
-        options?: { onTextDelta?: (delta: string, meta: { turnId: string }) => void },
+        options?: SessionHandleMessageOptions,
       ) => {
         // Simulate streaming text before failure
         options?.onTextDelta?.('report content here', { turnId: 'turn_1' })
@@ -354,7 +359,7 @@ describe('handleChannelMessage', () => {
   })
 
   test('streaming aborts when failure fully rolled back', async () => {
-    let streamAbortedWith: string | null = null
+    let streamAbortedWith: string | undefined
     const session = {
       data: { id: 'sess_test' },
       isAgentInitialized: () => true,
@@ -362,7 +367,7 @@ describe('handleChannelMessage', () => {
       initAgent: () => {},
       handleMessage: async (
         _content: string,
-        options?: { onTextDelta?: (delta: string, meta: { turnId: string }) => void },
+        options?: SessionHandleMessageOptions,
       ) => {
         options?.onTextDelta?.('partial text', { turnId: 'turn_1' })
         const err = new Error('total failure')
@@ -380,7 +385,7 @@ describe('handleChannelMessage', () => {
         update: async () => {},
         complete: async () => {},
         abort: async (msg?: string) => {
-          streamAbortedWith = msg ?? null
+          streamAbortedWith = msg
         },
       }),
     }

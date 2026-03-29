@@ -557,6 +557,7 @@ describe('ObservabilityStore', () => {
             selectedMemoryIds: ['mem_1'],
           },
           request: {
+            turnIndex: 1,
             ts: '2026-03-16T01:45:01.000Z',
           },
         },
@@ -613,6 +614,7 @@ describe('ObservabilityStore', () => {
     const entries = store.readSessionDecisions(sessionId)
 
     expect(entries.map((entry) => entry.outcome)).toEqual(['injected', 'empty', 'skipped'])
+    expect(entries[0]?.detail).toMatchObject({ turnIndex: 1 })
   })
 
   test('readSessionDecisions marks truncated tool-selection rationale explicitly', () => {

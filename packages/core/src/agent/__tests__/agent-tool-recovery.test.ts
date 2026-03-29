@@ -273,6 +273,7 @@ describe('Agent tool recovery', () => {
       {
         name: 'test-agent',
         agentInstruction: 'Test prompt',
+        promptMode: 'minimal',
       },
       adapter,
       registry,
@@ -332,6 +333,7 @@ describe('Agent tool recovery', () => {
       {
         name: 'test-agent',
         agentInstruction: 'Test prompt',
+        promptMode: 'minimal',
       },
       adapter,
       registry,
@@ -379,6 +381,7 @@ describe('Agent tool recovery', () => {
       {
         name: 'test-agent',
         agentInstruction: 'Test prompt',
+        promptMode: 'minimal',
       },
       adapter,
       registry,
@@ -451,6 +454,7 @@ describe('Agent tool recovery', () => {
       {
         name: 'test-agent',
         agentInstruction: 'Test prompt',
+        promptMode: 'minimal',
       },
       adapter,
       registry,

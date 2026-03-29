@@ -447,7 +447,7 @@ describe('Session queue handling', () => {
             onTextDelta?: unknown,
             shouldInterrupt?: () => boolean,
             getQueuedMessages?: () => QueuedMessage[],
-            requestLogMeta?: { turnIndex?: number },
+            requestLogMeta?: { turnIndex?: number; userMessageEntry?: Message },
           ) => Promise<Message[]>
         }
       }
@@ -460,7 +460,7 @@ describe('Session queue handling', () => {
         _onTextDelta?: unknown,
         _shouldInterrupt?: () => boolean,
         _getQueuedMessages?: () => QueuedMessage[],
-        requestLogMeta?: { turnIndex?: number },
+        requestLogMeta?: { turnIndex?: number; userMessageEntry?: Message },
       ) => {
         turnIndexes.push(requestLogMeta?.turnIndex ?? -1)
         const user = makeMessage(restored.data.id, 'user', 'message', userMessage)
@@ -505,7 +505,7 @@ describe('Session queue handling', () => {
             onTextDelta?: unknown,
             shouldInterrupt?: () => boolean,
             getQueuedMessages?: () => QueuedMessage[],
-            requestLogMeta?: { turnIndex?: number },
+            requestLogMeta?: { turnIndex?: number; userMessageEntry?: Message },
           ) => Promise<Message[]>
         }
       }
@@ -518,7 +518,7 @@ describe('Session queue handling', () => {
         _onTextDelta?: unknown,
         _shouldInterrupt?: () => boolean,
         _getQueuedMessages?: () => QueuedMessage[],
-        requestLogMeta?: { turnIndex?: number },
+        requestLogMeta?: { turnIndex?: number; userMessageEntry?: Message },
       ) => {
         turnIndexes.push(requestLogMeta?.turnIndex ?? -1)
         const user = makeMessage(restored.data.id, 'user', 'message', userMessage)
@@ -532,6 +532,56 @@ describe('Session queue handling', () => {
     await restored.handleMessage('next turn')
 
     expect(turnIndexes).toEqual([2])
+  })
+
+  test('passes a prebuilt user message entry into the agent request metadata', async () => {
+    const session = new Session('web', createRouter(), new ToolRegistry())
+    session.initAgent({ name: 'queue-agent', agentInstruction: 'queue test agent' })
+
+    let capturedUserMessage: Message | undefined
+    ;(
+      session as unknown as {
+        agent: {
+          run: (
+            context: unknown,
+            userMessage: string,
+            images: unknown,
+            onNewMessage?: (message: Message) => void,
+            onTextDelta?: unknown,
+            shouldInterrupt?: () => boolean,
+            getQueuedMessages?: () => QueuedMessage[],
+            requestLogMeta?: { turnIndex?: number; userMessageEntry?: Message },
+          ) => Promise<Message[]>
+        }
+      }
+    ).agent = {
+      run: async (
+        _context: unknown,
+        _userMessage: string,
+        _images: unknown,
+        onNewMessage?: (message: Message) => void,
+        _onTextDelta?: unknown,
+        _shouldInterrupt?: () => boolean,
+        _getQueuedMessages?: () => QueuedMessage[],
+        requestLogMeta?: { turnIndex?: number; userMessageEntry?: Message },
+      ) => {
+        capturedUserMessage = requestLogMeta?.userMessageEntry
+        const assistant = makeMessage(session.data.id, 'assistant', 'message', 'ok')
+        if (capturedUserMessage) onNewMessage?.(capturedUserMessage)
+        onNewMessage?.(assistant)
+        return capturedUserMessage ? [capturedUserMessage, assistant] : [assistant]
+      },
+    }
+
+    await session.handleMessage('prebuilt user message')
+
+    expect(capturedUserMessage).toMatchObject({
+      sessionId: session.data.id,
+      role: 'user',
+      messageType: 'message',
+      content: [{ type: 'text', text: 'prebuilt user message' }],
+    })
+    expect(capturedUserMessage?.createdAt).toEqual(expect.any(String))
   })
 
   test('failed turn with completed assistant work keeps messages and reports partial failure', async () => {

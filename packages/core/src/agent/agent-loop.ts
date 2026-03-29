@@ -118,6 +118,7 @@ export class AgentLoop {
     userMessage: string,
     conversationHistory: Message[],
     userImages?: Array<{ mediaType: string; data: string }>,
+    userMessageEntry?: Message,
   ): Promise<Message[]> {
     const messages: Message[] = [...conversationHistory]
     const newMessages: Message[] = []
@@ -129,7 +130,7 @@ export class AgentLoop {
       state: {},
     }
 
-    const userMsg = this.buildUserMessage(userMessage, userImages)
+    const userMsg = userMessageEntry ?? this.buildUserMessage(userMessage, userImages)
     this.notifyNewMessage(userMsg, ctx)
 
     const requestUserContent =

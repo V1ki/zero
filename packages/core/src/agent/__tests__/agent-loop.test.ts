@@ -97,6 +97,38 @@ describe('AgentLoop', () => {
     expect(messages[1]?.content).toEqual([{ type: 'text', text: 'done' }])
   })
 
+  test('uses a prebuilt user message when one is provided', async () => {
+    const loop = createLoop(
+      [
+        {
+          id: 'resp_final',
+          content: [{ type: 'text', text: 'done' }],
+          stopReason: 'end_turn',
+          usage: { input: 2, output: 2 },
+          model: 'fake-model',
+        },
+      ],
+      {
+        has: () => true,
+        execute: async () => ({ success: true, output: 'ok', outputSummary: 'ok' }),
+      },
+    )
+
+    const userMessage = {
+      id: 'msg_prebuilt',
+      sessionId: 'sess-agent-loop',
+      role: 'user' as const,
+      messageType: 'message' as const,
+      content: [{ type: 'text' as const, text: 'hello' }],
+      createdAt: '2026-03-29T06:16:58.894Z',
+    }
+
+    const messages = await loop.run('hello', [], undefined, userMessage)
+
+    expect(messages[0]).toEqual(userMessage)
+    expect(messages[1]?.content).toEqual([{ type: 'text', text: 'done' }])
+  })
+
   test('loops through tool_use, tool_result, then final assistant reply', async () => {
     const toolCalls: string[] = []
     const loop = createLoop(

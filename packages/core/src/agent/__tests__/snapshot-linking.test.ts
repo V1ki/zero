@@ -120,7 +120,7 @@ describe('Agent snapshot linking', () => {
     }
 
     const agent = new Agent(
-      { name: 'test-agent', agentInstruction: 'Test prompt' },
+      { name: 'test-agent', agentInstruction: 'Test prompt', promptMode: 'minimal' },
       new CompressionAdapter(),
       registry,
       toolContext,

@@ -584,6 +584,7 @@ export class Session {
     const { currentModel, tools, toolNames, systemPrompt, projectRoot, workspacePath } =
       this.ensureStaticContext()
     this.ensureCurrentContextSnapshot(toolNames)
+    const userMessageEntry = this.makeUserMessage(content, now(), options?.images)
 
     // === DYNAMIC: Per-message context ===
 
@@ -658,7 +659,7 @@ export class Session {
         options?.onTextDelta,
         shouldInterrupt,
         getQueuedMessages,
-        { turnIndex: this.allocateTurnIndex() },
+        { turnIndex: this.allocateTurnIndex(), userMessageEntry },
       )
     } catch (error) {
       // On failure, preserve completed assistant output when present; otherwise roll back

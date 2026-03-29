@@ -357,6 +357,45 @@ test('adds session task closure event when traces are unavailable', () => {
   }
 })
 
+test('orders memory retrieval decisions after the triggering user message when timestamps are chronological', () => {
+  const items = buildTimeline(
+    [
+      {
+        id: 'msg_user',
+        role: 'user',
+        messageType: 'message',
+        content: [{ type: 'text', text: 'please inspect this' }],
+        createdAt: '2026-03-08T00:00:00.001Z',
+      },
+      {
+        id: 'msg_assistant',
+        role: 'assistant',
+        messageType: 'message',
+        content: [{ type: 'text', text: 'working on it' }],
+        createdAt: '2026-03-08T00:00:01.000Z',
+      },
+    ],
+    [],
+    [],
+    [
+      {
+        id: 'decision_memory',
+        sessionId: 'sess_1',
+        ts: '2026-03-08T00:00:00.500Z',
+        decisionType: 'memory_retrieval',
+        outcome: 'injected',
+        sourceKind: 'llm_request',
+        detail: {
+          layer: 'layer1',
+          turnIndex: 1,
+        },
+      },
+    ],
+  )
+
+  expect(items.map((item) => item.type)).toEqual(['user-message', 'decision', 'agent-text'])
+})
+
 test('orders task closure event after its assistant message when assistant timestamp is available', () => {
   const messages: Message[] = [
     {

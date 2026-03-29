@@ -1,4 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import type {
   SessionJudgeHistoryResponse,
   SessionJudgeResponse,
@@ -89,6 +91,7 @@ interface MemoryRetrievalTokens {
 interface MemoryRetrievalDetail {
   need?: boolean
   layer?: string
+  turnIndex?: number
   queries: string[]
   searches: MemoryRetrievalSearchSummary[]
   searchResultCount?: number
@@ -361,7 +364,7 @@ export function ContextPanel({
 
   if (selectedDecision) {
     if (selectedDecision.decisionType === 'memory_retrieval') {
-      return <MemoryRetrievalDetailPanel decision={selectedDecision} />
+      return <MemoryRetrievalDetailPanel decision={selectedDecision} llmRequests={llmRequests} />
     }
 
     return <DecisionDetailPanel decision={selectedDecision} />
@@ -805,113 +808,277 @@ function TaskClosureDetailPanel({
 
 export function MemoryRetrievalDetailPanel({
   decision,
+  llmRequests = [],
 }: {
   decision: DecisionTimelineItem
+  llmRequests?: LlmRequestEntry[]
 }) {
   const detail = readMemoryRetrievalDetail(decision.detail)
+  const [viewingMemory, setViewingMemory] = useState<MemoryRetrievalSelectedMemory | null>(null)
+  const [memoryContent, setMemoryContent] = useState<string | null>(null)
+  const [memoryLoading, setMemoryLoading] = useState(false)
+  const [memoryError, setMemoryError] = useState<string | null>(null)
+  const injectionPreview = useMemo(
+    () => pickMemoryInjectionPreview(decision, detail, llmRequests),
+    [decision, detail, llmRequests],
+  )
+
+  useEffect(() => {
+    if (!viewingMemory) return
+
+    const controller = new AbortController()
+    setMemoryLoading(true)
+    setMemoryContent(null)
+    setMemoryError(null)
+
+    void fetch(`/api/memory/${viewingMemory.type}/${viewingMemory.id}`, {
+      signal: controller.signal,
+    })
+      .then(async (res) => {
+        if (res.status === 404) throw new Error('deleted')
+        if (!res.ok) throw new Error('fetch_failed')
+        return res.json() as Promise<{ memory?: { content?: string } }>
+      })
+      .then((data) => setMemoryContent(data.memory?.content ?? ''))
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === 'AbortError') return
+        setMemoryError(
+          error instanceof Error && error.message === 'deleted'
+            ? '该记忆已被删除或归档。'
+            : '加载失败。',
+        )
+      })
+      .finally(() => setMemoryLoading(false))
+
+    return () => controller.abort()
+  }, [viewingMemory])
+
+  useEffect(() => {
+    if (!viewingMemory) return
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setViewingMemory(null)
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [viewingMemory])
 
   return (
-    <div className="card p-4 h-full min-h-0 overflow-y-auto animate-fade-up">
-      <h3 className="text-[13px] font-semibold text-[var(--color-text-primary)] mb-3">
-        Memory Retrieval Detail
-      </h3>
-      <div className="space-y-3">
-        <DetailField label="OUTCOME">
-          <DecisionOutcomeBadge decisionType="memory_retrieval" outcome={decision.outcome} />
-        </DetailField>
-
-        {detail.layer && (
-          <DetailField label="LAYER">
-            <p className="text-[12px] font-mono text-[var(--color-text-secondary)]">
-              {detail.layer}
-            </p>
+    <>
+      <div className="card p-4 h-full min-h-0 overflow-y-auto animate-fade-up">
+        <h3 className="text-[13px] font-semibold text-[var(--color-text-primary)] mb-3">
+          Memory Retrieval Detail
+        </h3>
+        <div className="space-y-3">
+          <DetailField label="OUTCOME">
+            <DecisionOutcomeBadge decisionType="memory_retrieval" outcome={decision.outcome} />
           </DetailField>
-        )}
 
-        {detail.queries.length > 0 && (
-          <DetailField label="QUERIES">
-            <div className="flex flex-wrap gap-1.5">
-              {detail.queries.map((query) => (
-                <code
-                  key={query}
-                  className="rounded bg-black/20 px-2 py-1 text-[11px] text-[var(--color-text-secondary)]"
-                >
-                  {query}
-                </code>
-              ))}
-            </div>
-          </DetailField>
-        )}
-
-        {detail.searches.length > 0 && (
-          <DetailField label="SEARCHES">
-            <div className="space-y-2">
-              {detail.searches.map((search, index) => (
-                <div key={`${search.query}-${index}`} className="rounded bg-black/15 p-2">
-                  <p className="text-[11px] font-mono text-[var(--color-text-secondary)]">
-                    {search.query}
-                  </p>
-                  <p className="mt-1 text-[11px] text-[var(--color-text-muted)]">
-                    {search.resultCount} result{search.resultCount === 1 ? '' : 's'}
-                    {search.topResultTitle ? ` · top: ${search.topResultTitle}` : ''}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </DetailField>
-        )}
-
-        {detail.selectedMemories.length > 0 && (
-          <DetailField label="SELECTED MEMORIES">
-            <div className="space-y-2">
-              {detail.selectedMemories.map((memory) => (
-                <div key={memory.id} className="rounded bg-black/15 p-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <code className="text-[11px] text-[var(--color-accent)]">{memory.id}</code>
-                    <span className="text-[11px] text-[var(--color-text-secondary)]">
-                      {memory.title}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-[11px] text-[var(--color-text-muted)]">
-                    {memory.type}
-                    {memory.score !== undefined ? ` · score ${memory.score.toFixed(2)}` : ''}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </DetailField>
-        )}
-
-        {detail.usedFallbackSelection && (
-          <DetailField label="FALLBACK">
-            <p className="text-[12px] text-amber-300">
-              Agent 输出无法可靠解析，使用了 fallback selection。
-            </p>
-          </DetailField>
-        )}
-
-        <DetailField label="COST">
-          <p className="text-[12px] font-mono text-[var(--color-text-secondary)]">
-            {decision.durationMs !== undefined ? formatDuration(decision.durationMs) : 'n/a'}
-            {' · '}
-            {detail.tokens ? `${detail.tokens.input}+${detail.tokens.output} tokens` : '0+0 tokens'}
-            {' · '}
-            {detail.cost !== undefined ? `$${formatCost(detail.cost)}` : '$0.0000'}
-          </p>
-        </DetailField>
-
-        {decision.rationale && (
-          <DetailField label="AGENT REASONING">
-            <div className="space-y-2">
-              <p className="text-[12px] whitespace-pre-wrap break-words text-[var(--color-text-secondary)]">
-                {truncateInline(decision.rationale, 180)}
+          {detail.layer && (
+            <DetailField label="LAYER">
+              <p className="text-[12px] font-mono text-[var(--color-text-secondary)]">
+                {detail.layer}
               </p>
-              <ExpandableTextPanel value={decision.rationale} />
-            </div>
+            </DetailField>
+          )}
+
+          {detail.queries.length > 0 && (
+            <DetailField label="QUERIES">
+              <div className="flex flex-wrap gap-1.5">
+                {detail.queries.map((query) => (
+                  <code
+                    key={query}
+                    className="rounded bg-black/20 px-2 py-1 text-[11px] text-[var(--color-text-secondary)]"
+                  >
+                    {query}
+                  </code>
+                ))}
+              </div>
+            </DetailField>
+          )}
+
+          {detail.searches.length > 0 && (
+            <DetailField label="SEARCHES">
+              <div className="space-y-2">
+                {detail.searches.map((search, index) => (
+                  <div key={`${search.query}-${index}`} className="rounded bg-black/15 p-2">
+                    <p className="text-[11px] font-mono text-[var(--color-text-secondary)]">
+                      {search.query}
+                    </p>
+                    <p className="mt-1 text-[11px] text-[var(--color-text-muted)]">
+                      {search.resultCount} result{search.resultCount === 1 ? '' : 's'}
+                      {search.topResultTitle ? ` · top: ${search.topResultTitle}` : ''}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </DetailField>
+          )}
+
+          {detail.selectedMemories.length > 0 && (
+            <DetailField label="SELECTED MEMORIES">
+              <div className="space-y-2">
+                {detail.selectedMemories.map((memory) => (
+                  <button
+                    key={memory.id}
+                    type="button"
+                    onClick={() => setViewingMemory(memory)}
+                    className="w-full rounded bg-black/15 p-2 text-left transition-colors hover:bg-black/25"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <code className="text-[11px] text-[var(--color-accent)]">{memory.id}</code>
+                      <span className="text-[11px] text-[var(--color-text-secondary)]">
+                        {memory.title}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[11px] text-[var(--color-text-muted)]">
+                      {memory.type}
+                      {memory.score !== undefined ? ` · score ${memory.score.toFixed(2)}` : ''}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            </DetailField>
+          )}
+
+          {injectionPreview.length > 0 && (
+            <DetailField label="INJECTION PREVIEW">
+              <div className="space-y-3">
+                {injectionPreview.map((memoryInjection, index) => (
+                  <div
+                    key={`${memoryInjection.layer}-${memoryInjection.source}-${index}`}
+                    className="space-y-1"
+                  >
+                    <div className="flex items-center gap-2 text-[10px] text-[var(--color-text-secondary)]">
+                      <span className="rounded bg-white/5 px-1.5 py-0.5">
+                        {memoryInjection.layer}
+                      </span>
+                      <span>{memoryInjection.source}</span>
+                    </div>
+                    <ExpandableTextPanel value={memoryInjection.formattedText} />
+                  </div>
+                ))}
+              </div>
+            </DetailField>
+          )}
+
+          {detail.usedFallbackSelection && (
+            <DetailField label="FALLBACK">
+              <p className="text-[12px] text-amber-300">
+                Agent 输出无法可靠解析，使用了 fallback selection。
+              </p>
+            </DetailField>
+          )}
+
+          <DetailField label="COST">
+            <p className="text-[12px] font-mono text-[var(--color-text-secondary)]">
+              {decision.durationMs !== undefined ? formatDuration(decision.durationMs) : 'n/a'}
+              {' · '}
+              {detail.tokens
+                ? `${detail.tokens.input}+${detail.tokens.output} tokens`
+                : '0+0 tokens'}
+              {' · '}
+              {detail.cost !== undefined ? `$${formatCost(detail.cost)}` : '$0.0000'}
+            </p>
           </DetailField>
-        )}
+
+          {decision.rationale && (
+            <DetailField label="AGENT REASONING">
+              <div className="space-y-2">
+                <p className="text-[12px] whitespace-pre-wrap break-words text-[var(--color-text-secondary)]">
+                  {truncateInline(decision.rationale, 180)}
+                </p>
+                <ExpandableTextPanel value={decision.rationale} />
+              </div>
+            </DetailField>
+          )}
+        </div>
       </div>
-    </div>
+
+      {viewingMemory && (
+        <div
+          className="fixed inset-0 z-[90] flex items-center justify-center overlay-enter"
+          style={{ backgroundColor: 'rgba(0, 0, 0, 0.6)', backdropFilter: 'blur(4px)' }}
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setViewingMemory(null)
+          }}
+        >
+          <div
+            className="card mx-4 w-full max-w-[760px] dialog-enter"
+            style={{
+              background: 'var(--color-float)',
+              boxShadow:
+                '0 8px 40px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06)',
+            }}
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-[var(--color-border)] p-4">
+              <div className="space-y-2">
+                <h4 className="text-[15px] font-semibold text-[var(--color-text-primary)]">
+                  {viewingMemory.title}
+                </h4>
+                <div className="flex flex-wrap items-center gap-2 text-[11px] text-[var(--color-text-secondary)]">
+                  <span className="rounded bg-white/5 px-2 py-1 font-mono">
+                    {viewingMemory.type}
+                  </span>
+                  <code className="text-[var(--color-text-muted)]">{viewingMemory.id}</code>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setViewingMemory(null)}
+                className="rounded border border-[var(--color-border)] px-2.5 py-1 text-[12px] text-[var(--color-text-secondary)] transition-colors hover:bg-white/[0.04]"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="max-h-[70vh] overflow-y-auto p-4">
+              {memoryLoading && (
+                <p className="text-[13px] text-[var(--color-text-muted)]">Loading...</p>
+              )}
+              {memoryError && <p className="text-[13px] text-red-300">{memoryError}</p>}
+              {!memoryLoading && !memoryError && memoryContent !== null && (
+                <div className="prose prose-invert max-w-none text-[13px] text-[var(--color-text-secondary)]">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{memoryContent}</ReactMarkdown>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
+function pickMemoryInjectionPreview(
+  decision: DecisionTimelineItem,
+  detail: MemoryRetrievalDetail,
+  llmRequests: LlmRequestEntry[],
+): MemoryInjectionEntry[] {
+  if (decision.outcome !== 'injected' || !detail.layer) return []
+
+  const candidates = llmRequests.filter((request) =>
+    request.memoryInjections?.some((memoryInjection) => memoryInjection.layer === detail.layer),
+  )
+
+  const turnMatched =
+    detail.turnIndex === undefined
+      ? []
+      : candidates.filter((request) => request.turnIndex === detail.turnIndex)
+  const ranked = (turnMatched.length > 0
+    ? turnMatched
+    : candidates.filter((request) => request.ts >= decision.createdAt)
+  ).sort((left, right) => left.ts.localeCompare(right.ts))
+  const matchedRequest = ranked[0]
+
+  return (
+    matchedRequest?.memoryInjections?.filter(
+      (memoryInjection) => memoryInjection.layer === detail.layer,
+    ) ?? []
   )
 }
 
@@ -1761,6 +1928,10 @@ function readMemoryRetrievalDetail(detail?: Record<string, unknown>): MemoryRetr
   return {
     need: typeof record.need === 'boolean' ? record.need : undefined,
     layer: typeof record.layer === 'string' ? record.layer : undefined,
+    turnIndex:
+      typeof record.turnIndex === 'number' && Number.isFinite(record.turnIndex)
+        ? record.turnIndex
+        : undefined,
     queries: toStringArray(record.queries),
     searches: toMemoryRetrievalSearchSummaries(record.searches),
     searchResultCount:

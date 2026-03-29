@@ -435,6 +435,7 @@ export function projectSessionDecisionsFromTraceEntries(entries: TraceEntry[]): 
     if (entry.kind === 'llm_request') {
       const metadata = asRecord(entry.metadata)
       const request = asRecord(asRecord(entry.data)?.request)
+      const turnIndex = asNumber(request?.turnIndex)
 
       if (metadata && asString(metadata.purpose) === 'memory_retrieval_decision') {
         const decision = asRecord(asRecord(entry.data)?.memoryRetrievalDecision)
@@ -459,6 +460,7 @@ export function projectSessionDecisionsFromTraceEntries(entries: TraceEntry[]): 
           outcome: need ? (selectedMemoryIds.length > 0 ? 'injected' : 'empty') : 'skipped',
           detail: compactRecord({
             need,
+            turnIndex,
             queries,
             searchResultCount,
             selectedMemoryIds,

@@ -664,6 +664,7 @@ describe('Agent streaming callback', () => {
       {
         name: 'stream-agent',
         agentInstruction: 'test',
+        promptMode: 'minimal',
       },
       adapter,
       registry,
@@ -750,6 +751,7 @@ describe('Agent streaming callback', () => {
       {
         name: 'stream-agent',
         agentInstruction: 'test',
+        promptMode: 'minimal',
       },
       adapter,
       registry,

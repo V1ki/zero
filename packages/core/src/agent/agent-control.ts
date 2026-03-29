@@ -26,7 +26,7 @@ interface ControlledAgent {
     onTextDelta?: (delta: string, meta: { role: 'assistant'; turnId: string }) => void,
     shouldInterrupt?: () => boolean,
     getQueuedMessages?: () => QueuedMessage[],
-    requestLogMeta?: { turnIndex?: number },
+    requestLogMeta?: { turnIndex?: number; userMessageEntry?: Message },
   ): Promise<Message[]>
 }
 
