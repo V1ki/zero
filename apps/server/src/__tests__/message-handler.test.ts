@@ -292,4 +292,113 @@ describe('handleChannelMessage', () => {
 
     expect(replies).toContain('处理中断，已完成的工作已保留。请发送新消息继续。')
   })
+
+  test('streaming completes with existing text when partial work is kept (memory_nudge failure)', async () => {
+    const replies: string[] = []
+    let streamCompleted: string | null = null
+    let streamAborted = false
+    const session = {
+      data: { id: 'sess_test' },
+      isAgentInitialized: () => true,
+      setChannelCapabilities: () => {},
+      initAgent: () => {},
+      handleMessage: async (
+        _content: string,
+        options?: { onTextDelta?: (delta: string, meta: { turnId: string }) => void },
+      ) => {
+        // Simulate streaming text before failure
+        options?.onTextDelta?.('report content here', { turnId: 'turn_1' })
+        const err = new Error('stream returned empty content')
+        ;(err as Error & { rolledBack?: boolean }).rolledBack = false
+        throw err
+      },
+    }
+
+    const channelAdapter: ChannelAdapter = {
+      reply: async (_chatId: string, text: string) => {
+        replies.push(text)
+      },
+      showTyping: async () => ({
+        clear: async () => {},
+      }),
+      createStreaming: async () => ({
+        update: async () => {},
+        complete: async (text: string) => {
+          streamCompleted = text
+        },
+        abort: async () => {
+          streamAborted = true
+        },
+      }),
+    }
+
+    await handleChannelMessage(
+      {
+        channelType: 'feishu' as const,
+        senderId: 'user_test',
+        content: 'hello',
+        timestamp: new Date('2026-03-29T00:00:00.000Z').toISOString(),
+        metadata: {
+          chatId: 'chat_test',
+          messageId: 'msg_test',
+        },
+      },
+      createDefaultDeps(session, channelAdapter),
+    )
+
+    // Stream should be completed with the text, not aborted
+    expect(streamCompleted).toBe('report content here')
+    expect(streamAborted).toBe(false)
+    // Error notification should be sent as a separate reply
+    expect(replies).toContain('处理中断，已完成的工作已保留。请发送新消息继续。')
+  })
+
+  test('streaming aborts when failure fully rolled back', async () => {
+    let streamAbortedWith: string | null = null
+    const session = {
+      data: { id: 'sess_test' },
+      isAgentInitialized: () => true,
+      setChannelCapabilities: () => {},
+      initAgent: () => {},
+      handleMessage: async (
+        _content: string,
+        options?: { onTextDelta?: (delta: string, meta: { turnId: string }) => void },
+      ) => {
+        options?.onTextDelta?.('partial text', { turnId: 'turn_1' })
+        const err = new Error('total failure')
+        ;(err as Error & { rolledBack?: boolean }).rolledBack = true
+        throw err
+      },
+    }
+
+    const channelAdapter: ChannelAdapter = {
+      reply: async () => {},
+      showTyping: async () => ({
+        clear: async () => {},
+      }),
+      createStreaming: async () => ({
+        update: async () => {},
+        complete: async () => {},
+        abort: async (msg?: string) => {
+          streamAbortedWith = msg ?? null
+        },
+      }),
+    }
+
+    await handleChannelMessage(
+      {
+        channelType: 'feishu' as const,
+        senderId: 'user_test',
+        content: 'hello',
+        timestamp: new Date('2026-03-29T00:00:00.000Z').toISOString(),
+        metadata: {
+          chatId: 'chat_test',
+          messageId: 'msg_test',
+        },
+      },
+      createDefaultDeps(session, channelAdapter),
+    )
+
+    expect(streamAbortedWith).toBe('An error occurred processing your message.')
+  })
 })

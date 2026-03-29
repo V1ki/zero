@@ -46,6 +46,7 @@ export async function handleChannelMessage(
   let activeSessionId: string | null = null
   let typingHandle: TypingHandle | null = null
   let streaming: StreamAdapter | null = null
+  let streamText = ''
 
   try {
     if (deps.isShuttingDown()) {
@@ -107,7 +108,7 @@ export async function handleChannelMessage(
     let firstReply = true
     let lastSentMsgId: string | null = null
     let lastProgressText: string | null = null
-    let streamText = ''
+    streamText = ''
     let seenDelta = false
     let lastTurnId: string | null = null
     let turnRotateChain: Promise<void> = Promise.resolve()
@@ -339,7 +340,12 @@ export async function handleChannelMessage(
       const activeStreaming = streaming
       if (activeStreaming) {
         streaming = null
-        await activeStreaming.abort(userReply).catch(() => {})
+        if (!rolledBack && streamText) {
+          await activeStreaming.complete(streamText).catch(() => {})
+          await deps.channelAdapter.reply(chatId, userReply, messageId)
+        } else {
+          await activeStreaming.abort(userReply).catch(() => {})
+        }
       }
 
       await typingHandle?.clear().catch(() => {})
