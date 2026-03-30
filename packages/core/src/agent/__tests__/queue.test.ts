@@ -2,9 +2,11 @@ import { describe, expect, test } from 'bun:test'
 import type { ContentBlock, Message } from '@zero-os/shared'
 import { generateId, now } from '@zero-os/shared'
 import {
+  buildQueuedInjectionText,
   buildQueuedInjectionTrace,
   CONTINUATION_PROMPT,
   type QueuedMessage,
+  formatAppliedQueuedIntent,
   formatQueuedMessages,
   injectQueuedMessages,
   injectQueuedMessagesWithTrace,
@@ -70,6 +72,37 @@ describe('formatQueuedMessages', () => {
     const result = formatQueuedMessages(msgs)
     expect(result).toContain('[还有 3 条早期消息已省略]')
     expect(result).toContain('count="8"')
+  })
+})
+
+describe('buildQueuedInjectionText', () => {
+  test('reuses the queued message injection formatting', () => {
+    const queued: QueuedMessage[] = [{ content: 'hello', timestamp: '2026-03-03T10:30:00Z' }]
+
+    expect(buildQueuedInjectionText(queued)).toBe(formatQueuedMessages(queued))
+  })
+})
+
+describe('formatAppliedQueuedIntent', () => {
+  test('returns empty string for empty array', () => {
+    expect(formatAppliedQueuedIntent([])).toBe('')
+  })
+
+  test('returns plain content for a single queued message', () => {
+    expect(
+      formatAppliedQueuedIntent([{ content: '追加约束', timestamp: '2026-03-03T10:30:00Z' }]),
+    ).toBe('追加约束')
+  })
+
+  test('formats multiple messages as timestamped plain text without XML wrappers', () => {
+    const result = formatAppliedQueuedIntent([
+      { content: 'msg1', timestamp: '2026-03-03T10:30:00Z' },
+      { content: 'msg2', timestamp: '2026-03-03T10:31:00Z' },
+    ])
+
+    expect(result).toBe('[10:30] msg1\n[10:31] msg2')
+    expect(result).not.toContain('<queued_message>')
+    expect(result).not.toContain('<queued_messages')
   })
 })
 

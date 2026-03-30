@@ -309,6 +309,13 @@ export class Session {
       return await this.processMessage(content, options)
     } finally {
       this.mutex.release(lockId)
+      if (this.messageQueue.length > 0 || this.interruptFlag) {
+        this.logger.warn('queued_messages_leaked_after_turn', {
+          sessionId: this.data.id,
+          queueLength: this.messageQueue.length,
+          interruptFlag: this.interruptFlag,
+        })
+      }
       this.persistState()
     }
   }

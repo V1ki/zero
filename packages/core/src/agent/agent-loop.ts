@@ -102,7 +102,13 @@ export interface AgentLoopHooks {
   ): Promise<{ toolResultBlocks: ContentBlock[]; additionalMessages?: Message[] }>
   afterToolResults?(ctx: LoopIterationContext): Promise<void>
   shouldInterrupt?(ctx: LoopIterationContext): boolean
-  onEmptyResponse?(retryCount: number, ctx: LoopIterationContext): boolean | 'break'
+  onEmptyResponse?(
+    retryCount: number,
+    ctx: LoopIterationContext,
+  ):
+    | boolean
+    | 'break'
+    | { action: 'continue'; continuationMessage: Message }
 }
 
 export class AgentLoop {
@@ -161,6 +167,12 @@ export class AgentLoop {
 
         if (decision === 'break') {
           break
+        }
+
+        if (typeof decision === 'object' && decision.action === 'continue') {
+          messages.push(decision.continuationMessage)
+          this.notifyNewMessage(decision.continuationMessage, ctx)
+          continue
         }
 
         if (decision === true) {

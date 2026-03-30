@@ -268,6 +268,59 @@ describe('AgentLoop', () => {
     expect(messages[0]?.role).toBe('user')
   })
 
+  test('continues with a control message when onEmptyResponse returns a continuation', async () => {
+    const loop = new AgentLoop(
+      {
+        adapter: new ScriptedAdapter([
+          {
+            id: 'resp_empty',
+            content: [],
+            stopReason: 'end_turn',
+            usage: { input: 0, output: 0 },
+            model: 'fake-model',
+          },
+          {
+            id: 'resp_after_continue',
+            content: [{ type: 'text', text: 'continued after queue' }],
+            stopReason: 'end_turn',
+            usage: { input: 1, output: 1 },
+            model: 'fake-model',
+          },
+        ]),
+        sessionId: 'sess-agent-loop',
+        toolExecutor: {
+          has: () => true,
+          execute: async () => ({ success: true, output: 'ok', outputSummary: 'ok' }),
+        },
+        system: 'test system',
+        tools: [],
+        stream: false,
+        logger,
+      },
+      {
+        onEndTurn: () => ({ action: 'break' }),
+        onEmptyResponse: () => ({
+          action: 'continue',
+          continuationMessage: {
+            id: 'msg_queue_continue',
+            sessionId: 'sess-agent-loop',
+            role: 'user',
+            messageType: 'control',
+            controlKind: 'queued_injection',
+            content: [{ type: 'text', text: '<queued_message>queued follow-up</queued_message>' }],
+            createdAt: '2026-03-30T08:00:00.000Z',
+          },
+        }),
+      },
+    )
+
+    const messages = await loop.run('hello', [])
+
+    expect(messages.map((message) => message.role)).toEqual(['user', 'user', 'assistant'])
+    expect(messages[1]?.controlKind).toBe('queued_injection')
+    expect(messages.at(-1)?.content).toEqual([{ type: 'text', text: 'continued after queue' }])
+  })
+
   test('converts malformed tool input into a tool_result error without executing the tool', async () => {
     let executeCount = 0
     const loop = createLoop(

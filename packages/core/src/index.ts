@@ -91,6 +91,8 @@ export { prepareConversationHistory, estimateConversationTokens } from './agent/
 export { compressConversation } from './agent/compress'
 export { CONTEXT_PARAMS } from './agent/params'
 export {
+  buildQueuedInjectionText,
+  formatAppliedQueuedIntent,
   formatQueuedMessages,
   injectQueuedMessages,
   isTaskComplete,

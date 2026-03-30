@@ -75,6 +75,22 @@ ${omittedNote}${formatted}
 </queued_messages>`
 }
 
+export function buildQueuedInjectionText(messages: QueuedMessage[]): string {
+  return formatQueuedMessages(messages)
+}
+
+export function formatAppliedQueuedIntent(messages: QueuedMessage[]): string {
+  if (messages.length === 0) return ''
+  if (messages.length === 1) return messages[0].content
+
+  return messages
+    .map((message) => {
+      const time = message.timestamp.slice(11, 16)
+      return `[${time}] ${message.content}`
+    })
+    .join('\n')
+}
+
 export function buildQueuedInjectionTrace(
   messages: QueuedMessage[],
 ): QueuedInjectionTrace | undefined {
@@ -82,7 +98,7 @@ export function buildQueuedInjectionTrace(
 
   return {
     count: messages.length,
-    formattedText: formatQueuedMessages(messages),
+    formattedText: buildQueuedInjectionText(messages),
     messages: messages.map((message) => ({
       timestamp: message.timestamp,
       content: message.content,

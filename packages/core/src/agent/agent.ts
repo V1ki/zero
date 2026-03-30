@@ -32,7 +32,10 @@ import { retrieveMemoriesWithDecision } from './memory-retrieval'
 import { CONTEXT_PARAMS } from './params'
 import { wrapMemoryInjection } from './prompt'
 import {
+  buildQueuedInjectionText,
+  buildQueuedInjectionTrace,
   CONTINUATION_PROMPT,
+  formatAppliedQueuedIntent,
   type QueuedInjectionTrace,
   type QueuedMessage,
   injectQueuedMessagesWithTrace,
@@ -320,12 +323,114 @@ export class Agent {
     let pendingParentRequestId: string | undefined
     let currentRequestToolResults: RequestToolResultEntry[] = []
     let pendingQueuedInjection: QueuedInjectionTrace | undefined
+    let appliedQueuedIntentText: string | undefined
     let pendingMemoryInjections = cloneMemoryInjections(options.context.requestMemoryInjections)
     let currentRequestSpanId: string | undefined
     let activeMemoryNudgeSpanId: string | undefined
 
     const toolSpanIds = new Map<string, string>()
     const toolNamesByUseId = new Map<string, string>()
+
+    const appendAppliedQueuedIntent = (queued: QueuedMessage[]) => {
+      const intentText = formatAppliedQueuedIntent(queued)
+      if (!intentText) return
+      appliedQueuedIntentText = appliedQueuedIntentText
+        ? `${appliedQueuedIntentText}\n${intentText}`
+        : intentText
+    }
+
+    const interruptMemoryNudge = () => {
+      const wasDuringNudge = memoryNudgeCount > 0
+      if (activeMemoryNudgeSpanId) {
+        this.obs.tracer?.endSpan(activeMemoryNudgeSpanId, 'error', {
+          memoryWritten: memoryWriteSucceededThisTurn,
+          interruptReason: 'pending_queue',
+        })
+        activeMemoryNudgeSpanId = undefined
+      }
+      if (wasDuringNudge) {
+        memoryNudgeCount = 0
+      }
+      return wasDuringNudge
+    }
+
+    const finalizeTaskClosureSpan = (
+      evaluation: TaskClosureEvaluation,
+      assistantMsg: Message | undefined,
+      extraMetadata?: Record<string, unknown>,
+      extraClosureData?: Record<string, unknown>,
+    ) => {
+      if (assistantMsg?.role !== 'assistant' || !evaluation.traceSpanId) return
+
+      this.obs.tracer?.updateSpan(evaluation.traceSpanId, {
+        data: {
+          closure: {
+            assistantMessageId: assistantMsg.id,
+            assistantMessageCreatedAt: assistantMsg.createdAt,
+            ...(extraClosureData ?? {}),
+          },
+        },
+        metadata: {
+          assistantMessageId: assistantMsg.id,
+          assistantMessageCreatedAt: assistantMsg.createdAt,
+          ...(extraMetadata ?? {}),
+        },
+      })
+
+      if (evaluation.traceSpanStatus) {
+        this.obs.tracer?.endSpan(evaluation.traceSpanId, evaluation.traceSpanStatus)
+      }
+    }
+
+    const drainPendingQueue = (
+      phase: string,
+    ): { action: 'continue'; continuationMessage: Message } | null => {
+      if (!options.shouldInterrupt?.()) return null
+
+      const queued = options.getQueuedMessages?.() ?? []
+      if (queued.length === 0) return null
+
+      const wasDuringNudge = interruptMemoryNudge()
+
+      hadQueuedMessages = true
+      appendAppliedQueuedIntent(queued)
+      pendingQueuedInjection = buildQueuedInjectionTrace(queued)
+
+      const drainSpan = this.obs.tracer?.startSpan(
+        this.toolContext.sessionId,
+        'queue_gate_drain',
+        currentRequestSpanId,
+        {
+          kind: 'closure_decision',
+          agentName: this.config.name,
+          metadata: {
+            phase,
+            queueCount: queued.length,
+            wasDuringNudge,
+            appliedQueuedIntentLength: appliedQueuedIntentText?.length ?? 0,
+          },
+        },
+      )
+      if (drainSpan) {
+        this.obs.tracer?.endSpan(drainSpan.id, 'success')
+      }
+
+      this.obs.bus?.emit('session:update', {
+        sessionId: this.toolContext.sessionId,
+        event: 'queue_drain_on_interrupt',
+        queueCount: queued.length,
+        wasDuringNudge,
+        phase,
+      })
+
+      return {
+        action: 'continue' as const,
+        continuationMessage: this.buildLoopUserMessage(
+          buildQueuedInjectionText(queued),
+          'queued_injection',
+        ),
+      }
+    }
 
     return {
       buildRequestUserContent: (content) => {
@@ -411,6 +516,15 @@ export class Agent {
       },
       onEmptyResponse: (retryCount) => {
         if (memoryNudgeCount > 0) {
+          const drain = drainPendingQueue('memory_nudge_empty')
+          if (drain) {
+            this.toolContext.logger.info?.('memory_nudge_interrupted_by_queue', {
+              sessionId: this.toolContext.sessionId,
+              phase: 'memory_nudge_empty',
+            })
+            return drain
+          }
+
           if (activeMemoryNudgeSpanId) {
             this.obs.tracer?.endSpan(activeMemoryNudgeSpanId, 'success', {
               memoryWritten: memoryWriteSucceededThisTurn,
@@ -427,6 +541,11 @@ export class Agent {
         return retryCount < CONTEXT_PARAMS.completion.maxEmptyResponseRetries
       },
       onEndTurn: async (response, ctx) => {
+        const gate1 = drainPendingQueue('pre_closure')
+        if (gate1) {
+          return gate1
+        }
+
         let taskClosureEvaluation: TaskClosureEvaluation = {
           decision: null,
           eventPayload: null,
@@ -434,7 +553,6 @@ export class Agent {
 
         const shouldEvaluateTaskClosure =
           !this.toolContext.spawnedByRequestId &&
-          !hadQueuedMessages &&
           memoryNudgeCount === 0 &&
           hasAssistantText(response.content) &&
           extractAssistantTail(response.content).length > 0
@@ -442,35 +560,34 @@ export class Agent {
         if (shouldEvaluateTaskClosure) {
           taskClosureEvaluation = await this.decideTaskClosure(
             options.userMessage,
+            appliedQueuedIntentText,
             ctx.messages,
             response,
-            hadQueuedMessages,
             currentRequestSpanId,
           )
         }
 
         const assistantMsg = ctx.messages[ctx.messages.length - 1]
-        if (assistantMsg?.role === 'assistant' && taskClosureEvaluation.traceSpanId) {
-          this.obs.tracer?.updateSpan(taskClosureEvaluation.traceSpanId, {
-            data: {
-              closure: {
-                assistantMessageId: assistantMsg.id,
-                assistantMessageCreatedAt: assistantMsg.createdAt,
-              },
+        const gate2 = drainPendingQueue('post_classifier')
+        if (gate2) {
+          finalizeTaskClosureSpan(
+            taskClosureEvaluation,
+            assistantMsg,
+            {
+              discardedDuePendingQueue: true,
+              originalAction: taskClosureEvaluation.decision?.action ?? null,
+              originalReason: taskClosureEvaluation.decision?.reason ?? null,
             },
-            metadata: {
-              assistantMessageId: assistantMsg.id,
-              assistantMessageCreatedAt: assistantMsg.createdAt,
+            {
+              discardedDuePendingQueue: true,
+              originalAction: taskClosureEvaluation.decision?.action ?? null,
+              originalReason: taskClosureEvaluation.decision?.reason ?? null,
             },
-          })
-
-          if (taskClosureEvaluation.traceSpanStatus) {
-            this.obs.tracer?.endSpan(
-              taskClosureEvaluation.traceSpanId,
-              taskClosureEvaluation.traceSpanStatus,
-            )
-          }
+          )
+          return gate2
         }
+
+        finalizeTaskClosureSpan(taskClosureEvaluation, assistantMsg)
 
         if (assistantMsg?.role === 'assistant' && taskClosureEvaluation.eventPayload) {
           const sessionEvent: ClosureLogEntryInput & { spanId?: string } = {
@@ -503,6 +620,11 @@ export class Agent {
           taskClosureEvaluation.decision?.action === 'continue' &&
           taskClosureRetryCount < CONTEXT_PARAMS.completion.maxTaskClosureRetries
         ) {
+          const gate3 = drainPendingQueue('pre_task_closure_retry')
+          if (gate3) {
+            return gate3
+          }
+
           taskClosureRetryCount++
           return {
             action: 'continue' as const,
@@ -521,6 +643,11 @@ export class Agent {
           ctx.iteration >= CONTEXT_PARAMS.memoryNudge.minIterations &&
           memoryNudgeCount < CONTEXT_PARAMS.memoryNudge.maxNudgesPerTurn
         ) {
+          const gate4 = drainPendingQueue('pre_memory_nudge')
+          if (gate4) {
+            return gate4
+          }
+
           memoryNudgeCount++
           activeMemoryNudgeSpanId =
             this.obs.tracer?.startSpan(
@@ -721,6 +848,10 @@ export class Agent {
             ctx.messages[lastIdx] = injected.message
             pendingQueuedInjection = injected.trace
             hadQueuedMessages = injected.trace !== undefined
+            appendAppliedQueuedIntent(queued)
+            if (hadQueuedMessages) {
+              interruptMemoryNudge()
+            }
           }
         }
       },
@@ -742,9 +873,9 @@ export class Agent {
 
   private async decideTaskClosure(
     userMessage: string,
+    appliedQueuedIntentText: string | undefined,
     messages: Message[],
     response: CompletionResponse,
-    hadQueuedMessages: boolean,
     parentSpanId?: string,
   ): Promise<TaskClosureEvaluation> {
     const taskClosureSpan = this.obs.tracer?.startSpan(
@@ -774,7 +905,6 @@ export class Agent {
     }
 
     if (response.stopReason === 'tool_use') return endSkipped('tool_use')
-    if (hadQueuedMessages) return endSkipped('queued_messages')
     if (!hasAssistantText(response.content)) return endSkipped('no_assistant_text')
 
     const assistantText = extractAssistantText(response.content)
@@ -787,6 +917,7 @@ export class Agent {
       assistantText,
       assistantTail,
       promptContext,
+      appliedQueuedIntentText,
     )
     const classifierRequest: TaskClosureClassifierRequest = {
       system: TASK_CLOSURE_CLASSIFIER_SYSTEM_PROMPT,

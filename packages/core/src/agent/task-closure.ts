@@ -31,6 +31,7 @@ export function buildTaskClosureDecisionPrompt(
   assistantText: string,
   assistantTail: string,
   context?: TaskClosurePromptContext,
+  appliedQueuedIntentText?: string,
 ): string {
   return `<instruction>
 你是一个任务收尾判定器。请判断 assistant 的收尾是否把当前任务的必要后续动作包装成了可选下一步。
@@ -65,6 +66,14 @@ ${context?.toolSummary || 'none'}
 <user_message>
 ${userMessage}
 </user_message>
+
+${appliedQueuedIntentText
+  ? `
+<applied_queued_messages>
+以下是本轮中用户追加发来的消息（已纳入执行）：
+${appliedQueuedIntentText}
+</applied_queued_messages>`
+  : ''}
 
 <assistant_text>
 ${assistantText}

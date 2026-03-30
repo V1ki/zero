@@ -16,6 +16,7 @@ import type {
 import { BaseTool } from '../../tool/base'
 import { ToolRegistry } from '../../tool/registry'
 import { Agent, type AgentContext } from '../agent'
+import type { QueuedMessage } from '../queue'
 import { buildTaskClosurePrompt } from '../task-closure'
 
 async function* failStream(error: Error): AsyncIterable<StreamEvent> {
@@ -47,6 +48,16 @@ function createTextResponse(text: string, reasoningContent?: string): Completion
     usage: { input: 8, output: 8 },
     model: 'fake-model',
     reasoningContent,
+  }
+}
+
+function createToolResponse(id: string, toolUseId: string, toolName = 'noop'): CompletionResponse {
+  return {
+    id,
+    content: [{ type: 'tool_use', id: toolUseId, name: toolName, input: {} }],
+    stopReason: 'tool_use',
+    usage: { input: 5, output: 5 },
+    model: 'fake-model',
   }
 }
 
@@ -371,7 +382,90 @@ class MemoryNudgeAdapter implements ProviderAdapter {
   }
 }
 
-function createToolContext(): ToolContext {
+class QueueGateAdapter implements ProviderAdapter {
+  readonly apiType = 'fake-queue-gate'
+  classifierCalls = 0
+  normalCalls = 0
+
+  constructor(
+    private readonly mode: 'pre-closure' | 'post-classifier',
+    private readonly onClassifierEvaluated?: () => void,
+  ) {}
+
+  async complete(request: CompletionRequest): Promise<CompletionResponse> {
+    if (isTaskClosureClassifierRequest(request)) {
+      this.classifierCalls++
+      this.onClassifierEvaluated?.()
+      return createTextResponse(
+        '{"action":"continue","reason":"后续核验仍属于当前任务"}',
+        'classifier reasoning for continue',
+      )
+    }
+
+    this.normalCalls++
+    const lastUserMessage = getLastUserMessage(request)
+    if (
+      lastUserMessage?.messageType === 'control' &&
+      lastUserMessage.controlKind === 'queued_injection'
+    ) {
+      return createTextResponse('已处理排队消息，已完成')
+    }
+
+    if (this.mode === 'pre-closure') {
+      return createTextResponse(INITIAL_REPLY)
+    }
+
+    return createTextResponse(INITIAL_REPLY)
+  }
+
+  async *stream(_request: CompletionRequest): AsyncIterable<StreamEvent> {
+    yield* failStream(new Error('stream not supported in test'))
+  }
+
+  async healthCheck(): Promise<boolean> {
+    return true
+  }
+}
+
+class AppliedQueuedIntentAdapter implements ProviderAdapter {
+  readonly apiType = 'fake-applied-queued-intent'
+  lastClassifierPrompt = ''
+  normalCalls = 0
+  classifierCalls = 0
+
+  async complete(request: CompletionRequest): Promise<CompletionResponse> {
+    if (isTaskClosureClassifierRequest(request)) {
+      this.classifierCalls++
+      this.lastClassifierPrompt = getTextFromRequest(request)
+      return createTextResponse(
+        '{"action":"finish","reason":"当前回复应直接结束"}',
+        'classifier reasoning for finish',
+      )
+    }
+
+    this.normalCalls++
+    const lastUserMessage = getLastUserMessage(request)
+    if (
+      lastUserMessage?.content.some(
+        (block) => block.type === 'text' && block.text.includes('<queued_message>'),
+      )
+    ) {
+      return createTextResponse('已吸收补充约束，任务已完成')
+    }
+
+    return createToolResponse('resp_tool_1', 'call_noop_1')
+  }
+
+  async *stream(_request: CompletionRequest): AsyncIterable<StreamEvent> {
+    yield* failStream(new Error('stream not supported in test'))
+  }
+
+  async healthCheck(): Promise<boolean> {
+    return true
+  }
+}
+
+function createToolContext(overrides: Partial<ToolContext> = {}): ToolContext {
   return {
     sessionId: 'test-session',
     workDir: process.cwd(),
@@ -380,6 +474,7 @@ function createToolContext(): ToolContext {
       warn: () => {},
       error: () => {},
     },
+    ...overrides,
   }
 }
 
@@ -779,6 +874,188 @@ describe('Agent task closure gate', () => {
     expect(observability.readSessionClosures('test-session')).toHaveLength(2)
   })
 
+  test('drains pending queue before control flow and emits a queued_injection continuation', async () => {
+    const registry = new ToolRegistry()
+    const adapter = new QueueGateAdapter('pre-closure')
+    const tracer = new Tracer()
+    const agent = new Agent(
+      { name: 'test-agent', agentInstruction: 'Test prompt', promptMode: 'minimal' },
+      adapter,
+      registry,
+      createToolContext(),
+      { tracer },
+    )
+
+    let drained = false
+    const queuedMessages: QueuedMessage[] = [
+      {
+        content: '往前再推一个小时有 OOM 吗',
+        timestamp: '2026-03-30T05:55:32.137Z',
+      },
+    ]
+
+    const messages = await agent.run(
+      createContext(registry),
+      '先看这个会话',
+      undefined,
+      undefined,
+      undefined,
+      () => !drained,
+      () => {
+        drained = true
+        return queuedMessages
+      },
+    )
+
+    const drainSpan = tracer
+      .exportSession('test-session')
+      .flatMap(flattenTraceSpans)
+      .find((span) => span.name === 'queue_gate_drain')
+    const firstControl = messages.find((message) => message.messageType === 'control')
+
+    expect(firstControl?.controlKind).toBe('queued_injection')
+    expect(messages.some((message) => message.controlKind === 'queued_injection')).toBe(true)
+    expect(drainSpan?.metadata).toMatchObject({
+      phase: 'pre_closure',
+      queueCount: 1,
+      wasDuringNudge: false,
+    })
+  })
+
+  test('drains pending queue before task_closure retry when classifier returns continue', async () => {
+    const registry = new ToolRegistry()
+    const adapter = new QueueGateAdapter('pre-closure')
+    const tracer = new Tracer()
+    const agent = new Agent(
+      { name: 'test-agent', agentInstruction: 'Test prompt', promptMode: 'minimal' },
+      adapter,
+      registry,
+      createToolContext(),
+      { tracer },
+    )
+
+    let interruptChecks = 0
+    let drained = false
+    const messages = await agent.run(
+      createContext(registry),
+      '帮我继续核验',
+      undefined,
+      undefined,
+      undefined,
+      () => {
+        interruptChecks += 1
+        return interruptChecks === 3 && !drained
+      },
+      () => {
+        drained = true
+        return [{ content: '追加一个边界条件', timestamp: '2026-03-30T06:01:00.000Z' }]
+      },
+    )
+
+    const drainSpan = tracer
+      .exportSession('test-session')
+      .flatMap(flattenTraceSpans)
+      .find((span) => span.name === 'queue_gate_drain' && span.metadata?.phase === 'pre_task_closure_retry')
+    const firstQueuedInjectionIndex = messages.findIndex(
+      (message) => message.controlKind === 'queued_injection',
+    )
+    const firstTaskClosureIndex = messages.findIndex(
+      (message) => message.controlKind === 'task_closure',
+    )
+
+    expect(adapter.classifierCalls).toBeGreaterThanOrEqual(1)
+    expect(firstQueuedInjectionIndex).toBeGreaterThanOrEqual(0)
+    expect(firstTaskClosureIndex).toBeGreaterThan(firstQueuedInjectionIndex)
+    expect(drainSpan?.metadata).toMatchObject({
+      phase: 'pre_task_closure_retry',
+      queueCount: 1,
+      wasDuringNudge: false,
+    })
+  })
+
+  test('discards classifier result when a queued message arrives during classifier evaluation', async () => {
+    const registry = new ToolRegistry()
+    let shouldInterrupt = false
+    let drained = false
+    const adapter = new QueueGateAdapter('post-classifier', () => {
+      shouldInterrupt = true
+    })
+    const tracer = new Tracer()
+    const agent = new Agent(
+      { name: 'test-agent', agentInstruction: 'Test prompt', promptMode: 'minimal' },
+      adapter,
+      registry,
+      createToolContext(),
+      { tracer },
+    )
+
+    const messages = await agent.run(
+      createContext(registry),
+      '帮我继续核验',
+      undefined,
+      undefined,
+      undefined,
+      () => shouldInterrupt && !drained,
+      () => {
+        drained = true
+        shouldInterrupt = false
+        return [{ content: '追加一个限制条件', timestamp: '2026-03-30T05:56:48.319Z' }]
+      },
+    )
+
+    const spans = tracer.exportSession('test-session').flatMap(flattenTraceSpans)
+    const discardedClosureSpan = spans.find(
+      (span) =>
+        span.name === 'task_closure_decision' && span.metadata?.discardedDuePendingQueue === true,
+    )
+    const drainSpan = spans.find(
+      (span) => span.name === 'queue_gate_drain' && span.metadata?.phase === 'post_classifier',
+    )
+    expect(discardedClosureSpan?.status).toBe('success')
+    expect(discardedClosureSpan?.metadata).toMatchObject({
+      discardedDuePendingQueue: true,
+      originalAction: 'continue',
+      originalReason: '后续核验仍属于当前任务',
+    })
+    expect(drainSpan?.metadata).toMatchObject({
+      phase: 'post_classifier',
+      queueCount: 1,
+    })
+    expect(messages.some((message) => message.controlKind === 'queued_injection')).toBe(true)
+  })
+
+  test('passes applied queued intent text into the classifier after tool-result queue injection', async () => {
+    const registry = new ToolRegistry()
+    registry.register(new NoopTool())
+    const adapter = new AppliedQueuedIntentAdapter()
+    const agent = new Agent(
+      { name: 'test-agent', agentInstruction: 'Test prompt', promptMode: 'minimal' },
+      adapter,
+      registry,
+      createToolContext(),
+    )
+
+    let drained = false
+    await agent.run(
+      createContext(registry),
+      '先把主结论核验掉',
+      undefined,
+      undefined,
+      undefined,
+      () => false,
+      () => {
+        if (drained) return []
+        drained = true
+        return [{ content: '顺便核验 changelog', timestamp: '2026-03-30T05:55:32.137Z' }]
+      },
+    )
+
+    expect(adapter.classifierCalls).toBe(1)
+    expect(adapter.lastClassifierPrompt).toContain('<applied_queued_messages>')
+    expect(adapter.lastClassifierPrompt).toContain('顺便核验 changelog')
+    expect(adapter.lastClassifierPrompt).not.toContain('<queued_message>')
+  })
+
   test('nudges for memory after a substantive turn with no prior memory tool call', async () => {
     const registry = new ToolRegistry()
     registry.register(new NoopTool())
@@ -843,6 +1120,121 @@ describe('Agent task closure gate', () => {
     expect(memoryNudgeSpan?.metadata).toMatchObject({
       purpose: 'memory_nudge',
       memoryWritten: false,
+    })
+  })
+
+  test('drains queue instead of breaking when memory_nudge returns an empty response', async () => {
+    const registry = new ToolRegistry()
+    registry.register(new NoopTool())
+    const adapter = new MemoryNudgeAdapter('empty-on-nudge')
+    const tracer = new Tracer()
+    const agent = new Agent(
+      { name: 'test-agent', agentInstruction: 'Test prompt' },
+      adapter,
+      registry,
+      createToolContext(),
+      { tracer },
+    )
+
+    let drained = false
+    const messages = await agent.run(
+      createContext(registry),
+      '完成一个需要先查再总结的任务',
+      undefined,
+      undefined,
+      undefined,
+      () => adapter.nudgeCalls > 0 && !drained,
+      () => {
+        drained = true
+        return [{ content: '往前再推一个小时有 OOM 吗', timestamp: '2026-03-30T05:55:32.137Z' }]
+      },
+    )
+
+    expect(adapter.nudgeCalls).toBe(1)
+    expect(adapter.normalCalls).toBeGreaterThan(3)
+    expect(messages.some((message) => getTextFromMessage(message) === '这轮工作已经完成')).toBe(true)
+  })
+
+  test('drains pending queue before memory_nudge starts', async () => {
+    const registry = new ToolRegistry()
+    const adapter = new MemoryNudgeAdapter('skip')
+    const tracer = new Tracer()
+    const agent = new Agent(
+      { name: 'test-agent', agentInstruction: 'Test prompt' },
+      adapter,
+      registry,
+      createToolContext(),
+      { tracer },
+    )
+
+    let interruptChecks = 0
+    let drained = false
+    const hooks = (
+      agent as unknown as {
+        createHooks: (options: {
+          context: AgentContext
+          userMessage: string
+          onNewMessage?: (msg: Message) => void
+          onTextDelta?: (delta: string, meta: { role: 'assistant'; turnId: string }) => void
+          shouldInterrupt?: () => boolean
+          getQueuedMessages?: () => QueuedMessage[]
+          turnIndex: number
+          rootSpanId?: string
+          system: string
+          executionState: {
+            currentRequestId?: string
+            currentTraceSpanId?: string
+          }
+        }) => ReturnType<Agent['createHooks']>
+      }
+    ).createHooks({
+      context: createContext(registry),
+      userMessage: '完成一个需要先查再总结的任务',
+      shouldInterrupt: () => {
+        interruptChecks += 1
+        return interruptChecks === 3 && !drained
+      },
+      getQueuedMessages: () => {
+        drained = true
+        return [{ content: '顺便核验更早一小时的窗口', timestamp: '2026-03-30T06:02:00.000Z' }]
+      },
+      turnIndex: 1,
+      system: 'Test prompt',
+      executionState: {},
+    })
+
+    const assistantMessage: Message = {
+      id: 'msg_assistant_done',
+      sessionId: 'test-session',
+      role: 'assistant',
+      messageType: 'message',
+      content: [{ type: 'text', text: '这轮工作已经完成' }],
+      createdAt: '2026-03-30T06:03:00.000Z',
+    }
+
+    const decision = await hooks.onEndTurn?.(createTextResponse('这轮工作已经完成'), {
+      messages: [assistantMessage],
+      newMessages: [],
+      iteration: 2,
+      userMessage: '完成一个需要先查再总结的任务',
+      state: {},
+    })
+
+    const drainSpan = tracer
+      .exportSession('test-session')
+      .flatMap(flattenTraceSpans)
+      .find((span) => span.name === 'queue_gate_drain' && span.metadata?.phase === 'pre_memory_nudge')
+
+    expect(decision).toMatchObject({
+      action: 'continue',
+      continuationMessage: {
+        controlKind: 'queued_injection',
+      },
+    })
+    expect(drainSpan?.metadata).toMatchObject({
+      phase: 'pre_memory_nudge',
+      queueCount: 1,
+      wasDuringNudge: false,
     })
   })
 

@@ -130,6 +130,20 @@ test('buildTaskClosureDecisionPrompt renders none when no tool summary', () => {
   expect(prompt).toContain('<tool_calls_this_turn>\nnone\n</tool_calls_this_turn>')
 })
 
+test('buildTaskClosureDecisionPrompt includes applied queued intent when provided', () => {
+  const prompt = buildTaskClosureDecisionPrompt(
+    '先分析主贴',
+    '这里是当前结论，已完成',
+    '这里是当前结论，已完成',
+    undefined,
+    '[10:30] 顺便核验一下官方 changelog',
+  )
+
+  expect(prompt).toContain('<applied_queued_messages>')
+  expect(prompt).toContain('顺便核验一下官方 changelog')
+  expect(prompt).not.toContain('<queued_message>')
+})
+
 describe('extractToolDetail', () => {
   test('formats fetch, bash, file tools and generic tools', () => {
     expect(

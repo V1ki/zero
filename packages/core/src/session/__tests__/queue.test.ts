@@ -762,4 +762,67 @@ describe('Session queue handling', () => {
     expect(rollbackUpdate?.data.sessionId).toBe(session.data.id)
     expect(rollbackUpdate?.data.messageCount).toBe(1)
   })
+
+  test('logs leaked queued messages after a turn finishes without draining them', async () => {
+    const warnings: Array<{ event: string; data?: Record<string, unknown> }> = []
+    const session = new Session('web', createRouter(), new ToolRegistry())
+    session.initAgent({ name: 'queue-agent', agentInstruction: 'queue test agent' })
+    ;(
+      session as unknown as {
+        logger: {
+          info(event: string, data?: Record<string, unknown>): void
+          warn(event: string, data?: Record<string, unknown>): void
+          error(event: string, data?: Record<string, unknown>): void
+        }
+      }
+    ).logger = {
+      info: () => {},
+      warn: (event, data) => {
+        warnings.push({ event, data })
+      },
+      error: () => {},
+    }
+
+    const ready = createDeferred<void>()
+    const release = createDeferred<void>()
+    ;(
+      session as unknown as {
+        agent: {
+          run: (
+            context: unknown,
+            userMessage: string,
+            images: unknown,
+            onNewMessage?: (message: Message) => void,
+          ) => Promise<Message[]>
+        }
+      }
+    ).agent = {
+      run: async (
+        _context: unknown,
+        userMessage: string,
+        _images: unknown,
+        onNewMessage?: (message: Message) => void,
+      ) => {
+        onNewMessage?.(makeMessage(session.data.id, 'user', 'message', userMessage))
+        ready.resolve()
+        await release.promise
+        return []
+      },
+    }
+
+    const turnPromise = session.handleMessage('start work')
+    await ready.promise
+    await session.handleMessage('queued follow-up')
+    release.resolve()
+    await turnPromise
+
+    expect(warnings).toContainEqual({
+      event: 'queued_messages_leaked_after_turn',
+      data: {
+        sessionId: session.data.id,
+        queueLength: 1,
+        interruptFlag: true,
+      },
+    })
+  })
 })
