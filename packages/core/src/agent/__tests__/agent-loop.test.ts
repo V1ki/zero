@@ -234,6 +234,40 @@ describe('AgentLoop', () => {
     expect(messages.at(-1)?.content).toEqual([{ type: 'text', text: 'recovered' }])
   })
 
+  test("supports onEmptyResponse returning 'break' to end normally", async () => {
+    const loop = new AgentLoop(
+      {
+        adapter: new ScriptedAdapter([
+          {
+            id: 'resp_empty',
+            content: [],
+            stopReason: 'end_turn',
+            usage: { input: 0, output: 0 },
+            model: 'fake-model',
+          },
+        ]),
+        sessionId: 'sess-agent-loop',
+        toolExecutor: {
+          has: () => true,
+          execute: async () => ({ success: true, output: 'ok', outputSummary: 'ok' }),
+        },
+        system: 'test system',
+        tools: [],
+        stream: false,
+        logger,
+      },
+      {
+        onEndTurn: () => ({ action: 'break' }),
+        onEmptyResponse: () => 'break',
+      },
+    )
+
+    const messages = await loop.run('hello', [])
+
+    expect(messages).toHaveLength(1)
+    expect(messages[0]?.role).toBe('user')
+  })
+
   test('converts malformed tool input into a tool_result error without executing the tool', async () => {
     let executeCount = 0
     const loop = createLoop(

@@ -37,7 +37,7 @@ function createAdapter(): AnthropicAdapter {
       baseUrl: 'https://api.anthropic.com',
       auth: { type: 'oauth2', oauthTokenRef: 'CLAUDE_CODE_OAUTH_TOKEN' },
       modelConfig: {
-        modelId: 'claude-sonnet-4-20250514',
+        modelId: 'claude-sonnet-4-6',
         maxContext: 200000,
         maxOutput: 8192,
         capabilities: ['tools', 'vision'],
@@ -50,7 +50,7 @@ function createAdapter(): AnthropicAdapter {
     baseUrl: 'https://api.anthropic.com',
     auth: { type: 'api_key', apiKeyRef: 'anthropic' },
     modelConfig: {
-      modelId: 'claude-sonnet-4-20250514',
+      modelId: 'claude-sonnet-4-6',
       maxContext: 200000,
       maxOutput: 8192,
       capabilities: ['tools', 'vision'],
@@ -68,7 +68,7 @@ function createApiKeyAdapter(): AnthropicAdapter {
     baseUrl: 'https://api.anthropic.com',
     auth: { type: 'api_key', apiKeyRef: 'anthropic' },
     modelConfig: {
-      modelId: 'claude-sonnet-4-20250514',
+      modelId: 'claude-sonnet-4-6',
       maxContext: 200000,
       maxOutput: 8192,
       capabilities: ['tools', 'vision'],
@@ -290,7 +290,7 @@ describe('Anthropic Adapter (Pure Logic)', () => {
             yield {
               type: 'message_start',
               message: {
-                model: 'claude-sonnet-4-20250514',
+                model: 'claude-sonnet-4-6',
                 usage: { input_tokens: 11, output_tokens: 0 },
               },
             }
@@ -366,7 +366,7 @@ describe('Anthropic Adapter (Pure Logic)', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0].stream).toBe(true)
     expect(calls[0].max_tokens).toBe(123)
-    expect(calls[0].thinking).toBeUndefined()
+    expect(calls[0].thinking).toEqual({ type: 'adaptive' })
     expect(events).toEqual([
       { type: 'text_delta', data: { text: 'hello' } },
       { type: 'reasoning_delta', data: { text: 'internal-summary' } },
@@ -376,7 +376,7 @@ describe('Anthropic Adapter (Pure Logic)', () => {
       {
         type: 'done',
         data: {
-          model: 'claude-sonnet-4-20250514',
+          model: 'claude-sonnet-4-6',
           usage: { input: 11, output: 7, cacheWrite: undefined, cacheRead: undefined },
           finishReason: 'tool_use',
         },
@@ -384,12 +384,12 @@ describe('Anthropic Adapter (Pure Logic)', () => {
     ])
   })
 
-  test('complete enables thinking with a clamped default budget when max_tokens allows it', async () => {
+  test('complete uses adaptive thinking by default for Claude 4.6', async () => {
     const thinkingAdapter = new AnthropicAdapter({
       baseUrl: 'https://api.anthropic.com',
       auth: { type: 'api_key', apiKeyRef: 'anthropic' },
       modelConfig: {
-        modelId: 'claude-sonnet-4-20250514',
+        modelId: 'claude-sonnet-4-6',
         maxContext: 200000,
         maxOutput: 8192,
         capabilities: ['tools', 'vision'],
@@ -411,7 +411,7 @@ describe('Anthropic Adapter (Pure Logic)', () => {
             ],
             stop_reason: 'end_turn',
             usage: { input_tokens: 11, output_tokens: 7 },
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
           }
         },
       },
@@ -424,16 +424,16 @@ describe('Anthropic Adapter (Pure Logic)', () => {
     })
 
     expect(calls).toHaveLength(1)
-    expect(calls[0].thinking).toEqual({ type: 'enabled', budget_tokens: 1024 })
+    expect(calls[0].thinking).toEqual({ type: 'adaptive' })
     expect(result.reasoningContent).toBe('internal summary')
   })
 
-  test('complete honors configured thinkingTokens above the minimum', async () => {
+  test('complete ignores legacy thinkingTokens config and still uses adaptive thinking', async () => {
     const thinkingAdapter = new AnthropicAdapter({
       baseUrl: 'https://api.anthropic.com',
       auth: { type: 'api_key', apiKeyRef: 'anthropic' },
       modelConfig: {
-        modelId: 'claude-sonnet-4-20250514',
+        modelId: 'claude-sonnet-4-6',
         maxContext: 200000,
         maxOutput: 8192,
         thinkingTokens: 2048,
@@ -453,7 +453,7 @@ describe('Anthropic Adapter (Pure Logic)', () => {
             content: [{ type: 'text', text: 'answer' }],
             stop_reason: 'end_turn',
             usage: { input_tokens: 11, output_tokens: 7 },
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
           }
         },
       },
@@ -465,7 +465,7 @@ describe('Anthropic Adapter (Pure Logic)', () => {
       maxTokens: 4096,
     })
 
-    expect(calls[0].thinking).toEqual({ type: 'enabled', budget_tokens: 2048 })
+    expect(calls[0].thinking).toEqual({ type: 'adaptive' })
   })
 
   test('complete uses top-level automatic prompt caching', async () => {
@@ -480,7 +480,7 @@ describe('Anthropic Adapter (Pure Logic)', () => {
             content: [{ type: 'text', text: 'cached answer' }],
             stop_reason: 'end_turn',
             usage: { input_tokens: 11, output_tokens: 7 },
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
           }
         },
       },
@@ -538,7 +538,7 @@ describe('Anthropic Adapter (Pure Logic)', () => {
             yield {
               type: 'message_start',
               message: {
-                model: 'claude-sonnet-4-20250514',
+                model: 'claude-sonnet-4-6',
                 usage: { input_tokens: 11, output_tokens: 0 },
               },
             }
@@ -576,7 +576,7 @@ describe('Anthropic Adapter (Pure Logic)', () => {
       {
         type: 'done',
         data: {
-          model: 'claude-sonnet-4-20250514',
+          model: 'claude-sonnet-4-6',
           usage: { input: 11, output: 7, cacheWrite: undefined, cacheRead: undefined },
           finishReason: 'end_turn',
         },
@@ -612,7 +612,7 @@ describe('Anthropic Adapter (Pure Logic)', () => {
             content: [{ type: 'text', text: 'plain answer' }],
             stop_reason: 'end_turn',
             usage: { input_tokens: 11, output_tokens: 7 },
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
           }
         },
       },

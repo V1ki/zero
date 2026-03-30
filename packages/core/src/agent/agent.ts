@@ -409,6 +409,23 @@ export class Agent {
         if (memoryNudgeCount > 0) return
         options.onTextDelta?.(delta, meta)
       },
+      onEmptyResponse: (retryCount) => {
+        if (memoryNudgeCount > 0) {
+          if (activeMemoryNudgeSpanId) {
+            this.obs.tracer?.endSpan(activeMemoryNudgeSpanId, 'success', {
+              memoryWritten: memoryWriteSucceededThisTurn,
+            })
+            activeMemoryNudgeSpanId = undefined
+          }
+
+          this.toolContext.logger.info?.('memory_nudge_empty_response', {
+            sessionId: this.toolContext.sessionId,
+          })
+          return 'break'
+        }
+
+        return retryCount < CONTEXT_PARAMS.completion.maxEmptyResponseRetries
+      },
       onEndTurn: async (response, ctx) => {
         let taskClosureEvaluation: TaskClosureEvaluation = {
           decision: null,

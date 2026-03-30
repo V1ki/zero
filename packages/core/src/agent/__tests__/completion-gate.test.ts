@@ -203,6 +203,7 @@ class FailingMemoryToolStub extends BaseTool {
 
 type MemoryNudgeMode =
   | 'skip'
+  | 'empty-on-nudge'
   | 'write-on-nudge'
   | 'write-fails-on-nudge'
   | 'already-written'
@@ -257,6 +258,15 @@ class MemoryNudgeAdapter implements ProviderAdapter {
       lastUserMessage.controlKind === 'memory_nudge'
     ) {
       this.nudgeCalls++
+      if (this.mode === 'empty-on-nudge') {
+        return {
+          id: 'resp_nudge_empty',
+          content: [],
+          stopReason: 'end_turn',
+          usage: { input: 1, output: 0 },
+          model: 'fake-model',
+        }
+      }
       if (this.mode === 'write-on-nudge' || this.mode === 'write-fails-on-nudge') {
         return {
           id: 'resp_nudge_memory',
@@ -802,6 +812,36 @@ describe('Agent task closure gate', () => {
     expect(memoryNudgeSpan?.metadata).toMatchObject({
       purpose: 'memory_nudge',
       iteration: 2,
+      memoryWritten: false,
+    })
+  })
+
+  test('treats an empty memory nudge response as a normal end of turn', async () => {
+    const registry = new ToolRegistry()
+    registry.register(new NoopTool())
+    const adapter = new MemoryNudgeAdapter('empty-on-nudge')
+    const tracer = new Tracer()
+    const agent = new Agent(
+      { name: 'test-agent', agentInstruction: 'Test prompt' },
+      adapter,
+      registry,
+      createToolContext(),
+      { tracer },
+    )
+
+    const messages = await agent.run(createContext(registry), '完成一个需要先查再总结的任务')
+    const assistantMessages = messages.filter((message) => message.role === 'assistant')
+    const memoryNudgeSpan = tracer
+      .exportSession('test-session')
+      .flatMap(flattenTraceSpans)
+      .find((span) => span.name === 'memory_nudge')
+
+    expect(assistantMessages).toHaveLength(2)
+    expect(getTextFromMessage(assistantMessages[1])).toBe('这轮工作已经完成')
+    expect(adapter.nudgeCalls).toBe(1)
+    expect(memoryNudgeSpan?.status).toBe('success')
+    expect(memoryNudgeSpan?.metadata).toMatchObject({
+      purpose: 'memory_nudge',
       memoryWritten: false,
     })
   })

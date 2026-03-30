@@ -14,15 +14,12 @@ import type { AdapterConfig, ProviderAdapter } from './base'
  */
 export class AnthropicAdapter implements ProviderAdapter {
   readonly apiType = 'anthropic_messages'
-  private static readonly DEFAULT_THINKING_TOKENS = 512
-  private static readonly MIN_THINKING_TOKENS = 1024
   private static readonly REQUEST_CACHE_CONTROL = { type: 'ephemeral' } as const
   private static readonly TOOL_ID_RE = /^[a-zA-Z0-9_-]+$/
   private static readonly CLAUDE_CODE_SYSTEM_PROMPT =
     "You are Claude Code, Anthropic's official CLI for Claude."
   private client: Anthropic
   private modelId: string
-  private thinkingTokens?: number
   private isOAuthClient: boolean
 
   constructor(config: AdapterConfig) {
@@ -40,7 +37,6 @@ export class AnthropicAdapter implements ProviderAdapter {
       }),
     })
     this.modelId = config.modelConfig.modelId
-    this.thinkingTokens = config.modelConfig.thinkingTokens
   }
 
   async complete(req: CompletionRequest): Promise<CompletionResponse> {
@@ -148,7 +144,7 @@ export class AnthropicAdapter implements ProviderAdapter {
   }
 
   private buildRequest(req: CompletionRequest): Anthropic.MessageCreateParamsNonStreaming {
-    const thinking = this.buildThinkingConfig(req.maxTokens)
+    const thinking = this.buildThinkingConfig()
 
     return {
       model: req.model ?? this.modelId,
@@ -187,7 +183,7 @@ export class AnthropicAdapter implements ProviderAdapter {
   }
 
   private convertMessages(req: CompletionRequest): Anthropic.MessageParam[] {
-    const messages: Anthropic.MessageParam[] = []
+    const raw: Anthropic.MessageParam[] = []
 
     for (const msg of req.messages) {
       if (msg.role === 'user') {
@@ -213,7 +209,7 @@ export class AnthropicAdapter implements ProviderAdapter {
             })
           }
         }
-        messages.push({ role: 'user', content: parts })
+        raw.push({ role: 'user', content: parts })
       } else if (msg.role === 'assistant') {
         const parts: Anthropic.ContentBlockParam[] = []
         for (const block of msg.content) {
@@ -228,7 +224,20 @@ export class AnthropicAdapter implements ProviderAdapter {
             })
           }
         }
-        messages.push({ role: 'assistant', content: parts })
+        raw.push({ role: 'assistant', content: parts })
+      }
+    }
+
+    // Merge consecutive same-role messages (Anthropic API requires strict alternation)
+    const messages: Anthropic.MessageParam[] = []
+    for (const msg of raw) {
+      const prev = messages[messages.length - 1]
+      if (prev && prev.role === msg.role) {
+        const prevContent = Array.isArray(prev.content) ? prev.content : []
+        const curContent = Array.isArray(msg.content) ? msg.content : []
+        prev.content = [...prevContent, ...curContent] as Anthropic.ContentBlockParam[]
+      } else {
+        messages.push(msg)
       }
     }
 
@@ -273,25 +282,9 @@ export class AnthropicAdapter implements ProviderAdapter {
     return thinkingParts.join('\n')
   }
 
-  private buildThinkingConfig(
-    maxTokens?: number,
-  ): { type: 'enabled'; budget_tokens: number } | undefined {
-    const requestMaxTokens = maxTokens ?? 4096
-    if (requestMaxTokens <= AnthropicAdapter.MIN_THINKING_TOKENS) {
-      return undefined
-    }
-
-    const requestedBudget = this.thinkingTokens ?? AnthropicAdapter.DEFAULT_THINKING_TOKENS
-    const clampedBudget = Math.max(requestedBudget, AnthropicAdapter.MIN_THINKING_TOKENS)
-    const budgetTokens = Math.min(clampedBudget, requestMaxTokens - 1)
-
-    if (budgetTokens < AnthropicAdapter.MIN_THINKING_TOKENS) {
-      return undefined
-    }
-
+  private buildThinkingConfig(): { type: 'adaptive' } | undefined {
     return {
-      type: 'enabled',
-      budget_tokens: budgetTokens,
+      type: 'adaptive',
     }
   }
 

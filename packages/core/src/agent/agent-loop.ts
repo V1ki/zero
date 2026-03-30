@@ -102,7 +102,7 @@ export interface AgentLoopHooks {
   ): Promise<{ toolResultBlocks: ContentBlock[]; additionalMessages?: Message[] }>
   afterToolResults?(ctx: LoopIterationContext): Promise<void>
   shouldInterrupt?(ctx: LoopIterationContext): boolean
-  onEmptyResponse?(retryCount: number, ctx: LoopIterationContext): boolean
+  onEmptyResponse?(retryCount: number, ctx: LoopIterationContext): boolean | 'break'
 }
 
 export class AgentLoop {
@@ -155,11 +155,15 @@ export class AgentLoop {
           retryCount: emptyResponseRetryCount,
         })
 
-        const shouldRetry =
+        const decision =
           this.hooks.onEmptyResponse?.(emptyResponseRetryCount, ctx) ??
           emptyResponseRetryCount < CONTEXT_PARAMS.completion.maxEmptyResponseRetries
 
-        if (shouldRetry) {
+        if (decision === 'break') {
+          break
+        }
+
+        if (decision === true) {
           const retryMsg = this.buildPlainUserMessage(EMPTY_RESPONSE_RETRY_PROMPT)
           messages.push(retryMsg)
           this.notifyNewMessage(retryMsg, ctx)
@@ -452,14 +456,6 @@ export class AgentLoop {
       try {
         const streamed = await this.completeFromStream(request, ctx)
         if (streamed.content.length === 0) {
-          throw new Error('stream returned empty content')
-        }
-        return streamed
-      } catch (streamErr) {
-        lastStreamErr = streamErr
-        const errorDetails = this.getStreamErrorDetails(streamErr)
-
-        if (errorDetails.message === 'stream returned empty content') {
           if (emptyStreamAttempts < maxStreamRetries) {
             emptyStreamAttempts++
             this.config.logger.warn('llm_stream_empty_retry', {
@@ -469,7 +465,23 @@ export class AgentLoop {
             })
             continue
           }
+
+          // Non-Anthropic adapters: try non-streaming fallback
+          if (!this.shouldSkipStreamFallback(new Error('stream returned empty content'))) {
+            this.config.logger.warn('llm_stream_empty_fallback_to_complete', {
+              sessionId: this.config.sessionId,
+              apiType: this.config.adapter.apiType,
+            })
+            return await this.config.adapter.complete({ ...request, stream: false })
+          }
+
+          // Anthropic: return empty response, let agent loop handle via onEmptyResponse
+          return streamed
         }
+        return streamed
+      } catch (streamErr) {
+        lastStreamErr = streamErr
+        const errorDetails = this.getStreamErrorDetails(streamErr)
 
         if (transientAttempts < maxTransientRetries && this.isTransientError(errorDetails)) {
           transientAttempts++

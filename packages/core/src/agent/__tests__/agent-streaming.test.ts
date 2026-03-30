@@ -569,7 +569,7 @@ describe('Agent streaming callback', () => {
     expect(warnings.some((w) => w.event === 'llm_stream_fallback_to_complete')).toBe(false)
   })
 
-  test('Anthropic empty stream exhausts retries then throws', async () => {
+  test('Anthropic empty stream exhausts stream retries, then surfaces as an empty response error', async () => {
     const adapter: ProviderAdapter = {
       apiType: 'anthropic_messages',
       async complete() {
@@ -601,15 +601,12 @@ describe('Agent streaming callback', () => {
     })
 
     await expect(agent.run(createContext(), 'say hi')).rejects.toThrow(
-      'stream returned empty content',
+      'LLM returned empty response (stopReason=end_turn)',
     )
-    // Retry warning logged, then fallback warning with fallbackSkipped=true
+    // Stream retry warning remains, but the final handling now happens in run()
     expect(warnings.some((w) => w.event === 'llm_stream_empty_retry')).toBe(true)
-    expect(
-      warnings.some(
-        (w) => w.event === 'llm_stream_fallback_to_complete' && w.data?.fallbackSkipped === true,
-      ),
-    ).toBe(true)
+    expect(warnings.some((w) => w.event === 'llm_empty_response')).toBe(true)
+    expect(warnings.some((w) => w.event === 'llm_stream_fallback_to_complete')).toBe(false)
   })
 
   test('reasoning deltas are aggregated and logged to session requests', async () => {
