@@ -4,6 +4,8 @@ import { URL } from 'node:url'
 import {
   type ChatGptOAuthSession,
   decodeChatGptAccountId,
+  decodeChatGptTokenExpiry,
+  parseChatGptOAuthSession,
   serializeChatGptOAuthSession,
 } from '@zero-os/model'
 import { toErrorMessage } from '@zero-os/shared'
@@ -17,6 +19,10 @@ const CHATGPT_REDIRECT_URI = 'http://localhost:1455/auth/callback'
 const CHATGPT_SCOPE = 'openid profile email offline_access'
 const CALLBACK_PATH = '/auth/callback'
 const ORIGINATOR = 'zero-os'
+const CHATGPT_PREEMPTIVE_REFRESH_WINDOW_MS = 15 * 60_000
+const CHATGPT_MIN_VALIDITY_MS = 60_000
+const CHATGPT_REAUTH_MESSAGE =
+  'ChatGPT OAuth session can no longer be refreshed. Please re-authenticate with `bun zero provider login chatgpt`.'
 
 export type ChatGptOAuthState =
   | 'idle'
@@ -43,6 +49,85 @@ interface PendingAttempt {
   codeVerifier: string
   server: Server
   status: ChatGptOAuthStatus
+}
+
+type ChatGptRefreshReason = 'expiring' | 'unauthorized'
+
+function readSessionFromVault(vault: Vault): ChatGptOAuthSession | null {
+  return parseChatGptOAuthSession(vault.get(getChatgptOAuthTokenRef()))
+}
+
+function isSessionExpiring(session: ChatGptOAuthSession, minValidityMs = CHATGPT_MIN_VALIDITY_MS) {
+  return Date.now() >= session.expiresAt - minValidityMs
+}
+
+function resolveSessionExpiry(
+  accessToken: string,
+  expiresInSeconds: number | undefined,
+): number | null {
+  if (typeof expiresInSeconds === 'number' && Number.isFinite(expiresInSeconds)) {
+    return Date.now() + expiresInSeconds * 1000
+  }
+
+  return decodeChatGptTokenExpiry(accessToken)
+}
+
+function extractRefreshErrorDetail(body: string): { code?: string; message?: string } {
+  if (!body.trim()) return {}
+
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>
+    const error = parsed.error
+    if (typeof error === 'string') {
+      return {
+        code: error,
+        message:
+          typeof parsed.error_description === 'string'
+            ? parsed.error_description
+            : (typeof parsed.message === 'string' ? parsed.message : error),
+      }
+    }
+
+    if (error && typeof error === 'object') {
+      const typedError = error as Record<string, unknown>
+      return {
+        code:
+          typeof typedError.code === 'string'
+            ? typedError.code
+            : (typeof parsed.code === 'string' ? parsed.code : undefined),
+        message:
+          typeof typedError.message === 'string'
+            ? typedError.message
+            : (typeof parsed.error_description === 'string'
+                ? parsed.error_description
+                : (typeof parsed.message === 'string' ? parsed.message : undefined)),
+      }
+    }
+
+    return {
+      code: typeof parsed.code === 'string' ? parsed.code : undefined,
+      message:
+        typeof parsed.error_description === 'string'
+          ? parsed.error_description
+          : (typeof parsed.message === 'string' ? parsed.message : undefined),
+    }
+  } catch {
+    return { message: body.trim() }
+  }
+}
+
+function isReauthRequiredRefreshFailure(status: number, detail: { code?: string; message?: string }) {
+  const normalizedCode = detail.code?.toLowerCase()
+  if (
+    normalizedCode === 'refresh_token_expired' ||
+    normalizedCode === 'refresh_token_reused' ||
+    normalizedCode === 'refresh_token_invalidated' ||
+    normalizedCode === 'invalid_grant'
+  ) {
+    return true
+  }
+
+  return status === 401
 }
 
 export class ChatGptOAuthBroker {
@@ -263,7 +348,7 @@ export class ChatGptOAuthBroker {
         token_type?: string
       }
 
-      if (!data.access_token || !data.refresh_token || !data.expires_in || !data.token_type) {
+      if (!data.access_token || !data.refresh_token || !data.token_type) {
         throw new Error('Token response missing fields.')
       }
 
@@ -271,11 +356,15 @@ export class ChatGptOAuthBroker {
       if (!accountId) {
         throw new Error('Failed to extract chatgpt_account_id from token.')
       }
+      const expiresAt = resolveSessionExpiry(data.access_token, data.expires_in)
+      if (!expiresAt) {
+        throw new Error('Failed to determine token expiry from token response.')
+      }
 
       const session: ChatGptOAuthSession = {
         accessToken: data.access_token,
         refreshToken: data.refresh_token,
-        expiresAt: Date.now() + data.expires_in * 1000,
+        expiresAt,
         tokenType: data.token_type,
         accountId,
       }
@@ -323,18 +412,11 @@ export class ChatGptOAuthBroker {
   }
 
   private readStoredSession(): ChatGptOAuthSession | null {
-    const raw = this.vault.get(getChatgptOAuthTokenRef())
-    if (!raw) return null
-
-    try {
-      return JSON.parse(raw) as ChatGptOAuthSession
-    } catch {
-      return null
-    }
+    return readSessionFromVault(this.vault)
   }
 
   private isExpired(session: ChatGptOAuthSession) {
-    return Date.now() >= session.expiresAt - 60_000
+    return isSessionExpiring(session)
   }
 
   private updateAttempt(status: ChatGptOAuthStatus) {
@@ -353,5 +435,122 @@ export class ChatGptOAuthBroker {
     if (!this.attempt) return
     await this.resetAttemptServer()
     this.attempt = null
+  }
+}
+
+export class ChatGptTokenManager {
+  private refreshPromise: Promise<ChatGptOAuthSession> | null = null
+  private vault: Vault
+
+  constructor(vault: Vault) {
+    this.vault = vault
+  }
+
+  readSession(): ChatGptOAuthSession | null {
+    return readSessionFromVault(this.vault)
+  }
+
+  async ensureFreshSession(
+    options: { minValidityMs?: number } = {},
+  ): Promise<ChatGptOAuthSession> {
+    const session = this.readSession()
+    if (!session) {
+      throw new Error(
+        'ChatGPT OAuth credentials not found. Please run `bun zero provider login chatgpt`.',
+      )
+    }
+
+    const minValidityMs = options.minValidityMs ?? CHATGPT_PREEMPTIVE_REFRESH_WINDOW_MS
+    if (!isSessionExpiring(session, minValidityMs)) {
+      return session
+    }
+
+    return this.refreshSession('expiring')
+  }
+
+  async refreshSession(reason: ChatGptRefreshReason): Promise<ChatGptOAuthSession> {
+    if (this.refreshPromise) {
+      return this.refreshPromise
+    }
+
+    const currentSession = this.readSession()
+    if (!currentSession) {
+      throw new Error(
+        'ChatGPT OAuth credentials not found. Please run `bun zero provider login chatgpt`.',
+      )
+    }
+
+    const refreshPromise = this.performRefresh(currentSession, reason).finally(() => {
+      if (this.refreshPromise === refreshPromise) {
+        this.refreshPromise = null
+      }
+    })
+
+    this.refreshPromise = refreshPromise
+    return refreshPromise
+  }
+
+  private async performRefresh(
+    currentSession: ChatGptOAuthSession,
+    _reason: ChatGptRefreshReason,
+  ): Promise<ChatGptOAuthSession> {
+    const response = await fetch(CHATGPT_TOKEN_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        client_id: CHATGPT_CLIENT_ID,
+        grant_type: 'refresh_token',
+        refresh_token: currentSession.refreshToken,
+      }),
+    })
+
+    if (!response.ok) {
+      const body = await response.text()
+      const detail = extractRefreshErrorDetail(body)
+      if (isReauthRequiredRefreshFailure(response.status, detail)) {
+        throw new Error(CHATGPT_REAUTH_MESSAGE)
+      }
+
+      const message = detail.message ?? body.trim() ?? response.statusText
+      throw new Error(`ChatGPT OAuth token refresh failed: ${response.status} ${message}`.trim())
+    }
+
+    const data = (await response.json()) as {
+      access_token?: string
+      refresh_token?: string
+      expires_in?: number
+      token_type?: string
+    }
+
+    if (!data.access_token) {
+      throw new Error('ChatGPT OAuth token refresh response missing access_token.')
+    }
+
+    const accountId = decodeChatGptAccountId(data.access_token)
+    if (!accountId) {
+      throw new Error('Failed to extract chatgpt_account_id from refreshed token.')
+    }
+
+    const expiresAt = resolveSessionExpiry(data.access_token, data.expires_in)
+    if (!expiresAt) {
+      throw new Error('Failed to determine refreshed token expiry.')
+    }
+
+    const refreshedSession: ChatGptOAuthSession = {
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token ?? currentSession.refreshToken,
+      expiresAt,
+      tokenType: data.token_type ?? currentSession.tokenType,
+      accountId,
+    }
+
+    if (isSessionExpiring(refreshedSession, CHATGPT_MIN_VALIDITY_MS)) {
+      throw new Error(CHATGPT_REAUTH_MESSAGE)
+    }
+
+    this.vault.set(getChatgptOAuthTokenRef(), serializeChatGptOAuthSession(refreshedSession))
+    return refreshedSession
   }
 }

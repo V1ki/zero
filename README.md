@@ -225,6 +225,8 @@ bun zero launchctl status
 bun zero launchctl uninstall
 ```
 
+ChatGPT OAuth sessions now refresh on demand before expiry and after a single 401 recovery attempt. Re-run `bun zero provider login chatgpt` only if the refresh token has been invalidated or expired.
+
 ## Development Workflow
 
 ### Day-to-day commands

@@ -13,6 +13,7 @@ export {
   parseChatGptOAuthSession,
   serializeChatGptOAuthSession,
   decodeChatGptAccountId,
+  decodeChatGptTokenExpiry,
 } from './auth/chatgpt'
 export type { ChatGptOAuthSession } from './auth/chatgpt'
 export { createApiKeyAuth } from './auth/api-key'

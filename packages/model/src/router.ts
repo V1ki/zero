@@ -1,6 +1,6 @@
 import type { SystemConfig } from '@zero-os/shared'
 import type { ProviderAdapter } from './adapters/base'
-import { ModelRegistry, type ResolvedModel } from './registry'
+import { ModelRegistry, type ModelRegistryOptions, type ResolvedModel } from './registry'
 
 export interface ModelSwitchResult {
   success: boolean
@@ -18,8 +18,8 @@ export class ModelRouter {
   private fallbackChain: string[]
   private defaultModel: string
 
-  constructor(config: SystemConfig, secrets: Map<string, string>) {
-    this.registry = new ModelRegistry(config, secrets)
+  constructor(config: SystemConfig, secrets: Map<string, string>, options: ModelRegistryOptions = {}) {
+    this.registry = new ModelRegistry(config, secrets, options)
     this.fallbackChain = config.fallbackChain
     this.defaultModel = config.defaultModel
   }

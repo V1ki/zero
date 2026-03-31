@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   decodeChatGptAccountId,
+  decodeChatGptTokenExpiry,
   parseChatGptOAuthSession,
   serializeChatGptOAuthSession,
 } from '../auth/chatgpt'
@@ -44,5 +45,21 @@ describe('ChatGPT OAuth helpers', () => {
   test('decodeChatGptAccountId returns null when claim missing', () => {
     const token = makeJwt({ sub: 'user_1' })
     expect(decodeChatGptAccountId(token)).toBeNull()
+  })
+
+  test('decodeChatGptTokenExpiry reads exp claim in milliseconds', () => {
+    const token = makeJwt({
+      exp: 1_710_000_000,
+      'https://api.openai.com/auth': {
+        chatgpt_account_id: 'acct_nested_456',
+      },
+    })
+
+    expect(decodeChatGptTokenExpiry(token)).toBe(1_710_000_000_000)
+  })
+
+  test('decodeChatGptTokenExpiry returns null when exp claim missing', () => {
+    const token = makeJwt({ sub: 'user_1' })
+    expect(decodeChatGptTokenExpiry(token)).toBeNull()
   })
 })

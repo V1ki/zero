@@ -54,6 +54,14 @@ export function decodeChatGptAccountId(accessToken: string): string | null {
   return typeof current === 'string' && current.trim() ? current : null
 }
 
+export function decodeChatGptTokenExpiry(accessToken: string): number | null {
+  const claims = decodeJwtPayload(accessToken)
+  if (!claims) return null
+
+  const exp = claims.exp
+  return typeof exp === 'number' && Number.isFinite(exp) ? exp * 1000 : null
+}
+
 function decodeJwtPayload(token: string): Record<string, unknown> | null {
   const parts = token.split('.')
   if (parts.length < 2) return null

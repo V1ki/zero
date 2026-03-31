@@ -8,6 +8,10 @@ import type {
 
 export type { CompletionRequest, CompletionResponse, StreamEvent }
 
+export type OAuthRefreshReason = 'expiring' | 'unauthorized'
+export type OAuthTokenProvider = () => string | undefined
+export type OAuthTokenRefresher = (reason: OAuthRefreshReason) => Promise<void>
+
 /**
  * Unified provider adapter interface.
  * All provider adapters must implement this interface.
@@ -41,4 +45,6 @@ export interface AdapterConfig {
   modelConfig: ModelConfig
   apiKey?: string
   oauthToken?: string
+  oauthTokenProvider?: OAuthTokenProvider
+  oauthTokenRefresher?: OAuthTokenRefresher
 }

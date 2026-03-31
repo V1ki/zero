@@ -7,7 +7,13 @@ import type {
 } from '@zero-os/shared'
 import OpenAI from 'openai'
 import { parseChatGptOAuthSession } from '../auth/chatgpt'
-import type { AdapterConfig, ProviderAdapter } from './base'
+import type { ChatGptOAuthSession } from '../auth/chatgpt'
+import type {
+  AdapterConfig,
+  OAuthTokenProvider,
+  OAuthTokenRefresher,
+  ProviderAdapter,
+} from './base'
 
 type ResponseUsageLike = Partial<OpenAI.Responses.ResponseUsage> & {
   input_tokens?: number
@@ -36,6 +42,10 @@ interface ChatGptSseEvent {
 }
 
 const DEFAULT_CHATGPT_INSTRUCTIONS = 'You are a helpful assistant.'
+const CHATGPT_PREEMPTIVE_REFRESH_WINDOW_MS = 15 * 60_000
+const CHATGPT_MIN_VALIDITY_MS = 60_000
+const CHATGPT_REAUTH_MESSAGE =
+  'ChatGPT OAuth session can no longer be refreshed. Please re-authenticate with `bun zero provider login chatgpt`.'
 
 /** Split a composite tool call ID (`call_xxx|fc_yyy`) into its two parts. */
 function splitToolCallId(id: string): { callId: string; itemId: string | undefined } {
@@ -63,11 +73,15 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
   private isChatGptProvider: boolean
   private baseUrl: string
   private oauthToken?: string
+  private oauthTokenProvider?: OAuthTokenProvider
+  private oauthTokenRefresher?: OAuthTokenRefresher
 
   constructor(config: AdapterConfig) {
     this.isChatGptProvider = config.providerName === 'chatgpt'
     this.baseUrl = config.baseUrl
     this.oauthToken = config.oauthToken
+    this.oauthTokenProvider = config.oauthTokenProvider
+    this.oauthTokenRefresher = config.oauthTokenRefresher
     this.client = this.isChatGptProvider
       ? null
       : new OpenAI({
@@ -255,19 +269,7 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
   }
 
   private async *streamFromChatGpt(req: CompletionRequest): AsyncIterable<StreamEvent> {
-    const session = this.getChatGptSession()
-    const response = await fetch(`${this.baseUrl}/responses`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${session.accessToken}`,
-        'chatgpt-account-id': session.accountId,
-        'OpenAI-Beta': 'responses=experimental',
-        originator: 'zero-os',
-        accept: 'text/event-stream',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify(this.buildChatGptBody(req)),
-    })
+    const response = await this.requestChatGptResponse(req)
 
     if (!response.ok) {
       const error = await response.text()
@@ -461,19 +463,7 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
   }
 
   private async fetchChatGptEvents(req: CompletionRequest): Promise<ChatGptSseEvent[]> {
-    const session = this.getChatGptSession()
-    const response = await fetch(`${this.baseUrl}/responses`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${session.accessToken}`,
-        'chatgpt-account-id': session.accountId,
-        'OpenAI-Beta': 'responses=experimental',
-        originator: 'zero-os',
-        accept: 'text/event-stream',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify(this.buildChatGptBody(req)),
-    })
+    const response = await this.requestChatGptResponse(req)
 
     if (!response.ok) {
       const error = await response.text()
@@ -485,6 +475,37 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
       events.push(event)
     }
     return events
+  }
+
+  private async requestChatGptResponse(req: CompletionRequest): Promise<Response> {
+    const session = await this.getChatGptSession()
+    let response = await this.sendChatGptRequest(req, session)
+
+    if (response.status !== 401 || !this.oauthTokenRefresher) {
+      return response
+    }
+
+    await this.oauthTokenRefresher('unauthorized')
+    response = await this.sendChatGptRequest(req, this.getRequiredChatGptSession())
+    return response
+  }
+
+  private async sendChatGptRequest(
+    req: CompletionRequest,
+    session: ChatGptOAuthSession,
+  ): Promise<Response> {
+    return fetch(`${this.baseUrl}/responses`, {
+      method: 'POST',
+      headers: {
+        Authorization: `${session.tokenType} ${session.accessToken}`,
+        'chatgpt-account-id': session.accountId,
+        'OpenAI-Beta': 'responses=experimental',
+        originator: 'zero-os',
+        accept: 'text/event-stream',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(this.buildChatGptBody(req)),
+    })
   }
 
   private async *iterSseEvents(response: Response): AsyncIterable<ChatGptSseEvent> {
@@ -645,19 +666,51 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
     }
   }
 
-  private getChatGptSession() {
-    const session = parseChatGptOAuthSession(this.oauthToken)
+  private async getChatGptSession(): Promise<ChatGptOAuthSession> {
+    let session = this.readChatGptSession()
     if (!session) {
       throw new Error(
         'ChatGPT OAuth credentials not found. Please run `bun zero provider login chatgpt`.',
       )
     }
-    if (Date.now() >= session.expiresAt - 60_000) {
+
+    if (
+      this.isChatGptSessionExpiring(session, CHATGPT_PREEMPTIVE_REFRESH_WINDOW_MS) &&
+      this.oauthTokenRefresher
+    ) {
+      await this.oauthTokenRefresher('expiring')
+      session = this.getRequiredChatGptSession()
+    }
+
+    if (this.isChatGptSessionExpiring(session, CHATGPT_MIN_VALIDITY_MS)) {
+      throw new Error(CHATGPT_REAUTH_MESSAGE)
+    }
+
+    return session
+  }
+
+  private getRequiredChatGptSession(): ChatGptOAuthSession {
+    const session = this.readChatGptSession()
+    if (!session) {
       throw new Error(
-        'ChatGPT OAuth token expired. Please re-authenticate with `bun zero provider login chatgpt`.',
+        'ChatGPT OAuth credentials not found. Please run `bun zero provider login chatgpt`.',
       )
     }
+    if (this.isChatGptSessionExpiring(session, CHATGPT_MIN_VALIDITY_MS)) {
+      throw new Error(CHATGPT_REAUTH_MESSAGE)
+    }
     return session
+  }
+
+  private readChatGptSession(): ChatGptOAuthSession | null {
+    return parseChatGptOAuthSession(this.oauthTokenProvider?.() ?? this.oauthToken)
+  }
+
+  private isChatGptSessionExpiring(
+    session: ChatGptOAuthSession,
+    minValidityMs: number,
+  ): boolean {
+    return Date.now() >= session.expiresAt - minValidityMs
   }
 
   private safeJsonParse(value: string): Record<string, unknown> {

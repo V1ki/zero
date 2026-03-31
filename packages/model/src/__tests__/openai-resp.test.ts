@@ -83,6 +83,30 @@ function makeMessage(role: 'user' | 'assistant', text: string): Message {
   }
 }
 
+function makeJwt(payload: Record<string, unknown>) {
+  const header = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url')
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url')
+  return `${header}.${body}.signature`
+}
+
+function makeChatGptSessionJson(accountId: string, expMs: number, accessTokenLabel?: string) {
+  const expSeconds = Math.floor(expMs / 1000)
+  return JSON.stringify({
+    accessToken:
+      accessTokenLabel ??
+      makeJwt({
+        exp: expSeconds,
+        'https://api.openai.com/auth': {
+          chatgpt_account_id: accountId,
+        },
+      }),
+    refreshToken: 'refresh-token',
+    expiresAt: expMs,
+    tokenType: 'Bearer',
+    accountId,
+  })
+}
+
 describe('OpenAI Responses API Adapter (Pure Logic)', () => {
   test('buildInput: system prompt becomes system role message', () => {
     const req: CompletionRequest = {
@@ -554,6 +578,131 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
       })
       expect(events).toContainEqual({ type: 'reasoning_delta', data: { text: 'considering' } })
       expect(events).toContainEqual({ type: 'tool_use_end', data: { id: 'call_123' } })
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('ChatGPT requests refresh expiring tokens before sending the request', async () => {
+    let currentSession = makeChatGptSessionJson(
+      'acct_old',
+      Date.now() + 5 * 60 * 1000,
+      'old-token',
+    )
+    let refreshCalls = 0
+    const headersSeen: string[] = []
+
+    const chatgptAdapter = new OpenAIResponsesAdapter({
+      providerName: 'chatgpt',
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
+      modelConfig: {
+        modelId: 'gpt-5.4',
+        maxContext: 128000,
+        maxOutput: 8192,
+        capabilities: [],
+        tags: [],
+      },
+      oauthTokenProvider: () => currentSession,
+      oauthTokenRefresher: async () => {
+        refreshCalls += 1
+        currentSession = makeChatGptSessionJson(
+          'acct_new',
+          Date.now() + 2 * 60 * 60 * 1000,
+          'new-token',
+        )
+      },
+    })
+
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      headersSeen.push((init?.headers as Record<string, string>).Authorization)
+      return new Response(
+        [
+          'data: {"type":"response.output_text.delta","delta":"ok"}',
+          '',
+          'data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.4","status":"completed","usage":{}}}',
+          '',
+        ].join('\n'),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        },
+      )
+    }) as unknown as typeof fetch
+
+    try {
+      const response = await chatgptAdapter.complete({ messages: [], stream: false })
+      expect(refreshCalls).toBe(1)
+      expect(headersSeen).toEqual(['Bearer new-token'])
+      expect(response.content).toEqual([{ type: 'text', text: 'ok' }])
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('ChatGPT requests retry once after a 401 with refreshed credentials', async () => {
+    let currentSession = makeChatGptSessionJson(
+      'acct_old',
+      Date.now() + 2 * 60 * 60 * 1000,
+      'old-token',
+    )
+    let refreshCalls = 0
+    const headersSeen: string[] = []
+    let requestCount = 0
+
+    const chatgptAdapter = new OpenAIResponsesAdapter({
+      providerName: 'chatgpt',
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
+      modelConfig: {
+        modelId: 'gpt-5.4',
+        maxContext: 128000,
+        maxOutput: 8192,
+        capabilities: [],
+        tags: [],
+      },
+      oauthTokenProvider: () => currentSession,
+      oauthTokenRefresher: async () => {
+        refreshCalls += 1
+        currentSession = makeChatGptSessionJson(
+          'acct_new',
+          Date.now() + 2 * 60 * 60 * 1000,
+          'new-token',
+        )
+      },
+    })
+
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestCount += 1
+      headersSeen.push((init?.headers as Record<string, string>).Authorization)
+
+      if (requestCount === 1) {
+        return new Response('unauthorized', { status: 401 })
+      }
+
+      return new Response(
+        [
+          'data: {"type":"response.output_text.delta","delta":"retried"}',
+          '',
+          'data: {"type":"response.completed","response":{"id":"resp_2","model":"gpt-5.4","status":"completed","usage":{}}}',
+          '',
+        ].join('\n'),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        },
+      )
+    }) as unknown as typeof fetch
+
+    try {
+      const response = await chatgptAdapter.complete({ messages: [], stream: false })
+      expect(refreshCalls).toBe(1)
+      expect(requestCount).toBe(2)
+      expect(headersSeen[0]).toBe('Bearer old-token')
+      expect(headersSeen[1]).toBe('Bearer new-token')
+      expect(response.content).toEqual([{ type: 'text', text: 'retried' }])
     } finally {
       globalThis.fetch = originalFetch
     }

@@ -1,6 +1,10 @@
 import type { ApiType, ModelConfig, ProviderConfig, SystemConfig } from '@zero-os/shared'
 import { AnthropicAdapter } from './adapters/anthropic'
-import type { AdapterConfig, ProviderAdapter } from './adapters/base'
+import type {
+  AdapterConfig,
+  OAuthTokenRefresher,
+  ProviderAdapter,
+} from './adapters/base'
 import { OpenAIChatAdapter } from './adapters/openai-chat'
 import { OpenAIResponsesAdapter } from './adapters/openai-resp'
 import { LiteLLMPricing } from './pricing'
@@ -13,6 +17,13 @@ export interface ResolvedModel {
   adapter: ProviderAdapter
 }
 
+export type SecretGetter = (ref: string) => string | undefined
+
+export interface ModelRegistryOptions {
+  secretGetter?: SecretGetter
+  oauthRefreshers?: Record<string, OAuthTokenRefresher | undefined>
+}
+
 /**
  * Model Registry - parses config and creates adapters on demand.
  */
@@ -20,9 +31,13 @@ export class ModelRegistry {
   private providers: Map<string, ProviderConfig> = new Map()
   private adapters: Map<string, ProviderAdapter> = new Map()
   private secrets: Map<string, string>
+  private secretGetter: SecretGetter
+  private oauthRefreshers: Record<string, OAuthTokenRefresher | undefined>
 
-  constructor(config: SystemConfig, secrets: Map<string, string>) {
+  constructor(config: SystemConfig, secrets: Map<string, string>, options: ModelRegistryOptions = {}) {
     this.secrets = secrets
+    this.secretGetter = options.secretGetter ?? ((ref) => this.secrets.get(ref))
+    this.oauthRefreshers = options.oauthRefreshers ?? {}
     for (const [name, provider] of Object.entries(config.providers)) {
       this.providers.set(name, provider)
     }
@@ -116,9 +131,9 @@ export class ModelRegistry {
     let adapter = this.adapters.get(key)
     if (adapter) return adapter
 
-    const apiKey = provider.auth.apiKeyRef ? this.secrets.get(provider.auth.apiKeyRef) : undefined
+    const apiKey = provider.auth.apiKeyRef ? this.secretGetter(provider.auth.apiKeyRef) : undefined
     const oauthToken = provider.auth.oauthTokenRef
-      ? this.secrets.get(provider.auth.oauthTokenRef)
+      ? this.secretGetter(provider.auth.oauthTokenRef)
       : undefined
 
     const config: AdapterConfig = {
@@ -128,6 +143,10 @@ export class ModelRegistry {
       modelConfig: model,
       apiKey,
       oauthToken,
+      oauthTokenProvider: provider.auth.oauthTokenRef
+        ? () => this.secretGetter(provider.auth.oauthTokenRef as string)
+        : undefined,
+      oauthTokenRefresher: this.oauthRefreshers[providerName],
     }
 
     adapter = this.createAdapter(provider.apiType, config)

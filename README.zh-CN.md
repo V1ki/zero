@@ -217,6 +217,8 @@ bun zero launchctl status
 bun zero launchctl uninstall
 ```
 
+ChatGPT OAuth 会在请求前按需自动续期，并在首次 401 后尝试刷新一次再重试。只有当 refresh token 已失效或被撤销时，才需要重新执行 `bun zero provider login chatgpt`。
+
 ## 开发工作流
 
 ### 日常命令

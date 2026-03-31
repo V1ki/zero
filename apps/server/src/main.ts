@@ -65,6 +65,7 @@ import {
 import { RepairEngine } from '@zero-os/supervisor'
 import { HeartbeatWriter } from '@zero-os/supervisor'
 import { globalBus } from './bus'
+import { ChatGptTokenManager } from './chatgpt-oauth'
 import { FeishuAdapter } from './feishu-adapter'
 import { handleChannelMessage } from './message-handler'
 import {
@@ -222,7 +223,19 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
 
   // 7. Initialize Model Router
   const secrets = new Map(vault.entries())
-  const modelRouter = new ModelRouter(config, secrets)
+  const chatgptTokenManager = new ChatGptTokenManager(vault)
+  const modelRouter = new ModelRouter(config, secrets, {
+    secretGetter: (ref) => vault.get(ref) ?? undefined,
+    oauthRefreshers: {
+      chatgpt: async (reason) => {
+        if (reason === 'expiring') {
+          await chatgptTokenManager.ensureFreshSession()
+          return
+        }
+        await chatgptTokenManager.refreshSession(reason)
+      },
+    },
+  })
   const initResult = modelRouter.init()
   console.log(`[ZeRo OS] Model Router: ${initResult.message}`)
 
