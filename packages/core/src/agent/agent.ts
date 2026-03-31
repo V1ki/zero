@@ -922,7 +922,7 @@ export class Agent {
     const classifierRequest: TaskClosureClassifierRequest = {
       system: TASK_CLOSURE_CLASSIFIER_SYSTEM_PROMPT,
       prompt,
-      maxTokens: 200,
+      maxTokens: 800,
     }
 
     const classifierMessage: Message = {
