@@ -1,13 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  type EmbeddingProvider,
   IndexedMemoryStore,
   MemoryRetriever,
   MemoryStore,
   VectorIndex,
-  type EmbeddingProvider,
 } from '@zero-os/memory'
 import { MemoryGetTool } from '../memory-get'
 import { MemorySearchTool } from '../memory-search'
@@ -122,6 +122,30 @@ describe('Memory recall tools', () => {
       },
       {
         query: 'completely unrelated search terms',
+      },
+    )
+
+    expect(result.success).toBe(true)
+    expect(result.output).toContain('No relevant memories found')
+  })
+
+  test('memory_search forwards sessionId into retriever options', async () => {
+    const tool = new MemorySearchTool()
+    const result = await tool.run(
+      {
+        ...makeCtx(),
+        memoryRetriever: {
+          async retrieve() {
+            return []
+          },
+          async retrieveScored(_query, options) {
+            expect(options?.sessionId).toBe('test_session')
+            return []
+          },
+        },
+      },
+      {
+        query: 'deploy preference',
       },
     )
 

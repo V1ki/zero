@@ -1,7 +1,16 @@
 import type { ProviderAdapter } from '@zero-os/model'
-import type { CompressionResult, Message } from '@zero-os/shared'
+import type { MetricsDB } from '@zero-os/observe'
+import type { CompressionResult, Message, ModelPricing } from '@zero-os/shared'
 import { estimateMessageTokens, generateId, now } from '@zero-os/shared'
 import { CONTEXT_PARAMS } from './params'
+import { recordCompletionUsage } from './record-usage'
+
+export interface CompressionObsCtx {
+  metrics?: MetricsDB
+  pricing?: ModelPricing
+  providerName?: string
+  modelLabel?: string
+}
 
 /**
  * Compress conversation history when it exceeds the budget.
@@ -13,6 +22,7 @@ export async function compressConversation(
   conversationBudget: number,
   adapter: ProviderAdapter,
   sessionId: string,
+  obs?: CompressionObsCtx,
 ): Promise<CompressionResult> {
   const tokensBefore = messages.reduce((sum, m) => sum + estimateMessageTokens(m.content) + 4, 0)
 
@@ -65,7 +75,18 @@ export async function compressConversation(
   const retained = messages.slice(splitIndex)
 
   // Generate summary via LLM
-  const summary = await generateSummary(toSummarize, adapter)
+  const startedAt = Date.now()
+  const summaryResponse = await generateSummary(toSummarize, adapter)
+  const summary = summaryResponse.text
+
+  recordCompletionUsage(obs?.metrics, summaryResponse.response, {
+    sessionId,
+    purpose: 'compression',
+    model: obs?.modelLabel ?? summaryResponse.response.model,
+    provider: obs?.providerName ?? 'unknown',
+    pricing: obs?.pricing,
+    durationMs: Date.now() - startedAt,
+  })
 
   // Create summary message
   const summaryMessage: Message = {
@@ -101,7 +122,10 @@ export async function compressConversation(
   }
 }
 
-async function generateSummary(messages: Message[], adapter: ProviderAdapter): Promise<string> {
+async function generateSummary(
+  messages: Message[],
+  adapter: ProviderAdapter,
+): Promise<{ text: string; response: import('@zero-os/shared').CompletionResponse }> {
   const conversationText = messages
     .map((m) => {
       const role = m.role
@@ -156,5 +180,8 @@ ${conversationText}
   })
 
   const textBlocks = response.content.filter((b) => b.type === 'text')
-  return textBlocks.map((b) => (b as { type: 'text'; text: string }).text).join('\n')
+  return {
+    text: textBlocks.map((b) => (b as { type: 'text'; text: string }).text).join('\n'),
+    response,
+  }
 }

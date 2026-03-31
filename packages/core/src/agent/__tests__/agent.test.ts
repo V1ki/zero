@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { ProviderAdapter } from '@zero-os/model'
-import { Tracer } from '@zero-os/observe'
+import { MetricsDB, Tracer } from '@zero-os/observe'
 import type {
   CompletionRequest,
   CompletionResponse,
@@ -62,7 +62,9 @@ class UnknownToolAdapter implements ProviderAdapter {
     if (this.completeCalls === 1) {
       return {
         id: 'resp_fake_tool_use',
-        content: [{ type: 'tool_use', id: 'call_fake_1', name: 'FakeTool', input: { query: 'test' } }],
+        content: [
+          { type: 'tool_use', id: 'call_fake_1', name: 'FakeTool', input: { query: 'test' } },
+        ],
         stopReason: 'tool_use',
         usage: { input: 5, output: 2 },
         model: 'fake-model',
@@ -189,6 +191,27 @@ describe('Agent', () => {
     expect(lastMsg.content.length).toBeGreaterThan(0)
   }, 30000)
 
+  test('run records agent loop usage into requests and usage ledger', async () => {
+    const metrics = MetricsDB.createInMemory()
+    const { agent, registry } = createAgentWithAdapter(
+      new PlainTextAdapter('hello'),
+      {},
+      { metrics },
+    )
+    const context = createContext(registry)
+
+    await agent.run(context, 'Say exactly "hello" and nothing else.')
+
+    expect(metrics.sessionStats('test-session').requestCount).toBe(1)
+    const agentLoopUsage = metrics
+      .usageSummaryByPurpose('1d')
+      .find((entry) => entry.purpose === 'agent_loop')
+    expect(agentLoopUsage?.category).toBe('completion')
+    expect(agentLoopUsage?.eventCount).toBe(1)
+
+    metrics.close()
+  })
+
   test('run: tool_use response triggers tool execution', async () => {
     const { agent, registry } = createAgentWithAdapter(new ReadToolCallAdapter())
     const context = createContext(registry)
@@ -296,9 +319,13 @@ describe('Agent', () => {
       removeSecret() {},
     }
 
-    const { agent, registry } = createAgentWithAdapter(new PlainTextAdapter('hello'), {}, {
-      secretFilter,
-    })
+    const { agent, registry } = createAgentWithAdapter(
+      new PlainTextAdapter('hello'),
+      {},
+      {
+        secretFilter,
+      },
+    )
     const context = createContext(registry)
 
     const messages = await agent.run(context, 'Say exactly the word "hello" and nothing else.')
@@ -367,9 +394,13 @@ describe('Agent', () => {
   test('run: tracer creates spans', async () => {
     const tracer = new Tracer()
 
-    const { agent, registry } = createAgentWithAdapter(new PlainTextAdapter('traced'), {}, {
-      tracer,
-    })
+    const { agent, registry } = createAgentWithAdapter(
+      new PlainTextAdapter('traced'),
+      {},
+      {
+        tracer,
+      },
+    )
     const context = createContext(registry)
 
     await agent.run(context, 'Say "traced" and nothing else.')
@@ -386,9 +417,13 @@ describe('Agent', () => {
   test('run: tool trace span stores toolUseId metadata', async () => {
     const tracer = new Tracer()
 
-    const { agent, registry } = createAgentWithAdapter(new ReadToolCallAdapter(), {}, {
-      tracer,
-    })
+    const { agent, registry } = createAgentWithAdapter(
+      new ReadToolCallAdapter(),
+      {},
+      {
+        tracer,
+      },
+    )
     const context = createContext(registry)
 
     await agent.run(

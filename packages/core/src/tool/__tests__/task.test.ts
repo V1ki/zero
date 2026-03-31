@@ -2,19 +2,19 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { ModelRouter, type ProviderAdapter } from '@zero-os/model'
-import { Tracer } from '@zero-os/observe'
+import { MetricsDB, Tracer } from '@zero-os/observe'
 import type {
   CompletionRequest,
   CompletionResponse,
   ObservabilityHandle,
-  ToolContext,
-  ToolResult,
   StreamEvent,
   SystemConfig,
+  ToolContext,
+  ToolResult,
 } from '@zero-os/shared'
 import { Agent } from '../../agent/agent'
-import { BashTool } from '../bash'
 import { BaseTool } from '../base'
+import { BashTool } from '../bash'
 import { SUB_AGENT_BLOCKED_TOOLS } from '../constants'
 import { ReadTool } from '../read'
 import { ToolRegistry } from '../registry'
@@ -225,7 +225,7 @@ describe('TaskTool', () => {
     let capturedToolContext: ToolContext | undefined
     const originalRun = Agent.prototype.run
     Agent.prototype.run = async function () {
-      capturedToolContext = (this as any).toolContext as ToolContext
+      capturedToolContext = (this as unknown as { toolContext: ToolContext }).toolContext
       return [
         {
           role: 'assistant',
@@ -289,12 +289,19 @@ describe('TaskTool', () => {
     registry.register(new NamedTool('send_input'))
 
     const taskTool = new TaskTool(createStubRouter(new StaticResponseAdapter()), registry)
-    const scopedRegistry = (taskTool as any).buildScopedRegistry(
+    const scopedRegistry = (
+      taskTool as unknown as {
+        buildScopedRegistry(
+          spec?: { tools?: string[] },
+          role?: { defaultTools?: string[] },
+        ): ToolRegistry
+      }
+    ).buildScopedRegistry(
       {
         tools: ['read', 'task', 'spawn_agent', 'wait_agent', 'close_agent', 'send_input', 'bash'],
       },
       undefined,
-    ) as ToolRegistry
+    )
 
     expect(scopedRegistry.list().map((tool: BaseTool) => tool.name)).toEqual(['read', 'bash'])
     expect(
@@ -310,7 +317,14 @@ describe('TaskTool', () => {
     registry.register(new NamedTool('send_input'))
 
     const taskTool = new TaskTool(createStubRouter(new StaticResponseAdapter()), registry)
-    const scopedRegistry = (taskTool as any).buildScopedRegistry(undefined, {
+    const scopedRegistry = (
+      taskTool as unknown as {
+        buildScopedRegistry(
+          spec?: { tools?: string[] },
+          role?: { defaultTools?: string[] },
+        ): ToolRegistry
+      }
+    ).buildScopedRegistry(undefined, {
       defaultTools: [
         'read',
         'task',
@@ -320,7 +334,7 @@ describe('TaskTool', () => {
         'send_input',
         'bash',
       ],
-    }) as ToolRegistry
+    })
 
     expect(scopedRegistry.list().map((tool: BaseTool) => tool.name)).toEqual(['read', 'bash'])
   })
@@ -328,10 +342,14 @@ describe('TaskTool', () => {
   test('preserves the lightweight default tool set when no tools are provided', () => {
     const registry = createToolRegistry()
     const taskTool = new TaskTool(createStubRouter(new StaticResponseAdapter()), registry)
-    const scopedRegistry = (taskTool as any).buildScopedRegistry(
-      undefined,
-      undefined,
-    ) as ToolRegistry
+    const scopedRegistry = (
+      taskTool as unknown as {
+        buildScopedRegistry(
+          spec?: { tools?: string[] },
+          role?: { defaultTools?: string[] },
+        ): ToolRegistry
+      }
+    ).buildScopedRegistry(undefined, undefined)
 
     expect(scopedRegistry.list().map((tool: BaseTool) => tool.name)).toEqual(['read', 'bash'])
   })
@@ -467,6 +485,34 @@ describe('TaskTool', () => {
     expect(entries[0].sessionId).toBe('test_task_session')
     expect(entries[0].agentName).toBe('Researcher')
     expect(entries[0].spawnedByRequestId).toBe('req_parent_001')
+  })
+
+  test('subagent task runs record request metrics and usage ledger entries', async () => {
+    const metrics = MetricsDB.createInMemory()
+    const registry = new ToolRegistry()
+    const taskTool = new TaskTool(createStubRouter(new StaticResponseAdapter()), registry, metrics)
+
+    const result = await taskTool.run(ctx, {
+      tasks: [
+        {
+          id: 'metrics',
+          name: 'MetricsAgent',
+          agentInstruction: 'Return once complete.',
+          instruction: 'Respond with completion.',
+          tools: [],
+        },
+      ],
+    })
+
+    expect(result.success).toBe(true)
+    expect(metrics.sessionStats('test_task_session').requestCount).toBe(1)
+    const subAgentUsage = metrics
+      .usageSummaryByPurpose('1d')
+      .find((entry) => entry.purpose === 'sub_agent')
+    expect(subAgentUsage?.category).toBe('completion')
+    expect(subAgentUsage?.eventCount).toBe(1)
+
+    metrics.close()
   })
 })
 

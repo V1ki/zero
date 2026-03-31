@@ -201,9 +201,10 @@ export class Session {
       throw new Error('No active model available for session.')
     }
     const adapter = resolved.adapter
-    const closureAdapter = this.deps.taskClosureModel
-      ? this.modelRouter.resolveModel(this.deps.taskClosureModel)?.adapter
+    const closureResolved = this.deps.taskClosureModel
+      ? this.modelRouter.resolveModel(this.deps.taskClosureModel)
       : undefined
+    const closureAdapter = closureResolved?.adapter
 
     const projectRoot = process.cwd()
     const workspacePath = join(projectRoot, '.zero', 'workspace', config.name)
@@ -253,6 +254,11 @@ export class Session {
       providerName: resolved?.providerName,
       modelLabel: this.modelRouter.getModelLabel(resolved),
       pricing: resolved?.modelConfig.pricing,
+      closureProviderName: closureResolved?.providerName,
+      closureModelLabel: closureResolved
+        ? this.modelRouter.getModelLabel(closureResolved)
+        : undefined,
+      closurePricing: closureResolved?.modelConfig.pricing,
       getCurrentSnapshotId: () => this.currentSnapshotId,
       onContextCompressed: (event) => {
         this.logCompressionSnapshot(event.summary, event.stats, event.decisionContext)
@@ -740,6 +746,7 @@ export class Session {
         providerName: resolved.providerName,
         modelLabel: this.modelRouter.getModelLabel(resolved),
         pricing: resolved.modelConfig.pricing,
+        metrics: this.deps.metrics,
         secretFilter: this.deps.secretFilter,
         spanName: 'memory_retrieval_decision',
         metadata: {
@@ -804,6 +811,12 @@ export class Session {
           newBudget.conversation,
           result.model.adapter,
           this.data.id,
+          {
+            metrics: this.deps.metrics,
+            pricing: result.model.modelConfig.pricing,
+            providerName: result.model.providerName,
+            modelLabel: this.modelRouter.getModelLabel(result.model),
+          },
         )
         this.messages.length = 0
         this.messages.push(...compResult.retainedMessages)

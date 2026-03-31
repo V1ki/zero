@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { MemoryRetriever } from '@zero-os/memory'
 import type { ProviderAdapter, ResolvedModel } from '@zero-os/model'
 import { ModelRouter } from '@zero-os/model'
-import { Tracer, flattenTraceSpans } from '@zero-os/observe'
+import { MetricsDB, Tracer, flattenTraceSpans } from '@zero-os/observe'
 import type {
   CompletionRequest,
   CompletionResponse,
@@ -150,10 +150,12 @@ describe('Session memory retrieval', () => {
   test('injects retrieved memories into dynamic context before agent.run', async () => {
     const router = createRouter()
     const tracer = new Tracer()
+    const metrics = MetricsDB.createInMemory()
     let capturedSearchOptions: MemorySearchOptions | undefined
     const session = new Session('web', router, new ToolRegistry(), {
       identityMemory: '用户曾经要求优先使用浏览器插件',
       tracer,
+      metrics,
       memoryRetriever: {
         async retrieve() {
           return []
@@ -251,8 +253,14 @@ describe('Session memory retrieval', () => {
         topN: 8,
         confidenceThreshold: 0.5,
         minScore: 0.3,
+        sessionId: session.data.id,
       }),
     )
+    const retrievalUsage = metrics
+      .usageSummaryByPurpose('1d')
+      .find((entry) => entry.purpose === 'memory_retrieval')
+    expect(retrievalUsage?.category).toBe('aggregated')
+    expect(retrievalUsage?.eventCount).toBe(1)
     expect(capturedContext?.requestMemoryInjections).toEqual([
       expect.objectContaining({
         layer: 'layer1',

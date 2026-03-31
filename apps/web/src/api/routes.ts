@@ -422,6 +422,7 @@ export function createRoutes(zero: ZeroOS) {
       const session = zero.sessionManager.get(id)
       if (session) {
         const stats = zero.metrics.sessionStats(id)
+        const auxiliaryCost = zero.metrics.sessionAuxiliaryCost(id)
         const cacheEconomics = summarizeSessionCacheEconomics(id)
         return c.json({
           id: session.data.id,
@@ -449,6 +450,7 @@ export function createRoutes(zero: ZeroOS) {
           grossAvoidedInputCost: cacheEconomics.grossAvoidedInputCost,
           netSavings: cacheEconomics.netSavings,
           totalCost: stats.totalCost,
+          auxiliaryCost,
           requestCount: stats.requestCount,
         })
       }
@@ -460,6 +462,7 @@ export function createRoutes(zero: ZeroOS) {
       }
       const messages = zero.sessionManager.getMessagesFromDB(id)
       const stats = zero.metrics.sessionStats(id)
+      const auxiliaryCost = zero.metrics.sessionAuxiliaryCost(id)
       const cacheEconomics = summarizeSessionCacheEconomics(id)
       return c.json({
         id: row.id,
@@ -487,6 +490,7 @@ export function createRoutes(zero: ZeroOS) {
         grossAvoidedInputCost: cacheEconomics.grossAvoidedInputCost,
         netSavings: cacheEconomics.netSavings,
         totalCost: stats.totalCost,
+        auxiliaryCost,
         requestCount: stats.requestCount,
       })
     })
@@ -743,6 +747,20 @@ export function createRoutes(zero: ZeroOS) {
         today: { cost: today.totalCost, tokens: today.totalTokens },
         week: { cost: week.totalCost, tokens: week.totalTokens },
         month: { cost: month.totalCost, tokens: month.totalTokens },
+      })
+    })
+
+    .get('/api/metrics/usage-summary', (c) => {
+      const range = c.req.query('range') ?? '7d'
+      const data = zero.metrics.usageSummaryByPurpose(range)
+      return c.json({ range, data })
+    })
+
+    .get('/api/metrics/system-costs', (c) => {
+      const range = c.req.query('range') ?? '30d'
+      return c.json({
+        range,
+        ...zero.metrics.systemCosts(range),
       })
     })
 

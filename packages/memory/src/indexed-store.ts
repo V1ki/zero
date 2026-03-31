@@ -21,7 +21,7 @@ export class IndexedMemoryStore implements MemoryRepository {
     const memory = await this.store.create(type, title, content, options)
 
     try {
-      await this.upsertMemory(memory)
+      await this.upsertMemory(memory, options?.sessionId)
       return memory
     } catch (error) {
       await this.store.delete(type, memory.id)
@@ -53,15 +53,16 @@ export class IndexedMemoryStore implements MemoryRepository {
     type: MemoryType,
     id: string,
     updates: Partial<Memory>,
+    context?: { sessionId?: string },
   ): Promise<Memory | undefined> {
     const existing = this.store.get(type, id)
     if (!existing) return undefined
 
-    const updated = await this.store.update(type, id, updates)
+    const updated = await this.store.update(type, id, updates, context)
     if (!updated) return undefined
 
     try {
-      await this.upsertMemory(updated)
+      await this.upsertMemory(updated, context?.sessionId)
       return updated
     } catch (error) {
       await this.store.save(existing)
@@ -147,8 +148,11 @@ export class IndexedMemoryStore implements MemoryRepository {
     return memories.length
   }
 
-  private async upsertMemory(memory: Memory): Promise<void> {
-    const vector = await this.embeddingClient.embed(this.embeddingClient.memoryToText(memory))
+  private async upsertMemory(memory: Memory, sessionId?: string): Promise<void> {
+    const vector = await this.embeddingClient.embed(
+      this.embeddingClient.memoryToText(memory),
+      sessionId,
+    )
     await this.vectorIndex.upsert(memory.id, vector, this.toVectorMeta(memory))
   }
 

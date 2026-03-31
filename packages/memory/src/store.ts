@@ -7,7 +7,13 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { basename, join, relative, resolve, sep } from 'node:path'
-import { ALL_MEMORY_TYPES, generatePrefixedId, now, type Memory, type MemoryType } from '@zero-os/shared'
+import {
+  ALL_MEMORY_TYPES,
+  type Memory,
+  type MemoryType,
+  generatePrefixedId,
+  now,
+} from '@zero-os/shared'
 import matter from 'gray-matter'
 
 export interface MemoryRepository {
@@ -22,7 +28,12 @@ export interface MemoryRepository {
   getRelativePath(type: MemoryType, id: string): string
   list(type: MemoryType): Memory[]
   searchByTags(tags: string[], types?: MemoryType[]): Memory[]
-  update(type: MemoryType, id: string, updates: Partial<Memory>): Promise<Memory | undefined>
+  update(
+    type: MemoryType,
+    id: string,
+    updates: Partial<Memory>,
+    context?: { sessionId?: string },
+  ): Promise<Memory | undefined>
   delete(type: MemoryType, id: string): Promise<boolean>
   getAgentPreference(agentName: string): string
   deleteBySessionId(sessionId: string): Promise<number>
@@ -137,6 +148,7 @@ export class MemoryStore implements MemoryRepository {
     type: MemoryType,
     id: string,
     updates: Partial<Memory>,
+    _context?: { sessionId?: string },
   ): Promise<Memory | undefined> {
     const memory = this.get(type, id)
     if (!memory) return undefined

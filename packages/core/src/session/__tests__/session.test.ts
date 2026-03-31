@@ -123,9 +123,21 @@ describe('Session', () => {
       agentInstruction: 'You are a helpful assistant. Reply briefly.',
     })
 
-    const agent = (session as unknown as { agent: { closureAdapter: unknown } | null }).agent
+    const agent = (
+      session as unknown as {
+        agent: {
+          closureAdapter: unknown
+          obs?: {
+            closureModelLabel?: string
+            closureProviderName?: string
+          }
+        } | null
+      }
+    ).agent
     expect(agent).toBeDefined()
     expect(agent?.closureAdapter).toBe(router.resolveModel('openai-codex/gpt-5.4-medium')?.adapter)
+    expect(agent?.obs?.closureModelLabel).toBe('openai-codex/gpt-5.4-medium')
+    expect(agent?.obs?.closureProviderName).toBe('openai-codex')
   })
 
   test('handles real conversation with AI (real API)', async () => {

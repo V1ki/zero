@@ -30,6 +30,11 @@ export type {
   RepairByDay,
   CostDetailRecord,
   ToolErrorByDay,
+  UsageCategory,
+  UsagePurpose,
+  UsageLedgerEntry,
+  UsageSummaryRow,
+  UsageTotals,
 } from './metrics'
 export { SessionDB } from './session-db'
 export type { SessionRow } from './session-db'

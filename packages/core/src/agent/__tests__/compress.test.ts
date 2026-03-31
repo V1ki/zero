@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { ProviderAdapter } from '@zero-os/model'
+import { MetricsDB } from '@zero-os/observe'
 import { generateId, now } from '@zero-os/shared'
 import type { Message } from '@zero-os/shared'
 import { compressConversation } from '../compress'
@@ -111,5 +112,33 @@ describe('compressConversation', () => {
     // tokensBefore and tokensAfter should both be positive
     expect(result.stats.tokensBefore).toBeGreaterThan(0)
     expect(result.stats.tokensAfter).toBeGreaterThan(0)
+  })
+
+  test('records compression usage when observability context is provided', async () => {
+    const metrics = MetricsDB.createInMemory()
+    const messages: Message[] = []
+    for (let i = 0; i < 20; i++) {
+      const role = i % 2 === 0 ? 'user' : 'assistant'
+      messages.push(makeMessage(role as 'user' | 'assistant', `Msg ${i}: ${'z'.repeat(200)}`))
+    }
+
+    await compressConversation(messages, 100, mockAdapter, 'test-session', {
+      metrics,
+      pricing: { input: 1000, output: 2000 },
+      providerName: 'test-provider',
+      modelLabel: 'test-provider/compressor',
+    })
+
+    const summary = metrics.usageSummaryByPurpose('1d')
+    expect(summary).toEqual([
+      expect.objectContaining({
+        purpose: 'compression',
+        category: 'completion',
+        eventCount: 1,
+      }),
+    ])
+    expect(metrics.sessionAuxiliaryCost('test-session')).toBeGreaterThan(0)
+
+    metrics.close()
   })
 })

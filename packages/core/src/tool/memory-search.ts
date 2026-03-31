@@ -1,4 +1,4 @@
-import { ALL_MEMORY_TYPES, type MemoryType, type ToolContext, type ToolResult } from '@zero-os/shared'
+import { ALL_MEMORY_TYPES, type ToolContext, type ToolResult } from '@zero-os/shared'
 import { BaseTool } from './base'
 
 interface MemorySearchInput {
@@ -37,12 +37,14 @@ export class MemorySearchTool extends BaseTool {
           topN: maxResults ?? 5,
           types: DEFAULT_TYPES,
           confidenceThreshold: 0,
+          sessionId: ctx.sessionId,
         })
       : (
           await ctx.memoryRetriever.retrieve(query, {
             topN: maxResults ?? 5,
             types: DEFAULT_TYPES,
             confidenceThreshold: 0,
+            sessionId: ctx.sessionId,
           })
         ).map((memory) => ({
           memory,

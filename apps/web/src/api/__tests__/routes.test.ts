@@ -99,12 +99,12 @@ beforeAll(async () => {
 afterAll(async () => {
   await zero.shutdown()
   if (previousMasterKey === undefined) {
-    delete process.env.ZERO_MASTER_KEY_BASE64
+    process.env.ZERO_MASTER_KEY_BASE64 = undefined
   } else {
     process.env.ZERO_MASTER_KEY_BASE64 = previousMasterKey
   }
   if (previousZeroDataDir === undefined) {
-    delete process.env.ZERO_DATA_DIR
+    process.env.ZERO_DATA_DIR = undefined
   } else {
     process.env.ZERO_DATA_DIR = previousZeroDataDir
   }
@@ -452,6 +452,19 @@ describe('API Routes (Real)', () => {
       },
     })
     zero.tracer.endSpan(span.id, 'success')
+    zero.metrics.recordUsage({
+      id: 'usage_closure_session_001',
+      sessionId: session.data.id,
+      category: 'completion',
+      purpose: 'task_closure',
+      model: 'anthropic/claude-opus-4-6',
+      provider: 'anthropic',
+      inputTokens: 40,
+      outputTokens: 20,
+      cost: 0.005,
+      durationMs: 50,
+      createdAt,
+    })
 
     const res = await app.request(`/api/sessions/${session.data.id}`)
     expect(res.status).toBe(200)
@@ -462,6 +475,71 @@ describe('API Routes (Real)', () => {
     expect(data.cacheHitRate).toBeCloseTo(0.4, 5)
     expect(typeof data.cacheReadCost).toBe('number')
     expect(data.netSavings).toBeCloseTo(0.0017375, 12)
+    expect(data.auxiliaryCost).toBeCloseTo(0.005, 12)
+  })
+
+  test('GET /api/metrics/usage-summary returns ledger totals grouped by purpose', async () => {
+    const createdAt = new Date().toISOString()
+    zero.metrics.recordUsage({
+      id: 'usage_metrics_agent_001',
+      sessionId: 'sess_usage_metrics_001',
+      category: 'completion',
+      purpose: 'agent_loop',
+      model: 'gpt-5',
+      provider: 'openai',
+      inputTokens: 100,
+      outputTokens: 20,
+      cost: 0.02,
+      durationMs: 100,
+      createdAt,
+    })
+    zero.metrics.recordUsage({
+      id: 'usage_metrics_embedding_001',
+      sessionId: null,
+      category: 'embedding',
+      purpose: 'embedding',
+      model: 'text-embedding-v4',
+      provider: 'embedding',
+      inputTokens: 80,
+      outputTokens: 0,
+      cost: 0,
+      durationMs: 0,
+      createdAt,
+    })
+
+    const res = await app.request('/api/metrics/usage-summary?range=7d')
+    expect(res.status).toBe(200)
+    const data = await res.json()
+    expect(data.data).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ purpose: 'agent_loop', category: 'completion' }),
+        expect.objectContaining({ purpose: 'embedding', category: 'embedding' }),
+      ]),
+    )
+  })
+
+  test('GET /api/metrics/system-costs returns system-level usage totals', async () => {
+    const createdAt = new Date().toISOString()
+    zero.metrics.recordUsage({
+      id: 'usage_system_001',
+      sessionId: null,
+      category: 'embedding',
+      purpose: 'embedding',
+      model: 'text-embedding-v4',
+      provider: 'embedding',
+      inputTokens: 120,
+      outputTokens: 0,
+      cost: 0,
+      durationMs: 0,
+      createdAt,
+    })
+
+    const res = await app.request('/api/metrics/system-costs?range=7d')
+    expect(res.status).toBe(200)
+    const data = await res.json()
+    expect(data.totalCost).toBe(0)
+    expect(data.totalTokens).toBeGreaterThanOrEqual(120)
+    expect(data.eventCount).toBeGreaterThanOrEqual(1)
   })
 
   test('POST /api/chat creates session and returns reply', async () => {

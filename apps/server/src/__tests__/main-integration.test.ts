@@ -5,7 +5,7 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MemoryStore } from '@zero-os/memory'
-import type { ProviderAdapter } from '@zero-os/model'
+import { LiteLLMPricing, type ProviderAdapter } from '@zero-os/model'
 import { encryptSecrets } from '@zero-os/secrets'
 import { startZeroOS } from '../main'
 import type { ZeroOS } from '../main'
@@ -43,7 +43,9 @@ function writeConfig(
         tags:
           - powerful
           - coding
-${options?.includeClosureModel ? `      gpt-5.3-codex-medium:
+${
+  options?.includeClosureModel
+    ? `      gpt-5.3-codex-medium:
         model_id: gpt-5.3-codex-medium
         max_context: 400000
         max_output: 128000
@@ -54,22 +56,37 @@ ${options?.includeClosureModel ? `      gpt-5.3-codex-medium:
         tags:
           - powerful
           - coding
-` : ''}default_model: openai-codex/gpt-5.4-medium
-${options?.taskClosureModel ? `task_closure_model: ${options.taskClosureModel}
-` : ''}fallback_chain:
+`
+    : ''
+}default_model: openai-codex/gpt-5.4-medium
+${
+  options?.taskClosureModel
+    ? `task_closure_model: ${options.taskClosureModel}
+`
+    : ''
+}fallback_chain:
   - openai-codex/gpt-5.4-medium
 schedules: []
 fuse_list: []
-${options?.embeddingBaseUrl ? `embedding:
+${
+  options?.embeddingBaseUrl
+    ? `embedding:
   base_url: ${options.embeddingBaseUrl}
   api_key_ref: embedding_api_key
   model: text-embedding-test
-` : ''}`,
+`
+    : ''
+}`,
   )
   writeFileSync(join(dataDir, 'fuse_list.yaml'), 'rules: []\n')
 }
 
-async function createEmbeddingApiServer() {
+async function createEmbeddingApiServer(options?: {
+  usage?: {
+    promptTokens: number
+    totalTokens: number
+  }
+}) {
   const state = {
     failOnText: undefined as string | undefined,
   }
@@ -113,6 +130,14 @@ async function createEmbeddingApiServer() {
         data: inputs.map((text) => ({
           embedding: embedText(String(text)),
         })),
+        ...(options?.usage
+          ? {
+              usage: {
+                prompt_tokens: options.usage.promptTokens,
+                total_tokens: options.usage.totalTokens,
+              },
+            }
+          : {}),
       }),
     )
   })
@@ -157,7 +182,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await zero.shutdown()
-  delete process.env.ZERO_MASTER_KEY_BASE64
+  process.env.ZERO_MASTER_KEY_BASE64 = undefined
   rmSync(testDataDir, { recursive: true, force: true })
 })
 
@@ -333,7 +358,9 @@ describe('startZeroOS Integration', () => {
       initialZero = undefined
 
       const baseStore = new MemoryStore(join(dataDir, 'memory'))
-      const persistedMemory = baseStore.list('note').find((memory) => memory.title === 'Persisted deploy memory')
+      const persistedMemory = baseStore
+        .list('note')
+        .find((memory) => memory.title === 'Persisted deploy memory')
       if (!persistedMemory) {
         throw new Error('Expected persisted memory to exist before restart')
       }
@@ -344,15 +371,78 @@ describe('startZeroOS Integration', () => {
       embeddingApi.state.failOnText = 'Persisted deploy memory'
 
       restartedZero = await startZeroOS({ dataDir, skipProcessExit: true })
-      const restartedResults = await restartedZero.memoryRetriever.retrieveScored('deploy gateway', {
-        topN: 5,
-        confidenceThreshold: 0,
-      })
+      const restartedResults = await restartedZero.memoryRetriever.retrieveScored(
+        'deploy gateway',
+        {
+          topN: 5,
+          confidenceThreshold: 0,
+        },
+      )
 
-      expect(restartedResults.map((entry) => entry.memory.title)).toContain('Persisted deploy memory')
+      expect(restartedResults.map((entry) => entry.memory.title)).toContain(
+        'Persisted deploy memory',
+      )
     } finally {
       await initialZero?.shutdown()
       await restartedZero?.shutdown()
+      await embeddingApi.close()
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  test('records non-zero embedding cost when LiteLLM pricing is available', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'zero-embedding-cost-'))
+    const embeddingApi = await createEmbeddingApiServer({
+      usage: {
+        promptTokens: 50,
+        totalTokens: 50,
+      },
+    })
+    let embeddingZero: ZeroOS | undefined
+
+    try {
+      process.env.ZERO_MASTER_KEY_BASE64 = TEST_MASTER_KEY.toString('base64')
+      writeConfig(dataDir, { embeddingBaseUrl: embeddingApi.baseUrl })
+      encryptSecrets(
+        {
+          openai_codex_api_key: 'sk-test-placeholder',
+          embedding_api_key: 'emb-test-placeholder',
+        },
+        TEST_MASTER_KEY,
+        join(dataDir, 'secrets.enc'),
+      )
+
+      const litellmPricing = LiteLLMPricing.init(join(dataDir, 'cache')) as unknown as {
+        data: Record<string, unknown> | null
+      }
+
+      litellmPricing.data = {
+        'text-embedding-test': {
+          input_cost_per_token: 0.000001,
+          output_cost_per_token: 0,
+        },
+      }
+
+      embeddingZero = await startZeroOS({ dataDir, skipProcessExit: true })
+
+      const results = await embeddingZero.memoryRetriever.retrieveScored('deploy gateway', {
+        topN: 5,
+        confidenceThreshold: 0,
+        sessionId: 'sess_embedding_cost_001',
+      })
+
+      expect(results).toEqual([])
+
+      const embeddingSummary = embeddingZero.metrics
+        .usageSummaryByPurpose('1d')
+        .find((row) => row.purpose === 'embedding')
+      expect(embeddingSummary?.totalCost).toBeCloseTo(0.00005, 8)
+      expect(embeddingZero.metrics.sessionFullCost('sess_embedding_cost_001')).toBeCloseTo(
+        0.00005,
+        8,
+      )
+    } finally {
+      await embeddingZero?.shutdown()
       await embeddingApi.close()
       rmSync(dataDir, { recursive: true, force: true })
     }

@@ -1,16 +1,17 @@
 import { describe, expect, test } from 'bun:test'
-import { ModelRouter, type ProviderAdapter } from '@zero-os/model'
+import type { ModelRouter, ProviderAdapter } from '@zero-os/model'
+import { MetricsDB } from '@zero-os/observe'
 import type {
   AgentControlHandle,
   CompletionRequest,
   CompletionResponse,
   ObservabilityHandle,
+  StreamEvent,
   ToolContext,
   ToolResult,
-  StreamEvent,
 } from '@zero-os/shared'
-import { BashTool } from '../bash'
 import { BaseTool } from '../base'
+import { BashTool } from '../bash'
 import { SUB_AGENT_BLOCKED_TOOLS } from '../constants'
 import { ReadTool } from '../read'
 import { ToolRegistry } from '../registry'
@@ -137,7 +138,7 @@ describe('SpawnAgentTool', () => {
     let capturedToolContext: ToolContext | undefined
     const agentControl = {
       spawn: (agent: unknown) => {
-        capturedToolContext = (agent as any).toolContext as ToolContext
+        capturedToolContext = (agent as { toolContext: ToolContext }).toolContext
         return { agentId: 'agent_123', label: 'Explorer' }
       },
       waitAny: async () => ({ statuses: {}, timedOut: false }),
@@ -192,12 +193,54 @@ describe('SpawnAgentTool', () => {
     expect(capturedToolContext?.workDir).toContain('/subagents/')
   })
 
+  test('passes metrics and sub-agent usage metadata into spawned agent observability', async () => {
+    const registry = createToolRegistry()
+    const metrics = MetricsDB.createInMemory()
+    const tool = new SpawnAgentTool(
+      createStubRouter(new StaticResponseAdapter()),
+      registry,
+      metrics,
+    )
+
+    let capturedAgentObs: Record<string, unknown> | undefined
+    const agentControl = {
+      spawn: (agent: unknown) => {
+        capturedAgentObs = (agent as { obs?: Record<string, unknown> }).obs
+        return { agentId: 'agent_metrics', label: 'MetricsAgent' }
+      },
+    } as unknown as AgentControlHandle
+
+    const result = await tool.run(
+      {
+        ...ctx,
+        agentControl,
+      },
+      {
+        instruction: 'confirm completion',
+        label: 'MetricsAgent',
+        tools: [],
+      },
+    )
+
+    expect(result.success).toBe(true)
+    expect(capturedAgentObs?.metrics).toBe(metrics)
+    expect(capturedAgentObs?.usagePurpose).toBe('sub_agent')
+    expect(capturedAgentObs?.parentSessionId).toBe(ctx.sessionId)
+
+    metrics.close()
+  })
+
   test('includes interactive mode in spawn output and passes it to agent control', async () => {
     const registry = createToolRegistry()
     const tool = new SpawnAgentTool(createStubRouter(new StaticResponseAdapter()), registry)
     let receivedMode: unknown
     const agentControl = {
-      spawn: (_agent: unknown, _context: unknown, _instruction: string, options?: { mode?: string }) => {
+      spawn: (
+        _agent: unknown,
+        _context: unknown,
+        _instruction: string,
+        options?: { mode?: string },
+      ) => {
         receivedMode = options?.mode
         return { agentId: 'agent_456', label: 'InteractiveWorker' }
       },
@@ -245,7 +288,11 @@ describe('SpawnAgentTool', () => {
     registry.register(new NamedTool('send_input'))
 
     const tool = new SpawnAgentTool(createStubRouter(new StaticResponseAdapter()), registry)
-    const scopedRegistry = (tool as any).buildScopedRegistry([
+    const scopedRegistry = (
+      tool as unknown as {
+        buildScopedRegistry(tools?: string[]): ToolRegistry
+      }
+    ).buildScopedRegistry([
       'read',
       'task',
       'spawn_agent',
@@ -253,7 +300,7 @@ describe('SpawnAgentTool', () => {
       'close_agent',
       'send_input',
       'bash',
-    ]) as ToolRegistry
+    ])
 
     expect(scopedRegistry.list().map((entry: BaseTool) => entry.name)).toEqual(['read', 'bash'])
     expect(
@@ -270,7 +317,11 @@ describe('SpawnAgentTool', () => {
     registry.register(new NamedTool('send_input'))
 
     const tool = new SpawnAgentTool(createStubRouter(new StaticResponseAdapter()), registry)
-    const scopedRegistry = (tool as any).buildScopedRegistry() as ToolRegistry
+    const scopedRegistry = (
+      tool as unknown as {
+        buildScopedRegistry(tools?: string[]): ToolRegistry
+      }
+    ).buildScopedRegistry()
 
     expect(scopedRegistry.list().map((entry: BaseTool) => entry.name)).toEqual(['read', 'bash'])
   })

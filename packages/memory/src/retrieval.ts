@@ -1,8 +1,8 @@
 import {
-  MemorySearchOptions,
-  ScoredMemoryMatch,
   type Memory,
+  type MemorySearchOptions,
   type MemoryType,
+  type ScoredMemoryMatch,
   toErrorMessage,
 } from '@zero-os/shared'
 import type { EmbeddingProvider } from './embedding'
@@ -37,7 +37,15 @@ export class MemoryRetriever {
     query: string,
     options: MemorySearchOptions = {},
   ): Promise<ScoredMemoryMatch[]> {
-    const { topN = 5, confidenceThreshold = 0.6, minScore = 0, types, tags, status } = options
+    const {
+      topN = 5,
+      confidenceThreshold = 0.6,
+      minScore = 0,
+      types,
+      tags,
+      status,
+      sessionId,
+    } = options
     if (!query.trim() || !this.embeddingClient || !this.vectorIndex) return []
 
     const targetTypes = types ?? DEFAULT_TYPES
@@ -45,7 +53,7 @@ export class MemoryRetriever {
 
     let vectorResults: Array<{ memoryId: string; score: number }>
     try {
-      const queryVector = await this.embeddingClient.embed(query)
+      const queryVector = await this.embeddingClient.embed(query, sessionId)
       vectorResults = await this.vectorIndex.query(queryVector, Math.max(topN * 3, topN))
     } catch (error) {
       console.warn('[memory] vector retrieval failed', {

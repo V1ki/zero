@@ -386,4 +386,91 @@ describe('MetricsDB', () => {
     expect(expectDefined(errors.find((e) => e.tool === 'bash')).errors).toBe(1)
     expect(expectDefined(errors.find((e) => e.tool === 'read')).errors).toBe(1)
   })
+
+  test('recordUsage supports auxiliary, system, and parent session aggregation', () => {
+    const usageDb = MetricsDB.createInMemory()
+    const createdAt = new Date().toISOString()
+
+    usageDb.recordUsage({
+      id: 'usage_agent_001',
+      sessionId: 'sess_usage_001',
+      category: 'completion',
+      purpose: 'agent_loop',
+      model: 'gpt-5',
+      provider: 'openai',
+      inputTokens: 100,
+      outputTokens: 50,
+      cost: 0.1,
+      durationMs: 100,
+      createdAt,
+    })
+    usageDb.recordUsage({
+      id: 'usage_sub_001',
+      sessionId: 'sess_usage_child_001',
+      parentSessionId: 'sess_usage_001',
+      category: 'completion',
+      purpose: 'sub_agent',
+      model: 'gpt-5',
+      provider: 'openai',
+      inputTokens: 80,
+      outputTokens: 20,
+      cost: 0.08,
+      durationMs: 80,
+      createdAt,
+    })
+    usageDb.recordUsage({
+      id: 'usage_closure_001',
+      sessionId: 'sess_usage_001',
+      category: 'completion',
+      purpose: 'task_closure',
+      model: 'gpt-5-mini',
+      provider: 'openai',
+      inputTokens: 40,
+      outputTokens: 10,
+      cost: 0.04,
+      durationMs: 40,
+      createdAt,
+    })
+    usageDb.recordUsage({
+      id: 'usage_embedding_001',
+      sessionId: null,
+      category: 'embedding',
+      purpose: 'embedding',
+      model: 'text-embedding-v4',
+      provider: 'embedding',
+      inputTokens: 70,
+      outputTokens: 0,
+      cost: 0.02,
+      durationMs: 0,
+      metadata: JSON.stringify({ batchSize: 2 }),
+      createdAt,
+    })
+
+    expect(usageDb.sessionFullCost('sess_usage_001')).toBeCloseTo(0.22, 6)
+    expect(usageDb.sessionAuxiliaryCost('sess_usage_001')).toBeCloseTo(0.04, 6)
+
+    const usageSummary = usageDb.usageSummaryByPurpose('1d')
+    expect(usageSummary).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          purpose: 'agent_loop',
+          category: 'completion',
+          totalCost: 0.1,
+        }),
+        expect.objectContaining({
+          purpose: 'embedding',
+          category: 'embedding',
+          totalCost: 0.02,
+        }),
+      ]),
+    )
+
+    expect(usageDb.systemCosts('1d')).toEqual({
+      totalCost: 0.02,
+      totalTokens: 70,
+      eventCount: 1,
+    })
+
+    usageDb.close()
+  })
 })

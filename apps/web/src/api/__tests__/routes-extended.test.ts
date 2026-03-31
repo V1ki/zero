@@ -922,6 +922,11 @@ describe('API Routes Extended', () => {
       expect(historyData.history[0].artifacts.primary.response.rawText).toContain(
         'duplicate bash checks added cost',
       )
+      const judgeUsage = zero.metrics
+        .usageSummaryByPurpose('1d')
+        .find((entry) => entry.purpose === 'session_judge')
+      expect(judgeUsage?.category).toBe('completion')
+      expect(judgeUsage?.eventCount).toBeGreaterThanOrEqual(1)
     } finally {
       ;(resolved.adapter as { complete: typeof resolved.adapter.complete }).complete =
         originalComplete
@@ -1233,6 +1238,11 @@ describe('API Routes Extended', () => {
       expect(historyData.history[0].artifacts.repair.response.rawText).toContain(
         'Recovered by repair pass.',
       )
+      const judgeUsage = zero.metrics
+        .usageSummaryByPurpose('1d')
+        .find((entry) => entry.purpose === 'session_judge')
+      expect(judgeUsage?.category).toBe('completion')
+      expect(judgeUsage?.eventCount).toBeGreaterThanOrEqual(2)
     } finally {
       ;(resolved.adapter as { complete: typeof resolved.adapter.complete }).complete =
         originalComplete

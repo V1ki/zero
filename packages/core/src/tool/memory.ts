@@ -1,4 +1,9 @@
-import { ALL_MEMORY_TYPES, type MemoryType, type ToolContext, type ToolResult } from '@zero-os/shared'
+import {
+  ALL_MEMORY_TYPES,
+  type MemoryType,
+  type ToolContext,
+  type ToolResult,
+} from '@zero-os/shared'
 import { BaseTool } from './base'
 
 type MemoryAction = 'create' | 'update' | 'delete' | 'list'
@@ -90,7 +95,9 @@ export class MemoryTool extends BaseTool {
             outputSummary: 'Missing type or id for update',
           }
         }
-        const updated = await ctx.memoryStore.update(type, id, updates ?? {})
+        const updated = await ctx.memoryStore.update(type, id, updates ?? {}, {
+          sessionId: ctx.sessionId,
+        })
         if (!updated) {
           return {
             success: false,

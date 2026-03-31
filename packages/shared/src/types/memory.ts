@@ -54,4 +54,5 @@ export interface MemorySearchOptions {
   types?: MemoryType[]
   tags?: string[]
   status?: MemoryStatus[]
+  sessionId?: string
 }

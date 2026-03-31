@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
+import { MEMORY_NUDGE_PROMPT } from '@zero-os/memory'
 import type { ProviderAdapter } from '@zero-os/model'
 import { computeCost } from '@zero-os/model'
-import { MEMORY_NUDGE_PROMPT } from '@zero-os/memory'
 import type {
   ClosureLogEntryInput,
   MetricsDB,
@@ -11,6 +11,7 @@ import type {
   SnapshotEntry,
   TaskClosureClassifierResponse,
   Tracer,
+  UsagePurpose,
 } from '@zero-os/observe'
 import type {
   CompletionRequest,
@@ -32,15 +33,16 @@ import { retrieveMemoriesWithDecision } from './memory-retrieval'
 import { CONTEXT_PARAMS } from './params'
 import { wrapMemoryInjection } from './prompt'
 import {
-  buildQueuedInjectionText,
-  buildQueuedInjectionTrace,
   CONTINUATION_PROMPT,
-  formatAppliedQueuedIntent,
   type QueuedInjectionTrace,
   type QueuedMessage,
+  buildQueuedInjectionText,
+  buildQueuedInjectionTrace,
+  formatAppliedQueuedIntent,
   injectQueuedMessagesWithTrace,
   isTaskComplete,
 } from './queue'
+import { recordCompletionUsage } from './record-usage'
 import {
   TASK_CLOSURE_CLASSIFIER_SYSTEM_PROMPT,
   type TaskClosureDecision,
@@ -109,6 +111,11 @@ export interface AgentObservability {
   modelLabel?: string
   /** ModelPricing from config for cost calculation */
   pricing?: import('@zero-os/shared').ModelPricing
+  closurePricing?: import('@zero-os/shared').ModelPricing
+  closureProviderName?: string
+  closureModelLabel?: string
+  usagePurpose?: UsagePurpose
+  parentSessionId?: string
   getCurrentSnapshotId?: () => string | undefined
   onContextCompressed?: (event: {
     summary: string
@@ -609,10 +616,7 @@ export class Agent {
           hadQueuedMessages = false
           return {
             action: 'continue' as const,
-            continuationMessage: this.buildLoopUserMessage(
-              CONTINUATION_PROMPT,
-              'continuation',
-            ),
+            continuationMessage: this.buildLoopUserMessage(CONTINUATION_PROMPT, 'continuation'),
           }
         }
 
@@ -822,6 +826,12 @@ export class Agent {
               budget.conversation,
               this.adapter,
               this.toolContext.sessionId,
+              {
+                metrics: this.obs.metrics,
+                pricing: this.obs.pricing,
+                providerName: this.obs.providerName,
+                modelLabel: this.obs.modelLabel,
+              },
             )
 
             ctx.messages.length = 0
@@ -935,11 +945,21 @@ export class Agent {
     }
 
     try {
+      const startedAt = Date.now()
       const result = await this.closureAdapter.complete({
         messages: [classifierMessage],
         system: classifierRequest.system,
         stream: false,
         maxTokens: classifierRequest.maxTokens,
+      })
+      recordCompletionUsage(this.obs.metrics, result, {
+        sessionId: this.toolContext.sessionId,
+        purpose: 'task_closure',
+        model: this.obs.closureModelLabel ?? result.model,
+        provider: this.obs.closureProviderName ?? this.obs.providerName ?? 'unknown',
+        pricing: this.obs.closurePricing ?? this.obs.pricing,
+        durationMs: Date.now() - startedAt,
+        parentSessionId: this.obs.parentSessionId,
       })
 
       const text = extractAssistantText(result.content)
@@ -1165,6 +1185,15 @@ export class Agent {
       durationMs,
       createdAt: now(),
     })
+    recordCompletionUsage(this.obs.metrics, response, {
+      sessionId: this.toolContext.sessionId,
+      purpose: this.obs.usagePurpose ?? 'agent_loop',
+      model: this.obs.modelLabel ?? response.model,
+      provider: this.obs.providerName ?? 'unknown',
+      pricing: this.obs.pricing,
+      durationMs,
+      parentSessionId: this.obs.parentSessionId,
+    })
   }
 
   private filterQueuedInjection(
@@ -1300,6 +1329,7 @@ export class Agent {
         providerName: this.obs.providerName,
         modelLabel: this.obs.modelLabel,
         pricing: this.obs.pricing,
+        metrics: this.obs.metrics,
         secretFilter: this.obs.secretFilter,
         spanName: 'memory_retrieval_decision',
         metadata: {

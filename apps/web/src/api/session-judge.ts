@@ -1,8 +1,9 @@
+import { recordCompletionUsage } from '@zero-os/core'
 import {
-  flattenTraceSpans,
   type RequestLogEntry,
   type SnapshotEntry,
   type TraceSpan,
+  flattenTraceSpans,
 } from '@zero-os/observe'
 import type { CompletionResponse, Message } from '@zero-os/shared'
 import { now, toErrorMessage } from '@zero-os/shared'
@@ -125,6 +126,7 @@ export async function runSessionJudge(
 
   const primarySystemPrompt = JUDGE_SYSTEM_PROMPT
   const primaryUserPrompt = buildJudgePrompt(payload)
+  const primaryStartedAt = Date.now()
   const primaryCompletion = await resolved.adapter.complete({
     messages: [
       {
@@ -140,13 +142,26 @@ export async function runSessionJudge(
     stream: false,
     maxTokens: 3200,
   })
+  recordCompletionUsage(zero.metrics, primaryCompletion, {
+    sessionId,
+    purpose: 'session_judge',
+    model: modelLabel,
+    provider: resolved.providerName,
+    pricing: resolved.modelConfig.pricing,
+    durationMs: Date.now() - primaryStartedAt,
+  })
   const primaryRawText = extractResponseText(primaryCompletion)
 
   const { parsed, repair } = await parseOrRepairJudgeResponse(
+    zero,
     resolved.adapter,
     sessionId,
     primaryRawText,
-    resolved.modelConfig.modelId,
+    {
+      model: modelLabel,
+      provider: resolved.providerName,
+      pricing: resolved.modelConfig.pricing,
+    },
   )
 
   const generatedAt = now()
@@ -310,15 +325,21 @@ function buildJudgePrompt(payload: Record<string, unknown>): string {
 }
 
 async function parseOrRepairJudgeResponse(
+  zero: ZeroOS,
   adapter: JudgeCompletionAdapter,
   sessionId: string,
   raw: string,
-  model?: string,
+  usageContext: {
+    model: string
+    provider: string
+    pricing?: import('@zero-os/shared').ModelPricing
+  },
 ): Promise<ParsedJudgeArtifacts> {
   try {
     return { parsed: parseJudgeResponse(raw) }
   } catch (parseError) {
     const repairUserPrompt = buildJudgeRepairPrompt(raw, parseError)
+    const repairStartedAt = Date.now()
     const repaired = await adapter.complete({
       messages: [
         {
@@ -339,6 +360,14 @@ async function parseOrRepairJudgeResponse(
       stream: false,
       maxTokens: 1800,
     })
+    recordCompletionUsage(zero.metrics, repaired, {
+      sessionId,
+      purpose: 'session_judge',
+      model: usageContext.model,
+      provider: usageContext.provider,
+      pricing: usageContext.pricing,
+      durationMs: Date.now() - repairStartedAt,
+    })
     const repairRawText = extractResponseText(repaired)
 
     return {
@@ -347,7 +376,7 @@ async function parseOrRepairJudgeResponse(
         request: {
           systemPrompt: JUDGE_REPAIR_SYSTEM_PROMPT,
           userPrompt: repairUserPrompt,
-          model,
+          model: usageContext.model,
           maxTokens: 1800,
           stream: false,
         },
@@ -588,9 +617,7 @@ function collectInterventionSignals(
 
   const closureActions = closures
     .filter(
-      (
-        closure,
-      ): closure is Extract<typeof closure, { action: 'continue' | 'finish' | 'block' }> =>
+      (closure): closure is Extract<typeof closure, { action: 'continue' | 'finish' | 'block' }> =>
         'action' in closure,
     )
     .map((closure) => closure.action)
@@ -629,7 +656,9 @@ function collectInterventionSignals(
 
 function looksLikeHumanInterventionAsk(text: string): boolean {
   const normalized = text.toLowerCase()
-  return normalized.includes('?') || HUMAN_INTERVENTION_HINTS.some((hint) => normalized.includes(hint))
+  return (
+    normalized.includes('?') || HUMAN_INTERVENTION_HINTS.some((hint) => normalized.includes(hint))
+  )
 }
 
 function collectToolSignals(requests: RequestLogEntry[], filter: (value: string) => string) {
@@ -707,9 +736,7 @@ function parseJudgeJson(value: string): unknown {
     }
   }
 
-  throw new Error(
-    `Judge returned malformed JSON: ${lastError?.message ?? 'Unknown parse failure'}`,
-  )
+  throw new Error(`Judge returned malformed JSON: ${lastError?.message ?? 'Unknown parse failure'}`)
 }
 
 function extractJsonCandidate(value: string): string {

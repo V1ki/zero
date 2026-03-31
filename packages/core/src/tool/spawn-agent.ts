@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ModelRouter } from '@zero-os/model'
+import type { MetricsDB } from '@zero-os/observe'
 import type { ToolContext, ToolResult } from '@zero-os/shared'
 import { generateId } from '@zero-os/shared'
 import { Agent, type AgentConfig, type AgentContext, type AgentObservability } from '../agent/agent'
@@ -78,14 +79,14 @@ export class SpawnAgentTool extends BaseTool {
   constructor(
     private modelRouter: ModelRouter,
     private baseToolRegistry: ToolRegistry,
+    private metrics?: MetricsDB,
   ) {
     super()
 
     const models = this.modelRouter.getRegistry().listModels()
     const modelLabels = models.map((model) => `${model.providerName}/${model.modelName}`)
     if (modelLabels.length > 0) {
-      this.parameters.properties.model.description =
-        `Optional model override for this sub-agent. Defaults to the current session model. Available: ${modelLabels.join(', ')}`
+      this.parameters.properties.model.description = `Optional model override for this sub-agent. Defaults to the current session model. Available: ${modelLabels.join(', ')}`
     }
   }
 
@@ -123,7 +124,10 @@ export class SpawnAgentTool extends BaseTool {
       legacyRoleInstruction ||
       'You are a focused sub-agent. Execute the assigned task and report back.'
     const agentLabel =
-      label?.trim() || roleDefinition?.name || (legacyRoleInstruction ? role?.trim() : undefined) || 'SubAgent'
+      label?.trim() ||
+      roleDefinition?.name ||
+      (legacyRoleInstruction ? role?.trim() : undefined) ||
+      'SubAgent'
 
     const requestedModel = model?.trim() || roleDefinition?.model
     const resolvedModel = requestedModel
@@ -182,6 +186,9 @@ export class SpawnAgentTool extends BaseTool {
     }
 
     const agentObs: AgentObservability = {
+      metrics: this.metrics,
+      usagePurpose: 'sub_agent',
+      parentSessionId: ctx.sessionId,
       tracer: ctx.tracer,
       secretFilter: ctx.secretFilter,
       providerName: resolvedModel?.providerName,
@@ -190,7 +197,11 @@ export class SpawnAgentTool extends BaseTool {
     }
 
     const agent = new Agent(agentConfig, adapter, scopedRegistry, toolContext, agentObs)
-    const systemPrompt = buildSubAgentPrompt(toolDefinitions, trimmedInstruction, resolvedAgentInstruction)
+    const systemPrompt = buildSubAgentPrompt(
+      toolDefinitions,
+      trimmedInstruction,
+      resolvedAgentInstruction,
+    )
     const agentContext: AgentContext = {
       systemPrompt,
       conversationHistory: [],

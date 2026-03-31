@@ -103,6 +103,49 @@ export interface ToolErrorByDay {
   errors: number
 }
 
+export type UsageCategory = 'completion' | 'aggregated' | 'embedding'
+
+export type UsagePurpose =
+  | 'agent_loop'
+  | 'sub_agent'
+  | 'task_closure'
+  | 'compression'
+  | 'memory_retrieval'
+  | 'session_judge'
+  | 'embedding'
+
+export interface UsageLedgerEntry {
+  id: string
+  sessionId: string | null
+  category: UsageCategory
+  purpose: UsagePurpose
+  parentSessionId?: string
+  model: string
+  provider: string
+  inputTokens: number
+  outputTokens: number
+  cacheWriteTokens?: number
+  cacheReadTokens?: number
+  cost: number
+  durationMs: number
+  metadata?: string
+  createdAt: string
+}
+
+export interface UsageSummaryRow {
+  purpose: UsagePurpose
+  category: UsageCategory
+  totalCost: number
+  totalTokens: number
+  eventCount: number
+}
+
+export interface UsageTotals {
+  totalCost: number
+  totalTokens: number
+  eventCount: number
+}
+
 /**
  * SQLite-based metrics aggregation for ZeRo OS observability.
  */
@@ -165,6 +208,26 @@ export class MetricsDB {
     `)
 
     this.db.run(`
+      CREATE TABLE IF NOT EXISTS usage_ledger (
+        id TEXT PRIMARY KEY,
+        session_id TEXT,
+        category TEXT NOT NULL,
+        purpose TEXT NOT NULL,
+        parent_session_id TEXT,
+        model TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        input_tokens INTEGER DEFAULT 0,
+        output_tokens INTEGER DEFAULT 0,
+        cache_write_tokens INTEGER DEFAULT 0,
+        cache_read_tokens INTEGER DEFAULT 0,
+        cost REAL DEFAULT 0,
+        duration_ms INTEGER DEFAULT 0,
+        metadata TEXT,
+        created_at TEXT NOT NULL
+      )
+    `)
+
+    this.db.run(`
       CREATE INDEX IF NOT EXISTS idx_requests_model ON requests(model)
     `)
     this.db.run(`
@@ -181,6 +244,18 @@ export class MetricsDB {
     `)
     this.db.run(`
       CREATE INDEX IF NOT EXISTS idx_repairs_created ON repairs(created_at)
+    `)
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_usage_ledger_session ON usage_ledger(session_id)
+    `)
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_usage_ledger_purpose ON usage_ledger(purpose)
+    `)
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_usage_ledger_created ON usage_ledger(created_at)
+    `)
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_usage_ledger_parent ON usage_ledger(parent_session_id)
     `)
   }
 
@@ -239,6 +314,34 @@ export class MetricsDB {
         entry.event,
         entry.success ? 1 : 0,
         entry.durationMs,
+        entry.createdAt,
+      ],
+    )
+  }
+
+  recordUsage(entry: UsageLedgerEntry): void {
+    this.db.run(
+      `INSERT OR REPLACE INTO usage_ledger (
+         id, session_id, category, purpose, parent_session_id, model, provider,
+         input_tokens, output_tokens, cache_write_tokens, cache_read_tokens,
+         cost, duration_ms, metadata, created_at
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        entry.id,
+        entry.sessionId,
+        entry.category,
+        entry.purpose,
+        entry.parentSessionId ?? null,
+        entry.model,
+        entry.provider,
+        entry.inputTokens,
+        entry.outputTokens,
+        entry.cacheWriteTokens ?? 0,
+        entry.cacheReadTokens ?? 0,
+        entry.cost,
+        entry.durationMs,
+        entry.metadata ?? null,
         entry.createdAt,
       ],
     )
@@ -365,6 +468,29 @@ export class MetricsDB {
     return row
   }
 
+  sessionFullCost(sessionId: string): number {
+    const row = this.db
+      .query(
+        `SELECT COALESCE(SUM(cost), 0) as totalCost
+         FROM usage_ledger
+         WHERE session_id = ? OR parent_session_id = ?`,
+      )
+      .get(sessionId, sessionId) as { totalCost: number }
+    return row.totalCost
+  }
+
+  sessionAuxiliaryCost(sessionId: string): number {
+    const row = this.db
+      .query(
+        `SELECT COALESCE(SUM(cost), 0) as totalCost
+         FROM usage_ledger
+         WHERE (session_id = ? OR parent_session_id = ?)
+           AND purpose NOT IN ('agent_loop', 'sub_agent')`,
+      )
+      .get(sessionId, sessionId) as { totalCost: number }
+    return row.totalCost
+  }
+
   /**
    * Count tool operations for a session.
    */
@@ -383,10 +509,7 @@ export class MetricsDB {
   /**
    * Batch version of sessionStats to avoid N+1 queries.
    */
-  sessionStatsBatch(sessionIds: string[]): Map<
-    string,
-    SessionStatsSummary
-  > {
+  sessionStatsBatch(sessionIds: string[]): Map<string, SessionStatsSummary> {
     const result = new Map<string, SessionStatsSummary>()
     if (sessionIds.length === 0) return result
 
@@ -517,6 +640,23 @@ export class MetricsDB {
       .all(since) as CostByDayModel[]
   }
 
+  usageSummaryByPurpose(range = '7d'): UsageSummaryRow[] {
+    const since = rangeToCutoff(range)
+    return this.db
+      .query(
+        `SELECT purpose,
+                category,
+                COALESCE(SUM(cost), 0) as totalCost,
+                COALESCE(SUM(input_tokens + output_tokens), 0) as totalTokens,
+                COUNT(*) as eventCount
+         FROM usage_ledger
+         WHERE created_at >= ?
+         GROUP BY purpose, category
+         ORDER BY totalCost DESC, eventCount DESC`,
+      )
+      .all(since) as UsageSummaryRow[]
+  }
+
   /**
    * Cache usage grouped by provider and model.
    */
@@ -643,6 +783,20 @@ export class MetricsDB {
       .all(since) as ToolErrorByDay[]
   }
 
+  systemCosts(range = '7d'): UsageTotals {
+    const since = rangeToCutoff(range)
+    const row = this.db
+      .query(
+        `SELECT COALESCE(SUM(cost), 0) as totalCost,
+                COALESCE(SUM(input_tokens + output_tokens), 0) as totalTokens,
+                COUNT(*) as eventCount
+         FROM usage_ledger
+         WHERE session_id IS NULL AND created_at >= ?`,
+      )
+      .get(since) as UsageTotals
+    return row
+  }
+
   /**
    * Delete all metrics data for a session.
    */
@@ -650,6 +804,10 @@ export class MetricsDB {
     this.db.run('DELETE FROM requests WHERE session_id = ?', [sessionId])
     this.db.run('DELETE FROM operations WHERE session_id = ?', [sessionId])
     this.db.run('DELETE FROM repairs WHERE session_id = ?', [sessionId])
+    this.db.run('DELETE FROM usage_ledger WHERE session_id = ? OR parent_session_id = ?', [
+      sessionId,
+      sessionId,
+    ])
   }
 
   close(): void {

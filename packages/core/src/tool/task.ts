@@ -1,11 +1,12 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ModelRouter } from '@zero-os/model'
+import type { MetricsDB } from '@zero-os/observe'
 import type { ToolContext, ToolResult } from '@zero-os/shared'
 import { toErrorMessage } from '@zero-os/shared'
 import { Agent, type AgentConfig, type AgentContext, type AgentObservability } from '../agent/agent'
 import { buildSubAgentPrompt } from '../agent/prompt'
-import { getBuiltinRoles, loadRoles, resolveRole, type RoleDefinition } from '../agent/roles'
+import { type RoleDefinition, getBuiltinRoles, loadRoles, resolveRole } from '../agent/roles'
 import { type TaskNode, TaskOrchestrator, type TaskResult } from '../task/orchestrator'
 import { BaseTool } from './base'
 import { SUB_AGENT_BLOCKED_TOOLS } from './constants'
@@ -74,7 +75,11 @@ export class TaskTool extends BaseTool {
   private baseToolRegistry: ToolRegistry
   private orchestrator = new TaskOrchestrator()
 
-  constructor(modelRouter: ModelRouter, baseToolRegistry: ToolRegistry) {
+  constructor(
+    modelRouter: ModelRouter,
+    baseToolRegistry: ToolRegistry,
+    private metrics?: MetricsDB,
+  ) {
     super()
     this.modelRouter = modelRouter
     this.baseToolRegistry = baseToolRegistry
@@ -180,6 +185,9 @@ export class TaskTool extends BaseTool {
       }
 
       const agentObs: AgentObservability = {
+        metrics: this.metrics,
+        usagePurpose: 'sub_agent',
+        parentSessionId: ctx.sessionId,
         tracer: ctx.tracer,
         secretFilter: ctx.secretFilter,
         providerName: resolvedModel?.providerName,

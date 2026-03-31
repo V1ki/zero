@@ -45,7 +45,7 @@ import {
   VectorIndex,
 } from '@zero-os/memory'
 import type { MemoryRepository } from '@zero-os/memory'
-import { LiteLLMPricing, ModelRouter } from '@zero-os/model'
+import { LiteLLMPricing, ModelRouter, computeCost } from '@zero-os/model'
 import { MetricsDB, ObservabilityStore, SessionDB, Tracer } from '@zero-os/observe'
 import { CronScheduler } from '@zero-os/scheduler'
 import { Vault, generateMasterKey, getMasterKey, setMasterKey } from '@zero-os/secrets'
@@ -57,7 +57,9 @@ import {
   type SessionSource,
   collectAssistantReply,
   describeError,
+  generateId,
   installConsoleTimestamping,
+  now,
   toErrorMessage,
 } from '@zero-os/shared'
 import { RepairEngine } from '@zero-os/supervisor'
@@ -66,13 +68,13 @@ import { globalBus } from './bus'
 import { FeishuAdapter } from './feishu-adapter'
 import { handleChannelMessage } from './message-handler'
 import {
+  type RestartTrigger,
   consumeRestartTrigger,
   formatRestartTriggerLog,
-  type RestartTrigger,
   writeRestartTrigger,
 } from './restart-trigger'
-import { syncTelegramCommandMenu } from './telegram-menu'
 import { TelegramAdapter } from './telegram-adapter'
+import { syncTelegramCommandMenu } from './telegram-menu'
 import { rebuildWebBundle } from './web-build'
 
 export interface StartOptions {
@@ -235,10 +237,10 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
   toolRegistry.register(new MemorySearchTool())
   toolRegistry.register(new MemoryGetTool())
   toolRegistry.register(new MemoryTool())
-  toolRegistry.register(new TaskTool(modelRouter, toolRegistry))
+  toolRegistry.register(new TaskTool(modelRouter, toolRegistry, metrics))
   toolRegistry.register(new ScheduleTool())
   toolRegistry.register(new CodexTool())
-  toolRegistry.register(new SpawnAgentTool(modelRouter, toolRegistry))
+  toolRegistry.register(new SpawnAgentTool(modelRouter, toolRegistry, metrics))
   toolRegistry.register(new WaitAgentTool())
   toolRegistry.register(new CloseAgentTool())
   toolRegistry.register(new SendInputTool())
@@ -258,11 +260,36 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
     if (apiKey) {
       try {
         heartbeat.setReady(false, 'memory_indexing')
+        const embeddingPricing =
+          LiteLLMPricing.getInstance()?.lookup(embeddingConfig.model) ?? undefined
         embeddingClient = new EmbeddingClient({
           baseUrl: embeddingConfig.baseUrl,
           apiKey,
           model: embeddingConfig.model,
           dimensions: embeddingConfig.dimensions,
+          onUsage: (usage) => {
+            const outputTokens = Math.max(usage.totalTokens - usage.promptTokens, 0)
+            metrics.recordUsage({
+              id: generateId(),
+              sessionId: usage.sessionId,
+              category: 'embedding',
+              purpose: 'embedding',
+              model: embeddingConfig.model,
+              provider: 'embedding',
+              inputTokens: usage.promptTokens,
+              outputTokens,
+              cost: computeCost(
+                {
+                  input: usage.promptTokens,
+                  output: outputTokens,
+                },
+                embeddingPricing,
+              ),
+              durationMs: 0,
+              metadata: JSON.stringify({ batchSize: usage.batchSize }),
+              createdAt: now(),
+            })
+          },
         })
         vectorIndex = new VectorIndex(join(memoryDir, 'vectors'))
         const indexedMemoryStore = new IndexedMemoryStore(
@@ -856,7 +883,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
               await triggerChannel.send(sentinel.trigger.channelId, '✅ ZeRo OS 已重启完成')
             } catch (error) {
               console.warn(
-                `[ZeRo OS] Failed to send restart completion notice:`,
+                '[ZeRo OS] Failed to send restart completion notice:',
                 describeError(error),
               )
             }

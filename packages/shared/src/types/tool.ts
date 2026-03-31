@@ -203,6 +203,7 @@ export interface ToolContext {
       type: MemoryType,
       id: string,
       updates: Record<string, unknown>,
+      context?: { sessionId?: string },
     ): Promise<Memory | undefined>
     delete(type: MemoryType, id: string): Promise<boolean>
     list(type: MemoryType): Memory[]

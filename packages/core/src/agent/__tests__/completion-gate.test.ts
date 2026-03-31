@@ -2,9 +2,9 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ProviderAdapter } from '@zero-os/model'
 import { MEMORY_NUDGE_PROMPT } from '@zero-os/memory'
-import { ObservabilityStore, Tracer } from '@zero-os/observe'
+import type { ProviderAdapter } from '@zero-os/model'
+import { MetricsDB, ObservabilityStore, Tracer } from '@zero-os/observe'
 import type {
   CompletionRequest,
   CompletionResponse,
@@ -491,12 +491,18 @@ describe('Agent task closure gate', () => {
     const registry = new ToolRegistry()
     const adapter = new TaskClosureAdapter('continue')
     const closureAdapter = new TaskClosureAdapter('finish')
+    const metrics = MetricsDB.createInMemory()
     const agent = new Agent(
       { name: 'test-agent', agentInstruction: 'Test prompt' },
       adapter,
       registry,
       createToolContext(),
-      {},
+      {
+        metrics,
+        closureProviderName: 'closure-provider',
+        closureModelLabel: 'closure-provider/closure-model',
+        closurePricing: { input: 1000, output: 2000 },
+      },
       closureAdapter,
     )
 
@@ -509,6 +515,13 @@ describe('Agent task closure gate', () => {
     expect(adapter.classifierCalls).toBe(0)
     expect(closureAdapter.normalCalls).toBe(0)
     expect(closureAdapter.classifierCalls).toBe(1)
+    const taskClosureUsage = metrics
+      .usageSummaryByPurpose('1d')
+      .find((entry) => entry.purpose === 'task_closure')
+    expect(taskClosureUsage?.category).toBe('completion')
+    expect(taskClosureUsage?.eventCount).toBe(1)
+
+    metrics.close()
   })
 
   test('continues automatically when classifier marks optional tail as required work', async () => {
@@ -658,7 +671,7 @@ describe('Agent task closure gate', () => {
     expect(taskClosureSpan?.metadata?.classifierRequest).toEqual({
       system: expect.stringContaining('严格的任务收尾判定器'),
       prompt: expect.stringContaining('帮我看看这帖值不值得信'),
-      maxTokens: 200,
+      maxTokens: 800,
     })
   })
 
@@ -799,7 +812,7 @@ describe('Agent task closure gate', () => {
         classifierRequest: {
           system: expect.stringContaining('严格的任务收尾判定器'),
           prompt: expect.stringContaining('<assistant_tail>'),
-          maxTokens: 200,
+          maxTokens: 800,
         },
       },
     })
@@ -842,7 +855,7 @@ describe('Agent task closure gate', () => {
         classifierRequest: {
           system: expect.stringContaining('严格的任务收尾判定器'),
           prompt: expect.stringContaining('<assistant_tail>'),
-          maxTokens: 200,
+          maxTokens: 800,
         },
         classifierResponseRaw: 'not-json',
       },
@@ -955,7 +968,10 @@ describe('Agent task closure gate', () => {
     const drainSpan = tracer
       .exportSession('test-session')
       .flatMap(flattenTraceSpans)
-      .find((span) => span.name === 'queue_gate_drain' && span.metadata?.phase === 'pre_task_closure_retry')
+      .find(
+        (span) =>
+          span.name === 'queue_gate_drain' && span.metadata?.phase === 'pre_task_closure_retry',
+      )
     const firstQueuedInjectionIndex = messages.findIndex(
       (message) => message.controlKind === 'queued_injection',
     )
@@ -1152,7 +1168,9 @@ describe('Agent task closure gate', () => {
 
     expect(adapter.nudgeCalls).toBe(1)
     expect(adapter.normalCalls).toBeGreaterThan(3)
-    expect(messages.some((message) => getTextFromMessage(message) === '这轮工作已经完成')).toBe(true)
+    expect(messages.some((message) => getTextFromMessage(message) === '这轮工作已经完成')).toBe(
+      true,
+    )
   })
 
   test('drains pending queue before memory_nudge starts', async () => {
@@ -1223,7 +1241,9 @@ describe('Agent task closure gate', () => {
     const drainSpan = tracer
       .exportSession('test-session')
       .flatMap(flattenTraceSpans)
-      .find((span) => span.name === 'queue_gate_drain' && span.metadata?.phase === 'pre_memory_nudge')
+      .find(
+        (span) => span.name === 'queue_gate_drain' && span.metadata?.phase === 'pre_memory_nudge',
+      )
 
     expect(decision).toMatchObject({
       action: 'continue',
@@ -1278,10 +1298,7 @@ describe('Agent task closure gate', () => {
       { tracer },
     )
 
-    const messages = await agent.run(
-      createContext(registry),
-      '先给这个结论做完整核验, 然后再收尾',
-    )
+    const messages = await agent.run(createContext(registry), '先给这个结论做完整核验, 然后再收尾')
     const assistantMessages = messages.filter((message) => message.role === 'assistant')
     const taskClosureSpans = tracer
       .exportSession('test-session')
