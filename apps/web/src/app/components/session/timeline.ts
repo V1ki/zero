@@ -136,7 +136,7 @@ export type TimelineItem =
       label: string
       role?: string
       instruction: string
-      status: 'running' | 'completed' | 'errored' | 'closed'
+      status: 'running' | 'waiting' | 'completed' | 'errored' | 'closed'
       output?: string
       durationMs?: number
       spawnToolCallId: string
@@ -316,8 +316,13 @@ export function buildTimeline(
 
             // Prefer trace-based duration (actual agent runtime) over wait_agent or tool span duration
             const resolvedDurationMs = traceInfo?.durationMs ?? waitInfo?.durationMs
-            const resolvedStatus =
-              traceInfo?.status ?? waitInfo?.status ?? (result?.isError ? 'errored' : 'running')
+            const resolvedStatus = (() => {
+              if (waitInfo?.status === 'waiting') return 'waiting' as const
+              if (traceInfo?.status && traceInfo.status !== 'running') return traceInfo.status
+              if (waitInfo?.status) return waitInfo.status
+              if (traceInfo?.status) return traceInfo.status
+              return result?.isError ? ('errored' as const) : ('running' as const)
+            })()
             const resolvedOutput = waitInfo?.output ?? traceInfo?.output
 
             items.push({
@@ -718,7 +723,7 @@ function findWaitAgentResult(
   messages: Message[],
   agentId: string,
   toolResults: Map<string, { content: string; isError: boolean }>,
-): { status: 'completed' | 'errored' | 'closed'; output?: string; durationMs?: number } | null {
+): { status: 'waiting' | 'completed' | 'errored' | 'closed'; output?: string; durationMs?: number } | null {
   for (const msg of messages) {
     if (msg.role !== 'assistant') continue
     for (const block of msg.content) {
@@ -728,11 +733,13 @@ function findWaitAgentResult(
       const input = (block.input as Record<string, unknown>) ?? {}
       const targetId =
         (input.agentId as string | undefined) ?? (input.agent_id as string | undefined)
-      if (targetId !== agentId) continue
+      const ids = Array.isArray(input.ids) ? (input.ids as string[]) : undefined
+      const isMatch = targetId === agentId || ids?.includes(agentId)
+      if (!isMatch) continue
       const result = toolResults.get(block.id as string)
       if (!result) continue
 
-      let status: 'completed' | 'errored' | 'closed' =
+      let status: 'waiting' | 'completed' | 'errored' | 'closed' =
         name === 'close_agent' ? 'closed' : 'completed'
       let output: string | undefined
       let durationMs: number | undefined
@@ -740,16 +747,24 @@ function findWaitAgentResult(
       try {
         const parsed = JSON.parse(result.content)
         if (parsed && typeof parsed === 'object') {
-          if (parsed.status === 'errored' || parsed.status === 'error') status = 'errored'
-          else if (parsed.status === 'closed') status = 'closed'
-          else if (parsed.status === 'completed') status = 'completed'
+          const record = asRecord(parsed)
+          const statuses = asRecord(record?.statuses)
+          const agentRecord = asRecord(statuses?.[agentId]) ?? record
+          const state = asString(agentRecord?.state) ?? asString(agentRecord?.status)
+          if (state === 'waiting') status = 'waiting'
+          else if (state === 'errored' || state === 'error' || state === 'failed')
+            status = 'errored'
+          else if (state === 'closed') status = 'closed'
+          else if (state === 'completed') status = 'completed'
+
           output =
-            typeof parsed.output === 'string'
-              ? parsed.output
-              : typeof parsed.result === 'string'
-                ? parsed.result
+            typeof agentRecord?.output === 'string'
+              ? agentRecord.output
+              : typeof agentRecord?.result === 'string'
+                ? agentRecord.result
                 : undefined
-          if (typeof parsed.durationMs === 'number') durationMs = parsed.durationMs
+          if (typeof agentRecord?.durationMs === 'number') durationMs = agentRecord.durationMs
+          if (typeof agentRecord?.elapsedMs === 'number') durationMs = agentRecord.elapsedMs
         }
       } catch {
         output = result.content
@@ -873,6 +888,15 @@ function isHandledSubAgentTool(
   input: Record<string, unknown>,
   handledSubAgentIds: Set<string>,
 ): boolean {
-  const targetId = (input.agentId as string | undefined) ?? (input.agent_id as string | undefined)
-  return targetId !== undefined && handledSubAgentIds.has(targetId)
+  const targetId =
+    (input.agentId as string | undefined) ??
+    (input.agent_id as string | undefined) ??
+    (input.id as string | undefined)
+  if (targetId !== undefined && handledSubAgentIds.has(targetId)) return true
+
+  if (Array.isArray(input.ids)) {
+    return input.ids.some((id) => typeof id === 'string' && handledSubAgentIds.has(id))
+  }
+
+  return false
 }

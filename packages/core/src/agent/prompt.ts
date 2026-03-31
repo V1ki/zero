@@ -218,13 +218,13 @@ export function buildToolRulesBlock(tools: ToolDefinition[]): string {
       'Memory：写入或维护长期记忆。完成工作步骤后，评估是否产生了值得跨会话保留的信息（偏好、决策、经验、流程），如有则调用 create 或 update。不要等到会话结束才写，每个阶段性成果完成时就评估。',
     task: 'Task：拆分 SubAgent 时明确每个子任务的输入、输出和依赖关系。不要把含糊的大任务直接丢给 SubAgent。',
     spawn_agent:
-      'Spawn Agent：用于创建并行执行的子 agent。spawn 立即返回 agent_id，不会阻塞。可同时 spawn 多个 agent 并行工作。',
+      'Spawn Agent：用于创建子 agent。spawn 立即返回 agent_id，不会阻塞。mode="standard"（默认）执行后自动完成；mode="interactive" 执行后进入等待状态，可通过 send_input 持续发送指令，最后用 close_agent 关闭。',
     wait_agent:
-      'Wait Agent：等待子 agent 完成。默认等待任意一个完成即返回（Promise.race 语义），设置 waitAll=true 等待全部完成。',
+      'Wait Agent：等待子 agent 状态变化。默认等待任意一个完成即返回（Promise.race 语义），设置 waitAll=true 等待全部。设置 resolveOn="ready" 可在 interactive agent 就绪时返回（而不是等到完成）。',
     close_agent:
-      'Close Agent：关闭不再需要的子 agent，传入 spawn_agent 返回的 agent_id（兼容 id/agentId）。',
+      'Close Agent：关闭不再需要的子 agent，传入 spawn_agent 返回的 agent_id（兼容 id/agentId）。interactive agent 必须通过 close_agent 终止。',
     send_input:
-      'Send Input：向运行中的子 agent 发送追加消息。设置 interrupt=true 可在下一个安全点中断当前流程处理新消息。',
+      'Send Input：向运行中或等待中的子 agent 发送消息。对 interactive agent（waiting 状态），消息会唤醒 agent 开始新一轮处理。对 running agent，消息排队在下一个安全点送达。设置 interrupt=true 可请求尽快处理。',
   }
 
   const availableToolNames = tools.map((t) => t.name.toLowerCase())

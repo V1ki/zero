@@ -209,6 +209,7 @@ describe('TaskTool', () => {
       spawn: () => ({ error: 'not used' }),
       waitAny: async () => ({ statuses: {}, timedOut: false }),
       waitAll: async () => ({ statuses: {}, timedOut: false }),
+      waitReady: async () => ({ statuses: {}, timedOut: false }),
       getStatus: () => undefined,
       getOutput: () => undefined,
       getSnapshot: () => [],

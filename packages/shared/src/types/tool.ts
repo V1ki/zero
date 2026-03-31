@@ -93,6 +93,7 @@ export interface AgentControlHandle {
     context: unknown,
     instruction: string,
     options?: {
+      mode?: 'standard' | 'interactive'
       label?: string
       role?: string
       depth?: number
@@ -117,12 +118,21 @@ export interface AgentControlHandle {
     statuses: Record<string, { state: string; [key: string]: unknown }>
     timedOut: boolean
   }>
+  waitReady(
+    ids: string[],
+    timeoutMs?: number,
+    waitAll?: boolean,
+  ): Promise<{
+    statuses: Record<string, { state: string; [key: string]: unknown }>
+    timedOut: boolean
+  }>
   getStatus(agentId: string): { state: string; [key: string]: unknown } | undefined
   getOutput(agentId: string): string | undefined
   getSnapshot(): Array<{
     id: string
     label: string
     role?: string
+    mode?: string
     state: string
     instruction: string
     output?: string
@@ -135,6 +145,7 @@ export interface AgentControlHandle {
       id: string
       label: string
       role?: string
+      mode?: string
       state: string
       instruction: string
       output?: string

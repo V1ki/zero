@@ -186,4 +186,70 @@ describe('sub-agent restart recovery', () => {
       timedOut: false,
     })
   })
+
+  test('drain snapshot marks waiting interactive agents as failed on restore', async () => {
+    sessionDb = SessionDB.createInMemory()
+    const modelRouter = new ModelRouter(config, secrets)
+    modelRouter.init()
+    const toolRegistry = new ToolRegistry()
+
+    const manager = new SessionManager(modelRouter, toolRegistry, { sessionDb }, sessionDb)
+    const session = manager.create('telegram', {
+      channelId: 'chat_restart_waiting',
+      channelName: 'telegram',
+    })
+    const internal = session as unknown as {
+      agentControl: AgentControl
+      mutex: { acquire(ownerId: string): Promise<void>; release(ownerId: string): void }
+    }
+
+    const waiting = internal.agentControl.spawn(
+      createAgent({ text: 'interactive ready' }),
+      { systemPrompt: 'test', conversationHistory: [], tools: [] },
+      'interactive task',
+      { label: 'waiting-agent', mode: 'interactive' },
+    )
+    if (!('agentId' in waiting)) {
+      throw new Error('expected spawn success')
+    }
+
+    await internal.agentControl.waitReady([waiting.agentId], 100)
+    await internal.mutex.acquire('restart-test-waiting')
+
+    const interrupted = await manager.drainAndCollectInterrupted(10)
+    expect(interrupted).toHaveLength(1)
+    expect(interrupted[0]?.subAgents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: waiting.agentId,
+          label: 'waiting-agent',
+          mode: 'interactive',
+          state: 'waiting',
+          instruction: 'interactive task',
+          output: 'interactive ready',
+        }),
+      ]),
+    )
+
+    internal.agentControl.close(waiting.agentId)
+    internal.mutex.release('restart-test-waiting')
+
+    const restoredManager = new SessionManager(modelRouter, toolRegistry, { sessionDb }, sessionDb)
+    restoredManager.restoreFromDB()
+    const restoredSession = restoredManager.get(session.data.id)
+    restoredSession?.restoreSubAgentSnapshot(interrupted[0]?.subAgents ?? [])
+
+    const restoredControl = (restoredSession as unknown as { agentControl: AgentControl })
+      .agentControl
+
+    expect(restoredControl.getStatus(waiting.agentId)).toEqual({
+      state: 'failed',
+      label: 'waiting-agent',
+      depth: 1,
+      elapsedMs: expect.any(Number),
+      mode: 'interactive',
+      output: 'interactive ready',
+      error: 'Process restarted while agent was waiting',
+    })
+  })
 })

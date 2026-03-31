@@ -10,7 +10,7 @@ interface SendInputInput {
 export class SendInputTool extends BaseTool {
   name = 'send_input'
   description =
-    'Send an additional message to a running sub-agent. Optionally request a cooperative interrupt at the next safe point.'
+    'Send a message to a running or waiting sub-agent. For interactive agents in the waiting state, this wakes the agent to process the message as a new turn. For running agents, the message is queued.'
   parameters = {
     type: 'object',
     properties: {

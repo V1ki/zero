@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { beforeEach, describe, expect, test } from 'bun:test'
 import type { Message, ToolLogger, ToolTracer } from '@zero-os/shared'
 import { AgentControl } from '../agent-control'
 
@@ -76,10 +76,65 @@ function createQueuedAwareAgent(options?: {
   }
 }
 
+function createInteractiveAgent(options?: {
+  consumeQueuedMessages?: boolean
+  delayMsByRun?: Record<number, number>
+  onRun?: (details: {
+    context: { conversationHistory: Message[] }
+    instruction: string
+    interrupted: boolean
+    queuedMessages: string[]
+    runCount: number
+  }) => void
+}) {
+  let runCount = 0
+
+  return {
+    async run(
+      context: { conversationHistory: Message[] },
+      instruction: string,
+      _userImages?: unknown,
+      _onNewMessage?: unknown,
+      _onTextDelta?: unknown,
+      shouldInterrupt?: () => boolean,
+      getQueuedMessages?: () => Array<{ content: string }>,
+    ): Promise<Message[]> {
+      runCount++
+      const delayMs = options?.delayMsByRun?.[runCount]
+      if (delayMs) {
+        await sleep(delayMs)
+      }
+
+      const interrupted = shouldInterrupt?.() ?? false
+      const queuedMessages = options?.consumeQueuedMessages
+        ? (getQueuedMessages?.() ?? []).map((message) => message.content)
+        : []
+
+      options?.onRun?.({
+        context,
+        instruction,
+        interrupted,
+        queuedMessages,
+        runCount,
+      })
+
+      return [assistantMessage(`reply:${instruction}`)]
+    },
+  }
+}
+
 const agentContext = {
   systemPrompt: 'test',
   conversationHistory: [],
   tools: [],
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
 }
 
 function createObservabilityMocks(): {
@@ -152,6 +207,10 @@ function createObservabilityMocks(): {
 }
 
 describe('AgentControl', () => {
+  beforeEach(() => {
+    agentContext.conversationHistory = []
+  })
+
   test('spawn returns agent id and label', () => {
     const control = new AgentControl()
     const result = control.spawn(createAgent(), agentContext, 'do work', { label: 'worker-1' })
@@ -717,6 +776,342 @@ describe('AgentControl', () => {
     expect(interrupted).toBe(true)
   })
 
+  describe('interactive mode', () => {
+    test('interactive agents enter waiting state after initial instruction', async () => {
+      const control = new AgentControl()
+      const result = control.spawn(createInteractiveAgent(), agentContext, 'start', {
+        mode: 'interactive',
+      })
+      if (!('agentId' in result)) throw new Error('expected spawn success')
+
+      const ready = await control.waitReady([result.agentId], 100)
+
+      expect(ready.timedOut).toBe(false)
+      expect(control.getStatus(result.agentId)).toEqual({
+        state: 'waiting',
+        label: result.label,
+        depth: 1,
+        elapsedMs: expect.any(Number),
+        mode: 'interactive',
+        output: 'reply:start',
+      })
+      expect(control.activeAgentCount).toBe(1)
+
+      control.close(result.agentId)
+    })
+
+    test('sendInput wakes a waiting interactive agent and updates output', async () => {
+      const control = new AgentControl()
+      const seenInstructions: string[] = []
+      const result = control.spawn(
+        createInteractiveAgent({
+          delayMsByRun: { 2: 15 },
+          onRun: ({ instruction }) => {
+            seenInstructions.push(instruction)
+          },
+        }),
+        agentContext,
+        'start',
+        { mode: 'interactive' },
+      )
+      if (!('agentId' in result)) throw new Error('expected spawn success')
+
+      await control.waitReady([result.agentId], 100)
+      expect(control.sendInput(result.agentId, 'follow up')).toEqual({ success: true })
+      await control.waitReady([result.agentId], 100)
+
+      expect(seenInstructions).toEqual(['start', 'follow up'])
+      expect(control.getOutput(result.agentId)).toBe('reply:follow up')
+
+      control.close(result.agentId)
+    })
+
+    test('messages queued while running are processed without waiting for another sendInput', async () => {
+      const control = new AgentControl()
+      const seenInstructions: string[] = []
+      const result = control.spawn(
+        createInteractiveAgent({
+          consumeQueuedMessages: false,
+          delayMsByRun: { 1: 20 },
+          onRun: ({ instruction }) => {
+            seenInstructions.push(instruction)
+          },
+        }),
+        agentContext,
+        'initial',
+        { mode: 'interactive' },
+      )
+      if (!('agentId' in result)) throw new Error('expected spawn success')
+
+      expect(control.sendInput(result.agentId, 'queued while running')).toEqual({ success: true })
+      await control.waitReady([result.agentId], 100)
+
+      expect(seenInstructions).toEqual(['initial', 'queued while running'])
+      expect(control.getStatus(result.agentId)?.state).toBe('waiting')
+
+      control.close(result.agentId)
+    })
+
+    test('waitReady resolves for interactive waiting state and standard completion', async () => {
+      const control = new AgentControl()
+      const interactive = control.spawn(createInteractiveAgent(), agentContext, 'ready', {
+        mode: 'interactive',
+      })
+      const standard = control.spawn(createAgent({ text: 'done' }), agentContext, 'finish')
+      if (!('agentId' in interactive) || !('agentId' in standard)) {
+        throw new Error('expected spawn success')
+      }
+
+      const interactiveReady = await control.waitReady([interactive.agentId], 100)
+      const standardReady = await control.waitReady([standard.agentId], 100)
+
+      expect(interactiveReady.statuses[interactive.agentId]?.state).toBe('waiting')
+      expect(standardReady.statuses[standard.agentId]?.state).toBe('completed')
+
+      control.close(interactive.agentId)
+    })
+
+    test('waitReady honors waitAll for multiple interactive agents', async () => {
+      const control = new AgentControl()
+      const fast = control.spawn(createInteractiveAgent(), agentContext, 'fast', {
+        mode: 'interactive',
+      })
+      const slow = control.spawn(
+        createInteractiveAgent({
+          delayMsByRun: { 1: 25 },
+        }),
+        agentContext,
+        'slow',
+        { mode: 'interactive' },
+      )
+      if (!('agentId' in fast) || !('agentId' in slow)) {
+        throw new Error('expected spawn success')
+      }
+
+      const ready = await control.waitReady([fast.agentId, slow.agentId], 100, true)
+
+      expect(ready.timedOut).toBe(false)
+      expect(ready.statuses[fast.agentId]?.state).toBe('waiting')
+      expect(ready.statuses[slow.agentId]?.state).toBe('waiting')
+
+      control.close(fast.agentId)
+      control.close(slow.agentId)
+    })
+
+    test('interactive conversation history accumulates across turns', async () => {
+      const control = new AgentControl()
+      const historyLengths: number[] = []
+      const result = control.spawn(
+        createInteractiveAgent({
+          onRun: ({ context }) => {
+            historyLengths.push(context.conversationHistory.length)
+          },
+        }),
+        agentContext,
+        'first',
+        { mode: 'interactive' },
+      )
+      if (!('agentId' in result)) throw new Error('expected spawn success')
+
+      await control.waitReady([result.agentId], 100)
+      expect(control.sendInput(result.agentId, 'second')).toEqual({ success: true })
+      await control.waitReady([result.agentId], 100)
+
+      expect(historyLengths).toEqual([0, 1])
+
+      control.close(result.agentId)
+    })
+
+    test('multiple sendInput cycles keep the same interactive agent alive', async () => {
+      const control = new AgentControl()
+      const outputs: string[] = []
+      const result = control.spawn(createInteractiveAgent(), agentContext, 'first', {
+        mode: 'interactive',
+      })
+      if (!('agentId' in result)) throw new Error('expected spawn success')
+
+      await control.waitReady([result.agentId], 100)
+      outputs.push(control.getOutput(result.agentId) ?? '')
+
+      expect(control.sendInput(result.agentId, 'second')).toEqual({ success: true })
+      await control.waitReady([result.agentId], 100)
+      outputs.push(control.getOutput(result.agentId) ?? '')
+
+      expect(control.sendInput(result.agentId, 'third')).toEqual({ success: true })
+      await control.waitReady([result.agentId], 100)
+      outputs.push(control.getOutput(result.agentId) ?? '')
+
+      expect(control.getStatus(result.agentId)?.state).toBe('waiting')
+      expect(outputs).toEqual(['reply:first', 'reply:second', 'reply:third'])
+
+      control.close(result.agentId)
+    })
+
+    test('sendInput before waitForInput consumes the signal does not lose the queued message', async () => {
+      const control = new AgentControl()
+      const releaseFirstTurn = createDeferred<void>()
+      const seenInstructions: string[] = []
+
+      const deferredAgent = {
+        async run(
+          _context: unknown,
+          instruction: string,
+          _userImages?: unknown,
+          _onNewMessage?: unknown,
+          _onTextDelta?: unknown,
+          _shouldInterrupt?: () => boolean,
+          _getQueuedMessages?: () => Array<{ content: string }>,
+        ): Promise<Message[]> {
+          seenInstructions.push(instruction)
+          if (seenInstructions.length === 1) {
+            await releaseFirstTurn.promise
+          }
+          return [assistantMessage(`reply:${instruction}`)]
+        },
+      }
+
+      const result = control.spawn(deferredAgent, agentContext, 'first', {
+        mode: 'interactive',
+      })
+      if (!('agentId' in result)) throw new Error('expected spawn success')
+
+      expect(control.sendInput(result.agentId, 'second')).toEqual({ success: true })
+      releaseFirstTurn.resolve()
+
+      await control.waitReady([result.agentId], 100)
+
+      expect(seenInstructions).toEqual(['first', 'second'])
+      expect(control.getOutput(result.agentId)).toBe('reply:second')
+
+      control.close(result.agentId)
+    })
+
+    test('interactive agents fail cleanly when a later turn throws', async () => {
+      const control = new AgentControl()
+      let runCount = 0
+      const flakyAgent = {
+        async run(): Promise<Message[]> {
+          runCount++
+          if (runCount === 2) {
+            throw new Error('second turn boom')
+          }
+          return [assistantMessage('reply:first')]
+        },
+      }
+
+      const result = control.spawn(flakyAgent, agentContext, 'first', {
+        mode: 'interactive',
+      })
+      if (!('agentId' in result)) throw new Error('expected spawn success')
+
+      await control.waitReady([result.agentId], 100)
+      expect(control.sendInput(result.agentId, 'second')).toEqual({ success: true })
+      await control.waitAll([result.agentId], 100)
+
+      const internal = control as unknown as {
+        entries: Map<string, { inputSignal?: unknown }>
+      }
+      expect(control.getStatus(result.agentId)).toEqual({
+        state: 'failed',
+        label: result.label,
+        depth: 1,
+        elapsedMs: expect.any(Number),
+        mode: 'interactive',
+        output: 'reply:first',
+        error: 'second turn boom',
+      })
+      expect(control.activeAgentCount).toBe(0)
+      expect(internal.entries.get(result.agentId)?.inputSignal).toBeUndefined()
+    })
+
+    test('waitReady times out while the first interactive turn is still running', async () => {
+      const control = new AgentControl()
+      const releaseFirstTurn = createDeferred<void>()
+      const slowStartAgent = {
+        async run(): Promise<Message[]> {
+          await releaseFirstTurn.promise
+          return [assistantMessage('reply:slow start')]
+        },
+      }
+
+      const result = control.spawn(slowStartAgent, agentContext, 'slow start', {
+        mode: 'interactive',
+      })
+      if (!('agentId' in result)) throw new Error('expected spawn success')
+
+      const timedOut = await control.waitReady([result.agentId], 5)
+
+      expect(timedOut.timedOut).toBe(true)
+      expect(timedOut.statuses[result.agentId]?.state).toBe('running')
+      expect(control.getOutput(result.agentId)).toBeUndefined()
+
+      releaseFirstTurn.resolve()
+      await control.waitReady([result.agentId], 100)
+      control.close(result.agentId)
+    })
+
+    test('interactive snapshots include mode and waiting restores as failed', async () => {
+      const control = new AgentControl()
+      const result = control.spawn(createInteractiveAgent(), agentContext, 'snapshot me', {
+        mode: 'interactive',
+        label: 'interactive-agent',
+      })
+      if (!('agentId' in result)) throw new Error('expected spawn success')
+
+      await control.waitReady([result.agentId], 100)
+
+      expect(control.getSnapshot()).toEqual([
+        {
+          id: result.agentId,
+          label: 'interactive-agent',
+          role: undefined,
+          mode: 'interactive',
+          state: 'waiting',
+          instruction: 'snapshot me',
+          output: 'reply:snapshot me',
+          error: undefined,
+          startedAt: expect.any(Number),
+          endedAt: undefined,
+        },
+      ])
+
+      const restored = new AgentControl()
+      restored.restoreSnapshot(control.getSnapshot())
+
+      expect(restored.getStatus(result.agentId)).toEqual({
+        state: 'failed',
+        label: 'interactive-agent',
+        depth: 1,
+        elapsedMs: expect.any(Number),
+        mode: 'interactive',
+        output: 'reply:snapshot me',
+        error: 'Process restarted while agent was waiting',
+      })
+
+      control.close(result.agentId)
+    })
+
+    test('close clears waiting interactive agents and activeAgentCount', async () => {
+      const control = new AgentControl()
+      const result = control.spawn(createInteractiveAgent(), agentContext, 'close me', {
+        mode: 'interactive',
+      })
+      if (!('agentId' in result)) throw new Error('expected spawn success')
+
+      await control.waitReady([result.agentId], 100)
+      const internal = control as unknown as {
+        entries: Map<string, { inputSignal?: unknown }>
+      }
+      expect(internal.entries.get(result.agentId)?.inputSignal).toBeDefined()
+
+      control.close(result.agentId)
+
+      expect(control.getStatus(result.agentId)?.state).toBe('closed')
+      expect(control.activeAgentCount).toBe(0)
+      expect(internal.entries.get(result.agentId)?.inputSignal).toBeUndefined()
+    })
+  })
+
   test('completing an agent updates and ends the linked sub-agent span', async () => {
     const { tracer, logger, updates, endings, infos } = createObservabilityMocks()
     const control = new AgentControl({ tracer, logger })
@@ -753,6 +1148,7 @@ describe('AgentControl', () => {
         sessionId: 'sess_test',
         label: 'worker-1',
         role: 'explorer',
+        mode: 'standard',
         depth: 1,
         traceSpanId: 'span_subagent_1',
       },

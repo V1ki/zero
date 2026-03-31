@@ -3,12 +3,13 @@ import { generatePrefixedId, toErrorMessage } from '@zero-os/shared'
 import type { AgentContext } from './agent'
 import type { QueuedMessage } from './queue'
 
-export type AgentState = 'running' | 'completed' | 'failed' | 'closed'
+export type AgentState = 'running' | 'waiting' | 'completed' | 'failed' | 'closed'
 
 export interface AgentSnapshot {
   id: string
   label: string
   role?: string
+  mode?: 'standard' | 'interactive'
   state: AgentState
   instruction: string
   output?: string
@@ -35,6 +36,7 @@ interface AgentEntry {
   sessionId?: string
   label: string
   role?: string
+  mode: 'standard' | 'interactive'
   depth: number
   state: AgentState
   startedAt: number
@@ -47,7 +49,12 @@ interface AgentEntry {
   error?: string
   messageQueue: QueuedMessage[]
   interruptFlag: boolean
+  inputSignal?: {
+    resolve: (messages: QueuedMessage[]) => void
+    reject: (reason: Error) => void
+  }
   waiters: Set<() => void>
+  readyWaiters: Set<() => void>
   traceSpanId?: string
   tracer?: ToolTracer
   logger?: ToolLogger
@@ -72,7 +79,7 @@ export class AgentControl {
   get activeAgentCount(): number {
     let count = 0
     for (const entry of this.entries.values()) {
-      if (entry.state === 'running') count++
+      if (entry.state === 'running' || entry.state === 'waiting') count++
     }
     return count
   }
@@ -82,6 +89,7 @@ export class AgentControl {
     context: AgentContext,
     instruction: string,
     options?: {
+      mode?: 'standard' | 'interactive'
       label?: string
       role?: string
       depth?: number
@@ -109,6 +117,7 @@ export class AgentControl {
       sessionId: options?.sessionId,
       label,
       role: options?.role?.trim() || undefined,
+      mode: options?.mode ?? 'standard',
       depth: Math.max(1, options?.depth ?? 1),
       state: 'running',
       startedAt: Date.now(),
@@ -118,7 +127,9 @@ export class AgentControl {
       context,
       messageQueue: [],
       interruptFlag: false,
+      inputSignal: undefined,
       waiters: new Set(),
+      readyWaiters: new Set(),
       traceSpanId: options?.traceSpanId,
       tracer: options?.tracer ?? this.tracer,
       logger: options?.logger ?? this.logger,
@@ -131,6 +142,7 @@ export class AgentControl {
       sessionId: entry.sessionId,
       label: entry.label,
       role: entry.role,
+      mode: entry.mode,
       depth: entry.depth,
       traceSpanId: entry.traceSpanId,
     })
@@ -159,6 +171,20 @@ export class AgentControl {
     return this.wait(ids, timeoutMs, true)
   }
 
+  async waitReady(
+    ids: string[],
+    timeoutMs?: number,
+    waitAll = false,
+  ): Promise<{
+    statuses: Record<string, { state: string; [key: string]: unknown }>
+    timedOut: boolean
+  }> {
+    return this.wait(ids, timeoutMs, waitAll, {
+      isSatisfied: (entry) => entry.state === 'waiting' || this.isTerminal(entry),
+      waitForEntry: (entry) => this.waitForReadyOrTerminal(entry),
+    })
+  }
+
   getStatus(agentId: string): { state: string; [key: string]: unknown } | undefined {
     const entry = this.entries.get(agentId)
     return entry ? this.buildStatus(entry) : undefined
@@ -177,6 +203,7 @@ export class AgentControl {
       id: entry.id,
       label: entry.label,
       role: entry.role,
+      mode: entry.mode === 'interactive' ? entry.mode : undefined,
       state: entry.state,
       instruction: entry.originalInstruction,
       output: entry.output,
@@ -193,6 +220,7 @@ export class AgentControl {
           id: snapshot.id,
           label: snapshot.label,
           role: snapshot.role,
+          mode: snapshot.mode ?? 'standard',
           depth: 1,
           state: 'failed',
           startedAt: snapshot.startedAt,
@@ -203,7 +231,32 @@ export class AgentControl {
           error: 'Process restarted while agent was running',
           messageQueue: [],
           interruptFlag: false,
+          inputSignal: undefined,
           waiters: new Set(),
+          readyWaiters: new Set(),
+        })
+        continue
+      }
+
+      if (snapshot.state === 'waiting') {
+        this.entries.set(snapshot.id, {
+          id: snapshot.id,
+          label: snapshot.label,
+          role: snapshot.role,
+          mode: snapshot.mode ?? 'interactive',
+          depth: 1,
+          state: 'failed',
+          startedAt: snapshot.startedAt,
+          endedAt: Date.now(),
+          instruction: '',
+          originalInstruction: snapshot.instruction,
+          output: snapshot.output,
+          error: 'Process restarted while agent was waiting',
+          messageQueue: [],
+          interruptFlag: false,
+          inputSignal: undefined,
+          waiters: new Set(),
+          readyWaiters: new Set(),
         })
         continue
       }
@@ -212,6 +265,7 @@ export class AgentControl {
         id: snapshot.id,
         label: snapshot.label,
         role: snapshot.role,
+        mode: snapshot.mode ?? 'standard',
         depth: 1,
         state: snapshot.state,
         startedAt: snapshot.startedAt,
@@ -222,7 +276,9 @@ export class AgentControl {
         error: snapshot.error,
         messageQueue: [],
         interruptFlag: false,
+        inputSignal: undefined,
         waiters: new Set(),
+        readyWaiters: new Set(),
       })
     }
   }
@@ -273,6 +329,15 @@ export class AgentControl {
       entry.interruptFlag = true
     }
 
+    if (entry.inputSignal) {
+      const queuedMessages = [...entry.messageQueue]
+      entry.messageQueue = []
+      entry.interruptFlag = false
+      entry.inputSignal.resolve(queuedMessages)
+      entry.inputSignal = undefined
+      entry.state = 'running'
+    }
+
     entry.logger?.info('subagent_input_sent', {
       agentId,
       sessionId: entry.sessionId,
@@ -308,9 +373,13 @@ export class AgentControl {
 
     const previousState = entry.state
     if (entry.state !== 'closed') {
+      if (entry.inputSignal) {
+        entry.inputSignal.reject(new Error('Agent closed'))
+        entry.inputSignal = undefined
+      }
       entry.state = 'closed'
       entry.endedAt ??= Date.now()
-      if (previousState === 'running') {
+      if (previousState === 'running' || previousState === 'waiting') {
         this.endSpanForClosedEntry(entry)
       }
       entry.agent = undefined
@@ -355,6 +424,10 @@ export class AgentControl {
     ids: string[],
     timeoutMs: number | undefined,
     waitAll: boolean,
+    options?: {
+      isSatisfied?: (entry: AgentEntry) => boolean
+      waitForEntry?: (entry: AgentEntry) => Promise<void>
+    },
   ): Promise<{
     statuses: Record<string, { state: string; [key: string]: unknown }>
     timedOut: boolean
@@ -368,9 +441,12 @@ export class AgentControl {
       .map((id) => this.entries.get(id))
       .filter((entry): entry is AgentEntry => !!entry)
 
+    const isSatisfied = options?.isSatisfied ?? ((entry: AgentEntry) => this.isTerminal(entry))
+    const waitForEntry = options?.waitForEntry ?? ((entry: AgentEntry) => this.waitForTerminal(entry))
+
     const alreadySatisfied = waitAll
-      ? knownEntries.every((entry) => this.isTerminal(entry))
-      : knownEntries.some((entry) => this.isTerminal(entry))
+      ? knownEntries.every((entry) => isSatisfied(entry))
+      : knownEntries.some((entry) => isSatisfied(entry))
 
     if (alreadySatisfied || knownEntries.length === 0) {
       const result = {
@@ -382,8 +458,8 @@ export class AgentControl {
     }
 
     const waitPromise = waitAll
-      ? Promise.all(knownEntries.map((entry) => this.waitForTerminal(entry))).then(() => 'done')
-      : Promise.race(knownEntries.map((entry) => this.waitForTerminal(entry))).then(() => 'done')
+      ? Promise.all(knownEntries.map((entry) => waitForEntry(entry))).then(() => 'done')
+      : Promise.race(knownEntries.map((entry) => waitForEntry(entry))).then(() => 'done')
 
     let timedOut = false
     if (typeof timeoutMs === 'number' && timeoutMs >= 0) {
@@ -414,36 +490,20 @@ export class AgentControl {
     })
   }
 
+  private waitForReadyOrTerminal(entry: AgentEntry): Promise<void> {
+    if (entry.state === 'waiting' || this.isTerminal(entry)) return Promise.resolve()
+
+    return new Promise((resolve) => {
+      entry.readyWaiters.add(resolve)
+    })
+  }
+
   private async runEntry(entry: AgentEntry): Promise<void> {
     try {
-      const messages = await entry.agent?.run(
-        entry.context as AgentContext,
-        entry.instruction,
-        undefined,
-        undefined,
-        undefined,
-        () => entry.interruptFlag,
-        () => {
-          const messages = [...entry.messageQueue]
-          entry.messageQueue = []
-          entry.interruptFlag = false
-          return messages
-        },
-      )
-      if (entry.state !== 'closed') {
-        entry.output = this.filterSensitive(entry, this.extractOutput(messages ?? []))
-        entry.state = 'completed'
-        entry.endedAt = Date.now()
-        this.completeSpan(entry)
-        entry.logger?.info('subagent_completed', {
-          agentId: entry.id,
-          sessionId: entry.sessionId,
-          label: entry.label,
-          role: entry.role,
-          durationMs: this.getElapsedMs(entry),
-          traceSpanId: entry.traceSpanId,
-          outputSummary: entry.output.slice(0, 200),
-        })
+      if (entry.mode === 'interactive') {
+        await this.runInteractiveEntry(entry)
+      } else {
+        await this.runStandardEntry(entry)
       }
     } catch (error) {
       if (entry.state !== 'closed') {
@@ -465,6 +525,10 @@ export class AgentControl {
       entry.agent = undefined
       entry.context = undefined
       entry.instruction = ''
+      if (entry.inputSignal) {
+        entry.inputSignal.reject(new Error('Agent entry finalized'))
+        entry.inputSignal = undefined
+      }
       entry.messageQueue = []
       entry.interruptFlag = false
       if (entry.state !== 'closed') {
@@ -477,6 +541,12 @@ export class AgentControl {
   private resolveWaiters(entry: AgentEntry): void {
     for (const resolve of entry.waiters) resolve()
     entry.waiters.clear()
+    this.resolveReadyWaiters(entry)
+  }
+
+  private resolveReadyWaiters(entry: AgentEntry): void {
+    for (const resolve of entry.readyWaiters) resolve()
+    entry.readyWaiters.clear()
   }
 
   private buildStatuses(ids: string[]): Record<string, { state: string; [key: string]: unknown }> {
@@ -496,6 +566,7 @@ export class AgentControl {
       elapsedMs: this.getElapsedMs(entry),
     }
     if (entry.role) status.role = entry.role
+    if (entry.mode === 'interactive') status.mode = entry.mode
     if (entry.output !== undefined) status.output = entry.output
     if (entry.error) status.error = entry.error
     return status
@@ -507,6 +578,10 @@ export class AgentControl {
 
   private isTerminal(entry: AgentEntry): boolean {
     return entry.state === 'completed' || entry.state === 'failed' || entry.state === 'closed'
+  }
+
+  private isClosed(entry: AgentEntry): boolean {
+    return entry.state === 'closed'
   }
 
   private filterSensitive(entry: AgentEntry, value: string): string {
@@ -601,6 +676,123 @@ export class AgentControl {
     return lastAssistant.content
       .filter((block) => block.type === 'text')
       .map((block) => block.text)
+      .join('\n')
+  }
+
+  private async runStandardEntry(entry: AgentEntry): Promise<void> {
+    const messages = await entry.agent?.run(
+      entry.context as AgentContext,
+      entry.instruction,
+      undefined,
+      undefined,
+      undefined,
+      () => entry.interruptFlag,
+      () => {
+        const messages = [...entry.messageQueue]
+        entry.messageQueue = []
+        entry.interruptFlag = false
+        return messages
+      },
+    )
+    if (!this.isClosed(entry)) {
+      entry.output = this.filterSensitive(entry, this.extractOutput(messages ?? []))
+      entry.state = 'completed'
+      entry.endedAt = Date.now()
+      this.completeSpan(entry)
+      entry.logger?.info('subagent_completed', {
+        agentId: entry.id,
+        sessionId: entry.sessionId,
+        label: entry.label,
+        role: entry.role,
+        durationMs: this.getElapsedMs(entry),
+        traceSpanId: entry.traceSpanId,
+        outputSummary: entry.output.slice(0, 200),
+      })
+    }
+  }
+
+  private async runInteractiveEntry(entry: AgentEntry): Promise<void> {
+    const context = entry.context as AgentContext
+    let currentInstruction = entry.instruction
+    let turnCount = 0
+
+    while (true) {
+      entry.state = 'running'
+      turnCount++
+
+      const messages = await entry.agent?.run(
+        context,
+        currentInstruction,
+        undefined,
+        undefined,
+        undefined,
+        () => entry.interruptFlag,
+        () => {
+          const queuedMessages = [...entry.messageQueue]
+          entry.messageQueue = []
+          entry.interruptFlag = false
+          return queuedMessages
+        },
+      )
+
+      if (this.isClosed(entry)) return
+
+      entry.output = this.filterSensitive(entry, this.extractOutput(messages ?? []))
+      if (messages && messages.length > 0) {
+        context.conversationHistory.push(...messages)
+      }
+
+      entry.logger?.info('subagent_interactive_turn_complete', {
+        agentId: entry.id,
+        sessionId: entry.sessionId,
+        label: entry.label,
+        role: entry.role,
+        turnCount,
+        traceSpanId: entry.traceSpanId,
+      })
+
+      if (entry.messageQueue.length > 0) {
+        const queuedMessages = [...entry.messageQueue]
+        entry.messageQueue = []
+        entry.interruptFlag = false
+        currentInstruction = this.formatQueuedAsInstruction(queuedMessages)
+        continue
+      }
+
+      try {
+        const inputMessages = await this.waitForInput(entry)
+        currentInstruction = this.formatQueuedAsInstruction(inputMessages)
+      } catch {
+        return
+      }
+    }
+  }
+
+  private waitForInput(entry: AgentEntry): Promise<QueuedMessage[]> {
+    return new Promise<QueuedMessage[]>((resolve, reject) => {
+      entry.inputSignal = { resolve, reject }
+
+      if (entry.messageQueue.length > 0) {
+        const queuedMessages = [...entry.messageQueue]
+        entry.messageQueue = []
+        entry.interruptFlag = false
+        entry.inputSignal = undefined
+        resolve(queuedMessages)
+        return
+      }
+
+      entry.state = 'waiting'
+      this.resolveReadyWaiters(entry)
+    })
+  }
+
+  private formatQueuedAsInstruction(messages: QueuedMessage[]): string {
+    if (messages.length === 1) {
+      return messages[0]?.content ?? ''
+    }
+
+    return messages
+      .map((message) => `[${message.timestamp}] ${message.content}`)
       .join('\n')
   }
 }

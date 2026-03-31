@@ -13,6 +13,7 @@ import { ToolRegistry } from './registry'
 interface SpawnAgentInput {
   instruction: string
   label?: string
+  mode?: 'standard' | 'interactive'
   role?: string
   agent_type?: string
   preset?: string
@@ -35,6 +36,12 @@ export class SpawnAgentTool extends BaseTool {
       label: {
         type: 'string',
         description: 'Optional human-readable label for the sub-agent.',
+      },
+      mode: {
+        type: 'string',
+        enum: ['standard', 'interactive'],
+        description:
+          'Agent execution mode. "standard" completes after the initial instruction. "interactive" waits for additional send_input turns and must be ended with close_agent.',
       },
       role: {
         type: 'string',
@@ -73,6 +80,13 @@ export class SpawnAgentTool extends BaseTool {
     private baseToolRegistry: ToolRegistry,
   ) {
     super()
+
+    const models = this.modelRouter.getRegistry().listModels()
+    const modelLabels = models.map((model) => `${model.providerName}/${model.modelName}`)
+    if (modelLabels.length > 0) {
+      this.parameters.properties.model.description =
+        `Optional model override for this sub-agent. Defaults to the current session model. Available: ${modelLabels.join(', ')}`
+    }
   }
 
   protected async execute(ctx: ToolContext, input: unknown): Promise<ToolResult> {
@@ -84,7 +98,7 @@ export class SpawnAgentTool extends BaseTool {
       }
     }
 
-    const { instruction, label, role, agent_type, preset, agentInstruction, tools, model } =
+    const { instruction, label, mode, role, agent_type, preset, agentInstruction, tools, model } =
       input as SpawnAgentInput
     const trimmedInstruction = instruction.trim()
     const roles = await loadRoles(ctx.projectRoot ?? process.cwd())
@@ -194,6 +208,7 @@ export class SpawnAgentTool extends BaseTool {
     }
 
     const spawnResult = ctx.agentControl.spawn(agent, agentContext, trimmedInstruction, {
+      mode,
       label: agentLabel,
       role: roleDefinition ? requestedRoleId : undefined,
       depth: 1,
@@ -244,6 +259,7 @@ export class SpawnAgentTool extends BaseTool {
         {
           agent_id: spawnResult.agentId,
           label: spawnResult.label,
+          mode: mode ?? 'standard',
         },
         null,
         2,

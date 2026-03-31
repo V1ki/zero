@@ -62,12 +62,23 @@ function createStubRouter(adapter: ProviderAdapter): ModelRouter {
     providerName: 'test-provider',
     modelConfig: {},
   }
+  const registry = {
+    listModels: () => [
+      {
+        providerName: 'test-provider',
+        modelName: 'fake-spawn-subagent-model',
+        modelId: 'fake-spawn-subagent-model',
+        tags: [],
+      },
+    ],
+  }
 
   return {
     getCurrentModel: () => resolved,
     resolveModel: () => resolved,
     getAdapter: () => adapter,
     getModelLabel: () => 'test-provider/fake-spawn-subagent-model',
+    getRegistry: () => registry,
   } as unknown as ModelRouter
 }
 
@@ -131,6 +142,7 @@ describe('SpawnAgentTool', () => {
       },
       waitAny: async () => ({ statuses: {}, timedOut: false }),
       waitAll: async () => ({ statuses: {}, timedOut: false }),
+      waitReady: async () => ({ statuses: {}, timedOut: false }),
       getStatus: () => undefined,
       getOutput: () => undefined,
       getSnapshot: () => [],
@@ -178,6 +190,51 @@ describe('SpawnAgentTool', () => {
     expect(capturedToolContext?.currentTraceSpanId).toBe('trace_parent_001')
     expect(capturedToolContext?.agentControl).toBeUndefined()
     expect(capturedToolContext?.workDir).toContain('/subagents/')
+  })
+
+  test('includes interactive mode in spawn output and passes it to agent control', async () => {
+    const registry = createToolRegistry()
+    const tool = new SpawnAgentTool(createStubRouter(new StaticResponseAdapter()), registry)
+    let receivedMode: unknown
+    const agentControl = {
+      spawn: (_agent: unknown, _context: unknown, _instruction: string, options?: { mode?: string }) => {
+        receivedMode = options?.mode
+        return { agentId: 'agent_456', label: 'InteractiveWorker' }
+      },
+      waitAny: async () => ({ statuses: {}, timedOut: false }),
+      waitAll: async () => ({ statuses: {}, timedOut: false }),
+      waitReady: async () => ({ statuses: {}, timedOut: false }),
+      getStatus: () => undefined,
+      getOutput: () => undefined,
+      getSnapshot: () => [],
+      restoreSnapshot: () => {},
+      sendInput: () => ({ success: true }),
+      getTraceSpanId: () => undefined,
+      getAgentInfo: () => undefined,
+      close: () => undefined,
+      listAgents: () => [],
+      activeAgentCount: 0,
+    } as AgentControlHandle
+
+    const result = await tool.run(
+      {
+        ...ctx,
+        agentControl,
+      },
+      {
+        instruction: 'Stay alive for follow-up input.',
+        label: 'InteractiveWorker',
+        mode: 'interactive',
+      },
+    )
+
+    expect(result.success).toBe(true)
+    expect(receivedMode).toBe('interactive')
+    expect(JSON.parse(result.output)).toEqual({
+      agent_id: 'agent_456',
+      label: 'InteractiveWorker',
+      mode: 'interactive',
+    })
   })
 
   test('filters blocked tools from explicit allowlists', () => {

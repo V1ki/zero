@@ -6,6 +6,7 @@ interface WaitAgentInput {
   timeoutMs?: number
   waitAll?: boolean
   wait_all?: boolean
+  resolveOn?: 'terminal' | 'ready'
 }
 
 export class WaitAgentTool extends BaseTool {
@@ -33,6 +34,12 @@ export class WaitAgentTool extends BaseTool {
         type: 'boolean',
         description: 'Backward-compatible alias for waitAll.',
       },
+      resolveOn: {
+        type: 'string',
+        enum: ['terminal', 'ready'],
+        description:
+          'When to resolve. "terminal" waits for completion, failure, or close. "ready" also resolves when interactive agents enter the waiting state.',
+      },
     },
     required: ['ids'],
   }
@@ -47,12 +54,16 @@ export class WaitAgentTool extends BaseTool {
       }
     }
 
-    const { ids, timeoutMs, waitAll, wait_all } = input as WaitAgentInput
+    const { ids, timeoutMs, waitAll, wait_all, resolveOn } = input as WaitAgentInput
     const shouldWaitAll = waitAll ?? wait_all ?? false
+    const resolveCondition = resolveOn ?? 'terminal'
     const traceSpanIds = Object.fromEntries(ids.map((id) => [id, control.getTraceSpanId(id)]))
-    const result = shouldWaitAll
-      ? await control.waitAll(ids, timeoutMs)
-      : await control.waitAny(ids, timeoutMs)
+    const result =
+      resolveCondition === 'ready'
+        ? await control.waitReady(ids, timeoutMs, shouldWaitAll)
+        : shouldWaitAll
+          ? await control.waitAll(ids, timeoutMs)
+          : await control.waitAny(ids, timeoutMs)
 
     if (ctx.currentTraceSpanId) {
       ctx.tracer?.updateSpan(ctx.currentTraceSpanId, {
@@ -60,12 +71,14 @@ export class WaitAgentTool extends BaseTool {
           observedAgentIds: ids,
           observedSubAgentSpanIds: traceSpanIds,
           waitAll: shouldWaitAll,
+          resolveOn: resolveCondition,
           timedOut: result.timedOut,
         },
         metadata: {
           observedAgentIds: ids,
           observedSubAgentSpanIds: traceSpanIds,
           waitAll: shouldWaitAll,
+          resolveOn: resolveCondition,
           timedOut: result.timedOut,
         },
       })

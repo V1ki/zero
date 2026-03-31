@@ -729,6 +729,172 @@ describe('sub-agent timeline items', () => {
     }
   })
 
+  test('sub-agent resolves waiting status from wait_agent ids results', () => {
+    const messages: Message[] = [
+      {
+        id: 'msg_1',
+        role: 'assistant',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_spawn',
+            name: 'spawn_agent',
+            input: {
+              label: 'interactive-agent',
+              instruction: 'Wait for more work',
+            },
+          },
+        ],
+        createdAt: '2026-03-08T00:00:00.000Z',
+      },
+      {
+        id: 'msg_spawn_result',
+        role: 'user',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: 'call_spawn',
+            content: '{"agentId":"agent_waiting"}',
+          },
+        ],
+        createdAt: '2026-03-08T00:00:00.100Z',
+      },
+      {
+        id: 'msg_wait',
+        role: 'assistant',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_wait',
+            name: 'wait_agent',
+            input: { ids: ['agent_waiting'], resolveOn: 'ready' },
+          },
+        ],
+        createdAt: '2026-03-08T00:00:01.000Z',
+      },
+      {
+        id: 'msg_wait_result',
+        role: 'user',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: 'call_wait',
+            content:
+              '{"statuses":{"agent_waiting":{"state":"waiting","output":"reply:Wait for more work","elapsedMs":250}},"timedOut":false}',
+          },
+        ],
+        createdAt: '2026-03-08T00:00:01.100Z',
+      },
+    ]
+
+    const items = buildTimeline(messages)
+    const subAgent = items.find((item) => item.type === 'sub-agent')
+
+    expect(subAgent).toBeDefined()
+    if (subAgent?.type === 'sub-agent') {
+      expect(subAgent.status).toBe('waiting')
+      expect(subAgent.output).toBe('reply:Wait for more work')
+      expect(subAgent.durationMs).toBe(250)
+    }
+  })
+
+  test('waiting status takes precedence over running trace spans', () => {
+    const messages: Message[] = [
+      {
+        id: 'msg_1',
+        role: 'assistant',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_spawn',
+            name: 'spawn_agent',
+            input: {
+              label: 'interactive-agent',
+              instruction: 'Wait for more work',
+            },
+          },
+        ],
+        createdAt: '2026-03-08T00:00:00.000Z',
+      },
+      {
+        id: 'msg_spawn_result',
+        role: 'user',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: 'call_spawn',
+            content: '{"agentId":"agent_waiting"}',
+          },
+        ],
+        createdAt: '2026-03-08T00:00:00.100Z',
+      },
+      {
+        id: 'msg_wait',
+        role: 'assistant',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_wait',
+            name: 'wait_agent',
+            input: { ids: ['agent_waiting'], resolveOn: 'ready' },
+          },
+        ],
+        createdAt: '2026-03-08T00:00:01.000Z',
+      },
+      {
+        id: 'msg_wait_result',
+        role: 'user',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: 'call_wait',
+            content: '{"statuses":{"agent_waiting":{"state":"waiting"}},"timedOut":false}',
+          },
+        ],
+        createdAt: '2026-03-08T00:00:01.100Z',
+      },
+    ]
+
+    const traces: TraceSpan[] = [
+      {
+        id: 'span_root',
+        sessionId: 'sess_1',
+        name: 'tool:spawn_agent',
+        startTime: '2026-03-08T00:00:00.000Z',
+        status: 'success',
+        metadata: { toolUseId: 'call_spawn' },
+        children: [
+          {
+            id: 'span_sub',
+            parentId: 'span_root',
+            sessionId: 'sess_1',
+            name: 'sub_agent:interactive-agent',
+            startTime: '2026-03-08T00:00:00.000Z',
+            status: 'running',
+            metadata: { agentId: 'agent_waiting' },
+            children: [],
+          },
+        ],
+      },
+    ]
+
+    const items = buildTimeline(messages, traces)
+    const subAgent = items.find((item) => item.type === 'sub-agent')
+
+    expect(subAgent).toBeDefined()
+    if (subAgent?.type === 'sub-agent') {
+      expect(subAgent.status).toBe('waiting')
+    }
+  })
+
   test('sub-agent extracts child tool calls from traces', () => {
     const messages: Message[] = [
       {

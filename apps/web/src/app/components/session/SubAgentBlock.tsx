@@ -3,6 +3,7 @@ import {
   CaretRight,
   CheckCircle,
   Clock,
+  HourglassMedium,
   Robot,
   Spinner,
   XCircle,
@@ -23,7 +24,7 @@ export interface SubAgentBlockProps {
   label: string
   role?: string
   instruction: string
-  status: 'running' | 'completed' | 'errored' | 'closed'
+  status: 'running' | 'waiting' | 'completed' | 'errored' | 'closed'
   output?: string
   durationMs?: number
   childToolCalls?: SubAgentChildToolCall[]
@@ -35,6 +36,7 @@ export interface SubAgentBlockProps {
 
 const statusBorderColor: Record<SubAgentBlockProps['status'], string> = {
   running: 'border-l-blue-400',
+  waiting: 'border-l-amber-400',
   completed: 'border-l-emerald-400',
   errored: 'border-l-red-400',
   closed: 'border-l-slate-500',
@@ -42,6 +44,7 @@ const statusBorderColor: Record<SubAgentBlockProps['status'], string> = {
 
 const statusLabel: Record<SubAgentBlockProps['status'], string> = {
   running: 'Running',
+  waiting: 'Waiting',
   completed: 'Completed',
   errored: 'Error',
   closed: 'Closed',
@@ -49,6 +52,7 @@ const statusLabel: Record<SubAgentBlockProps['status'], string> = {
 
 const statusTextColor: Record<SubAgentBlockProps['status'], string> = {
   running: 'text-blue-400',
+  waiting: 'text-amber-400',
   completed: 'text-emerald-400',
   errored: 'text-red-400',
   closed: 'text-slate-500',
@@ -100,6 +104,8 @@ export function SubAgentBlock({
         <span className="flex-1" />
         {status === 'running' ? (
           <Spinner size={14} weight="bold" className="text-blue-400 animate-spin" />
+        ) : status === 'waiting' ? (
+          <HourglassMedium size={14} weight="fill" className="text-amber-400" />
         ) : status === 'completed' ? (
           <CheckCircle size={14} weight="fill" className="text-emerald-400" />
         ) : status === 'errored' ? (
@@ -256,5 +262,4 @@ function formatInputSummary(input: Record<string, unknown>): string {
   if (typeof first === 'string') return first.slice(0, 60)
   return ''
 }
-
 

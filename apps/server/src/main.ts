@@ -927,12 +927,14 @@ function buildRestartRecoveryMessage(entry: RestartSentinelEntry): string {
 
   if (entry.subAgents?.length) {
     const completed = entry.subAgents.filter((agent) => agent.state === 'completed')
-    const running = entry.subAgents.filter((agent) => agent.state === 'running')
+    const running = entry.subAgents.filter(
+      (agent) => agent.state === 'running' || agent.state === 'waiting',
+    )
     const failed = entry.subAgents.filter((agent) => agent.state === 'failed')
 
     systemMessage += '\n\nSub-agent state at restart:'
     systemMessage += `\n- ${completed.length} completed (outputs preserved, accessible via wait_agent)`
-    systemMessage += `\n- ${running.length} were still running (marked as failed, need re-spawn)`
+    systemMessage += `\n- ${running.length} were still running/waiting (marked as failed, need re-spawn)`
     systemMessage += `\n- ${failed.length} had already failed`
 
     if (running.length > 0) {
