@@ -59,6 +59,7 @@ interface FeishuIncomingPayload {
     message_type?: string
     create_time?: string
     content?: string
+    parent_id?: string
   }
 }
 
@@ -114,8 +115,10 @@ interface FeishuTestHarness {
         delete?: (payload: { path: { message_id: string } }) => Promise<void>
       }
     }
+    request?: (opts: unknown) => Promise<unknown>
   } | null
   buildIncomingMessage(payload: FeishuIncomingPayload): Promise<IncomingMessage | null>
+  parseInteractiveCardContent(raw: string): string
   updateConnectionStateFromSdkLog(
     level: 'error' | 'warn' | 'info' | 'debug' | 'trace',
     message: string,
@@ -731,6 +734,172 @@ describe('FeishuChannel contract', () => {
         data: Buffer.from('fake-post-image').toString('base64'),
       },
     ])
+  })
+
+  test('parseInteractiveCardContent extracts text from cardkit v2 cards', () => {
+    const channel = new FeishuChannel({ appId: 'test-id', appSecret: 'test-secret' })
+
+    const parsed = getFeishuHarness(channel).parseInteractiveCardContent(
+      JSON.stringify({
+        schema: '2.0',
+        header: {
+          title: { tag: 'plain_text', content: '引用标题' },
+        },
+        body: {
+          elements: [
+            { tag: 'markdown', content: '第一段' },
+            {
+              tag: 'column_set',
+              columns: [
+                {
+                  elements: [{ tag: 'markdown', content: '第二段' }],
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    )
+
+    expect(parsed).toBe('# 引用标题\n\n第一段\n\n第二段')
+  })
+
+  test('parseInteractiveCardContent avoids duplicate text for nested cardkit nodes', () => {
+    const channel = new FeishuChannel({ appId: 'test-id', appSecret: 'test-secret' })
+
+    const parsed = getFeishuHarness(channel).parseInteractiveCardContent(
+      JSON.stringify({
+        schema: '2.0',
+        body: {
+          elements: [
+            {
+              tag: 'markdown',
+              content: '只保留一次',
+              elements: [{ tag: 'markdown', content: '不应重复提取' }],
+            },
+          ],
+        },
+      }),
+    )
+
+    expect(parsed).toBe('只保留一次')
+  })
+
+  test('parseInteractiveCardContent handles wrapped and legacy cards', () => {
+    const channel = new FeishuChannel({ appId: 'test-id', appSecret: 'test-secret' })
+    const harness = getFeishuHarness(channel)
+
+    const wrapped = harness.parseInteractiveCardContent(
+      JSON.stringify({
+        type: 'interactive',
+        card: {
+          schema: '2.0',
+          body: {
+            elements: [{ tag: 'markdown', content: '包裹卡片正文' }],
+          },
+        },
+      }),
+    )
+    expect(wrapped).toBe('包裹卡片正文')
+
+    const legacy = harness.parseInteractiveCardContent(
+      JSON.stringify({
+        header: {
+          title: { content: 'Legacy 标题' },
+        },
+        config: {},
+        elements: [
+          { tag: 'div', text: { content: 'Legacy 正文' } },
+          {
+            tag: 'note',
+            elements: [{ tag: 'plain_text', content: '补充说明' }],
+          },
+        ],
+      }),
+    )
+    expect(legacy).toBe('# Legacy 标题\n\nLegacy 正文\n\n补充说明')
+  })
+
+  test('parseInteractiveCardContent ignores non-visible legacy content fields', () => {
+    const channel = new FeishuChannel({ appId: 'test-id', appSecret: 'test-secret' })
+    const harness = getFeishuHarness(channel)
+
+    expect(
+      harness.parseInteractiveCardContent(
+        JSON.stringify({
+          config: {},
+          elements: [{ tag: 'action', content: 'callback_action_id' }],
+        }),
+      ),
+    ).toBe('[卡片消息]')
+  })
+
+  test('parseInteractiveCardContent degrades for unsupported or empty cards', () => {
+    const channel = new FeishuChannel({ appId: 'test-id', appSecret: 'test-secret' })
+    const harness = getFeishuHarness(channel)
+
+    expect(
+      harness.parseInteractiveCardContent(
+        JSON.stringify({ type: 'card', data: { card_id: 'card_v1' } }),
+      ),
+    ).toBe('[卡片消息]')
+    expect(
+      harness.parseInteractiveCardContent(
+        JSON.stringify({ type: 'template', data: { template_id: 'tpl_v1' } }),
+      ),
+    ).toBe('[卡片消息]')
+    expect(
+      harness.parseInteractiveCardContent(
+        JSON.stringify({ schema: '2.0', body: { elements: [] } }),
+      ),
+    ).toBe('[卡片消息]')
+    expect(harness.parseInteractiveCardContent('not json')).toBe('[卡片消息]')
+  })
+
+  test('buildIncomingMessage injects quoted interactive card content into reply text', async () => {
+    const channel = new FeishuChannel({ appId: 'test-id', appSecret: 'test-secret' })
+    getFeishuHarness(channel).client = {
+      im: {},
+      request: async () => ({
+        code: 0,
+        data: {
+          items: [
+            {
+              msg_type: 'interactive',
+              body: {
+                content: JSON.stringify({
+                  schema: '2.0',
+                  body: {
+                    elements: [{ tag: 'markdown', content: '之前的回复内容' }],
+                  },
+                }),
+              },
+            },
+          ],
+        },
+      }),
+    }
+
+    const msg = await getFeishuHarness(channel).buildIncomingMessage({
+      sender: { sender_id: { open_id: 'ou_test' } },
+      message: {
+        message_id: 'om_reply',
+        chat_id: 'chat_test',
+        chat_type: 'p2p',
+        message_type: 'text',
+        create_time: '1710000000',
+        content: JSON.stringify({ text: '用户的回复' }),
+        parent_id: 'om_quoted',
+      },
+    })
+    if (!msg) {
+      throw new Error('expected Feishu message')
+    }
+
+    expect(msg.content).toBe('> 引用: 之前的回复内容\n\n用户的回复')
+    expect(msg.metadata).toMatchObject({
+      parentId: 'om_quoted',
+    })
   })
 
   test('send uses interactive JSON 2.0 card first', async () => {
