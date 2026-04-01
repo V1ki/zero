@@ -16,6 +16,12 @@ export {
   decodeChatGptTokenExpiry,
 } from './auth/chatgpt'
 export type { ChatGptOAuthSession } from './auth/chatgpt'
+export {
+  parseClaudeOAuthSession,
+  resolveClaudeOAuthAccessToken,
+  serializeClaudeOAuthSession,
+} from './auth/claude'
+export type { ClaudeOAuthAccount, ClaudeOAuthSession } from './auth/claude'
 export { createApiKeyAuth } from './auth/api-key'
 export { computeCost } from './cost'
 export { LiteLLMPricing } from './pricing'

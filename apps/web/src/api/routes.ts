@@ -11,18 +11,19 @@ import { readYaml, writeYaml } from '@zero-os/shared/utils'
 import { GitOps } from '@zero-os/supervisor'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { ChatGptOAuthBroker } from '../../../server/src/chatgpt-oauth'
-import {
-  ensureChatgptProviderConfig,
-  getChatgptOAuthTokenRef,
-  getConfigPath,
-} from '../../../server/src/chatgpt-provider'
+import { getConfigPath } from '../../../server/src/chatgpt-provider'
 import type { ZeroOS } from '../../../server/src/main'
+import {
+  createManagedOAuthCoordinator,
+  isManagedOAuthProvider,
+  isManagedOAuthTokenRef,
+  prepareManagedOAuthProvider,
+} from '../../../server/src/provider-oauth'
 import type { SessionJudgeHistoryResponse, StoredSessionJudgeEntry } from '../eval/types'
 import { runSessionJudge } from './session-judge'
 
 export function createRoutes(zero: ZeroOS) {
-  const chatgptOAuth = new ChatGptOAuthBroker(zero.vault)
+  const managedOAuth = createManagedOAuthCoordinator(zero.vault)
 
   interface TraceLogEntry {
     spanId: string
@@ -49,7 +50,9 @@ export function createRoutes(zero: ZeroOS) {
       Object.entries(config.providers).map(([name, provider]) => {
         const secretRef = provider.auth.apiKeyRef ?? provider.auth.oauthTokenRef
         const configured = secretRef ? !!zero.vault.get(secretRef) : false
-        const oauthStatus = name === 'chatgpt' ? chatgptOAuth.getStatus() : undefined
+        const oauthStatus = managedOAuth.supportsProvider(name)
+          ? managedOAuth.getStatus(name)
+          : undefined
 
         return [
           name,
@@ -849,7 +852,7 @@ export function createRoutes(zero: ZeroOS) {
         taskClosureModel: config.taskClosureModel ?? null,
         secrets: zero.vault.keys().map((key) => ({
           key,
-          masked: key === getChatgptOAuthTokenRef() ? 'oauth:configured' : 'configured',
+          masked: isManagedOAuthTokenRef(key) ? 'oauth:configured' : 'configured',
           configured: true,
         })),
       })
@@ -879,18 +882,42 @@ export function createRoutes(zero: ZeroOS) {
       return c.json({ ok: true, taskClosureModel: updated.taskClosureModel ?? null })
     })
 
+    .post('/api/providers/:provider/oauth/start', async (c) => {
+      const provider = c.req.param('provider')
+      if (!isManagedOAuthProvider(provider)) {
+        return c.json({ error: 'Unsupported OAuth provider' }, 404)
+      }
+
+      try {
+        prepareManagedOAuthProvider(provider)
+        const result = await managedOAuth.start(provider)
+        return c.json({ ...result, status: managedOAuth.getStatus(provider) })
+      } catch (error) {
+        return c.json({ error: toErrorMessage(error) }, 500)
+      }
+    })
+
+    .get('/api/providers/:provider/oauth/status', (c) => {
+      const provider = c.req.param('provider')
+      if (!isManagedOAuthProvider(provider)) {
+        return c.json({ error: 'Unsupported OAuth provider' }, 404)
+      }
+
+      return c.json(managedOAuth.getStatus(provider))
+    })
+
     .post('/api/providers/chatgpt/oauth/start', async (c) => {
       try {
-        ensureChatgptProviderConfig()
-        const result = await chatgptOAuth.start()
-        return c.json({ ...result, status: chatgptOAuth.getStatus() })
+        prepareManagedOAuthProvider('chatgpt')
+        const result = await managedOAuth.start('chatgpt')
+        return c.json({ ...result, status: managedOAuth.getStatus('chatgpt') })
       } catch (error) {
         return c.json({ error: toErrorMessage(error) }, 500)
       }
     })
 
     .get('/api/providers/chatgpt/oauth/status', (c) => {
-      return c.json(chatgptOAuth.getStatus())
+      return c.json(managedOAuth.getStatus('chatgpt'))
     })
 
     // Logs

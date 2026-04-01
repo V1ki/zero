@@ -4,14 +4,20 @@ import { join } from 'node:path'
 import { DEFAULT_TEMPLATES } from '@zero-os/core'
 import { Vault, generateMasterKey, getMasterKey, setMasterKey } from '@zero-os/secrets'
 import { installConsoleTimestamping, toErrorMessage } from '@zero-os/shared'
-import { ChatGptOAuthBroker } from './chatgpt-oauth'
-import { ensureChatgptProviderConfig, getChatgptOAuthTokenRef } from './chatgpt-provider'
+import { getChatgptOAuthTokenRef } from './chatgpt-provider'
+import { getClaudeOAuthSessionRef } from './claude-provider'
 import {
   getSupervisorLaunchAgentStatus,
   installSupervisorLaunchAgent,
   uninstallSupervisorLaunchAgent,
 } from './launchd'
 import { startZeroOS } from './main'
+import {
+  createManagedOAuthCoordinator,
+  getManagedOAuthProviderLabel,
+  isManagedOAuthProvider,
+  prepareManagedOAuthProvider,
+} from './provider-oauth'
 import { writeRestartTrigger } from './restart-trigger'
 import { rebuildWebBundle } from './web-build'
 
@@ -114,9 +120,7 @@ async function init() {
       const launchAgent = installSupervisorLaunchAgent()
       console.log(`  LaunchAgent: installed at ${launchAgent.plistPath}`)
     } catch (err) {
-      console.log(
-        `  LaunchAgent: not installed automatically (${toErrorMessage(err)})`,
-      )
+      console.log(`  LaunchAgent: not installed automatically (${toErrorMessage(err)})`)
       console.log('               Run `bun zero launchctl install` after fixing the issue.')
     }
   }
@@ -206,8 +210,8 @@ async function provider() {
   const action = process.argv[3]
   const target = process.argv[4]
 
-  if (action !== 'login' || target !== 'chatgpt') {
-    console.error('Usage: bun zero provider login chatgpt')
+  if (action !== 'login' || !target || !isManagedOAuthProvider(target)) {
+    console.error('Usage: bun zero provider login <chatgpt|claude>')
     process.exit(1)
   }
 
@@ -223,28 +227,29 @@ async function provider() {
   vault.load()
 
   try {
-    ensureChatgptProviderConfig()
+    prepareManagedOAuthProvider(target)
   } catch (error) {
     console.error(
-      '[ZeRo OS] Failed to prepare ChatGPT provider config:',
+      `[ZeRo OS] Failed to prepare ${getManagedOAuthProviderLabel(target)} provider config:`,
       toErrorMessage(error),
     )
     process.exit(1)
   }
 
-  const broker = new ChatGptOAuthBroker(vault)
+  const oauth = createManagedOAuthCoordinator(vault)
+  const label = getManagedOAuthProviderLabel(target)
 
   try {
-    const { url } = await broker.start()
-    console.log('[ZeRo OS] Starting ChatGPT OAuth login...')
+    const { url } = await oauth.start(target)
+    console.log(`[ZeRo OS] Starting ${label} OAuth login...`)
     console.log(`  URL: ${url}`)
 
     tryOpenBrowser(url)
 
-    const status = await broker.waitForCompletion(120_000)
+    const status = await oauth.waitForCompletion(target, 120_000)
     if (status.state === 'connected') {
       console.log(
-        '[ZeRo OS] ChatGPT OAuth configured. Run `bun zero restart` to use the new provider.',
+        `[ZeRo OS] ${label} OAuth configured. Run \`bun zero restart\` to use the new provider.`,
       )
       return
     }
@@ -262,18 +267,15 @@ async function provider() {
   }
 
   try {
-    const status = await broker.completeFromInput(pasted)
+    const status = await oauth.completeFromInput(target, pasted)
     if (status.state !== 'connected') {
       throw new Error(status.error ?? 'Authentication failed')
     }
     console.log(
-      '[ZeRo OS] ChatGPT OAuth configured. Run `bun zero restart` to use the new provider.',
+      `[ZeRo OS] ${label} OAuth configured. Run \`bun zero restart\` to use the new provider.`,
     )
   } catch (error) {
-    console.error(
-      '[ZeRo OS] ChatGPT OAuth login failed:',
-      toErrorMessage(error),
-    )
+    console.error(`[ZeRo OS] ${label} OAuth login failed:`, toErrorMessage(error))
     process.exit(1)
   }
 }
@@ -318,8 +320,10 @@ async function status() {
       vault.load()
       const hasApiKey = vault.get('openai_codex_api_key')
       const hasChatGptOauth = vault.get(getChatgptOAuthTokenRef())
+      const hasClaudeOauth = vault.get(getClaudeOAuthSessionRef())
       console.log(`  API Key:   ${hasApiKey ? '✓ configured' : '✗ not set'}`)
       console.log(`  ChatGPT:   ${hasChatGptOauth ? '✓ OAuth configured' : '✗ not set'}`)
+      console.log(`  Claude:    ${hasClaudeOauth ? '✓ OAuth configured' : '✗ not set'}`)
       console.log(`  Keys:      ${vault.keys().length} total`)
     } catch {
       console.log('  API Key:   ? cannot read vault')
@@ -529,7 +533,7 @@ Commands:
   secret set <k> <v> Store a secret in the vault
   secret list        List all stored secret keys
   secret delete <k>  Delete a secret
-  provider login chatgpt  Authenticate ChatGPT OAuth
+  provider login <provider> Authenticate managed OAuth (chatgpt | claude)
   status             Show system status
 
 Examples:
@@ -540,6 +544,7 @@ Examples:
   bun zero logs all --follow
   bun zero secret set openai_codex_api_key sk-xxx
   bun zero provider login chatgpt
+  bun zero provider login claude
   bun zero status
 `)
 }

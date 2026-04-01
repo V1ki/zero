@@ -1,12 +1,9 @@
 import type { ApiType, ModelConfig, ProviderConfig, SystemConfig } from '@zero-os/shared'
 import { AnthropicAdapter } from './adapters/anthropic'
-import type {
-  AdapterConfig,
-  OAuthTokenRefresher,
-  ProviderAdapter,
-} from './adapters/base'
+import type { AdapterConfig, OAuthTokenRefresher, ProviderAdapter } from './adapters/base'
 import { OpenAIChatAdapter } from './adapters/openai-chat'
 import { OpenAIResponsesAdapter } from './adapters/openai-resp'
+import { resolveClaudeOAuthAccessToken } from './auth/claude'
 import { LiteLLMPricing } from './pricing'
 
 export interface ResolvedModel {
@@ -34,7 +31,11 @@ export class ModelRegistry {
   private secretGetter: SecretGetter
   private oauthRefreshers: Record<string, OAuthTokenRefresher | undefined>
 
-  constructor(config: SystemConfig, secrets: Map<string, string>, options: ModelRegistryOptions = {}) {
+  constructor(
+    config: SystemConfig,
+    secrets: Map<string, string>,
+    options: ModelRegistryOptions = {},
+  ) {
     this.secrets = secrets
     this.secretGetter = options.secretGetter ?? ((ref) => this.secrets.get(ref))
     this.oauthRefreshers = options.oauthRefreshers ?? {}
@@ -133,7 +134,7 @@ export class ModelRegistry {
 
     const apiKey = provider.auth.apiKeyRef ? this.secretGetter(provider.auth.apiKeyRef) : undefined
     const oauthToken = provider.auth.oauthTokenRef
-      ? this.secretGetter(provider.auth.oauthTokenRef)
+      ? this.resolveOauthToken(providerName, this.secretGetter(provider.auth.oauthTokenRef))
       : undefined
 
     const config: AdapterConfig = {
@@ -144,7 +145,11 @@ export class ModelRegistry {
       apiKey,
       oauthToken,
       oauthTokenProvider: provider.auth.oauthTokenRef
-        ? () => this.secretGetter(provider.auth.oauthTokenRef as string)
+        ? () =>
+            this.resolveOauthToken(
+              providerName,
+              this.secretGetter(provider.auth.oauthTokenRef as string),
+            )
         : undefined,
       oauthTokenRefresher: this.oauthRefreshers[providerName],
     }
@@ -162,6 +167,14 @@ export class ModelRegistry {
     const fallback = LiteLLMPricing.getInstance()?.lookup(model.modelId)
     if (!fallback) return model
     return { ...model, pricing: fallback }
+  }
+
+  private resolveOauthToken(providerName: string, rawValue: string | undefined) {
+    if (providerName === 'claude') {
+      return resolveClaudeOAuthAccessToken(rawValue)
+    }
+
+    return rawValue
   }
 
   private createAdapter(apiType: ApiType, config: AdapterConfig): ProviderAdapter {

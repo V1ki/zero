@@ -66,6 +66,7 @@ import { RepairEngine } from '@zero-os/supervisor'
 import { HeartbeatWriter } from '@zero-os/supervisor'
 import { globalBus } from './bus'
 import { ChatGptTokenManager } from './chatgpt-oauth'
+import { ClaudeTokenManager } from './claude-oauth'
 import { FeishuAdapter } from './feishu-adapter'
 import { handleChannelMessage } from './message-handler'
 import {
@@ -224,6 +225,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
   // 7. Initialize Model Router
   const secrets = new Map(vault.entries())
   const chatgptTokenManager = new ChatGptTokenManager(vault)
+  const claudeTokenManager = new ClaudeTokenManager(vault)
   const modelRouter = new ModelRouter(config, secrets, {
     secretGetter: (ref) => vault.get(ref) ?? undefined,
     oauthRefreshers: {
@@ -233,6 +235,13 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
           return
         }
         await chatgptTokenManager.refreshSession(reason)
+      },
+      claude: async (reason) => {
+        if (reason === 'expiring') {
+          await claudeTokenManager.ensureFreshSession()
+          return
+        }
+        await claudeTokenManager.refreshSession(reason)
       },
     },
   })
