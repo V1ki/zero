@@ -25,7 +25,7 @@ const CLAUDE_SCOPE = [
 const CLAUDE_PREEMPTIVE_REFRESH_WINDOW_MS = 15 * 60_000
 const CLAUDE_MIN_VALIDITY_MS = 60_000
 const CLAUDE_REAUTH_MESSAGE =
-  'Claude OAuth session can no longer be refreshed. Please re-authenticate with `bun zero provider login claude`.'
+  'Claude OAuth session can no longer be refreshed. Please re-authenticate with `bun zero provider login anthropic`.'
 
 export type ClaudeOAuthState =
   | 'idle'
@@ -36,7 +36,7 @@ export type ClaudeOAuthState =
   | 'error'
 
 export interface ClaudeOAuthStatus extends ManagedOAuthStatus {
-  provider: 'claude'
+  provider: 'anthropic'
   state: ClaudeOAuthState
 }
 
@@ -222,7 +222,7 @@ function buildSession(
 }
 
 export class ClaudeOAuthDriver implements ManagedOAuthDriver<ClaudeOAuthSession> {
-  readonly provider = 'claude' as const
+  readonly provider = 'anthropic' as const
 
   getCallbackConfig() {
     return {
@@ -298,7 +298,7 @@ export class ClaudeOAuthDriver implements ManagedOAuthDriver<ClaudeOAuthSession>
   ): ClaudeOAuthStatus {
     const expired = this.isSessionExpired(session)
     return {
-      provider: 'claude',
+      provider: 'anthropic',
       state: expired ? 'expired' : 'connected',
       authorized: !expired,
       expiresAt: session.expiresAt,
@@ -325,19 +325,19 @@ export class ClaudeOAuthBroker {
   }
 
   getStatus(): ClaudeOAuthStatus {
-    return this.coordinator.getStatus('claude') as ClaudeOAuthStatus
+    return this.coordinator.getStatus('anthropic') as ClaudeOAuthStatus
   }
 
   async start(): Promise<{ attemptId: string; url: string }> {
-    return this.coordinator.start('claude')
+    return this.coordinator.start('anthropic')
   }
 
   async completeFromInput(rawInput: string): Promise<ClaudeOAuthStatus> {
-    return (await this.coordinator.completeFromInput('claude', rawInput)) as ClaudeOAuthStatus
+    return (await this.coordinator.completeFromInput('anthropic', rawInput)) as ClaudeOAuthStatus
   }
 
   async waitForCompletion(timeoutMs = 120_000): Promise<ClaudeOAuthStatus> {
-    return (await this.coordinator.waitForCompletion('claude', timeoutMs)) as ClaudeOAuthStatus
+    return (await this.coordinator.waitForCompletion('anthropic', timeoutMs)) as ClaudeOAuthStatus
   }
 }
 
@@ -357,7 +357,7 @@ export class ClaudeTokenManager {
     const session = this.readSession()
     if (!session) {
       throw new Error(
-        'Claude OAuth credentials not found. Please run `bun zero provider login claude`.',
+        'Claude OAuth credentials not found. Please run `bun zero provider login anthropic`.',
       )
     }
 
@@ -377,7 +377,7 @@ export class ClaudeTokenManager {
     const currentSession = this.readSession()
     if (!currentSession) {
       throw new Error(
-        'Claude OAuth credentials not found. Please run `bun zero provider login claude`.',
+        'Claude OAuth credentials not found. Please run `bun zero provider login anthropic`.',
       )
     }
 

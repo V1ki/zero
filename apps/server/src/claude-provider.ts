@@ -4,7 +4,7 @@ import { loadConfig } from '@zero-os/core'
 import { readYaml, writeYaml } from '@zero-os/shared'
 import type { SystemConfig } from '@zero-os/shared'
 
-const CLAUDE_PROVIDER = 'claude'
+const CLAUDE_PROVIDER = 'anthropic'
 const CLAUDE_OAUTH_SESSION_REF = 'claude_oauth_session'
 
 function getZeroDir() {

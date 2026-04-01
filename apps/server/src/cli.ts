@@ -211,7 +211,7 @@ async function provider() {
   const target = process.argv[4]
 
   if (action !== 'login' || !target || !isManagedOAuthProvider(target)) {
-    console.error('Usage: bun zero provider login <chatgpt|claude>')
+    console.error('Usage: bun zero provider login <chatgpt|anthropic>')
     process.exit(1)
   }
 
@@ -533,7 +533,7 @@ Commands:
   secret set <k> <v> Store a secret in the vault
   secret list        List all stored secret keys
   secret delete <k>  Delete a secret
-  provider login <provider> Authenticate managed OAuth (chatgpt | claude)
+  provider login <provider> Authenticate managed OAuth (chatgpt | anthropic)
   status             Show system status
 
 Examples:
@@ -544,7 +544,7 @@ Examples:
   bun zero logs all --follow
   bun zero secret set openai_codex_api_key sk-xxx
   bun zero provider login chatgpt
-  bun zero provider login claude
+  bun zero provider login anthropic
   bun zero status
 `)
 }

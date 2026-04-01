@@ -12,6 +12,7 @@ import { GitOps } from '@zero-os/supervisor'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { getConfigPath } from '../../../server/src/chatgpt-provider'
+import { ChatGptUsageService } from '../../../server/src/chatgpt-usage'
 import { ClaudeUsageService } from '../../../server/src/claude-usage'
 import type { ZeroOS } from '../../../server/src/main'
 import {
@@ -25,6 +26,7 @@ import { runSessionJudge } from './session-judge'
 
 export function createRoutes(zero: ZeroOS) {
   const managedOAuth = createManagedOAuthCoordinator(zero.vault)
+  const chatgptUsage = new ChatGptUsageService(zero.vault)
   const claudeUsage = new ClaudeUsageService(zero.vault)
 
   interface TraceLogEntry {
@@ -914,13 +916,17 @@ export function createRoutes(zero: ZeroOS) {
         return c.json({ error: 'Unsupported OAuth provider' }, 404)
       }
 
-      if (provider !== 'claude') {
-        return c.json({ error: 'OAuth usage is not available for this provider' }, 404)
-      }
-
       try {
-        const usage = await claudeUsage.fetchUsage()
-        return c.json({ provider, usage })
+        switch (provider) {
+          case 'chatgpt': {
+            const usage = await chatgptUsage.fetchUsage()
+            return c.json({ provider: 'chatgpt', usage })
+          }
+          case 'anthropic': {
+            const usage = await claudeUsage.fetchUsage()
+            return c.json({ provider: 'anthropic', usage })
+          }
+        }
       } catch (error) {
         return c.json({ error: toErrorMessage(error) }, 500)
       }
@@ -940,10 +946,10 @@ export function createRoutes(zero: ZeroOS) {
       return c.json(managedOAuth.getStatus('chatgpt'))
     })
 
-    .get('/api/providers/claude/oauth/usage', async (c) => {
+    .get('/api/providers/anthropic/oauth/usage', async (c) => {
       try {
         const usage = await claudeUsage.fetchUsage()
-        return c.json({ provider: 'claude', usage })
+        return c.json({ provider: 'anthropic', usage })
       } catch (error) {
         return c.json({ error: toErrorMessage(error) }, 500)
       }

@@ -45,7 +45,7 @@ export class ClaudeUsageService {
     const session = this.tokenManager.readSession()
     if (!session) {
       throw new Error(
-        'Claude OAuth credentials not found. Please run `bun zero provider login claude`.',
+        'Claude OAuth credentials not found. Please run `bun zero provider login anthropic`.',
       )
     }
 

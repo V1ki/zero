@@ -2,10 +2,11 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { serializeClaudeOAuthSession } from '@zero-os/model'
+import { serializeChatGptOAuthSession, serializeClaudeOAuthSession } from '@zero-os/model'
 import type { ProviderAdapter } from '@zero-os/model'
 import { encryptSecrets } from '@zero-os/secrets'
 import { readYaml } from '@zero-os/shared/utils'
+import { getChatgptOAuthTokenRef } from '../../../../server/src/chatgpt-provider'
 import { getClaudeOAuthSessionRef } from '../../../../server/src/claude-provider'
 import { startZeroOS } from '../../../../server/src/main'
 import type { ZeroOS } from '../../../../server/src/main'
@@ -219,7 +220,7 @@ describe('API Routes (Real)', () => {
     expect(data.taskClosureModel).toBeNull()
   })
 
-  test('GET /api/providers/claude/oauth/usage returns Claude OAuth usage', async () => {
+  test('GET /api/providers/anthropic/oauth/usage returns Claude OAuth usage', async () => {
     zero.vault.set(
       getClaudeOAuthSessionRef(),
       serializeClaudeOAuthSession({
@@ -247,10 +248,10 @@ describe('API Routes (Real)', () => {
       )) as unknown as typeof fetch
 
     try {
-      const res = await app.request('/api/providers/claude/oauth/usage')
+      const res = await app.request('/api/providers/anthropic/oauth/usage')
       expect(res.status).toBe(200)
       const data = await res.json()
-      expect(data.provider).toBe('claude')
+      expect(data.provider).toBe('anthropic')
       expect(data.usage).toEqual({
         five_hour: {
           utilization: 33,
@@ -260,6 +261,123 @@ describe('API Routes (Real)', () => {
     } finally {
       globalThis.fetch = originalFetch
       zero.vault.delete(getClaudeOAuthSessionRef())
+    }
+  })
+
+  test('GET /api/providers/chatgpt/oauth/usage returns ChatGPT OAuth usage', async () => {
+    zero.vault.set(
+      getChatgptOAuthTokenRef(),
+      serializeChatGptOAuthSession({
+        accessToken: 'chatgpt-access-token',
+        refreshToken: 'chatgpt-refresh-token',
+        expiresAt: Date.now() + 60 * 60 * 1000,
+        tokenType: 'Bearer',
+        accountId: 'account-123',
+      }),
+    )
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe('https://chatgpt.com/backend-api/codex/wham/usage')
+      expect(init?.method).toBe('GET')
+      expect(init?.headers).toEqual({
+        Authorization: 'Bearer chatgpt-access-token',
+        'chatgpt-account-id': 'account-123',
+        'Content-Type': 'application/json',
+        'User-Agent': 'zero-os/0.1.0 (external, cli)',
+      })
+
+      return new Response(
+        JSON.stringify({
+          plan_type: 'pro',
+          rate_limit: {
+            primary_window: {
+              used_percent: 42,
+              limit_window_seconds: 3600,
+              reset_at: 1743508800,
+            },
+            secondary_window: {
+              used_percent: 5,
+              limit_window_seconds: 10080 * 60,
+              reset_at: 1744113600,
+            },
+          },
+          additional_rate_limits: [
+            {
+              limit_name: 'codex_other',
+              metered_feature: 'codex_other',
+              rate_limit: {
+                primary_window: {
+                  used_percent: 88,
+                  limit_window_seconds: 1800,
+                  reset_at: 1743507000,
+                },
+              },
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      )
+    }) as unknown as typeof fetch
+
+    try {
+      const res = await app.request('/api/providers/chatgpt/oauth/usage')
+      expect(res.status).toBe(200)
+      const data = await res.json()
+      expect(data.provider).toBe('chatgpt')
+      expect(data.usage).toEqual({
+        rateLimits: {
+          limitId: 'codex',
+          limitName: null,
+          primary: {
+            usedPercent: 42,
+            windowDurationMins: 60,
+            resetsAt: 1743508800,
+          },
+          secondary: {
+            usedPercent: 5,
+            windowDurationMins: 10080,
+            resetsAt: 1744113600,
+          },
+          credits: null,
+          planType: 'pro',
+        },
+        rateLimitsByLimitId: {
+          codex: {
+            limitId: 'codex',
+            limitName: null,
+            primary: {
+              usedPercent: 42,
+              windowDurationMins: 60,
+              resetsAt: 1743508800,
+            },
+            secondary: {
+              usedPercent: 5,
+              windowDurationMins: 10080,
+              resetsAt: 1744113600,
+            },
+            credits: null,
+            planType: 'pro',
+          },
+          codex_other: {
+            limitId: 'codex_other',
+            limitName: 'codex_other',
+            primary: {
+              usedPercent: 88,
+              windowDurationMins: 30,
+              resetsAt: 1743507000,
+            },
+            secondary: null,
+            credits: null,
+            planType: 'pro',
+          },
+        },
+      })
+    } finally {
+      globalThis.fetch = originalFetch
+      zero.vault.delete(getChatgptOAuthTokenRef())
     }
   })
 

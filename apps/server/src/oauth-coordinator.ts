@@ -7,7 +7,7 @@ import { toErrorMessage } from '@zero-os/shared'
 
 export const DEFAULT_OAUTH_REDIRECT_URI = 'http://localhost:1455/auth/callback'
 
-export type ManagedOAuthProvider = 'chatgpt' | 'claude'
+export type ManagedOAuthProvider = 'chatgpt' | 'anthropic'
 
 export type ManagedOAuthState =
   | 'idle'

@@ -47,6 +47,32 @@ interface ClaudeUsageSnapshot {
   extra_usage?: ClaudeExtraUsageWindow | null
 }
 
+interface ChatGptUsageWindow {
+  usedPercent: number
+  windowDurationMins: number | null
+  resetsAt: number | null
+}
+
+interface ChatGptCreditsSnapshot {
+  hasCredits: boolean
+  unlimited: boolean
+  balance: string | null
+}
+
+interface ChatGptRateLimitSnapshot {
+  limitId: string | null
+  limitName: string | null
+  primary: ChatGptUsageWindow | null
+  secondary: ChatGptUsageWindow | null
+  credits: ChatGptCreditsSnapshot | null
+  planType: string | null
+}
+
+interface ChatGptUsageSnapshot {
+  rateLimits: ChatGptRateLimitSnapshot
+  rateLimitsByLimitId: Record<string, ChatGptRateLimitSnapshot> | null
+}
+
 interface ConfigData {
   providers: Record<string, ProviderView>
   defaultModel: string
@@ -79,6 +105,10 @@ const TABS: { key: Tab; label: string }[] = [
 export function ConfigPage() {
   const [config, setConfig] = useState<ConfigData | null>(null)
   const [chatgptConnecting, setChatgptConnecting] = useState(false)
+  const [chatgptUsage, setChatgptUsage] = useState<ChatGptUsageSnapshot | null>(null)
+  const [chatgptUsageState, setChatgptUsageState] = useState<
+    'idle' | 'loading' | 'ready' | 'error'
+  >('idle')
   const [claudeUsage, setClaudeUsage] = useState<ClaudeUsageSnapshot | null>(null)
   const [claudeUsageState, setClaudeUsageState] = useState<'idle' | 'loading' | 'ready' | 'error'>(
     'idle',
@@ -122,7 +152,37 @@ export function ConfigPage() {
   }, [loadConfig])
 
   useEffect(() => {
-    const claudeProvider = config?.providers?.claude
+    const provider = config?.providers?.chatgpt
+    if (!provider?.authorized) {
+      setChatgptUsage(null)
+      setChatgptUsageState('idle')
+      return
+    }
+
+    let cancelled = false
+    setChatgptUsageState('loading')
+
+    apiFetch<{ provider: string; usage: ChatGptUsageSnapshot }>(
+      '/api/providers/chatgpt/oauth/usage',
+    )
+      .then((res) => {
+        if (cancelled) return
+        setChatgptUsage(res.usage)
+        setChatgptUsageState('ready')
+      })
+      .catch(() => {
+        if (cancelled) return
+        setChatgptUsage(null)
+        setChatgptUsageState('error')
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [config])
+
+  useEffect(() => {
+    const claudeProvider = config?.providers?.anthropic
     if (!claudeProvider?.authorized) {
       setClaudeUsage(null)
       setClaudeUsageState('idle')
@@ -133,7 +193,7 @@ export function ConfigPage() {
     setClaudeUsageState('loading')
 
     apiFetch<{ provider: string; usage: ClaudeUsageSnapshot | null }>(
-      '/api/providers/claude/oauth/usage',
+      '/api/providers/anthropic/oauth/usage',
     )
       .then((res) => {
         if (cancelled) return
@@ -290,6 +350,23 @@ export function ConfigPage() {
     }
   }
 
+  function formatUsageResetTimestamp(value: number | null | undefined) {
+    if (typeof value !== 'number') return 'n/a'
+
+    try {
+      return new Date(value * 1000).toLocaleString()
+    } catch {
+      return String(value)
+    }
+  }
+
+  function formatUsageWindowDuration(value: number | null | undefined) {
+    if (typeof value !== 'number' || value <= 0) return 'n/a'
+    if (value % (60 * 24) === 0) return `${value / (60 * 24)}d`
+    if (value % 60 === 0) return `${value / 60}h`
+    return `${value}m`
+  }
+
   const providers = config?.providers ?? {}
   const chatgptProvider = providers.chatgpt
   const models = Object.entries(providers).flatMap(([provName, prov]) =>
@@ -338,7 +415,7 @@ export function ConfigPage() {
                   {Object.entries(providers).map(([name, prov]) => {
                     const badge = getProviderBadge(prov)
                     const isChatgpt = name === 'chatgpt'
-                    const isClaude = name === 'claude'
+                    const isClaude = name === 'anthropic'
                     return (
                       <div
                         key={name}
@@ -354,6 +431,71 @@ export function ConfigPage() {
                               Authorized. Restart ZeRo to use new models.
                             </p>
                           )}
+                          {isChatgpt && prov.authorized && chatgptUsageState === 'loading' && (
+                            <p className="text-[11px] text-[var(--color-text-muted)] mt-1">
+                              Loading usage...
+                            </p>
+                          )}
+                          {isChatgpt && prov.authorized && chatgptUsageState === 'error' && (
+                            <p className="text-[11px] text-red-400 mt-1">
+                              Usage unavailable right now.
+                            </p>
+                          )}
+                          {isChatgpt &&
+                            prov.authorized &&
+                            chatgptUsageState === 'ready' &&
+                            chatgptUsage && (
+                              <div className="mt-1 space-y-1">
+                                {chatgptUsage.rateLimits.primary && (
+                                  <p className="text-[11px] text-[var(--color-text-muted)]">
+                                    Primary (
+                                    {formatUsageWindowDuration(
+                                      chatgptUsage.rateLimits.primary.windowDurationMins,
+                                    )}
+                                    ) :{' '}
+                                    {formatUsagePercent(
+                                      chatgptUsage.rateLimits.primary.usedPercent,
+                                    )}{' '}
+                                    · resets{' '}
+                                    {formatUsageResetTimestamp(
+                                      chatgptUsage.rateLimits.primary.resetsAt,
+                                    )}
+                                  </p>
+                                )}
+                                {chatgptUsage.rateLimits.secondary && (
+                                  <p className="text-[11px] text-[var(--color-text-muted)]">
+                                    Secondary (
+                                    {formatUsageWindowDuration(
+                                      chatgptUsage.rateLimits.secondary.windowDurationMins,
+                                    )}
+                                    ) :{' '}
+                                    {formatUsagePercent(
+                                      chatgptUsage.rateLimits.secondary.usedPercent,
+                                    )}{' '}
+                                    · resets{' '}
+                                    {formatUsageResetTimestamp(
+                                      chatgptUsage.rateLimits.secondary.resetsAt,
+                                    )}
+                                  </p>
+                                )}
+                                {(chatgptUsage.rateLimits.planType ||
+                                  chatgptUsage.rateLimits.credits?.hasCredits) && (
+                                  <p className="text-[11px] text-[var(--color-text-muted)]">
+                                    Plan: {chatgptUsage.rateLimits.planType ?? 'n/a'}
+                                    {chatgptUsage.rateLimits.credits?.hasCredits && (
+                                      <>
+                                        {' · '}
+                                        Credits{' '}
+                                        {chatgptUsage.rateLimits.credits.unlimited
+                                          ? 'unlimited'
+                                          : (chatgptUsage.rateLimits.credits.balance ??
+                                            'available')}
+                                      </>
+                                    )}
+                                  </p>
+                                )}
+                              </div>
+                            )}
                           {isClaude && prov.authorized && claudeUsageState === 'loading' && (
                             <p className="text-[11px] text-[var(--color-text-muted)] mt-1">
                               Loading usage...

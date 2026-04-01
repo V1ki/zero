@@ -53,7 +53,7 @@ fuse_list: []
 
     try {
       const result = ensureClaudeProviderConfig()
-      const claude = result.config.providers.claude
+      const claude = result.config.providers.anthropic
 
       expect(result.changed).toBe(true)
       expect(claude.apiType).toBe('anthropic_messages')
@@ -65,7 +65,7 @@ fuse_list: []
 
       const raw = readYaml<Record<string, unknown>>(getConfigPath())
       const rawProviders = raw.providers as Record<string, Record<string, unknown>>
-      const rawClaude = rawProviders.claude
+      const rawClaude = rawProviders.anthropic
       const rawAuth = rawClaude.auth as Record<string, unknown>
       const rawModels = rawClaude.models as Record<string, unknown>
 

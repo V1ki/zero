@@ -11,7 +11,7 @@ import {
 } from '../oauth-coordinator'
 
 interface FakeSession {
-  provider: 'chatgpt' | 'claude'
+  provider: 'chatgpt' | 'anthropic'
   accessToken: string
   expiresAt: number
 }
@@ -23,13 +23,13 @@ function createVault() {
   return { dir, vault }
 }
 
-function createDriver(provider: 'chatgpt' | 'claude'): ManagedOAuthDriver<FakeSession> {
+function createDriver(provider: 'chatgpt' | 'anthropic'): ManagedOAuthDriver<FakeSession> {
   const key = `${provider}_session`
 
   return {
     provider,
     getCallbackConfig() {
-      if (provider === 'claude') {
+      if (provider === 'anthropic') {
         return {
           listenHost: 'localhost',
           listenPort: 0,
@@ -79,7 +79,7 @@ describe('ManagedOAuthCoordinator', () => {
     const { dir, vault } = createVault()
     const coordinator = new ManagedOAuthCoordinator(vault, [
       createDriver('chatgpt'),
-      createDriver('claude'),
+      createDriver('anthropic'),
     ])
 
     try {
@@ -98,7 +98,7 @@ describe('ManagedOAuthCoordinator', () => {
       expect(chatgptStatus.state).toBe('connected')
       expect(chatgptStatus.requiresRestart).toBe(true)
 
-      const claudeStart = await coordinator.start('claude')
+      const claudeStart = await coordinator.start('anthropic')
       const claudeUrl = new URL(claudeStart.url)
       const claudeState = claudeUrl.searchParams.get('state')
       const claudeRedirectUri = claudeUrl.searchParams.get('redirect_uri')
@@ -106,13 +106,13 @@ describe('ManagedOAuthCoordinator', () => {
       expect(claudeRedirectUri).toMatch(/^http:\/\/localhost:\d+\/callback$/)
 
       const claudeStatus = await coordinator.completeFromInput(
-        'claude',
+        'anthropic',
         `${claudeRedirectUri}?code=claude-code&state=${claudeState}`,
       )
-      expect(claudeStatus.provider).toBe('claude')
+      expect(claudeStatus.provider).toBe('anthropic')
       expect(claudeStatus.state).toBe('connected')
       expect(vault.get('chatgpt_session')).toContain('chatgpt-code')
-      expect(vault.get('claude_session')).toContain('claude-code')
+      expect(vault.get('anthropic_session')).toContain('claude-code')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

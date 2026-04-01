@@ -170,7 +170,7 @@ export class ModelRegistry {
   }
 
   private resolveOauthToken(providerName: string, rawValue: string | undefined) {
-    if (providerName === 'claude') {
+    if (providerName === 'anthropic') {
       return resolveClaudeOAuthAccessToken(rawValue)
     }
 

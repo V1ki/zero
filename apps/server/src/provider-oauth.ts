@@ -12,7 +12,7 @@ import { ManagedOAuthCoordinator, type ManagedOAuthProvider } from './oauth-coor
 const MANAGED_OAUTH_TOKEN_REFS = new Set([getChatgptOAuthTokenRef(), getClaudeOAuthSessionRef()])
 
 export function isManagedOAuthProvider(provider: string): provider is ManagedOAuthProvider {
-  return provider === 'chatgpt' || provider === 'claude'
+  return provider === 'chatgpt' || provider === 'anthropic'
 }
 
 export function createManagedOAuthCoordinator(vault: Vault) {
@@ -23,7 +23,7 @@ export function prepareManagedOAuthProvider(provider: ManagedOAuthProvider) {
   switch (provider) {
     case 'chatgpt':
       return ensureChatgptProviderConfig()
-    case 'claude':
+    case 'anthropic':
       return ensureClaudeProviderConfig()
   }
 }
@@ -36,7 +36,7 @@ export function getManagedOAuthProviderLabel(provider: ManagedOAuthProvider) {
   switch (provider) {
     case 'chatgpt':
       return 'ChatGPT'
-    case 'claude':
+    case 'anthropic':
       return getClaudeProviderLabel()
   }
 }
