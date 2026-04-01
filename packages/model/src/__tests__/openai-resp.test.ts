@@ -89,7 +89,12 @@ function makeJwt(payload: Record<string, unknown>) {
   return `${header}.${body}.signature`
 }
 
-function makeChatGptSessionJson(accountId: string, expMs: number, accessTokenLabel?: string) {
+function makeChatGptSessionJson(
+  accountId: string,
+  expMs: number,
+  accessTokenLabel?: string,
+  tokenType = 'Bearer',
+) {
   const expSeconds = Math.floor(expMs / 1000)
   return JSON.stringify({
     accessToken:
@@ -99,10 +104,10 @@ function makeChatGptSessionJson(accountId: string, expMs: number, accessTokenLab
         'https://api.openai.com/auth': {
           chatgpt_account_id: accountId,
         },
-      }),
+    }),
     refreshToken: 'refresh-token',
     expiresAt: expMs,
-    tokenType: 'Bearer',
+    tokenType,
     accountId,
   })
 }
@@ -588,6 +593,7 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
       'acct_old',
       Date.now() + 5 * 60 * 1000,
       'old-token',
+      'bearer',
     )
     let refreshCalls = 0
     const headersSeen: string[] = []
@@ -646,6 +652,7 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
       'acct_old',
       Date.now() + 2 * 60 * 60 * 1000,
       'old-token',
+      'bearer',
     )
     let refreshCalls = 0
     const headersSeen: string[] = []

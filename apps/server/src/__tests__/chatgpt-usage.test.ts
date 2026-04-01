@@ -57,7 +57,7 @@ describe('ChatGptUsageService', () => {
         accessToken: 'chatgpt-access-token',
         refreshToken: 'chatgpt-refresh-token',
         expiresAt: Date.now() + 60 * 60 * 1000,
-        tokenType: 'Bearer',
+        tokenType: 'bearer',
         accountId: 'account-123',
       }),
     )
@@ -65,7 +65,7 @@ describe('ChatGptUsageService', () => {
     let callCount = 0
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       callCount += 1
-      expect(String(input)).toBe('https://chatgpt.com/backend-api/codex/wham/usage')
+      expect(String(input)).toBe('https://chatgpt.com/backend-api/wham/usage')
       expect(init?.method).toBe('GET')
       expect(init?.headers).toEqual({
         Authorization: 'Bearer chatgpt-access-token',

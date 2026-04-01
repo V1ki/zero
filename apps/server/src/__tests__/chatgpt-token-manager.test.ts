@@ -79,7 +79,7 @@ describe('ChatGptTokenManager', () => {
         JSON.stringify({
           access_token: makeAccessToken('acct_new', nowSeconds + 2 * 60 * 60),
           refresh_token: 'refresh-new',
-          token_type: 'Bearer',
+          token_type: 'bearer',
         }),
         {
           status: 200,
@@ -95,6 +95,7 @@ describe('ChatGptTokenManager', () => {
       expect(fetchCalls).toBe(1)
       expect(refreshed.refreshToken).toBe('refresh-new')
       expect(refreshed.accountId).toBe('acct_new')
+      expect(refreshed.tokenType).toBe('Bearer')
       expect(refreshed.expiresAt).toBeGreaterThan(Date.now() + 60 * 60 * 1000)
 
       const stored = parseChatGptOAuthSession(vault.get(getChatgptOAuthTokenRef()))

@@ -6,7 +6,7 @@ import type {
   TokenUsage,
 } from '@zero-os/shared'
 import OpenAI from 'openai'
-import { parseChatGptOAuthSession } from '../auth/chatgpt'
+import { getChatGptAuthorizationScheme, parseChatGptOAuthSession } from '../auth/chatgpt'
 import type { ChatGptOAuthSession } from '../auth/chatgpt'
 import type {
   AdapterConfig,
@@ -497,7 +497,7 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
     return fetch(`${this.baseUrl}/responses`, {
       method: 'POST',
       headers: {
-        Authorization: `${session.tokenType} ${session.accessToken}`,
+        Authorization: `${getChatGptAuthorizationScheme(session.tokenType)} ${session.accessToken}`,
         'chatgpt-account-id': session.accountId,
         'OpenAI-Beta': 'responses=experimental',
         originator: 'zero-os',

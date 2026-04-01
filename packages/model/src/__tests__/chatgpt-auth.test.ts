@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   decodeChatGptAccountId,
   decodeChatGptTokenExpiry,
+  getChatGptAuthorizationScheme,
   parseChatGptOAuthSession,
   serializeChatGptOAuthSession,
 } from '../auth/chatgpt'
@@ -61,5 +62,11 @@ describe('ChatGPT OAuth helpers', () => {
   test('decodeChatGptTokenExpiry returns null when exp claim missing', () => {
     const token = makeJwt({ sub: 'user_1' })
     expect(decodeChatGptTokenExpiry(token)).toBeNull()
+  })
+
+  test('getChatGptAuthorizationScheme normalizes bearer casing', () => {
+    expect(getChatGptAuthorizationScheme('bearer')).toBe('Bearer')
+    expect(getChatGptAuthorizationScheme('Bearer')).toBe('Bearer')
+    expect(getChatGptAuthorizationScheme('DPoP')).toBe('DPoP')
   })
 })

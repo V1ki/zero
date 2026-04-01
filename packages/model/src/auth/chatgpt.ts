@@ -8,6 +8,10 @@ export interface ChatGptOAuthSession {
   accountId: string
 }
 
+export function getChatGptAuthorizationScheme(tokenType: string): string {
+  return tokenType.trim().toLowerCase() === 'bearer' ? 'Bearer' : tokenType
+}
+
 export function serializeChatGptOAuthSession(session: ChatGptOAuthSession): string {
   return JSON.stringify(session)
 }

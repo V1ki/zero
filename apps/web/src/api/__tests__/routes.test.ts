@@ -271,13 +271,13 @@ describe('API Routes (Real)', () => {
         accessToken: 'chatgpt-access-token',
         refreshToken: 'chatgpt-refresh-token',
         expiresAt: Date.now() + 60 * 60 * 1000,
-        tokenType: 'Bearer',
+        tokenType: 'bearer',
         accountId: 'account-123',
       }),
     )
 
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      expect(String(input)).toBe('https://chatgpt.com/backend-api/codex/wham/usage')
+      expect(String(input)).toBe('https://chatgpt.com/backend-api/wham/usage')
       expect(init?.method).toBe('GET')
       expect(init?.headers).toEqual({
         Authorization: 'Bearer chatgpt-access-token',

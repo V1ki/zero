@@ -1,9 +1,10 @@
 import { loadConfig } from '@zero-os/core'
+import { getChatGptAuthorizationScheme } from '@zero-os/model'
 import type { Vault } from '@zero-os/secrets'
 import { ChatGptTokenManager } from './chatgpt-oauth'
 import { getConfigPath } from './chatgpt-provider'
 
-const DEFAULT_CHATGPT_BASE_URL = 'https://chatgpt.com/backend-api/codex'
+const DEFAULT_CHATGPT_BASE_URL = 'https://chatgpt.com/backend-api'
 const ZERO_OS_USER_AGENT = 'zero-os/0.1.0 (external, cli)'
 
 interface ChatGptRawRateLimitWindow {
@@ -67,6 +68,19 @@ function normalizeBaseUrl(baseUrl: string | undefined): string {
   while (normalized.endsWith('/')) {
     normalized = normalized.slice(0, -1)
   }
+
+  if (
+    (normalized.startsWith('https://chatgpt.com') ||
+      normalized.startsWith('https://chat.openai.com')) &&
+    !normalized.includes('/backend-api')
+  ) {
+    normalized = `${normalized}/backend-api`
+  }
+
+  if (normalized.endsWith('/backend-api/codex')) {
+    normalized = normalized.slice(0, -'/codex'.length)
+  }
+
   return normalized
 }
 
@@ -172,7 +186,7 @@ export class ChatGptUsageService {
     const response = await fetch(getChatGptUsageUrl(), {
       method: 'GET',
       headers: {
-        Authorization: `${session.tokenType} ${session.accessToken}`,
+        Authorization: `${getChatGptAuthorizationScheme(session.tokenType)} ${session.accessToken}`,
         'chatgpt-account-id': session.accountId,
         'Content-Type': 'application/json',
         'User-Agent': ZERO_OS_USER_AGENT,

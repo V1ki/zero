@@ -14,6 +14,7 @@ export {
   serializeChatGptOAuthSession,
   decodeChatGptAccountId,
   decodeChatGptTokenExpiry,
+  getChatGptAuthorizationScheme,
 } from './auth/chatgpt'
 export type { ChatGptOAuthSession } from './auth/chatgpt'
 export {

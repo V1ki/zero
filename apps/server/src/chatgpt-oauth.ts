@@ -3,6 +3,7 @@ import {
   type ChatGptOAuthSession,
   decodeChatGptAccountId,
   decodeChatGptTokenExpiry,
+  getChatGptAuthorizationScheme,
   parseChatGptOAuthSession,
   serializeChatGptOAuthSession,
 } from '@zero-os/model'
@@ -209,7 +210,7 @@ export class ChatGptOAuthDriver implements ManagedOAuthDriver<ChatGptOAuthSessio
       accessToken: data.access_token,
       refreshToken: data.refresh_token,
       expiresAt,
-      tokenType: data.token_type,
+      tokenType: getChatGptAuthorizationScheme(data.token_type),
       accountId,
     }
   }
@@ -373,7 +374,7 @@ export class ChatGptTokenManager {
       accessToken: data.access_token,
       refreshToken: data.refresh_token ?? currentSession.refreshToken,
       expiresAt,
-      tokenType: data.token_type ?? currentSession.tokenType,
+      tokenType: getChatGptAuthorizationScheme(data.token_type ?? currentSession.tokenType),
       accountId,
     }
 
