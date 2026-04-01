@@ -12,6 +12,7 @@ import { GitOps } from '@zero-os/supervisor'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { getConfigPath } from '../../../server/src/chatgpt-provider'
+import { ClaudeUsageService } from '../../../server/src/claude-usage'
 import type { ZeroOS } from '../../../server/src/main'
 import {
   createManagedOAuthCoordinator,
@@ -24,6 +25,7 @@ import { runSessionJudge } from './session-judge'
 
 export function createRoutes(zero: ZeroOS) {
   const managedOAuth = createManagedOAuthCoordinator(zero.vault)
+  const claudeUsage = new ClaudeUsageService(zero.vault)
 
   interface TraceLogEntry {
     spanId: string
@@ -906,6 +908,24 @@ export function createRoutes(zero: ZeroOS) {
       return c.json(managedOAuth.getStatus(provider))
     })
 
+    .get('/api/providers/:provider/oauth/usage', async (c) => {
+      const provider = c.req.param('provider')
+      if (!isManagedOAuthProvider(provider)) {
+        return c.json({ error: 'Unsupported OAuth provider' }, 404)
+      }
+
+      if (provider !== 'claude') {
+        return c.json({ error: 'OAuth usage is not available for this provider' }, 404)
+      }
+
+      try {
+        const usage = await claudeUsage.fetchUsage()
+        return c.json({ provider, usage })
+      } catch (error) {
+        return c.json({ error: toErrorMessage(error) }, 500)
+      }
+    })
+
     .post('/api/providers/chatgpt/oauth/start', async (c) => {
       try {
         prepareManagedOAuthProvider('chatgpt')
@@ -918,6 +938,15 @@ export function createRoutes(zero: ZeroOS) {
 
     .get('/api/providers/chatgpt/oauth/status', (c) => {
       return c.json(managedOAuth.getStatus('chatgpt'))
+    })
+
+    .get('/api/providers/claude/oauth/usage', async (c) => {
+      try {
+        const usage = await claudeUsage.fetchUsage()
+        return c.json({ provider: 'claude', usage })
+      } catch (error) {
+        return c.json({ error: toErrorMessage(error) }, 500)
+      }
     })
 
     // Logs

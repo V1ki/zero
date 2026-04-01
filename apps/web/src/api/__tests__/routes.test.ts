@@ -2,9 +2,11 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { serializeClaudeOAuthSession } from '@zero-os/model'
 import type { ProviderAdapter } from '@zero-os/model'
 import { encryptSecrets } from '@zero-os/secrets'
 import { readYaml } from '@zero-os/shared/utils'
+import { getClaudeOAuthSessionRef } from '../../../../server/src/claude-provider'
 import { startZeroOS } from '../../../../server/src/main'
 import type { ZeroOS } from '../../../../server/src/main'
 import { createRoutes } from '../routes'
@@ -15,6 +17,7 @@ let testDataDir: string
 const previousZeroDataDir = process.env.ZERO_DATA_DIR
 const previousMasterKey = process.env.ZERO_MASTER_KEY_BASE64
 const TEST_MASTER_KEY = Buffer.alloc(32, 9)
+const originalFetch = globalThis.fetch
 
 function writeConfig(dataDir: string) {
   writeFileSync(
@@ -97,6 +100,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  globalThis.fetch = originalFetch
   await zero.shutdown()
   if (previousMasterKey === undefined) {
     process.env.ZERO_MASTER_KEY_BASE64 = undefined
@@ -213,6 +217,50 @@ describe('API Routes (Real)', () => {
     expect(data.defaultModel).toBe('openai-codex/gpt-5.4-medium')
     expect(data.providers).toBeDefined()
     expect(data.taskClosureModel).toBeNull()
+  })
+
+  test('GET /api/providers/claude/oauth/usage returns Claude OAuth usage', async () => {
+    zero.vault.set(
+      getClaudeOAuthSessionRef(),
+      serializeClaudeOAuthSession({
+        accessToken: 'access-token',
+        refreshToken: 'refresh-token',
+        expiresAt: Date.now() + 60 * 60 * 1000,
+        tokenType: 'Bearer',
+        scopes: ['user:profile', 'user:inference'],
+        subscriptionType: 'max',
+      }),
+    )
+
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          five_hour: {
+            utilization: 33,
+            resets_at: '2026-04-01T12:00:00.000Z',
+          },
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      )) as unknown as typeof fetch
+
+    try {
+      const res = await app.request('/api/providers/claude/oauth/usage')
+      expect(res.status).toBe(200)
+      const data = await res.json()
+      expect(data.provider).toBe('claude')
+      expect(data.usage).toEqual({
+        five_hour: {
+          utilization: 33,
+          resets_at: '2026-04-01T12:00:00.000Z',
+        },
+      })
+    } finally {
+      globalThis.fetch = originalFetch
+      zero.vault.delete(getClaudeOAuthSessionRef())
+    }
   })
 
   test('PUT /api/config updates task closure model in config.yaml', async () => {

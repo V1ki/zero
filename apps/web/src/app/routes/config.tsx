@@ -26,6 +26,27 @@ interface ProviderView {
   >
 }
 
+interface ClaudeRateLimitWindow {
+  utilization: number | null
+  resets_at: string | null
+}
+
+interface ClaudeExtraUsageWindow {
+  is_enabled: boolean
+  monthly_limit: number | null
+  used_credits: number | null
+  utilization: number | null
+}
+
+interface ClaudeUsageSnapshot {
+  five_hour?: ClaudeRateLimitWindow | null
+  seven_day?: ClaudeRateLimitWindow | null
+  seven_day_oauth_apps?: ClaudeRateLimitWindow | null
+  seven_day_opus?: ClaudeRateLimitWindow | null
+  seven_day_sonnet?: ClaudeRateLimitWindow | null
+  extra_usage?: ClaudeExtraUsageWindow | null
+}
+
 interface ConfigData {
   providers: Record<string, ProviderView>
   defaultModel: string
@@ -58,6 +79,10 @@ const TABS: { key: Tab; label: string }[] = [
 export function ConfigPage() {
   const [config, setConfig] = useState<ConfigData | null>(null)
   const [chatgptConnecting, setChatgptConnecting] = useState(false)
+  const [claudeUsage, setClaudeUsage] = useState<ClaudeUsageSnapshot | null>(null)
+  const [claudeUsageState, setClaudeUsageState] = useState<'idle' | 'loading' | 'ready' | 'error'>(
+    'idle',
+  )
   const [channels, setChannels] = useState<ChannelConfig[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<Tab>('models')
@@ -95,6 +120,36 @@ export function ConfigPage() {
       .then((res) => setLastStableTag(res.tag))
       .catch(() => {})
   }, [loadConfig])
+
+  useEffect(() => {
+    const claudeProvider = config?.providers?.claude
+    if (!claudeProvider?.authorized) {
+      setClaudeUsage(null)
+      setClaudeUsageState('idle')
+      return
+    }
+
+    let cancelled = false
+    setClaudeUsageState('loading')
+
+    apiFetch<{ provider: string; usage: ClaudeUsageSnapshot | null }>(
+      '/api/providers/claude/oauth/usage',
+    )
+      .then((res) => {
+        if (cancelled) return
+        setClaudeUsage(res.usage)
+        setClaudeUsageState('ready')
+      })
+      .catch(() => {
+        if (cancelled) return
+        setClaudeUsage(null)
+        setClaudeUsageState('error')
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [config])
 
   async function handleAddSecret() {
     if (!newSecretKey.trim() || !newSecretValue.trim()) return
@@ -221,6 +276,20 @@ export function ConfigPage() {
     })
   }
 
+  function formatUsagePercent(value: number | null | undefined) {
+    return typeof value === 'number' ? `${value}%` : 'n/a'
+  }
+
+  function formatUsageResetAt(value: string | null | undefined) {
+    if (!value) return 'n/a'
+
+    try {
+      return new Date(value).toLocaleString()
+    } catch {
+      return value
+    }
+  }
+
   const providers = config?.providers ?? {}
   const chatgptProvider = providers.chatgpt
   const models = Object.entries(providers).flatMap(([provName, prov]) =>
@@ -269,6 +338,7 @@ export function ConfigPage() {
                   {Object.entries(providers).map(([name, prov]) => {
                     const badge = getProviderBadge(prov)
                     const isChatgpt = name === 'chatgpt'
+                    const isClaude = name === 'claude'
                     return (
                       <div
                         key={name}
@@ -284,6 +354,46 @@ export function ConfigPage() {
                               Authorized. Restart ZeRo to use new models.
                             </p>
                           )}
+                          {isClaude && prov.authorized && claudeUsageState === 'loading' && (
+                            <p className="text-[11px] text-[var(--color-text-muted)] mt-1">
+                              Loading usage...
+                            </p>
+                          )}
+                          {isClaude && prov.authorized && claudeUsageState === 'error' && (
+                            <p className="text-[11px] text-red-400 mt-1">
+                              Usage unavailable right now.
+                            </p>
+                          )}
+                          {isClaude &&
+                            prov.authorized &&
+                            claudeUsageState === 'ready' &&
+                            claudeUsage && (
+                              <div className="mt-1 space-y-1">
+                                <p className="text-[11px] text-[var(--color-text-muted)]">
+                                  5h: {formatUsagePercent(claudeUsage.five_hour?.utilization)} ·
+                                  resets {formatUsageResetAt(claudeUsage.five_hour?.resets_at)}
+                                </p>
+                                <p className="text-[11px] text-[var(--color-text-muted)]">
+                                  7d: {formatUsagePercent(claudeUsage.seven_day?.utilization)}
+                                  {claudeUsage.seven_day_oauth_apps && (
+                                    <>
+                                      {' · '}
+                                      OAuth apps{' '}
+                                      {formatUsagePercent(
+                                        claudeUsage.seven_day_oauth_apps.utilization,
+                                      )}
+                                    </>
+                                  )}
+                                </p>
+                                {claudeUsage.extra_usage && (
+                                  <p className="text-[11px] text-[var(--color-text-muted)]">
+                                    Extra usage: {claudeUsage.extra_usage.used_credits ?? 0}/
+                                    {claudeUsage.extra_usage.monthly_limit ?? 'n/a'} ·{' '}
+                                    {formatUsagePercent(claudeUsage.extra_usage.utilization)}
+                                  </p>
+                                )}
+                              </div>
+                            )}
                         </div>
                         <div className="flex items-center gap-2">
                           <span className={`text-[11px] px-2 py-0.5 rounded-md ${badge.className}`}>
@@ -381,7 +491,10 @@ export function ConfigPage() {
                 </div>
               </div>
 
-              <div className="card p-5 animate-fade-up lg:col-span-2" style={{ animationDelay: '120ms' }}>
+              <div
+                className="card p-5 animate-fade-up lg:col-span-2"
+                style={{ animationDelay: '120ms' }}
+              >
                 <h3 className="text-[14px] font-semibold mb-1 text-[var(--color-text-secondary)]">
                   Task Closure Model
                 </h3>
