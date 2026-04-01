@@ -41,15 +41,15 @@ By default the runner benchmarks both configured models:
 From the project root:
 
 ```bash
-bun run benchmark/subagent-comparison/src/runner.ts
+bun run benchmarks/subagent-comparison/src/runner.ts
 ```
 
 Examples:
 
 ```bash
-bun run benchmark/subagent-comparison/src/runner.ts --models=claude-opus-4-6
-bun run benchmark/subagent-comparison/src/runner.ts --scenarios=single-task,parallel-tasks
-bun run benchmark/subagent-comparison/src/runner.ts --runs=3
+bun run benchmarks/subagent-comparison/src/runner.ts --models=claude-opus-4-6
+bun run benchmarks/subagent-comparison/src/runner.ts --scenarios=single-task,parallel-tasks
+bun run benchmarks/subagent-comparison/src/runner.ts --runs=3
 ```
 
 ## CLI Options
@@ -60,7 +60,7 @@ bun run benchmark/subagent-comparison/src/runner.ts --runs=3
 
 ## Output
 
-The runner writes artifacts under `benchmark/subagent-comparison/results/`:
+The runner writes artifacts under `benchmarks/subagent-comparison/results/`:
 
 - `benchmark-<timestamp>.json`: raw benchmark results plus aggregated summary
 - `benchmark-<timestamp>.md`: markdown summary table

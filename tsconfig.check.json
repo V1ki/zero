@@ -12,7 +12,7 @@
     "apps/**/*.tsx",
     "packages/**/*.ts",
     "packages/**/*.tsx",
-    "benchmark/**/*.ts"
+    "benchmarks/**/*.ts"
   ],
   "exclude": [".zero", "node_modules", "dist", "test-results", "apps/web/.zero", "apps/web/dist"]
 }

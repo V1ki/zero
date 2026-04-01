@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*", "apps/*", "benchmark/*"],
+  "workspaces": ["packages/*", "apps/*", "benchmarks/*"],
   "scripts": {
     "test": "bun test --recursive packages apps",
     "test:e2e": "bunx playwright test",

@@ -6,4 +6,6 @@ dist/
 .env
 .env.local
 test-results
-benchmarks
+benchmarks/**/results/**
+!benchmarks/**/results/
+!benchmarks/**/results/.gitkeep

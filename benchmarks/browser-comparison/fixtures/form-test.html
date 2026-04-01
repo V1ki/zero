@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Browser Benchmark — Form Test</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 600px; margin: 40px auto; padding: 0 20px; }
+    label { display: block; margin: 12px 0 4px; font-weight: 600; }
+    input, select, textarea { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+    button { margin-top: 16px; padding: 10px 24px; background: #0070f3; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    #result { margin-top: 20px; padding: 16px; background: #f0f0f0; border-radius: 4px; display: none; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Form Test</h1>
+  <form id="testForm">
+    <label for="name">Name</label>
+    <input type="text" id="name" name="name" placeholder="Enter name">
+
+    <label for="email">Email</label>
+    <input type="email" id="email" name="email" placeholder="Enter email">
+
+    <label for="phone">Phone</label>
+    <input type="tel" id="phone" name="phone" placeholder="Enter phone">
+
+    <label for="country">Country</label>
+    <select id="country" name="country">
+      <option value="">Select country</option>
+      <option value="us">United States</option>
+      <option value="cn">China</option>
+      <option value="jp">Japan</option>
+      <option value="de">Germany</option>
+    </select>
+
+    <label for="message">Message</label>
+    <textarea id="message" name="message" rows="3" placeholder="Enter message"></textarea>
+
+    <label>
+      <input type="checkbox" id="agree" name="agree"> I agree to the terms
+    </label>
+
+    <button type="submit" id="submitBtn">Submit</button>
+  </form>
+
+  <div id="result"></div>
+
+  <script>
+    document.getElementById('testForm').addEventListener('submit', (e) => {
+      e.preventDefault()
+      const form = e.target
+      const data = Object.fromEntries(new FormData(form))
+      data.agree = document.getElementById('agree').checked
+      data.timestamp = new Date().toISOString()
+      const result = document.getElementById('result')
+      result.style.display = 'block'
+      result.textContent = JSON.stringify(data, null, 2)
+    })
+  </script>
+</body>
+</html>
