@@ -6,7 +6,18 @@ import type {
   StreamEvent,
   TokenUsage,
 } from '@zero-os/shared'
-import type { AdapterConfig, ProviderAdapter } from './base'
+import { parseClaudeOAuthSession, type ClaudeOAuthSession } from '../auth/claude'
+import type {
+  AdapterConfig,
+  OAuthTokenProvider,
+  OAuthTokenRefresher,
+  ProviderAdapter,
+} from './base'
+
+const CLAUDE_PREEMPTIVE_REFRESH_WINDOW_MS = 5 * 60_000
+const CLAUDE_MIN_VALIDITY_MS = 60_000
+const CLAUDE_REAUTH_MESSAGE =
+  'Claude OAuth session can no longer be refreshed. Please re-authenticate with `bun zero provider login anthropic`.'
 
 /**
  * Anthropic Messages API adapter.
@@ -19,28 +30,27 @@ export class AnthropicAdapter implements ProviderAdapter {
   private static readonly CLAUDE_CODE_SYSTEM_PROMPT =
     "You are Claude Code, Anthropic's official CLI for Claude."
   private client: Anthropic
+  private baseUrl: string
   private modelId: string
   private isOAuthClient: boolean
+  private apiKey?: string
+  private oauthToken?: string
+  private oauthTokenProvider?: OAuthTokenProvider
+  private oauthTokenRefresher?: OAuthTokenRefresher
 
   constructor(config: AdapterConfig) {
+    this.baseUrl = config.baseUrl
+    this.apiKey = config.apiKey
+    this.oauthToken = config.oauthToken
+    this.oauthTokenProvider = config.oauthTokenProvider
+    this.oauthTokenRefresher = config.oauthTokenRefresher
     this.isOAuthClient = Boolean(config.oauthToken)
-    this.client = new Anthropic({
-      apiKey: this.isOAuthClient ? null : (config.apiKey ?? 'dummy'),
-      authToken: config.oauthToken ?? null,
-      baseURL: config.baseUrl,
-      ...(this.isOAuthClient && {
-        defaultHeaders: {
-          'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20',
-          'user-agent': 'claude-cli/0.0.0 (external, cli)',
-          'x-app': 'cli',
-        },
-      }),
-    })
+    this.client = this.createClient(this.extractOauthAccessToken(config.oauthToken))
     this.modelId = config.modelConfig.modelId
   }
 
   async complete(req: CompletionRequest): Promise<CompletionResponse> {
-    const response = await this.client.messages.create(this.buildRequest(req))
+    const response = await this.withOauthRetry((client) => client.messages.create(this.buildRequest(req)))
 
     return {
       id: response.id,
@@ -58,10 +68,12 @@ export class AnthropicAdapter implements ProviderAdapter {
   }
 
   async *stream(req: CompletionRequest): AsyncIterable<StreamEvent> {
-    const stream = await this.client.messages.create({
-      ...this.buildRequest(req),
-      stream: true,
-    })
+    const stream = await this.withOauthRetry((client) =>
+      client.messages.create({
+        ...this.buildRequest(req),
+        stream: true,
+      }),
+    )
 
     let streamModel: string | undefined
     let streamUsage: TokenUsage | undefined
@@ -131,12 +143,14 @@ export class AnthropicAdapter implements ProviderAdapter {
 
   async healthCheck(): Promise<boolean> {
     try {
-      const response = await this.client.messages.create({
-        model: this.modelId,
-        system: this.buildSystem(),
-        messages: [{ role: 'user', content: 'ping' }],
-        max_tokens: 5,
-      })
+      const response = await this.withOauthRetry((client) =>
+        client.messages.create({
+          model: this.modelId,
+          system: this.buildSystem(),
+          messages: [{ role: 'user', content: 'ping' }],
+          max_tokens: 5,
+        }),
+      )
       return response.content.length > 0
     } catch {
       return false
@@ -299,5 +313,105 @@ export class AnthropicAdapter implements ProviderAdapter {
       default:
         return 'end_turn'
     }
+  }
+
+  private createClient(oauthAccessToken?: string): Anthropic {
+    return new Anthropic({
+      apiKey: this.isOAuthClient ? null : (this.apiKey ?? 'dummy'),
+      authToken: oauthAccessToken ?? null,
+      baseURL: this.baseUrl,
+      ...(this.isOAuthClient && {
+        defaultHeaders: {
+          'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20',
+          'user-agent': 'claude-cli/0.0.0 (external, cli)',
+          'x-app': 'cli',
+        },
+      }),
+    })
+  }
+
+  private async withOauthRetry<T>(request: (client: Anthropic) => Promise<T>): Promise<T> {
+    if (!this.isOAuthClient) {
+      return request(this.client)
+    }
+
+    if (!this.readClaudeSession() && !this.oauthTokenProvider && !this.oauthTokenRefresher) {
+      return request(this.client)
+    }
+
+    let session = await this.getClaudeSession()
+
+    try {
+      return await request(this.getClientForSession(session))
+    } catch (error) {
+      if (!this.isUnauthorizedError(error) || !this.oauthTokenRefresher) {
+        throw error
+      }
+
+      await this.oauthTokenRefresher('unauthorized')
+      session = this.getRequiredClaudeSession()
+      return request(this.getClientForSession(session))
+    }
+  }
+
+  private getClientForSession(session: ClaudeOAuthSession): Anthropic {
+    if (!this.oauthTokenProvider && !this.oauthTokenRefresher) {
+      return this.client
+    }
+
+    return this.createClient(session.accessToken)
+  }
+
+  private async getClaudeSession(): Promise<ClaudeOAuthSession> {
+    const session = this.getRequiredClaudeSession()
+    if (
+      this.isClaudeSessionExpiring(session, CLAUDE_PREEMPTIVE_REFRESH_WINDOW_MS) &&
+      this.oauthTokenRefresher
+    ) {
+      try {
+        await this.oauthTokenRefresher('expiring')
+        return this.getRequiredClaudeSession()
+      } catch (error) {
+        if (this.isClaudeSessionExpiring(session, CLAUDE_MIN_VALIDITY_MS)) {
+          throw error
+        }
+      }
+    }
+
+    return session
+  }
+
+  private getRequiredClaudeSession(): ClaudeOAuthSession {
+    const session = this.readClaudeSession()
+    if (!session) {
+      throw new Error(
+        'Claude OAuth credentials not found. Please run `bun zero provider login anthropic`.',
+      )
+    }
+
+    if (this.isClaudeSessionExpiring(session, CLAUDE_MIN_VALIDITY_MS)) {
+      throw new Error(CLAUDE_REAUTH_MESSAGE)
+    }
+
+    return session
+  }
+
+  private readClaudeSession(): ClaudeOAuthSession | null {
+    return parseClaudeOAuthSession(this.oauthTokenProvider?.() ?? this.oauthToken)
+  }
+
+  private extractOauthAccessToken(rawValue: string | undefined): string | undefined {
+    return parseClaudeOAuthSession(rawValue)?.accessToken ?? rawValue
+  }
+
+  private isClaudeSessionExpiring(session: ClaudeOAuthSession, minValidityMs: number): boolean {
+    return Date.now() >= session.expiresAt - minValidityMs
+  }
+
+  private isUnauthorizedError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') return false
+
+    const withStatus = error as { status?: number; response?: { status?: number } }
+    return withStatus.status === 401 || withStatus.response?.status === 401
   }
 }

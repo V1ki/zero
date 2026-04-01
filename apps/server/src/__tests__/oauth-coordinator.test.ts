@@ -23,7 +23,10 @@ function createVault() {
   return { dir, vault }
 }
 
-function createDriver(provider: 'chatgpt' | 'anthropic'): ManagedOAuthDriver<FakeSession> {
+function createDriver(
+  provider: 'chatgpt' | 'anthropic',
+  options: { onRefreshStatus?: (vault: Vault) => Promise<void> | void } = {},
+): ManagedOAuthDriver<FakeSession> {
   const key = `${provider}_session`
 
   return {
@@ -71,6 +74,9 @@ function createDriver(provider: 'chatgpt' | 'anthropic'): ManagedOAuthDriver<Fak
         attemptId: options.attemptId,
       }
     },
+    async refreshStatus(vault) {
+      await options.onRefreshStatus?.(vault)
+    },
   }
 }
 
@@ -113,6 +119,43 @@ describe('ManagedOAuthCoordinator', () => {
       expect(claudeStatus.state).toBe('connected')
       expect(vault.get('chatgpt_session')).toContain('chatgpt-code')
       expect(vault.get('anthropic_session')).toContain('claude-code')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('getStatusWithRefresh refreshes stored sessions before reporting status', async () => {
+    const { dir, vault } = createVault()
+    const coordinator = new ManagedOAuthCoordinator(vault, [
+      createDriver('chatgpt', {
+        async onRefreshStatus(vault) {
+          vault.set(
+            'chatgpt_session',
+            JSON.stringify({
+              provider: 'chatgpt',
+              accessToken: 'chatgpt:fresh',
+              expiresAt: Date.now() + 5 * 60_000,
+            } satisfies FakeSession),
+          )
+        },
+      }),
+    ])
+
+    try {
+      vault.set(
+        'chatgpt_session',
+        JSON.stringify({
+          provider: 'chatgpt',
+          accessToken: 'chatgpt:stale',
+          expiresAt: Date.now() - 1_000,
+        } satisfies FakeSession),
+      )
+
+      const status = await coordinator.getStatusWithRefresh('chatgpt')
+
+      expect(status.state).toBe('connected')
+      expect(status.authorized).toBe(true)
+      expect(vault.get('chatgpt_session')).toContain('chatgpt:fresh')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

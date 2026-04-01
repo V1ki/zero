@@ -243,6 +243,10 @@ export class ChatGptOAuthDriver implements ManagedOAuthDriver<ChatGptOAuthSessio
     }
   }
 
+  async refreshStatus(vault: Vault): Promise<void> {
+    await new ChatGptTokenManager(vault).ensureFreshSession()
+  }
+
   getCallbackSuccessHtml(): string {
     return '<html><body><h2>ZeRo OS</h2><p>ChatGPT authorization received. You can return to ZeRo OS.</p></body></html>'
   }

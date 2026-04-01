@@ -127,6 +127,27 @@ function makeMessage(role: 'user' | 'assistant', text: string): Message {
   }
 }
 
+function makeClaudeOAuthSessionJson(
+  accessToken: string,
+  expiresAt: number,
+  overrides: Partial<{
+    refreshToken: string
+    tokenType: string
+    scopes: string[]
+    subscriptionType: string | null
+  }> = {},
+) {
+  return JSON.stringify({
+    accessToken,
+    refreshToken: overrides.refreshToken ?? 'refresh-token',
+    expiresAt,
+    tokenType: overrides.tokenType ?? 'Bearer',
+    scopes:
+      overrides.scopes ?? ['user:profile', 'user:inference', 'user:sessions:claude_code'],
+    subscriptionType: overrides.subscriptionType ?? 'max',
+  })
+}
+
 describe('Anthropic Adapter (Pure Logic)', () => {
   test('convertMessages correctly handles text messages', () => {
     const messages: Message[] = [makeMessage('user', 'Hello'), makeMessage('assistant', 'Hi there')]
@@ -678,6 +699,146 @@ describe('Anthropic Adapter (Pure Logic)', () => {
         text: 'You are a cached assistant.',
       },
     ])
+  })
+
+  test('oauth requests refresh expiring sessions before sending Anthropic requests', async () => {
+    const originalFetch = globalThis.fetch
+    let currentSession = makeClaudeOAuthSessionJson('claude-stale-token', Date.now() + 2 * 60_000)
+    const seenAuthHeaders: string[] = []
+    let refreshCalls = 0
+
+    const oauthAdapter = new AnthropicAdapter({
+      baseUrl: 'https://api.anthropic.test',
+      auth: { type: 'oauth2', oauthTokenRef: 'CLAUDE_CODE_OAUTH_TOKEN' },
+      modelConfig: {
+        modelId: 'claude-sonnet-4-6',
+        maxContext: 200000,
+        maxOutput: 8192,
+        capabilities: ['tools', 'vision'],
+        tags: ['balanced'],
+      },
+      oauthToken: currentSession,
+      oauthTokenProvider: () => currentSession,
+      oauthTokenRefresher: async () => {
+        refreshCalls += 1
+        currentSession = makeClaudeOAuthSessionJson(
+          'claude-fresh-token',
+          Date.now() + 30 * 60_000,
+        )
+      },
+    })
+
+    globalThis.fetch = (async (_input, init) => {
+      const headers = new Headers(init?.headers)
+      seenAuthHeaders.push(headers.get('authorization') ?? '')
+      return new Response(
+        JSON.stringify({
+          id: 'msg_refresh_001',
+          content: [{ type: 'text', text: 'ok' }],
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 9, output_tokens: 4 },
+          model: 'claude-sonnet-4-6',
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      )
+    }) as typeof fetch
+
+    try {
+      const response = await oauthAdapter.complete({
+        messages: [makeMessage('user', 'refresh me')],
+        stream: false,
+      })
+
+      expect(response.content[0]).toEqual({ type: 'text', text: 'ok' })
+      expect(refreshCalls).toBe(1)
+      expect(seenAuthHeaders).toEqual(['Bearer claude-fresh-token'])
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('oauth requests retry once after a 401 with refreshed credentials', async () => {
+    const originalFetch = globalThis.fetch
+    let currentSession = makeClaudeOAuthSessionJson(
+      'claude-unauthorized-token',
+      Date.now() + 30 * 60_000,
+    )
+    const seenAuthHeaders: string[] = []
+    let refreshCalls = 0
+
+    const oauthAdapter = new AnthropicAdapter({
+      baseUrl: 'https://api.anthropic.test',
+      auth: { type: 'oauth2', oauthTokenRef: 'CLAUDE_CODE_OAUTH_TOKEN' },
+      modelConfig: {
+        modelId: 'claude-sonnet-4-6',
+        maxContext: 200000,
+        maxOutput: 8192,
+        capabilities: ['tools', 'vision'],
+        tags: ['balanced'],
+      },
+      oauthToken: currentSession,
+      oauthTokenProvider: () => currentSession,
+      oauthTokenRefresher: async (reason) => {
+        expect(reason).toBe('unauthorized')
+        refreshCalls += 1
+        currentSession = makeClaudeOAuthSessionJson('claude-retried-token', Date.now() + 3600_000)
+      },
+    })
+
+    globalThis.fetch = (async (_input, init) => {
+      const headers = new Headers(init?.headers)
+      const authorization = headers.get('authorization') ?? ''
+      seenAuthHeaders.push(authorization)
+
+      if (authorization === 'Bearer claude-unauthorized-token') {
+        return new Response(
+          JSON.stringify({
+            type: 'error',
+            error: {
+              type: 'authentication_error',
+              message: 'expired',
+            },
+          }),
+          {
+            status: 401,
+            headers: { 'content-type': 'application/json' },
+          },
+        )
+      }
+
+      return new Response(
+        JSON.stringify({
+          id: 'msg_retry_001',
+          content: [{ type: 'text', text: 'retried' }],
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 7, output_tokens: 3 },
+          model: 'claude-sonnet-4-6',
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      )
+    }) as typeof fetch
+
+    try {
+      const response = await oauthAdapter.complete({
+        messages: [makeMessage('user', 'retry me')],
+        stream: false,
+      })
+
+      expect(response.content[0]).toEqual({ type: 'text', text: 'retried' })
+      expect(refreshCalls).toBe(1)
+      expect(seenAuthHeaders).toEqual([
+        'Bearer claude-unauthorized-token',
+        'Bearer claude-retried-token',
+      ])
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 })
 

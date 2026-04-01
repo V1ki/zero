@@ -312,6 +312,10 @@ export class ClaudeOAuthDriver implements ManagedOAuthDriver<ClaudeOAuthSession>
     }
   }
 
+  async refreshStatus(vault: Vault): Promise<void> {
+    await new ClaudeTokenManager(vault).ensureFreshSession()
+  }
+
   getCallbackSuccessHtml(): string {
     return '<html><body><h2>ZeRo OS</h2><p>Claude authorization received. You can return to ZeRo OS.</p></body></html>'
   }

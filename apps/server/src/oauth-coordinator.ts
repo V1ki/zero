@@ -64,6 +64,7 @@ export interface ManagedOAuthDriver<Session = unknown> {
       requiresRestart: boolean
     },
   ): ManagedOAuthStatus
+  refreshStatus?(vault: Vault): Promise<void>
   getCallbackSuccessHtml?(): string
 }
 
@@ -138,6 +139,30 @@ export class ManagedOAuthCoordinator {
     return driver.buildConnectedStatus(storedSession, {
       requiresRestart: false,
     })
+  }
+
+  async getStatusWithRefresh(provider: ManagedOAuthProvider): Promise<ManagedOAuthStatus> {
+    const attempt = this.attemptsByProvider.get(provider)
+    if (attempt) {
+      return this.getStatus(provider)
+    }
+
+    const driver = this.requireDriver(provider)
+    const storedSession = driver.readSession(this.vault)
+    if (!storedSession) {
+      return this.buildIdleStatus(provider)
+    }
+
+    if (driver.refreshStatus) {
+      try {
+        await driver.refreshStatus(this.vault)
+      } catch {
+        // Fall back to the stored session status. Real request paths still handle
+        // refresh errors explicitly; status reads stay best-effort.
+      }
+    }
+
+    return this.getStatus(provider)
   }
 
   async start(provider: ManagedOAuthProvider): Promise<{ attemptId: string; url: string }> {

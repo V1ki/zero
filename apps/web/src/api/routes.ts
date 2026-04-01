@@ -48,31 +48,33 @@ export function createRoutes(zero: ZeroOS) {
     return `${providerName}/${modelName}`
   }
 
-  function buildProvidersForConfig() {
+  async function buildProvidersForConfig() {
     const config = readCurrentConfig()
     return Object.fromEntries(
-      Object.entries(config.providers).map(([name, provider]) => {
-        const secretRef = provider.auth.apiKeyRef ?? provider.auth.oauthTokenRef
-        const configured = secretRef ? !!zero.vault.get(secretRef) : false
-        const oauthStatus = managedOAuth.supportsProvider(name)
-          ? managedOAuth.getStatus(name)
+      await Promise.all(
+        Object.entries(config.providers).map(async ([name, provider]) => {
+          const secretRef = provider.auth.apiKeyRef ?? provider.auth.oauthTokenRef
+          const configured = secretRef ? !!zero.vault.get(secretRef) : false
+          const oauthStatus = managedOAuth.supportsProvider(name)
+          ? await managedOAuth.getStatusWithRefresh(name)
           : undefined
 
-        return [
-          name,
-          {
-            apiType: provider.apiType,
-            baseUrl: provider.baseUrl,
-            authType: provider.auth.type,
-            secretRef,
-            configured,
-            authorized: oauthStatus ? oauthStatus.authorized : configured,
-            oauthState: oauthStatus?.state,
-            requiresRestart: oauthStatus?.requiresRestart ?? false,
-            models: provider.models,
-          },
-        ]
-      }),
+          return [
+            name,
+            {
+              apiType: provider.apiType,
+              baseUrl: provider.baseUrl,
+              authType: provider.auth.type,
+              secretRef,
+              configured,
+              authorized: oauthStatus ? oauthStatus.authorized : configured,
+              oauthState: oauthStatus?.state,
+              requiresRestart: oauthStatus?.requiresRestart ?? false,
+              models: provider.models,
+            },
+          ]
+        }),
+      ),
     )
   }
 
@@ -913,10 +915,10 @@ export function createRoutes(zero: ZeroOS) {
     })
 
     // Config
-    .get('/api/config', (c) => {
+    .get('/api/config', async (c) => {
       const config = readCurrentConfig()
       return c.json({
-        providers: buildProvidersForConfig(),
+        providers: await buildProvidersForConfig(),
         defaultModel: config.defaultModel,
         fallbackChain: config.fallbackChain,
         schedules: config.schedules,
@@ -969,13 +971,18 @@ export function createRoutes(zero: ZeroOS) {
       }
     })
 
-    .get('/api/providers/:provider/oauth/status', (c) => {
+    .get('/api/providers/:provider/oauth/status', async (c) => {
       const provider = c.req.param('provider')
       if (!isManagedOAuthProvider(provider)) {
         return c.json({ error: 'Unsupported OAuth provider' }, 404)
       }
 
-      return c.json(managedOAuth.getStatus(provider))
+      const refresh = c.req.query('refresh')
+      const status =
+        refresh === 'soft'
+          ? await managedOAuth.getStatusWithRefresh(provider)
+          : managedOAuth.getStatus(provider)
+      return c.json(status)
     })
 
     .get('/api/providers/:provider/oauth/usage', async (c) => {
@@ -1010,8 +1017,13 @@ export function createRoutes(zero: ZeroOS) {
       }
     })
 
-    .get('/api/providers/chatgpt/oauth/status', (c) => {
-      return c.json(managedOAuth.getStatus('chatgpt'))
+    .get('/api/providers/chatgpt/oauth/status', async (c) => {
+      const refresh = c.req.query('refresh')
+      const status =
+        refresh === 'soft'
+          ? await managedOAuth.getStatusWithRefresh('chatgpt')
+          : managedOAuth.getStatus('chatgpt')
+      return c.json(status)
     })
 
     .get('/api/providers/anthropic/oauth/usage', async (c) => {

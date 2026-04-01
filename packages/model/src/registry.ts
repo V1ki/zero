@@ -4,7 +4,6 @@ import type { AdapterConfig, OAuthTokenRefresher, ProviderAdapter } from './adap
 import { TrackedAdapter, type UsageRecorder } from './adapters/tracked'
 import { OpenAIChatAdapter } from './adapters/openai-chat'
 import { OpenAIResponsesAdapter } from './adapters/openai-resp'
-import { resolveClaudeOAuthAccessToken } from './auth/claude'
 import { LiteLLMPricing } from './pricing'
 
 export interface ResolvedModel {
@@ -183,10 +182,6 @@ export class ModelRegistry {
   }
 
   private resolveOauthToken(providerName: string, rawValue: string | undefined) {
-    if (providerName === 'anthropic') {
-      return resolveClaudeOAuthAccessToken(rawValue)
-    }
-
     return rawValue
   }
 
