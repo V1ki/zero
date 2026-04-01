@@ -10,6 +10,7 @@ export interface EmbeddingConfig {
     totalTokens: number
     batchSize: number
     sessionId: string | null
+    durationMs: number
   }) => void
 }
 
@@ -37,6 +38,7 @@ export class EmbeddingClient implements EmbeddingProvider {
 
   async embedBatch(texts: string[], sessionId?: string): Promise<number[][]> {
     if (texts.length === 0) return []
+    const startedAt = Date.now()
 
     const response = await fetch(`${this.config.baseUrl.replace(/\/$/, '')}/embeddings`, {
       method: 'POST',
@@ -69,6 +71,7 @@ export class EmbeddingClient implements EmbeddingProvider {
         totalTokens: payload.usage.total_tokens ?? 0,
         batchSize: texts.length,
         sessionId: sessionId ?? null,
+        durationMs: Date.now() - startedAt,
       })
     }
 

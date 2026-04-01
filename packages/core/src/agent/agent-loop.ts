@@ -1,6 +1,7 @@
 import type { ProviderAdapter } from '@zero-os/model'
 import type {
   CompletionRequest,
+  CompletionRequestMeta,
   CompletionResponse,
   ContentBlock,
   Message,
@@ -50,6 +51,8 @@ export interface AgentLoopConfig {
   stream?: boolean
   logger: ToolLogger
   transientRetryDelayMs?: (attempt: number) => number
+  meta?: CompletionRequestMeta
+  getMeta?: (ctx: LoopIterationContext) => CompletionRequestMeta | undefined
 }
 
 export interface AgentLoopHooks {
@@ -151,7 +154,7 @@ export class AgentLoop {
 
     while (this.hasRemainingIterations(ctx.iteration)) {
       ctx.iteration += 1
-      const request = this.buildRequest(messages)
+      const request = this.buildRequest(messages, ctx)
       const response = await this.complete(request, ctx)
 
       if (response.content.length === 0) {
@@ -222,7 +225,7 @@ export class AgentLoop {
       await this.hooks.afterToolResults?.(ctx)
 
       if (this.hooks.shouldInterrupt?.(ctx)) {
-        const finalRequest = this.buildRequest(messages)
+        const finalRequest = this.buildRequest(messages, ctx)
         const finalResponse = await this.complete(finalRequest, ctx)
         const finalMsg = this.buildAssistantMessage(finalResponse, ctx)
         messages.push(finalMsg)
@@ -238,13 +241,14 @@ export class AgentLoop {
     return this.config.maxIterations === undefined || iterationCount < this.config.maxIterations
   }
 
-  private buildRequest(messages: Message[]): CompletionRequest {
+  private buildRequest(messages: Message[], ctx: LoopIterationContext): CompletionRequest {
     return {
       messages,
       tools: this.config.tools,
       system: this.config.system,
       stream: this.config.stream ?? true,
       maxTokens: this.config.maxOutputTokens ?? 16384,
+      meta: this.config.getMeta?.(ctx) ?? this.config.meta,
     }
   }
 

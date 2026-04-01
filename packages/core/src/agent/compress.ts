@@ -1,16 +1,7 @@
 import type { ProviderAdapter } from '@zero-os/model'
-import type { MetricsDB } from '@zero-os/observe'
-import type { CompressionResult, Message, ModelPricing } from '@zero-os/shared'
+import type { CompressionResult, Message } from '@zero-os/shared'
 import { estimateMessageTokens, generateId, now } from '@zero-os/shared'
 import { CONTEXT_PARAMS } from './params'
-import { recordCompletionUsage } from './record-usage'
-
-export interface CompressionObsCtx {
-  metrics?: MetricsDB
-  pricing?: ModelPricing
-  providerName?: string
-  modelLabel?: string
-}
 
 /**
  * Compress conversation history when it exceeds the budget.
@@ -22,7 +13,7 @@ export async function compressConversation(
   conversationBudget: number,
   adapter: ProviderAdapter,
   sessionId: string,
-  obs?: CompressionObsCtx,
+  meta?: { parentSessionId?: string },
 ): Promise<CompressionResult> {
   const tokensBefore = messages.reduce((sum, m) => sum + estimateMessageTokens(m.content) + 4, 0)
 
@@ -75,18 +66,8 @@ export async function compressConversation(
   const retained = messages.slice(splitIndex)
 
   // Generate summary via LLM
-  const startedAt = Date.now()
-  const summaryResponse = await generateSummary(toSummarize, adapter)
+  const summaryResponse = await generateSummary(toSummarize, adapter, meta)
   const summary = summaryResponse.text
-
-  recordCompletionUsage(obs?.metrics, summaryResponse.response, {
-    sessionId,
-    purpose: 'compression',
-    model: obs?.modelLabel ?? summaryResponse.response.model,
-    provider: obs?.providerName ?? 'unknown',
-    pricing: obs?.pricing,
-    durationMs: Date.now() - startedAt,
-  })
 
   // Create summary message
   const summaryMessage: Message = {
@@ -125,6 +106,7 @@ export async function compressConversation(
 async function generateSummary(
   messages: Message[],
   adapter: ProviderAdapter,
+  meta?: { parentSessionId?: string },
 ): Promise<{ text: string; response: import('@zero-os/shared').CompletionResponse }> {
   const conversationText = messages
     .map((m) => {
@@ -177,6 +159,11 @@ ${conversationText}
     system: '你是一个对话摘要助手。请将提供的对话历史压缩为简洁的摘要。',
     stream: false,
     maxTokens: 1024,
+    meta: {
+      sessionId: messages[0]?.sessionId ?? 'compression',
+      purpose: 'compression',
+      ...(meta?.parentSessionId ? { parentSessionId: meta.parentSessionId } : {}),
+    },
   })
 
   const textBlocks = response.content.filter((b) => b.type === 'text')

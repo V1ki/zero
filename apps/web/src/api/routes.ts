@@ -430,6 +430,7 @@ export function createRoutes(zero: ZeroOS) {
       if (session) {
         const stats = zero.metrics.sessionStats(id)
         const auxiliaryCost = zero.metrics.sessionAuxiliaryCost(id)
+        const purposeBreakdown = zero.metrics.sessionUsageByPurpose(id)
         const cacheEconomics = summarizeSessionCacheEconomics(id)
         return c.json({
           id: session.data.id,
@@ -450,6 +451,7 @@ export function createRoutes(zero: ZeroOS) {
           outputTokens: stats.outputTokens,
           cacheWriteTokens: stats.cacheWriteTokens,
           cacheReadTokens: stats.cacheReadTokens,
+          reasoningTokens: stats.reasoningTokens,
           effectiveInputTokens: stats.effectiveInputTokens,
           cacheHitRate: stats.cacheHitRate,
           cacheReadCost: cacheEconomics.cacheReadCost,
@@ -458,6 +460,7 @@ export function createRoutes(zero: ZeroOS) {
           netSavings: cacheEconomics.netSavings,
           totalCost: stats.totalCost,
           auxiliaryCost,
+          purposeBreakdown,
           requestCount: stats.requestCount,
         })
       }
@@ -470,6 +473,7 @@ export function createRoutes(zero: ZeroOS) {
       const messages = zero.sessionManager.getMessagesFromDB(id)
       const stats = zero.metrics.sessionStats(id)
       const auxiliaryCost = zero.metrics.sessionAuxiliaryCost(id)
+      const purposeBreakdown = zero.metrics.sessionUsageByPurpose(id)
       const cacheEconomics = summarizeSessionCacheEconomics(id)
       return c.json({
         id: row.id,
@@ -490,6 +494,7 @@ export function createRoutes(zero: ZeroOS) {
         outputTokens: stats.outputTokens,
         cacheWriteTokens: stats.cacheWriteTokens,
         cacheReadTokens: stats.cacheReadTokens,
+        reasoningTokens: stats.reasoningTokens,
         effectiveInputTokens: stats.effectiveInputTokens,
         cacheHitRate: stats.cacheHitRate,
         cacheReadCost: cacheEconomics.cacheReadCost,
@@ -498,6 +503,7 @@ export function createRoutes(zero: ZeroOS) {
         netSavings: cacheEconomics.netSavings,
         totalCost: stats.totalCost,
         auxiliaryCost,
+        purposeBreakdown,
         requestCount: stats.requestCount,
       })
     })
@@ -590,6 +596,19 @@ export function createRoutes(zero: ZeroOS) {
         } satisfies StoredSessionJudgeEntry
 
         zero.observability.appendSessionJudge(id, entry)
+        zero.metrics.recordEvaluation({
+          sessionId: id,
+          model: result.run.model,
+          overallScore: result.run.result.overallScore,
+          verdict: result.run.result.verdict,
+          confidence: result.run.result.confidence,
+          summary: result.run.result.summary,
+          dimensions: result.run.result.dimensions,
+          findings: result.run.result.findings,
+          signals: result.run.result.signals as unknown as Record<string, unknown>,
+          generatedAt: result.run.generatedAt,
+          createdAt: result.run.generatedAt,
+        })
 
         return c.json(result.run)
       } catch (error) {
@@ -769,6 +788,55 @@ export function createRoutes(zero: ZeroOS) {
         range,
         ...zero.metrics.systemCosts(range),
       })
+    })
+
+    .get('/api/metrics/cost-by-channel', (c) => {
+      const range = c.req.query('range') ?? '7d'
+      return c.json({ range, data: zero.metrics.costByChannel(range) })
+    })
+
+    .get('/api/metrics/cost-by-source', (c) => {
+      const range = c.req.query('range') ?? '7d'
+      return c.json({ range, data: zero.metrics.costBySource(range) })
+    })
+
+    .get('/api/metrics/channel/:name/cost-by-day', (c) => {
+      const range = c.req.query('range') ?? '30d'
+      const source = c.req.query('source') ?? undefined
+      const name = decodeURIComponent(c.req.param('name'))
+      return c.json({
+        range,
+        channelName: name,
+        source: source ?? null,
+        data: zero.metrics.channelCostByDay(name, range, source),
+      })
+    })
+
+    .get('/api/metrics/channel/:name/purpose-breakdown', (c) => {
+      const range = c.req.query('range') ?? '30d'
+      const source = c.req.query('source') ?? undefined
+      const name = decodeURIComponent(c.req.param('name'))
+      return c.json({
+        range,
+        channelName: name,
+        source: source ?? null,
+        data: zero.metrics.channelPurposeBreakdown(name, range, source),
+      })
+    })
+
+    .get('/api/metrics/evaluations/trend', (c) => {
+      const range = c.req.query('range') ?? '30d'
+      return c.json({ range, data: zero.metrics.evaluationTrend(range) })
+    })
+
+    .get('/api/metrics/evaluations/dimensions', (c) => {
+      const range = c.req.query('range') ?? '30d'
+      return c.json({ range, data: zero.metrics.evaluationDimensionAvg(range) })
+    })
+
+    .get('/api/metrics/evaluations/top-findings', (c) => {
+      const range = c.req.query('range') ?? '30d'
+      return c.json({ range, data: zero.metrics.topFindings(range) })
     })
 
     .get('/api/metrics/cost-by-day', (c) => {

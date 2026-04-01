@@ -62,6 +62,12 @@ export interface TokenUsage {
   reasoning?: number
 }
 
+export interface CompletionRequestMeta {
+  sessionId: string
+  purpose: string
+  parentSessionId?: string
+}
+
 export interface CompletionRequest {
   messages: Message[]
   tools?: ToolDefinition[]
@@ -69,6 +75,7 @@ export interface CompletionRequest {
   stream: boolean
   maxTokens?: number
   model?: string
+  meta?: CompletionRequestMeta
 }
 
 export interface CompletionResponse {

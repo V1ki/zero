@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test'
 import type { ProviderAdapter } from '@zero-os/model'
-import { MetricsDB } from '@zero-os/observe'
 import { generateId, now } from '@zero-os/shared'
 import type { Message } from '@zero-os/shared'
 import { compressConversation } from '../compress'
@@ -114,31 +113,36 @@ describe('compressConversation', () => {
     expect(result.stats.tokensAfter).toBeGreaterThan(0)
   })
 
-  test('records compression usage when observability context is provided', async () => {
-    const metrics = MetricsDB.createInMemory()
+  test('adds compression meta to the summary request', async () => {
+    let seenMeta: import('@zero-os/shared').CompletionRequest['meta'] | undefined
     const messages: Message[] = []
     for (let i = 0; i < 20; i++) {
       const role = i % 2 === 0 ? 'user' : 'assistant'
       messages.push(makeMessage(role as 'user' | 'assistant', `Msg ${i}: ${'z'.repeat(200)}`))
     }
 
-    await compressConversation(messages, 100, mockAdapter, 'test-session', {
-      metrics,
-      pricing: { input: 1000, output: 2000 },
-      providerName: 'test-provider',
-      modelLabel: 'test-provider/compressor',
+    const adapter = {
+      ...mockAdapter,
+      async complete(request) {
+        seenMeta = request.meta
+        return {
+          id: 'test',
+          content: [{ type: 'text' as const, text: 'Summary of conversation' }],
+          stopReason: 'end_turn' as const,
+          usage: { input: 100, output: 50 },
+          model: 'mock',
+        }
+      },
+    } satisfies ProviderAdapter
+
+    await compressConversation(messages, 100, adapter, 'test-session', {
+      parentSessionId: 'parent-session',
     })
 
-    const summary = metrics.usageSummaryByPurpose('1d')
-    expect(summary).toEqual([
-      expect.objectContaining({
-        purpose: 'compression',
-        category: 'completion',
-        eventCount: 1,
-      }),
-    ])
-    expect(metrics.sessionAuxiliaryCost('test-session')).toBeGreaterThan(0)
-
-    metrics.close()
+    expect(seenMeta).toEqual({
+      sessionId: 'test-session',
+      purpose: 'compression',
+      parentSessionId: 'parent-session',
+    })
   })
 })

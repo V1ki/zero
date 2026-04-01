@@ -24,9 +24,18 @@ interface Props {
   outputTokens: number
   cacheWriteTokens: number
   cacheReadTokens: number
+  reasoningTokens: number
   effectiveInputTokens: number
   cacheHitRate: number
   totalCost: number
+  auxiliaryCost: number
+  purposeBreakdown: Array<{
+    purpose: string
+    totalCost: number
+    totalTokens: number
+    reasoningTokens: number
+    requestCount: number
+  }>
   onArchived?: () => void
   onDeleted?: () => void
 }
@@ -44,15 +53,25 @@ export function MetadataBar({
   outputTokens,
   cacheWriteTokens,
   cacheReadTokens,
+  reasoningTokens,
   effectiveInputTokens,
   cacheHitRate,
   totalCost,
+  auxiliaryCost,
+  purposeBreakdown,
   onArchived,
   onDeleted,
 }: Props) {
   const [showArchiveConfirm, setShowArchiveConfirm] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const { addToast } = useUIStore()
+  const purposeBreakdownTitle = purposeBreakdown
+    .filter((row) => row.totalCost > 0 || row.requestCount > 0)
+    .map(
+      (row) =>
+        `${row.purpose}: ${formatCost(row.totalCost)} · ${formatNumber(row.totalTokens)} tokens · ${row.requestCount} calls`,
+    )
+    .join('\n')
 
   async function handleArchive() {
     await apiPost(`/api/sessions/${sessionId}/archive`, {})
@@ -120,6 +139,8 @@ export function MetadataBar({
           cache {formatNumber(cacheReadTokens)} read / {formatNumber(cacheWriteTokens)} write
         </span>
         <span className="text-[var(--color-text-disabled)]">·</span>
+        <span>reasoning {formatNumber(reasoningTokens)}</span>
+        <span className="text-[var(--color-text-disabled)]">·</span>
         <span>
           eff {formatNumber(effectiveInputTokens)} · {(cacheHitRate * 100).toFixed(0)}% hit
         </span>
@@ -127,6 +148,13 @@ export function MetadataBar({
         <span className="flex items-center gap-0.5">
           <CurrencyDollar size={12} />
           {formatCost(totalCost)}
+        </span>
+        <span className="text-[var(--color-text-disabled)]">·</span>
+        <span
+          title={purposeBreakdownTitle || undefined}
+          className={purposeBreakdownTitle ? 'cursor-help' : undefined}
+        >
+          aux {formatCost(auxiliaryCost)}
         </span>
       </div>
 

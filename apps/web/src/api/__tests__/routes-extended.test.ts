@@ -303,6 +303,201 @@ describe('API Routes Extended', () => {
     expect(data.repairTrend).toBeDefined()
   })
 
+  test('GET /api/metrics/cost-by-channel and related channel routes aggregate usage_ledger attribution', async () => {
+    const createdAt = new Date().toISOString()
+    const telegramSession = zero.sessionManager.create('telegram', {
+      channelId: 'chat_ops_001',
+      channelName: 'ops-bot',
+    })
+    const webSession = zero.sessionManager.create('web', {
+      channelId: 'dashboard_001',
+      channelName: 'dashboard',
+    })
+    zero.sessionDb.saveSession(telegramSession.data)
+    zero.sessionDb.saveSession(webSession.data)
+
+    zero.metrics.recordUsage({
+      id: 'usage_attr_telegram_agent',
+      sessionId: telegramSession.data.id,
+      category: 'completion',
+      purpose: 'agent_loop',
+      model: 'chatgpt/gpt-5.4',
+      provider: 'chatgpt',
+      inputTokens: 120,
+      outputTokens: 30,
+      cost: 0.3,
+      durationMs: 1200,
+      createdAt,
+    })
+    zero.metrics.recordUsage({
+      id: 'usage_attr_telegram_closure',
+      sessionId: telegramSession.data.id,
+      category: 'completion',
+      purpose: 'task_closure',
+      model: 'chatgpt/gpt-5.4',
+      provider: 'chatgpt',
+      inputTokens: 20,
+      outputTokens: 5,
+      cost: 0.05,
+      durationMs: 150,
+      createdAt,
+    })
+    zero.metrics.recordUsage({
+      id: 'usage_attr_web_agent',
+      sessionId: webSession.data.id,
+      category: 'completion',
+      purpose: 'agent_loop',
+      model: 'chatgpt/gpt-5.4',
+      provider: 'chatgpt',
+      inputTokens: 80,
+      outputTokens: 20,
+      cost: 0.1,
+      durationMs: 500,
+      createdAt,
+    })
+
+    const channelRes = await app.request('/api/metrics/cost-by-channel?range=7d')
+    expect(channelRes.status).toBe(200)
+    const channelData = await channelRes.json()
+    expect(channelData.data).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: 'telegram',
+          channelName: 'ops-bot',
+          totalCost: 0.35,
+        }),
+        expect.objectContaining({
+          source: 'web',
+          channelName: 'dashboard',
+          totalCost: 0.1,
+        }),
+      ]),
+    )
+
+    const sourceRes = await app.request('/api/metrics/cost-by-source?range=7d')
+    expect(sourceRes.status).toBe(200)
+    const sourceData = await sourceRes.json()
+    const telegramSource = sourceData.data.find(
+      (row: { source: string }) => row.source === 'telegram',
+    )
+    const webSource = sourceData.data.find((row: { source: string }) => row.source === 'web')
+    expect(telegramSource).toEqual(
+      expect.objectContaining({
+        source: 'telegram',
+        totalCost: 0.35,
+      }),
+    )
+    // Other web-scoped tests in this suite may have already written usage rows.
+    // Assert that this route includes at least the usage inserted by this case.
+    expect(webSource).toEqual(
+      expect.objectContaining({
+        source: 'web',
+      }),
+    )
+    expect(webSource.totalCost).toBeGreaterThanOrEqual(0.1)
+
+    const detailRes = await app.request(
+      `/api/metrics/channel/${encodeURIComponent('ops-bot')}/cost-by-day?range=7d&source=telegram`,
+    )
+    expect(detailRes.status).toBe(200)
+    const detailData = await detailRes.json()
+    expect(detailData.data).toEqual([
+      expect.objectContaining({
+        totalCost: 0.35,
+      }),
+    ])
+
+    const breakdownRes = await app.request(
+      `/api/metrics/channel/${encodeURIComponent('ops-bot')}/purpose-breakdown?range=7d&source=telegram`,
+    )
+    expect(breakdownRes.status).toBe(200)
+    const breakdownData = await breakdownRes.json()
+    expect(breakdownData.data).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ purpose: 'agent_loop', totalCost: 0.3 }),
+        expect.objectContaining({ purpose: 'task_closure', totalCost: 0.05 }),
+      ]),
+    )
+  })
+
+  test('GET /api/metrics/evaluations/* returns persisted evaluation aggregates', async () => {
+    const createdAt = new Date().toISOString()
+    zero.metrics.recordEvaluation({
+      sessionId: 'sess_eval_metrics_001',
+      model: 'judge/gpt-5.4',
+      overallScore: 4,
+      verdict: 'strong',
+      confidence: 'high',
+      summary: 'Strong result',
+      dimensions: [
+        {
+          key: 'task_completion',
+          label: 'Task Completion',
+          score: 4,
+          maxScore: 5,
+          rationale: 'Completed the work.',
+        },
+      ],
+      findings: [{ severity: 'warn', title: 'Duplicate search', evidence: 'Repeated once.' }],
+      signals: { totalCost: 0.4, requestCount: 2 },
+      generatedAt: createdAt,
+      createdAt,
+    })
+    zero.metrics.recordEvaluation({
+      sessionId: 'sess_eval_metrics_002',
+      model: 'judge/gpt-5.4',
+      overallScore: 2,
+      verdict: 'weak',
+      confidence: 'medium',
+      summary: 'Weak result',
+      dimensions: [
+        {
+          key: 'task_completion',
+          label: 'Task Completion',
+          score: 2,
+          maxScore: 5,
+          rationale: 'Missed the final step.',
+        },
+      ],
+      findings: [{ severity: 'warn', title: 'Duplicate search', evidence: 'Repeated twice.' }],
+      signals: { totalCost: 0.8, requestCount: 4 },
+      generatedAt: createdAt,
+      createdAt,
+    })
+
+    const trendRes = await app.request('/api/metrics/evaluations/trend?range=30d')
+    expect(trendRes.status).toBe(200)
+    const trendData = await trendRes.json()
+    expect(trendData.data[0]).toMatchObject({
+      avgScore: 3,
+      evalCount: 2,
+      strongCount: 1,
+      weakCount: 1,
+    })
+
+    const dimensionsRes = await app.request('/api/metrics/evaluations/dimensions?range=30d')
+    expect(dimensionsRes.status).toBe(200)
+    const dimensionsData = await dimensionsRes.json()
+    expect(dimensionsData.data).toEqual([
+      expect.objectContaining({
+        dimensionKey: 'task_completion',
+        avgScore: 3,
+        count: 2,
+      }),
+    ])
+
+    const findingsRes = await app.request('/api/metrics/evaluations/top-findings?range=30d')
+    expect(findingsRes.status).toBe(200)
+    const findingsData = await findingsRes.json()
+    expect(findingsData.data).toEqual([
+      expect.objectContaining({
+        title: 'Duplicate search',
+        severity: 'warn',
+        count: 2,
+      }),
+    ])
+  })
+
   test('GET /api/sessions/:id/traces returns traces', async () => {
     const session = zero.sessionManager.create('web')
     const span = zero.tracer.startSpan(session.data.id, 'task_closure_decision', undefined, {
@@ -922,11 +1117,13 @@ describe('API Routes Extended', () => {
       expect(historyData.history[0].artifacts.primary.response.rawText).toContain(
         'duplicate bash checks added cost',
       )
-      const judgeUsage = zero.metrics
-        .usageSummaryByPurpose('1d')
-        .find((entry) => entry.purpose === 'session_judge')
-      expect(judgeUsage?.category).toBe('completion')
-      expect(judgeUsage?.eventCount).toBeGreaterThanOrEqual(1)
+      expect(zero.metrics.evaluationsBySession(session.data.id)).toEqual([
+        expect.objectContaining({
+          sessionId: session.data.id,
+          model: data.model,
+          verdict: data.result.verdict,
+        }),
+      ])
     } finally {
       ;(resolved.adapter as { complete: typeof resolved.adapter.complete }).complete =
         originalComplete
@@ -1238,11 +1435,13 @@ describe('API Routes Extended', () => {
       expect(historyData.history[0].artifacts.repair.response.rawText).toContain(
         'Recovered by repair pass.',
       )
-      const judgeUsage = zero.metrics
-        .usageSummaryByPurpose('1d')
-        .find((entry) => entry.purpose === 'session_judge')
-      expect(judgeUsage?.category).toBe('completion')
-      expect(judgeUsage?.eventCount).toBeGreaterThanOrEqual(2)
+      expect(zero.metrics.evaluationsBySession(session.data.id)).toEqual([
+        expect.objectContaining({
+          sessionId: session.data.id,
+          summary: 'Recovered by repair pass.',
+          verdict: 'mixed',
+        }),
+      ])
     } finally {
       ;(resolved.adapter as { complete: typeof resolved.adapter.complete }).complete =
         originalComplete

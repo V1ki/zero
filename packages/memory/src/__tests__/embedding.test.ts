@@ -74,12 +74,15 @@ describe('EmbeddingClient', () => {
 
     await client.embedBatch(['a', 'b'], 'sess_embed_001')
 
-    expect(onUsage).toHaveBeenCalledWith({
-      promptTokens: 42,
-      totalTokens: 42,
-      batchSize: 2,
-      sessionId: 'sess_embed_001',
-    })
+    expect(onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        promptTokens: 42,
+        totalTokens: 42,
+        batchSize: 2,
+        sessionId: 'sess_embed_001',
+        durationMs: expect.any(Number),
+      }),
+    )
   })
 
   test('throws on non-ok response', async () => {

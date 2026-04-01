@@ -5,9 +5,10 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MemoryStore } from '@zero-os/memory'
+import { MetricsDB } from '@zero-os/observe'
 import { LiteLLMPricing, type ProviderAdapter } from '@zero-os/model'
 import { encryptSecrets } from '@zero-os/secrets'
-import { startZeroOS } from '../main'
+import { createUsageRecorder, startZeroOS } from '../main'
 import type { ZeroOS } from '../main'
 
 let zero: ZeroOS
@@ -187,6 +188,36 @@ afterAll(async () => {
 })
 
 describe('startZeroOS Integration', () => {
+  test('createUsageRecorder skips invalid purposes without polluting the usage ledger', () => {
+    const metrics = MetricsDB.createInMemory()
+    const usageRecorder = createUsageRecorder(metrics)
+    const warnings: unknown[][] = []
+    const originalWarn = console.warn
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args)
+    }
+
+    try {
+      usageRecorder.record({
+        sessionId: 'sess_invalid_usage_001',
+        purpose: 'invalid-purpose',
+        model: 'chatgpt/gpt-5.4',
+        provider: 'chatgpt',
+        usage: { input: 10, output: 4 },
+        cost: 0.02,
+        durationMs: 50,
+      })
+    } finally {
+      console.warn = originalWarn
+    }
+
+    expect(metrics.summary('1d').requestCount).toBe(0)
+    expect(warnings).toHaveLength(1)
+    expect(String(warnings[0]?.[0])).toContain('Skipping usage record with invalid purpose')
+
+    metrics.close()
+  })
+
   test('runs core-ready hook before external channels start', async () => {
     const observed = {
       webRegistered: false,

@@ -746,7 +746,6 @@ export class Session {
         providerName: resolved.providerName,
         modelLabel: this.modelRouter.getModelLabel(resolved),
         pricing: resolved.modelConfig.pricing,
-        metrics: this.deps.metrics,
         secretFilter: this.deps.secretFilter,
         spanName: 'memory_retrieval_decision',
         metadata: {
@@ -811,12 +810,7 @@ export class Session {
           newBudget.conversation,
           result.model.adapter,
           this.data.id,
-          {
-            metrics: this.deps.metrics,
-            pricing: result.model.modelConfig.pricing,
-            providerName: result.model.providerName,
-            modelLabel: this.modelRouter.getModelLabel(result.model),
-          },
+          {},
         )
         this.messages.length = 0
         this.messages.push(...compResult.retainedMessages)

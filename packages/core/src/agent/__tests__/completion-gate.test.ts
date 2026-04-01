@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MEMORY_NUDGE_PROMPT } from '@zero-os/memory'
-import type { ProviderAdapter } from '@zero-os/model'
+import { TrackedAdapter, type ProviderAdapter } from '@zero-os/model'
 import { MetricsDB, ObservabilityStore, Tracer } from '@zero-os/observe'
 import type {
   CompletionRequest,
@@ -87,6 +87,37 @@ function getLastUserMessage(request: CompletionRequest): Message | undefined {
 function isTaskClosureClassifierRequest(request: CompletionRequest): boolean {
   const text = getTextFromRequest(request)
   return text.includes('任务收尾判定器') && text.includes('<assistant_tail>')
+}
+
+function withTrackedUsage(adapter: ProviderAdapter, metrics: MetricsDB): ProviderAdapter {
+  return new TrackedAdapter(
+    adapter,
+    {
+      record(entry) {
+        metrics.recordUsage({
+          id: `${entry.purpose}_${Math.random().toString(36).slice(2)}`,
+          sessionId: entry.sessionId,
+          category: 'completion',
+          purpose: entry.purpose as import('@zero-os/observe').UsagePurpose,
+          parentSessionId: entry.parentSessionId,
+          model: entry.model,
+          provider: entry.provider,
+          inputTokens: entry.usage.input,
+          outputTokens: entry.usage.output,
+          cacheWriteTokens: entry.usage.cacheWrite,
+          cacheReadTokens: entry.usage.cacheRead,
+          reasoningTokens: entry.usage.reasoning,
+          cost: entry.cost,
+          durationMs: entry.durationMs,
+          createdAt: new Date().toISOString(),
+        })
+      },
+    },
+    {
+      providerName: 'test-provider',
+      modelLabel: 'test-provider/fake-model',
+    },
+  )
 }
 
 class TaskClosureAdapter implements ProviderAdapter {
@@ -494,7 +525,7 @@ describe('Agent task closure gate', () => {
     const metrics = MetricsDB.createInMemory()
     const agent = new Agent(
       { name: 'test-agent', agentInstruction: 'Test prompt' },
-      adapter,
+      withTrackedUsage(adapter, metrics),
       registry,
       createToolContext(),
       {
@@ -503,7 +534,7 @@ describe('Agent task closure gate', () => {
         closureModelLabel: 'closure-provider/closure-model',
         closurePricing: { input: 1000, output: 2000 },
       },
-      closureAdapter,
+      withTrackedUsage(closureAdapter, metrics),
     )
 
     const messages = await agent.run(createContext(registry), '帮我看看这帖值不值得信')
@@ -518,7 +549,6 @@ describe('Agent task closure gate', () => {
     const taskClosureUsage = metrics
       .usageSummaryByPurpose('1d')
       .find((entry) => entry.purpose === 'task_closure')
-    expect(taskClosureUsage?.category).toBe('completion')
     expect(taskClosureUsage?.eventCount).toBe(1)
 
     metrics.close()
@@ -1203,6 +1233,7 @@ describe('Agent task closure gate', () => {
             currentRequestId?: string
             currentTraceSpanId?: string
           }
+          requestPurposeRef: { current: import('@zero-os/observe').UsagePurpose }
         }) => ReturnType<Agent['createHooks']>
       }
     ).createHooks({
@@ -1219,6 +1250,7 @@ describe('Agent task closure gate', () => {
       turnIndex: 1,
       system: 'Test prompt',
       executionState: {},
+      requestPurposeRef: { current: 'agent_loop' },
     })
 
     const assistantMessage: Message = {

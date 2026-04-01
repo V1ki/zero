@@ -37,6 +37,7 @@ const ZERO_STATS: SessionStatsSummary = {
   outputTokens: 0,
   cacheWriteTokens: 0,
   cacheReadTokens: 0,
+  reasoningTokens: 0,
   effectiveInputTokens: 0,
   cacheHitRate: 0,
   requestCount: 0,

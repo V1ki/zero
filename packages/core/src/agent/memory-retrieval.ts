@@ -1,7 +1,7 @@
 import { type RetrievedMemoryMatch, runMemoryRetrievalAgentDetailed } from '@zero-os/memory'
 import { computeCost } from '@zero-os/model'
 import type { ProviderAdapter } from '@zero-os/model'
-import type { MetricsDB, Tracer } from '@zero-os/observe'
+import type { Tracer } from '@zero-os/observe'
 import type {
   LoopRunner,
   LoopToolCallRecord,
@@ -9,7 +9,6 @@ import type {
   SecretFilter,
   ToolLogger,
 } from '@zero-os/shared'
-import { generateId, now } from '@zero-os/shared'
 import { AgentLoop, type ToolExecutor } from './agent-loop'
 import { CONTEXT_PARAMS } from './params'
 
@@ -37,7 +36,6 @@ interface RetrieveMemoriesWithDecisionOptions {
     providerName?: string
     modelLabel?: string
     pricing?: ModelPricing
-    metrics?: MetricsDB
     secretFilter?: SecretFilter
     spanName: string
     metadata?: Record<string, unknown>
@@ -70,6 +68,10 @@ export function createLoopRunner(
       {
         adapter,
         sessionId,
+        meta: {
+          sessionId,
+          purpose: 'memory_retrieval',
+        },
         toolExecutor,
         system: config.system,
         tools: config.tools.map((tool) => ({
@@ -204,26 +206,6 @@ export async function retrieveMemoriesWithDecision({
         },
       })
     }
-
-    trace?.metrics?.recordUsage({
-      id: generateId(),
-      sessionId,
-      category: 'aggregated',
-      purpose: 'memory_retrieval',
-      model: trace?.modelLabel ?? 'unknown',
-      provider: trace?.providerName ?? 'unknown',
-      inputTokens: result.usage.input,
-      outputTokens: result.usage.output,
-      cost: computeCost(result.usage, trace?.pricing),
-      durationMs: result.durationMs,
-      metadata: JSON.stringify({
-        queries: result.queries,
-        selectedMemoryIds: result.selectedMemoryIds,
-        searchCount: result.searches.length,
-        usedFallbackSelection: result.usedFallbackSelection,
-      }),
-      createdAt: now(),
-    })
 
     return result.memories
   } catch (error) {

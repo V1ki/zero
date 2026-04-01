@@ -42,7 +42,6 @@ import {
   injectQueuedMessagesWithTrace,
   isTaskComplete,
 } from './queue'
-import { recordCompletionUsage } from './record-usage'
 import {
   TASK_CLOSURE_CLASSIFIER_SYSTEM_PROMPT,
   type TaskClosureDecision,
@@ -222,6 +221,9 @@ export class Agent {
       currentRequestId: undefined as string | undefined,
       currentTraceSpanId: undefined as string | undefined,
     }
+    const requestPurposeRef: { current: UsagePurpose } = {
+      current: this.obs.usagePurpose ?? 'agent_loop',
+    }
 
     try {
       const loop = new AgentLoop(
@@ -235,6 +237,13 @@ export class Agent {
           stream: true,
           logger: this.toolContext.logger,
           transientRetryDelayMs: this.transientRetryDelayMs.bind(this),
+          getMeta: () => ({
+            sessionId: this.toolContext.sessionId,
+            purpose: requestPurposeRef.current,
+            ...(this.obs.parentSessionId
+              ? { parentSessionId: this.obs.parentSessionId }
+              : {}),
+          }),
         },
         this.createHooks({
           context,
@@ -250,6 +259,7 @@ export class Agent {
           rootSpanId: rootSpan?.id,
           system,
           executionState,
+          requestPurposeRef,
         }),
       )
 
@@ -321,6 +331,7 @@ export class Agent {
       currentRequestId?: string
       currentTraceSpanId?: string
     }
+    requestPurposeRef: { current: UsagePurpose }
   }): AgentLoopHooks {
     let continuationCount = 0
     let taskClosureRetryCount = 0
@@ -337,6 +348,12 @@ export class Agent {
 
     const toolSpanIds = new Map<string, string>()
     const toolNamesByUseId = new Map<string, string>()
+    const baseUsagePurpose = this.obs.usagePurpose ?? 'agent_loop'
+
+    const syncRequestPurpose = () => {
+      options.requestPurposeRef.current =
+        memoryNudgeCount > 0 ? 'memory_nudge' : baseUsagePurpose
+    }
 
     const appendAppliedQueuedIntent = (queued: QueuedMessage[]) => {
       const intentText = formatAppliedQueuedIntent(queued)
@@ -358,6 +375,7 @@ export class Agent {
       if (wasDuringNudge) {
         memoryNudgeCount = 0
       }
+      syncRequestPurpose()
       return wasDuringNudge
     }
 
@@ -506,7 +524,9 @@ export class Agent {
             memoryWritten: memoryWriteSucceededThisTurn,
           })
           activeMemoryNudgeSpanId = undefined
+          memoryNudgeCount = 0
         }
+        syncRequestPurpose()
 
         if (currentRequestSpanId) {
           this.obs.tracer?.updateSpan(currentRequestSpanId, {
@@ -538,6 +558,8 @@ export class Agent {
             })
             activeMemoryNudgeSpanId = undefined
           }
+          memoryNudgeCount = 0
+          syncRequestPurpose()
 
           this.toolContext.logger.info?.('memory_nudge_empty_response', {
             sessionId: this.toolContext.sessionId,
@@ -673,6 +695,7 @@ export class Agent {
                 },
               },
             )?.id ?? activeMemoryNudgeSpanId
+          syncRequestPurpose()
 
           return {
             action: 'continue' as const,
@@ -685,6 +708,8 @@ export class Agent {
             memoryWritten: memoryWriteSucceededThisTurn,
           })
           activeMemoryNudgeSpanId = undefined
+          memoryNudgeCount = 0
+          syncRequestPurpose()
         }
 
         return { action: 'break' as const }
@@ -826,12 +851,7 @@ export class Agent {
               budget.conversation,
               this.adapter,
               this.toolContext.sessionId,
-              {
-                metrics: this.obs.metrics,
-                pricing: this.obs.pricing,
-                providerName: this.obs.providerName,
-                modelLabel: this.obs.modelLabel,
-              },
+              { parentSessionId: this.obs.parentSessionId },
             )
 
             ctx.messages.length = 0
@@ -945,21 +965,16 @@ export class Agent {
     }
 
     try {
-      const startedAt = Date.now()
       const result = await this.closureAdapter.complete({
         messages: [classifierMessage],
         system: classifierRequest.system,
         stream: false,
         maxTokens: classifierRequest.maxTokens,
-      })
-      recordCompletionUsage(this.obs.metrics, result, {
-        sessionId: this.toolContext.sessionId,
-        purpose: 'task_closure',
-        model: this.obs.closureModelLabel ?? result.model,
-        provider: this.obs.closureProviderName ?? this.obs.providerName ?? 'unknown',
-        pricing: this.obs.closurePricing ?? this.obs.pricing,
-        durationMs: Date.now() - startedAt,
-        parentSessionId: this.obs.parentSessionId,
+        meta: {
+          sessionId: this.toolContext.sessionId,
+          purpose: 'task_closure',
+          ...(this.obs.parentSessionId ? { parentSessionId: this.obs.parentSessionId } : {}),
+        },
       })
 
       const text = extractAssistantText(result.content)
@@ -1171,29 +1186,6 @@ export class Agent {
       })
       this.obs.tracer?.endSpan(traceSpanId, 'success')
     }
-
-    this.obs.metrics?.recordRequest({
-      id: response.id,
-      sessionId: this.toolContext.sessionId,
-      model: this.obs.modelLabel ?? response.model,
-      provider: this.obs.providerName ?? 'unknown',
-      inputTokens: response.usage.input,
-      outputTokens: response.usage.output,
-      cacheWriteTokens: response.usage.cacheWrite,
-      cacheReadTokens: response.usage.cacheRead,
-      cost,
-      durationMs,
-      createdAt: now(),
-    })
-    recordCompletionUsage(this.obs.metrics, response, {
-      sessionId: this.toolContext.sessionId,
-      purpose: this.obs.usagePurpose ?? 'agent_loop',
-      model: this.obs.modelLabel ?? response.model,
-      provider: this.obs.providerName ?? 'unknown',
-      pricing: this.obs.pricing,
-      durationMs,
-      parentSessionId: this.obs.parentSessionId,
-    })
   }
 
   private filterQueuedInjection(
@@ -1329,7 +1321,6 @@ export class Agent {
         providerName: this.obs.providerName,
         modelLabel: this.obs.modelLabel,
         pricing: this.obs.pricing,
-        metrics: this.obs.metrics,
         secretFilter: this.obs.secretFilter,
         spanName: 'memory_retrieval_decision',
         metadata: {

@@ -1,4 +1,7 @@
 import { afterAll, describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { MetricsDB } from '../metrics'
 
 function expectDefined<T>(value: T | null | undefined): NonNullable<T> {
@@ -7,6 +10,40 @@ function expectDefined<T>(value: T | null | undefined): NonNullable<T> {
     throw new Error('Expected value to be defined')
   }
   return value
+}
+
+function recordRequest(
+  db: MetricsDB,
+  entry: {
+    id: string
+    sessionId: string
+    model: string
+    provider: string
+    inputTokens: number
+    outputTokens: number
+    cacheWriteTokens?: number
+    cacheReadTokens?: number
+    cost: number
+    durationMs: number
+    createdAt: string
+  },
+) {
+  db.recordUsage({
+    id: `usage_${entry.id}`,
+    sessionId: entry.sessionId,
+    category: 'completion',
+    purpose: 'agent_loop',
+    model: entry.model,
+    provider: entry.provider,
+    inputTokens: entry.inputTokens,
+    outputTokens: entry.outputTokens,
+    cacheWriteTokens: entry.cacheWriteTokens,
+    cacheReadTokens: entry.cacheReadTokens,
+    reasoningTokens: 0,
+    cost: entry.cost,
+    durationMs: entry.durationMs,
+    createdAt: entry.createdAt,
+  })
 }
 
 describe('MetricsDB', () => {
@@ -19,7 +56,7 @@ describe('MetricsDB', () => {
   test('initialize and record requests', () => {
     db = MetricsDB.createInMemory()
 
-    db.recordRequest({
+    recordRequest(db, {
       id: 'req_001',
       sessionId: 'sess_001',
       model: 'gpt-5.3-codex-medium',
@@ -31,7 +68,7 @@ describe('MetricsDB', () => {
       createdAt: new Date().toISOString(),
     })
 
-    db.recordRequest({
+    recordRequest(db, {
       id: 'req_002',
       sessionId: 'sess_001',
       model: 'gpt-5.3-codex-medium',
@@ -57,7 +94,7 @@ describe('MetricsDB', () => {
   })
 
   test('sessionStats returns cache metrics', () => {
-    db.recordRequest({
+    recordRequest(db, {
       id: 'req_session_cache_001',
       sessionId: 'sess_001',
       model: 'gpt-5.3-codex-medium',
@@ -134,6 +171,28 @@ describe('MetricsDB', () => {
     expect(db.sessionToolCallCount('sess_missing')).toBe(0)
   })
 
+  test('recordUsage rejects invalid purposes at runtime', () => {
+    const runtimeDb = MetricsDB.createInMemory()
+
+    expect(() =>
+      runtimeDb.recordUsage({
+        id: 'usage_invalid_001',
+        sessionId: 'sess_invalid_001',
+        category: 'completion',
+        purpose: 'not_a_real_purpose' as never,
+        model: 'chatgpt/gpt-5.4',
+        provider: 'chatgpt',
+        inputTokens: 1,
+        outputTokens: 1,
+        cost: 0.01,
+        durationMs: 10,
+        createdAt: new Date().toISOString(),
+      }),
+    ).toThrow('Invalid usage purpose')
+
+    runtimeDb.close()
+  })
+
   test('costByDay returns daily aggregation', () => {
     const daily = db.costByDay('30d')
     expect(daily.length).toBeGreaterThanOrEqual(1)
@@ -144,7 +203,7 @@ describe('MetricsDB', () => {
     const cacheDb = MetricsDB.createInMemory()
     const createdAt = new Date().toISOString()
 
-    cacheDb.recordRequest({
+    recordRequest(cacheDb, {
       id: 'req_cache_001',
       sessionId: 'sess_002',
       model: 'claude-opus',
@@ -157,7 +216,7 @@ describe('MetricsDB', () => {
       durationMs: 800,
       createdAt,
     })
-    cacheDb.recordRequest({
+    recordRequest(cacheDb, {
       id: 'req_cache_002',
       sessionId: 'sess_003',
       model: 'gpt-5.3-codex-medium',
@@ -184,7 +243,7 @@ describe('MetricsDB', () => {
     const cacheDb = MetricsDB.createInMemory()
     const createdAt = new Date().toISOString()
 
-    cacheDb.recordRequest({
+    recordRequest(cacheDb, {
       id: 'req_cache_003',
       sessionId: 'sess_004',
       model: 'claude-opus',
@@ -211,7 +270,7 @@ describe('MetricsDB', () => {
     const cacheDb = MetricsDB.createInMemory()
     const createdAt = new Date().toISOString()
 
-    cacheDb.recordRequest({
+    recordRequest(cacheDb, {
       id: 'req_cache_004',
       sessionId: 'sess_005',
       model: 'gpt-5.3-codex-medium',
@@ -257,7 +316,7 @@ describe('MetricsDB', () => {
     const costDb = MetricsDB.createInMemory()
     const createdAt = new Date().toISOString()
 
-    costDb.recordRequest({
+    recordRequest(costDb, {
       id: 'req_cost_day_001',
       sessionId: 'sess_cost_001',
       model: 'gpt-5.3-codex-medium',
@@ -268,7 +327,7 @@ describe('MetricsDB', () => {
       durationMs: 1500,
       createdAt,
     })
-    costDb.recordRequest({
+    recordRequest(costDb, {
       id: 'req_cost_day_002',
       sessionId: 'sess_cost_002',
       model: 'claude-opus',
@@ -293,7 +352,7 @@ describe('MetricsDB', () => {
     const cacheDb = MetricsDB.createInMemory()
     const createdAt = new Date().toISOString()
 
-    cacheDb.recordRequest({
+    recordRequest(cacheDb, {
       id: 'req_cache_by_model_001',
       sessionId: 'sess_cache_by_model_001',
       model: 'claude-opus',
@@ -454,12 +513,10 @@ describe('MetricsDB', () => {
       expect.arrayContaining([
         expect.objectContaining({
           purpose: 'agent_loop',
-          category: 'completion',
           totalCost: 0.1,
         }),
         expect.objectContaining({
           purpose: 'embedding',
-          category: 'embedding',
           totalCost: 0.02,
         }),
       ]),
@@ -472,5 +529,107 @@ describe('MetricsDB', () => {
     })
 
     usageDb.close()
+  })
+
+  test('migrateLegacyRequestsToUsageLedger includes same-timestamp legacy requests without duplicating mirrored usage', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'metrics-migrate-'))
+    const migrationDb = new MetricsDB(join(tempDir, 'metrics.db'))
+    const internals = migrationDb as unknown as {
+      db: {
+        run(sql: string, params?: unknown[]): void
+        query(sql: string): {
+          all(...params: unknown[]): Array<Record<string, unknown>>
+        }
+      }
+      migrateLegacyRequestsToUsageLedger(): void
+    }
+    const boundary = '2026-04-01T00:00:00.123Z'
+
+    try {
+      internals.db.run(
+        `INSERT INTO usage_ledger (
+           id, session_id, category, purpose, parent_session_id, model, provider,
+           input_tokens, output_tokens, cache_write_tokens, cache_read_tokens,
+           reasoning_tokens, cost, duration_ms, metadata, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          'usage_existing_boundary',
+          'sess_boundary_existing',
+          'completion',
+          'agent_loop',
+          null,
+          'chatgpt/gpt-5.4',
+          'chatgpt',
+          10,
+          5,
+          0,
+          0,
+          0,
+          0.15,
+          120,
+          null,
+          boundary,
+        ],
+      )
+
+      internals.db.run(
+        `INSERT INTO requests (
+           id, session_id, model, provider, input_tokens, output_tokens,
+           cache_write_tokens, cache_read_tokens, cost, duration_ms, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          'req_skip_existing',
+          'sess_boundary_existing',
+          'chatgpt/gpt-5.4',
+          'chatgpt',
+          10,
+          5,
+          0,
+          0,
+          0.15,
+          120,
+          boundary,
+        ],
+      )
+
+      internals.db.run(
+        `INSERT INTO requests (
+           id, session_id, model, provider, input_tokens, output_tokens,
+           cache_write_tokens, cache_read_tokens, cost, duration_ms, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          'req_migrate_boundary',
+          'sess_boundary_missing',
+          'chatgpt/gpt-5.4',
+          'chatgpt',
+          11,
+          6,
+          0,
+          0,
+          0.16,
+          121,
+          boundary,
+        ],
+      )
+
+      internals.migrateLegacyRequestsToUsageLedger()
+
+      const rows = internals.db
+        .query(
+          `SELECT id, session_id
+           FROM usage_ledger
+           WHERE created_at = ?
+           ORDER BY id`,
+        )
+        .all(boundary) as Array<{ id: string; session_id: string | null }>
+
+      expect(rows).toEqual([
+        { id: 'migrated_req_migrate_boundary', session_id: 'sess_boundary_missing' },
+        { id: 'usage_existing_boundary', session_id: 'sess_boundary_existing' },
+      ])
+    } finally {
+      migrationDb.close()
+      rmSync(tempDir, { recursive: true, force: true })
+    }
   })
 })

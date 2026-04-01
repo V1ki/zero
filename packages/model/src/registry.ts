@@ -1,6 +1,7 @@
 import type { ApiType, ModelConfig, ProviderConfig, SystemConfig } from '@zero-os/shared'
 import { AnthropicAdapter } from './adapters/anthropic'
 import type { AdapterConfig, OAuthTokenRefresher, ProviderAdapter } from './adapters/base'
+import { TrackedAdapter, type UsageRecorder } from './adapters/tracked'
 import { OpenAIChatAdapter } from './adapters/openai-chat'
 import { OpenAIResponsesAdapter } from './adapters/openai-resp'
 import { resolveClaudeOAuthAccessToken } from './auth/claude'
@@ -19,6 +20,7 @@ export type SecretGetter = (ref: string) => string | undefined
 export interface ModelRegistryOptions {
   secretGetter?: SecretGetter
   oauthRefreshers?: Record<string, OAuthTokenRefresher | undefined>
+  usageRecorder?: UsageRecorder
 }
 
 /**
@@ -30,6 +32,7 @@ export class ModelRegistry {
   private secrets: Map<string, string>
   private secretGetter: SecretGetter
   private oauthRefreshers: Record<string, OAuthTokenRefresher | undefined>
+  private usageRecorder?: UsageRecorder
 
   constructor(
     config: SystemConfig,
@@ -39,6 +42,7 @@ export class ModelRegistry {
     this.secrets = secrets
     this.secretGetter = options.secretGetter ?? ((ref) => this.secrets.get(ref))
     this.oauthRefreshers = options.oauthRefreshers ?? {}
+    this.usageRecorder = options.usageRecorder
     for (const [name, provider] of Object.entries(config.providers)) {
       this.providers.set(name, provider)
     }
@@ -59,7 +63,7 @@ export class ModelRegistry {
           qualifiedName === modelName ||
           qualifiedModelId === modelName
         ) {
-          const adapter = this.getOrCreateAdapter(providerName, provider, model)
+          const adapter = this.getOrCreateAdapter(providerName, name, provider, model)
           return {
             providerName,
             modelName: name,
@@ -89,7 +93,7 @@ export class ModelRegistry {
           model.tags.some((t) => t.toLowerCase().includes(lower))
 
         if (matches) {
-          const adapter = this.getOrCreateAdapter(providerName, provider, model)
+          const adapter = this.getOrCreateAdapter(providerName, name, provider, model)
           results.push({
             providerName,
             modelName: name,
@@ -125,6 +129,7 @@ export class ModelRegistry {
 
   private getOrCreateAdapter(
     providerName: string,
+    modelName: string,
     provider: ProviderConfig,
     model: ModelConfig,
   ): ProviderAdapter {
@@ -137,11 +142,12 @@ export class ModelRegistry {
       ? this.resolveOauthToken(providerName, this.secretGetter(provider.auth.oauthTokenRef))
       : undefined
 
+    const modelConfig = this.enrichPricing(model)
     const config: AdapterConfig = {
       providerName,
       baseUrl: provider.baseUrl,
       auth: provider.auth,
-      modelConfig: model,
+      modelConfig,
       apiKey,
       oauthToken,
       oauthTokenProvider: provider.auth.oauthTokenRef
@@ -155,6 +161,13 @@ export class ModelRegistry {
     }
 
     adapter = this.createAdapter(provider.apiType, config)
+    if (this.usageRecorder) {
+      adapter = new TrackedAdapter(adapter, this.usageRecorder, {
+        providerName,
+        modelLabel: `${providerName}/${modelName}`,
+        pricing: modelConfig.pricing,
+      })
+    }
     this.adapters.set(key, adapter)
     return adapter
   }

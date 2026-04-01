@@ -1,4 +1,3 @@
-import { recordCompletionUsage } from '@zero-os/core'
 import {
   type RequestLogEntry,
   type SnapshotEntry,
@@ -81,6 +80,7 @@ type JudgeCompletionAdapter = {
     stream: boolean
     maxTokens?: number
     model?: string
+    meta?: import('@zero-os/shared').CompletionRequest['meta']
   }): Promise<CompletionResponse>
 }
 
@@ -126,7 +126,6 @@ export async function runSessionJudge(
 
   const primarySystemPrompt = JUDGE_SYSTEM_PROMPT
   const primaryUserPrompt = buildJudgePrompt(payload)
-  const primaryStartedAt = Date.now()
   const primaryCompletion = await resolved.adapter.complete({
     messages: [
       {
@@ -141,26 +140,19 @@ export async function runSessionJudge(
     system: primarySystemPrompt,
     stream: false,
     maxTokens: 3200,
-  })
-  recordCompletionUsage(zero.metrics, primaryCompletion, {
-    sessionId,
-    purpose: 'session_judge',
-    model: modelLabel,
-    provider: resolved.providerName,
-    pricing: resolved.modelConfig.pricing,
-    durationMs: Date.now() - primaryStartedAt,
+    meta: {
+      sessionId,
+      purpose: 'session_judge',
+    },
   })
   const primaryRawText = extractResponseText(primaryCompletion)
 
   const { parsed, repair } = await parseOrRepairJudgeResponse(
-    zero,
     resolved.adapter,
     sessionId,
     primaryRawText,
     {
       model: modelLabel,
-      provider: resolved.providerName,
-      pricing: resolved.modelConfig.pricing,
     },
   )
 
@@ -325,21 +317,17 @@ function buildJudgePrompt(payload: Record<string, unknown>): string {
 }
 
 async function parseOrRepairJudgeResponse(
-  zero: ZeroOS,
   adapter: JudgeCompletionAdapter,
   sessionId: string,
   raw: string,
   usageContext: {
     model: string
-    provider: string
-    pricing?: import('@zero-os/shared').ModelPricing
   },
 ): Promise<ParsedJudgeArtifacts> {
   try {
     return { parsed: parseJudgeResponse(raw) }
   } catch (parseError) {
     const repairUserPrompt = buildJudgeRepairPrompt(raw, parseError)
-    const repairStartedAt = Date.now()
     const repaired = await adapter.complete({
       messages: [
         {
@@ -359,14 +347,10 @@ async function parseOrRepairJudgeResponse(
       system: JUDGE_REPAIR_SYSTEM_PROMPT,
       stream: false,
       maxTokens: 1800,
-    })
-    recordCompletionUsage(zero.metrics, repaired, {
-      sessionId,
-      purpose: 'session_judge',
-      model: usageContext.model,
-      provider: usageContext.provider,
-      pricing: usageContext.pricing,
-      durationMs: Date.now() - repairStartedAt,
+      meta: {
+        sessionId,
+        purpose: 'session_judge',
+      },
     })
     const repairRawText = extractResponseText(repaired)
 

@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { MemoryRetriever } from '@zero-os/memory'
-import type { ProviderAdapter, ResolvedModel } from '@zero-os/model'
-import { ModelRouter } from '@zero-os/model'
+import { ModelRouter, TrackedAdapter, type ProviderAdapter, type ResolvedModel } from '@zero-os/model'
 import { MetricsDB, Tracer, flattenTraceSpans } from '@zero-os/observe'
 import type {
   CompletionRequest,
@@ -140,17 +139,76 @@ class DedupLoopRetrievalAdapter implements ProviderAdapter {
   }
 }
 
-function createRouter(): ModelRouter {
-  const router = new ModelRouter(config, new Map([['openai_codex_api_key', API_KEY]]))
+function createRouter(metrics?: MetricsDB): ModelRouter {
+  const router = new ModelRouter(config, new Map([['openai_codex_api_key', API_KEY]]), {
+    usageRecorder: metrics
+      ? {
+          record(entry) {
+            metrics.recordUsage({
+              id: `${entry.purpose}_${Math.random().toString(36).slice(2)}`,
+              sessionId: entry.sessionId,
+              category: 'completion',
+              purpose: entry.purpose as import('@zero-os/observe').UsagePurpose,
+              parentSessionId: entry.parentSessionId,
+              model: entry.model,
+              provider: entry.provider,
+              inputTokens: entry.usage.input,
+              outputTokens: entry.usage.output,
+              cacheWriteTokens: entry.usage.cacheWrite,
+              cacheReadTokens: entry.usage.cacheRead,
+              reasoningTokens: entry.usage.reasoning,
+              cost: entry.cost,
+              durationMs: entry.durationMs,
+              createdAt: new Date().toISOString(),
+            })
+          },
+        }
+      : undefined,
+  })
   router.init()
   return router
 }
 
+function trackAdapter(
+  adapter: ProviderAdapter,
+  metrics: MetricsDB,
+  modelLabel = 'fake/fake-model',
+): ProviderAdapter {
+  return new TrackedAdapter(
+    adapter,
+    {
+      record(entry) {
+        metrics.recordUsage({
+          id: `${entry.purpose}_${Math.random().toString(36).slice(2)}`,
+          sessionId: entry.sessionId,
+          category: 'completion',
+          purpose: entry.purpose as import('@zero-os/observe').UsagePurpose,
+          parentSessionId: entry.parentSessionId,
+          model: entry.model,
+          provider: entry.provider,
+          inputTokens: entry.usage.input,
+          outputTokens: entry.usage.output,
+          cacheWriteTokens: entry.usage.cacheWrite,
+          cacheReadTokens: entry.usage.cacheRead,
+          reasoningTokens: entry.usage.reasoning,
+          cost: entry.cost,
+          durationMs: entry.durationMs,
+          createdAt: new Date().toISOString(),
+        })
+      },
+    },
+    {
+      providerName: modelLabel.split('/')[0] ?? 'fake',
+      modelLabel,
+    },
+  )
+}
+
 describe('Session memory retrieval', () => {
   test('injects retrieved memories into dynamic context before agent.run', async () => {
-    const router = createRouter()
-    const tracer = new Tracer()
     const metrics = MetricsDB.createInMemory()
+    const router = createRouter(metrics)
+    const tracer = new Tracer()
     let capturedSearchOptions: MemorySearchOptions | undefined
     const session = new Session('web', router, new ToolRegistry(), {
       identityMemory: '用户曾经要求优先使用浏览器插件',
@@ -209,7 +267,7 @@ describe('Session memory retrieval', () => {
         auth: { type: 'api_key', apiKeyRef: 'openai_codex_api_key' },
         models: {},
       },
-      adapter: new LoopRetrievalAdapter(),
+      adapter: trackAdapter(new LoopRetrievalAdapter(), metrics),
     }
 
     let capturedContext:
@@ -259,8 +317,7 @@ describe('Session memory retrieval', () => {
     const retrievalUsage = metrics
       .usageSummaryByPurpose('1d')
       .find((entry) => entry.purpose === 'memory_retrieval')
-    expect(retrievalUsage?.category).toBe('aggregated')
-    expect(retrievalUsage?.eventCount).toBe(1)
+    expect(retrievalUsage?.eventCount).toBe(2)
     expect(capturedContext?.requestMemoryInjections).toEqual([
       expect.objectContaining({
         layer: 'layer1',

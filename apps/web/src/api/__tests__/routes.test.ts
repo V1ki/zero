@@ -20,6 +20,40 @@ const previousMasterKey = process.env.ZERO_MASTER_KEY_BASE64
 const TEST_MASTER_KEY = Buffer.alloc(32, 9)
 const originalFetch = globalThis.fetch
 
+function recordAgentLoopUsage(
+  zero: ZeroOS,
+  entry: {
+    id: string
+    sessionId: string
+    model: string
+    provider: string
+    inputTokens: number
+    outputTokens: number
+    cacheWriteTokens?: number
+    cacheReadTokens?: number
+    cost: number
+    durationMs: number
+    createdAt: string
+  },
+) {
+  zero.metrics.recordUsage({
+    id: `usage_${entry.id}`,
+    sessionId: entry.sessionId,
+    category: 'completion',
+    purpose: 'agent_loop',
+    model: entry.model,
+    provider: entry.provider,
+    inputTokens: entry.inputTokens,
+    outputTokens: entry.outputTokens,
+    cacheWriteTokens: entry.cacheWriteTokens,
+    cacheReadTokens: entry.cacheReadTokens,
+    reasoningTokens: 0,
+    cost: entry.cost,
+    durationMs: entry.durationMs,
+    createdAt: entry.createdAt,
+  })
+}
+
 function writeConfig(dataDir: string) {
   writeFileSync(
     join(dataDir, 'config.yaml'),
@@ -545,7 +579,7 @@ describe('API Routes (Real)', () => {
   })
 
   test('GET /api/metrics/cache-by-model returns cache analytics rows', async () => {
-    zero.metrics.recordRequest({
+    recordAgentLoopUsage(zero, {
       id: 'req_cache_metrics_001',
       sessionId: 'sess_cache_metrics_001',
       model: 'anthropic/claude-opus-4-6',
@@ -578,7 +612,7 @@ describe('API Routes (Real)', () => {
     const session = zero.sessionManager.create('web')
     const createdAt = new Date().toISOString()
 
-    zero.metrics.recordRequest({
+    recordAgentLoopUsage(zero, {
       id: 'req_cache_session_001',
       sessionId: session.data.id,
       model: 'anthropic/claude-opus-4-6',
@@ -637,11 +671,18 @@ describe('API Routes (Real)', () => {
     const data = await res.json()
     expect(data.cacheWriteTokens).toBe(50)
     expect(data.cacheReadTokens).toBe(400)
-    expect(data.effectiveInputTokens).toBe(1000)
-    expect(data.cacheHitRate).toBeCloseTo(0.4, 5)
+    expect(data.reasoningTokens).toBe(0)
+    expect(data.effectiveInputTokens).toBe(1040)
+    expect(data.cacheHitRate).toBeCloseTo(400 / 1040, 5)
     expect(typeof data.cacheReadCost).toBe('number')
     expect(data.netSavings).toBeCloseTo(0.0017375, 12)
     expect(data.auxiliaryCost).toBeCloseTo(0.005, 12)
+    expect(data.purposeBreakdown).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ purpose: 'agent_loop', requestCount: 1 }),
+        expect.objectContaining({ purpose: 'task_closure', requestCount: 1 }),
+      ]),
+    )
   })
 
   test('GET /api/metrics/usage-summary returns ledger totals grouped by purpose', async () => {
@@ -678,8 +719,18 @@ describe('API Routes (Real)', () => {
     const data = await res.json()
     expect(data.data).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ purpose: 'agent_loop', category: 'completion' }),
-        expect.objectContaining({ purpose: 'embedding', category: 'embedding' }),
+        expect.objectContaining({
+          purpose: 'agent_loop',
+          totalCost: expect.any(Number),
+          totalTokens: expect.any(Number),
+          eventCount: expect.any(Number),
+        }),
+        expect.objectContaining({
+          purpose: 'embedding',
+          totalCost: 0,
+          totalTokens: 80,
+          eventCount: 1,
+        }),
       ]),
     )
   })

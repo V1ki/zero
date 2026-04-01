@@ -45,8 +45,19 @@ import {
   VectorIndex,
 } from '@zero-os/memory'
 import type { MemoryRepository } from '@zero-os/memory'
-import { LiteLLMPricing, ModelRouter, computeCost } from '@zero-os/model'
-import { MetricsDB, ObservabilityStore, SessionDB, Tracer } from '@zero-os/observe'
+import {
+  LiteLLMPricing,
+  ModelRouter,
+  computeCost,
+  type UsageRecorder,
+} from '@zero-os/model'
+import {
+  MetricsDB,
+  ObservabilityStore,
+  SessionDB,
+  Tracer,
+  isUsagePurpose,
+} from '@zero-os/observe'
 import { CronScheduler } from '@zero-os/scheduler'
 import { Vault, generateMasterKey, getMasterKey, setMasterKey } from '@zero-os/secrets'
 import { OutputSecretFilter } from '@zero-os/secrets'
@@ -166,6 +177,39 @@ export interface ZeroOS {
   shutdown(): Promise<void>
 }
 
+export function createUsageRecorder(metrics: MetricsDB): UsageRecorder {
+  return {
+    record(entry) {
+      if (!isUsagePurpose(entry.purpose)) {
+        console.warn('[ZeRo OS] Skipping usage record with invalid purpose', {
+          purpose: entry.purpose,
+          sessionId: entry.sessionId,
+          model: entry.model,
+        })
+        return
+      }
+
+      metrics.recordUsage({
+        id: generateId(),
+        sessionId: entry.sessionId,
+        category: 'completion',
+        purpose: entry.purpose,
+        parentSessionId: entry.parentSessionId,
+        model: entry.model,
+        provider: entry.provider,
+        inputTokens: entry.usage.input,
+        outputTokens: entry.usage.output,
+        cacheWriteTokens: entry.usage.cacheWrite,
+        cacheReadTokens: entry.usage.cacheRead,
+        reasoningTokens: entry.usage.reasoning,
+        cost: entry.cost,
+        durationMs: entry.durationMs,
+        createdAt: now(),
+      })
+    },
+  }
+}
+
 /**
  * Initialize and start ZeRo OS.
  */
@@ -208,7 +252,9 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
   const logsDir = join(ZERO_DIR, 'logs')
   const observability = new ObservabilityStore(logsDir)
   const metrics = new MetricsDB(join(logsDir, 'metrics.db'))
-  const sessionDb = new SessionDB(join(logsDir, 'sessions.db'))
+  const sessionsDbPath = join(logsDir, 'sessions.db')
+  const sessionDb = new SessionDB(sessionsDbPath)
+  metrics.attachSessionsDb(sessionsDbPath)
   const tracer = new Tracer(logsDir)
   const heartbeat = new HeartbeatWriter(join(ZERO_DIR, 'heartbeat.json'))
   heartbeat.setReady(false, 'booting')
@@ -226,8 +272,10 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
   const secrets = new Map(vault.entries())
   const chatgptTokenManager = new ChatGptTokenManager(vault)
   const claudeTokenManager = new ClaudeTokenManager(vault)
+  const usageRecorder = createUsageRecorder(metrics)
   const modelRouter = new ModelRouter(config, secrets, {
     secretGetter: (ref) => vault.get(ref) ?? undefined,
+    usageRecorder,
     oauthRefreshers: {
       chatgpt: async (reason) => {
         if (reason === 'expiring') {
@@ -300,6 +348,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
               provider: 'embedding',
               inputTokens: usage.promptTokens,
               outputTokens,
+              reasoningTokens: 0,
               cost: computeCost(
                 {
                   input: usage.promptTokens,
@@ -307,7 +356,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
                 },
                 embeddingPricing,
               ),
-              durationMs: 0,
+              durationMs: usage.durationMs,
               metadata: JSON.stringify({ batchSize: usage.batchSize }),
               createdAt: now(),
             })

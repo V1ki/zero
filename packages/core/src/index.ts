@@ -89,7 +89,6 @@ export { allocateBudget, shouldCompress } from './agent/budget'
 export { truncateToolOutput } from './agent/truncate'
 export { prepareConversationHistory, estimateConversationTokens } from './agent/context'
 export { compressConversation } from './agent/compress'
-export { recordCompletionUsage } from './agent/record-usage'
 export { CONTEXT_PARAMS } from './agent/params'
 export {
   buildQueuedInjectionText,

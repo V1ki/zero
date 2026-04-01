@@ -106,6 +106,7 @@ interface SessionDetail {
   outputTokens: number
   cacheWriteTokens: number
   cacheReadTokens: number
+  reasoningTokens: number
   effectiveInputTokens: number
   cacheHitRate: number
   cacheReadCost: number
@@ -113,6 +114,14 @@ interface SessionDetail {
   grossAvoidedInputCost: number
   netSavings: number
   totalCost: number
+  auxiliaryCost: number
+  purposeBreakdown: Array<{
+    purpose: string
+    totalCost: number
+    totalTokens: number
+    reasoningTokens: number
+    requestCount: number
+  }>
   requestCount: number
 }
 
@@ -564,9 +573,12 @@ export function SessionDetailScreen({
         outputTokens={session.outputTokens}
         cacheWriteTokens={session.cacheWriteTokens}
         cacheReadTokens={session.cacheReadTokens}
+        reasoningTokens={session.reasoningTokens}
         effectiveInputTokens={session.effectiveInputTokens}
         cacheHitRate={session.cacheHitRate}
         totalCost={session.totalCost}
+        auxiliaryCost={session.auxiliaryCost}
+        purposeBreakdown={session.purposeBreakdown}
         onArchived={goBack}
         onDeleted={goBack}
       />

@@ -16,7 +16,7 @@ export type {
   DecisionLogEntry,
   TaskClosureClassifierResponse,
 } from './observability-store'
-export { MetricsDB } from './metrics'
+export { MetricsDB, USAGE_PURPOSES, isUsagePurpose } from './metrics'
 export type {
   CostByModel,
   CostByPeriod,

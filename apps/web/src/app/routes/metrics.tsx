@@ -19,7 +19,7 @@ import { formatCost, formatNumber } from '../lib/format'
 // Types
 // ---------------------------------------------------------------------------
 
-type Tab = 'cost' | 'events' | 'health'
+type Tab = 'cost' | 'purpose' | 'attribution' | 'evaluations' | 'events' | 'health'
 type TimeRange = '7d' | '30d' | '90d' | 'custom'
 
 interface CostByDayModel {
@@ -89,6 +89,50 @@ interface HealthData {
   repairs: { total: number; successCount: number; successRate: number }
   repairTrend: { period: string; total: number; success: number }[]
 }
+interface UsageSummary {
+  purpose: string
+  totalCost: number
+  totalTokens: number
+  reasoningTokens: number
+  eventCount: number
+}
+interface CostByChannel {
+  source: string
+  channelName: string
+  totalCost: number
+  sessionCount: number
+  requestCount: number
+}
+interface CostBySource {
+  source: string
+  totalCost: number
+  sessionCount: number
+}
+interface SessionUsageByPurpose {
+  purpose: string
+  totalCost: number
+  totalTokens: number
+  reasoningTokens: number
+  requestCount: number
+}
+interface EvaluationTrend {
+  period: string
+  avgScore: number
+  evalCount: number
+  strongCount: number
+  mixedCount: number
+  weakCount: number
+}
+interface EvaluationDimensionAverage {
+  dimensionKey: string
+  avgScore: number
+  count: number
+}
+interface TopFinding {
+  title: string
+  severity: string
+  count: number
+}
 interface LogEntry {
   ts: string
   event?: string
@@ -123,6 +167,9 @@ const TOOLTIP_STYLE = {
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'cost', label: 'Cost' },
+  { key: 'purpose', label: 'Purpose' },
+  { key: 'attribution', label: 'Attribution' },
+  { key: 'evaluations', label: 'Evaluations' },
   { key: 'events', label: 'Events' },
   { key: 'health', label: 'Health' },
 ]
@@ -592,6 +639,499 @@ function CostTab({ range }: { range: TimeRange }) {
 }
 
 // ---------------------------------------------------------------------------
+// PurposeTab
+// ---------------------------------------------------------------------------
+
+function PurposeTab({ range }: { range: TimeRange }) {
+  const [loading, setLoading] = useState(true)
+  const [usage, setUsage] = useState<UsageSummary[]>([])
+
+  const fetchData = useCallback((r: TimeRange) => {
+    setLoading(true)
+    apiFetch<{ data: UsageSummary[] }>(`/api/metrics/usage-summary?range=${r}`)
+      .then((response) => setUsage(response.data))
+      .catch(() => setUsage([]))
+      .finally(() => setLoading(false))
+  }, [])
+
+  useEffect(() => {
+    fetchData(range)
+  }, [range, fetchData])
+
+  const totalCost = usage.reduce((sum, row) => sum + row.totalCost, 0)
+  const totalReasoning = usage.reduce((sum, row) => sum + row.reasoningTokens, 0)
+
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3 lg:col-span-2">
+        <StatCard
+          label="Tracked Purposes"
+          value={loading ? '...' : usage.length}
+          delay={0}
+        />
+        <StatCard
+          label="Purpose Cost"
+          value={loading ? '...' : `$${formatCost(totalCost)}`}
+          delay={40}
+        />
+        <StatCard
+          label="Reasoning Tokens"
+          value={loading ? '...' : formatNumber(totalReasoning)}
+          delay={80}
+        />
+      </div>
+
+      <ChartCard title="Cost by Purpose" delay={0}>
+        <div className="h-[280px]">
+          {loading || usage.length === 0 ? (
+            <ChartEmpty loading={loading} />
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={usage} layout="vertical">
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} />
+                <XAxis
+                  type="number"
+                  tick={{ fontSize: 10, fill: CHART_TEXT }}
+                  tickFormatter={(value: number) => `$${formatCost(value)}`}
+                />
+                <YAxis
+                  type="category"
+                  dataKey="purpose"
+                  tick={{ fontSize: 10, fill: CHART_TEXT }}
+                  width={110}
+                />
+                <Tooltip
+                  {...TOOLTIP_STYLE}
+                  formatter={(value: number) => `$${formatCost(value)}`}
+                />
+                <Bar dataKey="totalCost" fill="#f59e0b" radius={[0, 4, 4, 0]} name="Cost" />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </ChartCard>
+
+      <ChartCard title="Purpose Detail" delay={60}>
+        {loading ? (
+          <ChartEmpty loading />
+        ) : usage.length === 0 ? (
+          <ChartEmpty loading={false} />
+        ) : (
+          <div className="max-h-[280px] overflow-y-auto">
+            <table className="w-full text-[12px]">
+              <thead>
+                <tr className="border-b border-[var(--color-border)] text-left text-[10px] tracking-wide text-[var(--color-text-disabled)]">
+                  <th className="pb-2 pr-4">Purpose</th>
+                  <th className="pb-2 pr-4 text-right">Events</th>
+                  <th className="pb-2 pr-4 text-right">Tokens</th>
+                  <th className="pb-2 pr-4 text-right">Reasoning</th>
+                  <th className="pb-2 text-right">Cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {usage.map((row) => (
+                  <tr key={row.purpose} className="border-b border-[var(--color-border)] last:border-0">
+                    <td className="py-2 pr-4 font-mono uppercase text-[var(--color-text-secondary)]">
+                      {row.purpose}
+                    </td>
+                    <td className="py-2 pr-4 text-right text-[var(--color-text-muted)]">
+                      {formatNumber(row.eventCount)}
+                    </td>
+                    <td className="py-2 pr-4 text-right text-[var(--color-text-muted)]">
+                      {formatNumber(row.totalTokens)}
+                    </td>
+                    <td className="py-2 pr-4 text-right text-[var(--color-text-muted)]">
+                      {formatNumber(row.reasoningTokens)}
+                    </td>
+                    <td className="py-2 text-right">${formatCost(row.totalCost)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </ChartCard>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// AttributionTab
+// ---------------------------------------------------------------------------
+
+function AttributionTab({ range }: { range: TimeRange }) {
+  const [loading, setLoading] = useState(true)
+  const [channels, setChannels] = useState<CostByChannel[]>([])
+  const [sources, setSources] = useState<CostBySource[]>([])
+  const [selectedChannelKey, setSelectedChannelKey] = useState<string>('')
+  const [trend, setTrend] = useState<{ period: string; totalCost: number }[]>([])
+  const [breakdown, setBreakdown] = useState<SessionUsageByPurpose[]>([])
+
+  const selectedChannel =
+    channels.find((row) => `${row.source}::${row.channelName}` === selectedChannelKey) ?? channels[0]
+
+  const fetchOverview = useCallback((r: TimeRange) => {
+    setLoading(true)
+    Promise.all([
+      apiFetch<{ data: CostByChannel[] }>(`/api/metrics/cost-by-channel?range=${r}`),
+      apiFetch<{ data: CostBySource[] }>(`/api/metrics/cost-by-source?range=${r}`),
+    ])
+      .then(([channelRes, sourceRes]) => {
+        setChannels(channelRes.data)
+        setSources(sourceRes.data)
+        const first = channelRes.data[0]
+        if (first) {
+          const nextKey = `${first.source}::${first.channelName}`
+          setSelectedChannelKey((current) => current || nextKey)
+        } else {
+          setSelectedChannelKey('')
+        }
+      })
+      .catch(() => {
+        setChannels([])
+        setSources([])
+        setSelectedChannelKey('')
+      })
+      .finally(() => setLoading(false))
+  }, [])
+
+  const fetchChannelDetail = useCallback((channel: CostByChannel | undefined, r: TimeRange) => {
+    if (!channel) {
+      setTrend([])
+      setBreakdown([])
+      return
+    }
+
+    const name = encodeURIComponent(channel.channelName)
+    const sourceQuery = `&source=${encodeURIComponent(channel.source)}`
+
+    Promise.all([
+      apiFetch<{ data: { period: string; totalCost: number }[] }>(
+        `/api/metrics/channel/${name}/cost-by-day?range=${r}${sourceQuery}`,
+      ),
+      apiFetch<{ data: SessionUsageByPurpose[] }>(
+        `/api/metrics/channel/${name}/purpose-breakdown?range=${r}${sourceQuery}`,
+      ),
+    ])
+      .then(([trendRes, breakdownRes]) => {
+        setTrend(trendRes.data)
+        setBreakdown(breakdownRes.data)
+      })
+      .catch(() => {
+        setTrend([])
+        setBreakdown([])
+      })
+  }, [])
+
+  useEffect(() => {
+    fetchOverview(range)
+  }, [range, fetchOverview])
+
+  useEffect(() => {
+    fetchChannelDetail(selectedChannel, range)
+  }, [range, selectedChannel, fetchChannelDetail])
+
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <ChartCard title="Channel Cost" delay={0}>
+        {loading ? (
+          <ChartEmpty loading />
+        ) : channels.length === 0 ? (
+          <ChartEmpty loading={false} />
+        ) : (
+          <div className="max-h-[300px] overflow-y-auto">
+            <table className="w-full text-[12px]">
+              <thead>
+                <tr className="border-b border-[var(--color-border)] text-left text-[10px] tracking-wide text-[var(--color-text-disabled)]">
+                  <th className="pb-2 pr-4">Channel</th>
+                  <th className="pb-2 pr-4">Source</th>
+                  <th className="pb-2 pr-4 text-right">Sessions</th>
+                  <th className="pb-2 pr-4 text-right">Calls</th>
+                  <th className="pb-2 text-right">Cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {channels.map((row) => {
+                  const key = `${row.source}::${row.channelName}`
+                  const active = selectedChannelKey === key
+                  return (
+                    <tr
+                      key={key}
+                      className={`cursor-pointer border-b border-[var(--color-border)] last:border-0 ${
+                        active ? 'bg-white/[0.04]' : ''
+                      }`}
+                      onClick={() => setSelectedChannelKey(key)}
+                    >
+                      <td className="py-2 pr-4 font-mono text-[var(--color-text-secondary)]">
+                        {row.channelName}
+                      </td>
+                      <td className="py-2 pr-4 text-[var(--color-text-muted)]">{row.source}</td>
+                      <td className="py-2 pr-4 text-right text-[var(--color-text-muted)]">
+                        {formatNumber(row.sessionCount)}
+                      </td>
+                      <td className="py-2 pr-4 text-right text-[var(--color-text-muted)]">
+                        {formatNumber(row.requestCount)}
+                      </td>
+                      <td className="py-2 text-right">${formatCost(row.totalCost)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </ChartCard>
+
+      <ChartCard title="Source Summary" delay={60}>
+        {loading ? (
+          <ChartEmpty loading />
+        ) : sources.length === 0 ? (
+          <ChartEmpty loading={false} />
+        ) : (
+          <div className="h-[300px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={sources}>
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} />
+                <XAxis dataKey="source" tick={{ fontSize: 10, fill: CHART_TEXT }} />
+                <YAxis
+                  tick={{ fontSize: 10, fill: CHART_TEXT }}
+                  tickFormatter={(value: number) => `$${formatCost(value)}`}
+                />
+                <Tooltip {...TOOLTIP_STYLE} formatter={(value: number) => `$${formatCost(value)}`} />
+                <Bar dataKey="totalCost" fill="#14b8a6" radius={[4, 4, 0, 0]} name="Cost" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </ChartCard>
+
+      <ChartCard
+        title={selectedChannel ? `Daily Cost · ${selectedChannel.channelName}` : 'Daily Cost'}
+        delay={120}
+      >
+        <div className="h-[260px]">
+          {loading || trend.length === 0 ? (
+            <ChartEmpty loading={loading} />
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={trend}>
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} />
+                <XAxis dataKey="period" tick={{ fontSize: 10, fill: CHART_TEXT }} />
+                <YAxis
+                  tick={{ fontSize: 10, fill: CHART_TEXT }}
+                  tickFormatter={(value: number) => `$${formatCost(value)}`}
+                />
+                <Tooltip {...TOOLTIP_STYLE} formatter={(value: number) => `$${formatCost(value)}`} />
+                <Line
+                  type="monotone"
+                  dataKey="totalCost"
+                  stroke="#14b8a6"
+                  strokeWidth={2}
+                  dot={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </ChartCard>
+
+      <ChartCard
+        title={selectedChannel ? `Purpose Mix · ${selectedChannel.channelName}` : 'Purpose Mix'}
+        delay={180}
+      >
+        <div className="h-[260px]">
+          {loading || breakdown.length === 0 ? (
+            <ChartEmpty loading={loading} />
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={breakdown} layout="vertical">
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} />
+                <XAxis
+                  type="number"
+                  tick={{ fontSize: 10, fill: CHART_TEXT }}
+                  tickFormatter={(value: number) => `$${formatCost(value)}`}
+                />
+                <YAxis
+                  type="category"
+                  dataKey="purpose"
+                  width={110}
+                  tick={{ fontSize: 10, fill: CHART_TEXT }}
+                />
+                <Tooltip {...TOOLTIP_STYLE} formatter={(value: number) => `$${formatCost(value)}`} />
+                <Bar dataKey="totalCost" fill="#38bdf8" radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </ChartCard>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// EvaluationTab
+// ---------------------------------------------------------------------------
+
+function EvaluationTab({ range }: { range: TimeRange }) {
+  const [loading, setLoading] = useState(true)
+  const [trend, setTrend] = useState<EvaluationTrend[]>([])
+  const [dimensions, setDimensions] = useState<EvaluationDimensionAverage[]>([])
+  const [findings, setFindings] = useState<TopFinding[]>([])
+
+  const fetchData = useCallback((r: TimeRange) => {
+    setLoading(true)
+    Promise.all([
+      apiFetch<{ data: EvaluationTrend[] }>(`/api/metrics/evaluations/trend?range=${r}`),
+      apiFetch<{ data: EvaluationDimensionAverage[] }>(
+        `/api/metrics/evaluations/dimensions?range=${r}`,
+      ),
+      apiFetch<{ data: TopFinding[] }>(`/api/metrics/evaluations/top-findings?range=${r}`),
+    ])
+      .then(([trendRes, dimRes, findingsRes]) => {
+        setTrend(trendRes.data)
+        setDimensions(dimRes.data)
+        setFindings(findingsRes.data)
+      })
+      .catch(() => {
+        setTrend([])
+        setDimensions([])
+        setFindings([])
+      })
+      .finally(() => setLoading(false))
+  }, [])
+
+  useEffect(() => {
+    fetchData(range)
+  }, [range, fetchData])
+
+  const totalEvaluations = trend.reduce((sum, row) => sum + row.evalCount, 0)
+  const latestAverage = trend.at(-1)?.avgScore ?? 0
+
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3 lg:col-span-2">
+        <StatCard
+          label="Evaluations"
+          value={loading ? '...' : formatNumber(totalEvaluations)}
+          delay={0}
+        />
+        <StatCard
+          label="Latest Avg Score"
+          value={loading ? '...' : latestAverage.toFixed(2)}
+          delay={40}
+        />
+        <StatCard
+          label="Frequent Findings"
+          value={loading ? '...' : findings.length}
+          delay={80}
+        />
+      </div>
+
+      <ChartCard title="Average Score Trend" delay={0}>
+        <div className="h-[260px]">
+          {loading || trend.length === 0 ? (
+            <ChartEmpty loading={loading} />
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={trend}>
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} />
+                <XAxis dataKey="period" tick={{ fontSize: 10, fill: CHART_TEXT }} />
+                <YAxis tick={{ fontSize: 10, fill: CHART_TEXT }} domain={[0, 5]} />
+                <Tooltip {...TOOLTIP_STYLE} />
+                <Line
+                  type="monotone"
+                  dataKey="avgScore"
+                  stroke="#a78bfa"
+                  strokeWidth={2}
+                  dot={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </ChartCard>
+
+      <ChartCard title="Dimension Averages" delay={60}>
+        <div className="h-[260px]">
+          {loading || dimensions.length === 0 ? (
+            <ChartEmpty loading={loading} />
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={dimensions}>
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} />
+                <XAxis dataKey="dimensionKey" tick={{ fontSize: 10, fill: CHART_TEXT }} />
+                <YAxis tick={{ fontSize: 10, fill: CHART_TEXT }} domain={[0, 5]} />
+                <Tooltip {...TOOLTIP_STYLE} />
+                <Bar dataKey="avgScore" fill="#a78bfa" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </ChartCard>
+
+      <ChartCard title="Top Findings" delay={120}>
+        {loading ? (
+          <ChartEmpty loading />
+        ) : findings.length === 0 ? (
+          <ChartEmpty loading={false} />
+        ) : (
+          <div className="max-h-[260px] overflow-y-auto">
+            <table className="w-full text-[12px]">
+              <thead>
+                <tr className="border-b border-[var(--color-border)] text-left text-[10px] tracking-wide text-[var(--color-text-disabled)]">
+                  <th className="pb-2 pr-4">Severity</th>
+                  <th className="pb-2 pr-4">Title</th>
+                  <th className="pb-2 text-right">Count</th>
+                </tr>
+              </thead>
+              <tbody>
+                {findings.map((finding) => (
+                  <tr
+                    key={`${finding.severity}:${finding.title}`}
+                    className="border-b border-[var(--color-border)] last:border-0"
+                  >
+                    <td className="py-2 pr-4 uppercase text-[var(--color-text-muted)]">
+                      {finding.severity}
+                    </td>
+                    <td className="py-2 pr-4 text-[var(--color-text-secondary)]">
+                      {finding.title}
+                    </td>
+                    <td className="py-2 text-right text-[var(--color-text-muted)]">
+                      {formatNumber(finding.count)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </ChartCard>
+
+      <ChartCard title="Verdict Mix" delay={180}>
+        <div className="h-[260px]">
+          {loading || trend.length === 0 ? (
+            <ChartEmpty loading={loading} />
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={trend}>
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} />
+                <XAxis dataKey="period" tick={{ fontSize: 10, fill: CHART_TEXT }} />
+                <YAxis tick={{ fontSize: 10, fill: CHART_TEXT }} />
+                <Tooltip {...TOOLTIP_STYLE} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Bar dataKey="strongCount" stackId="verdict" fill="#22c55e" />
+                <Bar dataKey="mixedCount" stackId="verdict" fill="#f59e0b" />
+                <Bar dataKey="weakCount" stackId="verdict" fill="#ef4444" />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </ChartCard>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // EventsTab
 // ---------------------------------------------------------------------------
 
@@ -1009,6 +1549,9 @@ export function MetricsPage() {
 
       {/* Tab content */}
       {activeTab === 'cost' && <CostTab range={effectiveRange} />}
+      {activeTab === 'purpose' && <PurposeTab range={effectiveRange} />}
+      {activeTab === 'attribution' && <AttributionTab range={effectiveRange} />}
+      {activeTab === 'evaluations' && <EvaluationTab range={effectiveRange} />}
       {activeTab === 'events' && <EventsTab range={effectiveRange} />}
       {activeTab === 'health' && <HealthTab range={effectiveRange} />}
     </div>

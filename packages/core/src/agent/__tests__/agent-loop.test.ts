@@ -12,10 +12,12 @@ import { AgentLoop, type ToolExecutor } from '../agent-loop'
 class ScriptedAdapter implements ProviderAdapter {
   readonly apiType = 'fake-agent-loop'
   private cursor = 0
+  requests: CompletionRequest[] = []
 
   constructor(private readonly responses: CompletionResponse[]) {}
 
-  async complete(_request: CompletionRequest): Promise<CompletionResponse> {
+  async complete(request: CompletionRequest): Promise<CompletionResponse> {
+    this.requests.push(request)
     const response = this.responses[this.cursor]
     this.cursor++
     if (!response) {
@@ -24,7 +26,8 @@ class ScriptedAdapter implements ProviderAdapter {
     return response
   }
 
-  async *stream(_request: CompletionRequest): AsyncIterable<StreamEvent> {
+  async *stream(request: CompletionRequest): AsyncIterable<StreamEvent> {
+    this.requests.push(request)
     yield {
       type: 'done',
       data: { finishReason: 'end_turn' },
@@ -47,9 +50,10 @@ function createLoop(
   toolExecutor: ToolExecutor,
   overrides: Partial<ConstructorParameters<typeof AgentLoop>[0]> = {},
 ) {
+  const adapter = new ScriptedAdapter(responses)
   return new AgentLoop(
     {
-      adapter: new ScriptedAdapter(responses),
+      adapter,
       sessionId: 'sess-agent-loop',
       toolExecutor,
       system: 'test system',
@@ -407,5 +411,47 @@ describe('AgentLoop', () => {
         content: 'Unknown tool: missing',
       }),
     ])
+  })
+
+  test('forwards request meta from getMeta into completion requests', async () => {
+    const adapter = new ScriptedAdapter([
+      {
+        id: 'resp_meta_001',
+        content: [{ type: 'text', text: 'done' }],
+        stopReason: 'end_turn',
+        usage: { input: 2, output: 1 },
+        model: 'fake-model',
+      },
+    ])
+    const loop = new AgentLoop(
+      {
+        adapter,
+        sessionId: 'sess-agent-loop',
+        toolExecutor: {
+          has: () => false,
+          execute: async () => ({ success: false, output: 'unused', outputSummary: 'unused' }),
+        },
+        system: 'test system',
+        tools: [],
+        stream: false,
+        logger,
+        getMeta: () => ({
+          sessionId: 'sess-agent-loop',
+          purpose: 'memory_nudge',
+          parentSessionId: 'parent-agent-loop',
+        }),
+      },
+      {
+        onEndTurn: () => ({ action: 'break' }),
+      },
+    )
+
+    await loop.run('hello', [])
+
+    expect(adapter.requests[0]?.meta).toEqual({
+      sessionId: 'sess-agent-loop',
+      purpose: 'memory_nudge',
+      parentSessionId: 'parent-agent-loop',
+    })
   })
 })
