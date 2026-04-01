@@ -517,16 +517,17 @@ export function ConfigPage() {
                                 </p>
                                 <p className="text-[11px] text-[var(--color-text-muted)]">
                                   7d: {formatUsagePercent(claudeUsage.seven_day?.utilization)}
-                                  {claudeUsage.seven_day_oauth_apps && (
-                                    <>
-                                      {' · '}
-                                      OAuth apps{' '}
-                                      {formatUsagePercent(
-                                        claudeUsage.seven_day_oauth_apps.utilization,
-                                      )}
-                                    </>
-                                  )}
+                                  {' · '}resets{' '}
+                                  {formatUsageResetAt(claudeUsage.seven_day?.resets_at)}
                                 </p>
+                                {claudeUsage.seven_day_oauth_apps && (
+                                  <p className="text-[11px] text-[var(--color-text-muted)]">
+                                    7d OAuth apps:{' '}
+                                    {formatUsagePercent(claudeUsage.seven_day_oauth_apps.utilization)}
+                                    {' · '}resets{' '}
+                                    {formatUsageResetAt(claudeUsage.seven_day_oauth_apps.resets_at)}
+                                  </p>
+                                )}
                                 {claudeUsage.extra_usage && (
                                   <p className="text-[11px] text-[var(--color-text-muted)]">
                                     Extra usage: {claudeUsage.extra_usage.used_credits ?? 0}/
