@@ -224,6 +224,14 @@ function buildSession(
 export class ClaudeOAuthDriver implements ManagedOAuthDriver<ClaudeOAuthSession> {
   readonly provider = 'claude' as const
 
+  getCallbackConfig() {
+    return {
+      listenHost: 'localhost',
+      listenPort: 0,
+      callbackPath: '/callback',
+    }
+  }
+
   buildAuthorizationUrl(params: {
     state: string
     redirectUri: string

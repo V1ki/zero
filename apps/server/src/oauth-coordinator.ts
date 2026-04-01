@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { type Server, createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { URL } from 'node:url'
 import type { Vault } from '@zero-os/secrets'
 import { toErrorMessage } from '@zero-os/shared'
@@ -31,8 +32,16 @@ export interface ManagedOAuthStatus {
   requiresRestart: boolean
 }
 
+export interface ManagedOAuthCallbackConfig {
+  redirectUri?: string
+  listenHost?: string
+  listenPort?: number
+  callbackPath?: string
+}
+
 export interface ManagedOAuthDriver<Session = unknown> {
   readonly provider: ManagedOAuthProvider
+  getCallbackConfig?(): ManagedOAuthCallbackConfig
   buildAuthorizationUrl(params: {
     state: string
     redirectUri: string
@@ -58,11 +67,21 @@ export interface ManagedOAuthDriver<Session = unknown> {
   getCallbackSuccessHtml?(): string
 }
 
+interface ResolvedCallbackConfig {
+  protocol: 'http:' | 'https:'
+  listenHost: string
+  listenPort: number
+  callbackPath: string
+}
+
 interface PendingAttempt {
   id: string
   provider: ManagedOAuthProvider
   state: string
   codeVerifier: string
+  redirectUri: string
+  callbackPath: string
+  server: Server | null
   status: ManagedOAuthStatus
 }
 
@@ -70,19 +89,14 @@ export interface ManagedOAuthCoordinatorOptions {
   redirectUri?: string
   listenHost?: string
   listenPort?: number
+  callbackPath?: string
 }
 
 export class ManagedOAuthCoordinator {
   private vault: Vault
   private drivers = new Map<ManagedOAuthProvider, ManagedOAuthDriver>()
   private attemptsByProvider = new Map<ManagedOAuthProvider, PendingAttempt>()
-  private attemptsByState = new Map<string, PendingAttempt>()
-  private server: Server | null = null
-  private readonly redirectUri: string
-  private readonly callbackPath: string
-  private readonly listenHost: string
-  private readonly listenPort: number
-  private readonly callbackOrigin: string
+  private readonly defaultCallbackConfig: ResolvedCallbackConfig
 
   constructor(
     vault: Vault,
@@ -90,14 +104,7 @@ export class ManagedOAuthCoordinator {
     options: ManagedOAuthCoordinatorOptions = {},
   ) {
     this.vault = vault
-    this.redirectUri = options.redirectUri ?? DEFAULT_OAUTH_REDIRECT_URI
-
-    const parsed = new URL(this.redirectUri)
-    this.callbackPath = parsed.pathname
-    this.listenHost = options.listenHost ?? parsed.hostname
-    this.listenPort =
-      options.listenPort ?? Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80))
-    this.callbackOrigin = `${parsed.protocol}//${parsed.host}`
+    this.defaultCallbackConfig = this.parseDefaultCallbackConfig(options)
 
     for (const driver of drivers) {
       this.drivers.set(driver.provider, driver)
@@ -135,19 +142,22 @@ export class ManagedOAuthCoordinator {
 
   async start(provider: ManagedOAuthProvider): Promise<{ attemptId: string; url: string }> {
     const driver = this.requireDriver(provider)
-    await this.ensureServer()
-    this.clearAttempt(provider)
+    await this.resetAttempt(provider)
 
     const codeVerifier = randomBytes(32).toString('base64url')
     const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url')
     const state = randomBytes(16).toString('hex')
     const attemptId = randomBytes(12).toString('hex')
 
+    const callbackConfig = this.resolveCallbackConfig(driver)
     const attempt: PendingAttempt = {
       id: attemptId,
       provider,
       state,
       codeVerifier,
+      redirectUri: '',
+      callbackPath: callbackConfig.callbackPath,
+      server: null,
       status: {
         provider,
         state: 'waiting_for_callback',
@@ -157,17 +167,30 @@ export class ManagedOAuthCoordinator {
       },
     }
 
-    this.attemptsByProvider.set(provider, attempt)
-    this.attemptsByState.set(state, attempt)
+    try {
+      const callbackRuntime = await this.startAttemptServer(attempt, callbackConfig)
+      attempt.server = callbackRuntime.server
+      attempt.redirectUri = callbackRuntime.redirectUri
+    } catch (error) {
+      await this.resetAttempt(provider)
+      throw error
+    }
 
-    return {
-      attemptId,
-      url: driver.buildAuthorizationUrl({
-        state,
-        redirectUri: this.redirectUri,
-        codeVerifier,
-        codeChallenge,
-      }),
+    this.attemptsByProvider.set(provider, attempt)
+
+    try {
+      return {
+        attemptId,
+        url: driver.buildAuthorizationUrl({
+          state,
+          redirectUri: attempt.redirectUri,
+          codeVerifier,
+          codeChallenge,
+        }),
+      }
+    } catch (error) {
+      await this.resetAttempt(provider)
+      throw error
     }
   }
 
@@ -216,6 +239,47 @@ export class ManagedOAuthCoordinator {
     throw new Error(`Timed out waiting for ${provider} OAuth callback.`)
   }
 
+  private parseDefaultCallbackConfig(
+    options: ManagedOAuthCoordinatorOptions,
+  ): ResolvedCallbackConfig {
+    const redirectUri = options.redirectUri ?? DEFAULT_OAUTH_REDIRECT_URI
+    const parsed = new URL(redirectUri)
+
+    return {
+      protocol: parsed.protocol === 'https:' ? 'https:' : 'http:',
+      listenHost: options.listenHost ?? parsed.hostname,
+      listenPort:
+        options.listenPort ?? Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80)),
+      callbackPath: options.callbackPath ?? parsed.pathname,
+    }
+  }
+
+  private resolveCallbackConfig(driver: ManagedOAuthDriver): ResolvedCallbackConfig {
+    const driverConfig = driver.getCallbackConfig?.()
+    if (!driverConfig) {
+      return this.defaultCallbackConfig
+    }
+
+    if (driverConfig.redirectUri) {
+      const parsed = new URL(driverConfig.redirectUri)
+      return {
+        protocol: parsed.protocol === 'https:' ? 'https:' : 'http:',
+        listenHost: driverConfig.listenHost ?? parsed.hostname,
+        listenPort:
+          driverConfig.listenPort ??
+          Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80)),
+        callbackPath: driverConfig.callbackPath ?? parsed.pathname,
+      }
+    }
+
+    return {
+      protocol: 'http:',
+      listenHost: driverConfig.listenHost ?? this.defaultCallbackConfig.listenHost,
+      listenPort: driverConfig.listenPort ?? this.defaultCallbackConfig.listenPort,
+      callbackPath: driverConfig.callbackPath ?? this.defaultCallbackConfig.callbackPath,
+    }
+  }
+
   private buildIdleStatus(provider: ManagedOAuthProvider): ManagedOAuthStatus {
     return {
       provider,
@@ -233,23 +297,35 @@ export class ManagedOAuthCoordinator {
     return driver
   }
 
-  private async ensureServer() {
-    if (this.server) return
-
-    this.server = await new Promise<Server>((resolve, reject) => {
+  private async startAttemptServer(
+    attempt: PendingAttempt,
+    callbackConfig: ResolvedCallbackConfig,
+  ): Promise<{ server: Server; redirectUri: string }> {
+    return await new Promise<{ server: Server; redirectUri: string }>((resolve, reject) => {
       const server = createServer((req, res) => {
-        const requestUrl = new URL(req.url ?? '/', this.callbackOrigin)
-        if (requestUrl.pathname !== this.callbackPath) {
+        const requestUrl = new URL(
+          req.url ?? '/',
+          `${callbackConfig.protocol}//${callbackConfig.listenHost}`,
+        )
+
+        if (requestUrl.pathname !== attempt.callbackPath) {
           res.statusCode = 404
           res.end('Not found')
           return
         }
 
         const callbackState = requestUrl.searchParams.get('state')
-        const attempt = callbackState ? this.attemptsByState.get(callbackState) : undefined
-        if (!attempt) {
+        if (callbackState !== attempt.state) {
+          this.updateAttempt(attempt.provider, {
+            provider: attempt.provider,
+            state: 'error',
+            authorized: false,
+            error: 'State validation failed.',
+            attemptId: attempt.id,
+            requiresRestart: false,
+          })
           res.statusCode = 400
-          res.end('Unknown OAuth attempt')
+          res.end('State mismatch')
           return
         }
 
@@ -288,7 +364,19 @@ export class ManagedOAuthCoordinator {
       })
 
       server.once('error', (error) => reject(error))
-      server.listen(this.listenPort, this.listenHost, () => resolve(server))
+      server.listen(callbackConfig.listenPort, callbackConfig.listenHost, () => {
+        const address = server.address()
+        if (!address || typeof address === 'string') {
+          server.close(() => reject(new Error('Failed to resolve OAuth callback server address.')))
+          return
+        }
+
+        const { port } = address as AddressInfo
+        resolve({
+          server,
+          redirectUri: `${callbackConfig.protocol}//${callbackConfig.listenHost}:${port}${callbackConfig.callbackPath}`,
+        })
+      })
     })
   }
 
@@ -299,7 +387,7 @@ export class ManagedOAuthCoordinator {
       const session = await driver.exchangeCode({
         code,
         state: attempt.state,
-        redirectUri: this.redirectUri,
+        redirectUri: attempt.redirectUri,
         codeVerifier: attempt.codeVerifier,
       })
 
@@ -320,6 +408,8 @@ export class ManagedOAuthCoordinator {
         attemptId: attempt.id,
         requiresRestart: false,
       })
+    } finally {
+      await this.closeAttemptServer(attempt.provider)
     }
   }
 
@@ -347,11 +437,22 @@ export class ManagedOAuthCoordinator {
     attempt.status = status
   }
 
-  private clearAttempt(provider: ManagedOAuthProvider) {
-    const existing = this.attemptsByProvider.get(provider)
-    if (!existing) return
+  private async closeAttemptServer(provider: ManagedOAuthProvider) {
+    const attempt = this.attemptsByProvider.get(provider)
+    if (!attempt?.server) return
 
+    const server = attempt.server
+    attempt.server = null
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve())
+    })
+  }
+
+  private async resetAttempt(provider: ManagedOAuthProvider) {
+    const attempt = this.attemptsByProvider.get(provider)
+    if (!attempt) return
+
+    await this.closeAttemptServer(provider)
     this.attemptsByProvider.delete(provider)
-    this.attemptsByState.delete(existing.state)
   }
 }

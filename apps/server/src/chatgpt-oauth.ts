@@ -130,6 +130,12 @@ function isReauthRequiredRefreshFailure(
 export class ChatGptOAuthDriver implements ManagedOAuthDriver<ChatGptOAuthSession> {
   readonly provider = 'chatgpt' as const
 
+  getCallbackConfig() {
+    return {
+      redirectUri: 'http://localhost:1455/auth/callback',
+    }
+  }
+
   buildAuthorizationUrl(params: {
     state: string
     redirectUri: string

@@ -28,6 +28,19 @@ function createDriver(provider: 'chatgpt' | 'claude'): ManagedOAuthDriver<FakeSe
 
   return {
     provider,
+    getCallbackConfig() {
+      if (provider === 'claude') {
+        return {
+          listenHost: 'localhost',
+          listenPort: 0,
+          callbackPath: '/callback',
+        }
+      }
+
+      return {
+        redirectUri: 'http://localhost:1455/auth/callback',
+      }
+    },
     buildAuthorizationUrl({ state, redirectUri }) {
       return `https://example.test/${provider}/oauth?state=${state}&redirect_uri=${encodeURIComponent(redirectUri)}`
     },
@@ -64,35 +77,37 @@ function createDriver(provider: 'chatgpt' | 'claude'): ManagedOAuthDriver<FakeSe
 describe('ManagedOAuthCoordinator', () => {
   test('completes a provider attempt via manual callback input and persists provider state', async () => {
     const { dir, vault } = createVault()
-    const coordinator = new ManagedOAuthCoordinator(
-      vault,
-      [createDriver('chatgpt'), createDriver('claude')],
-      {
-        redirectUri: 'http://localhost:0/auth/callback',
-        listenPort: 0,
-      },
-    )
+    const coordinator = new ManagedOAuthCoordinator(vault, [
+      createDriver('chatgpt'),
+      createDriver('claude'),
+    ])
 
     try {
       const chatgptStart = await coordinator.start('chatgpt')
-      const chatgptState = new URL(chatgptStart.url).searchParams.get('state')
+      const chatgptUrl = new URL(chatgptStart.url)
+      const chatgptState = chatgptUrl.searchParams.get('state')
+      const chatgptRedirectUri = chatgptUrl.searchParams.get('redirect_uri')
       expect(chatgptState).toBeTruthy()
+      expect(chatgptRedirectUri).toBe('http://localhost:1455/auth/callback')
 
       const chatgptStatus = await coordinator.completeFromInput(
         'chatgpt',
-        `http://localhost:0/auth/callback?code=chatgpt-code&state=${chatgptState}`,
+        `${chatgptRedirectUri}?code=chatgpt-code&state=${chatgptState}`,
       )
       expect(chatgptStatus.provider).toBe('chatgpt')
       expect(chatgptStatus.state).toBe('connected')
       expect(chatgptStatus.requiresRestart).toBe(true)
 
       const claudeStart = await coordinator.start('claude')
-      const claudeState = new URL(claudeStart.url).searchParams.get('state')
+      const claudeUrl = new URL(claudeStart.url)
+      const claudeState = claudeUrl.searchParams.get('state')
+      const claudeRedirectUri = claudeUrl.searchParams.get('redirect_uri')
       expect(claudeState).toBeTruthy()
+      expect(claudeRedirectUri).toMatch(/^http:\/\/localhost:\d+\/callback$/)
 
       const claudeStatus = await coordinator.completeFromInput(
         'claude',
-        `http://localhost:0/auth/callback?code=claude-code&state=${claudeState}`,
+        `${claudeRedirectUri}?code=claude-code&state=${claudeState}`,
       )
       expect(claudeStatus.provider).toBe('claude')
       expect(claudeStatus.state).toBe('connected')
