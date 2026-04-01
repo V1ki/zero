@@ -1,4 +1,7 @@
-import { describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { ModelRouter, ProviderAdapter } from '@zero-os/model'
 import { MetricsDB } from '@zero-os/observe'
 import type {
@@ -90,9 +93,21 @@ function createToolRegistry(): ToolRegistry {
   return registry
 }
 
+let testWorkDir = ''
+
+beforeAll(() => {
+  testWorkDir = mkdtempSync(join(tmpdir(), 'zero-spawn-agent-'))
+})
+
+afterAll(() => {
+  rmSync(testWorkDir, { recursive: true, force: true })
+})
+
 const ctx = {
   sessionId: 'test_spawn_session',
-  workDir: process.cwd(),
+  get workDir() {
+    return testWorkDir
+  },
   projectRoot: process.cwd(),
   logger: {
     info: () => {},
