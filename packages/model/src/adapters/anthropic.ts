@@ -16,6 +16,8 @@ import type {
 
 const CLAUDE_PREEMPTIVE_REFRESH_WINDOW_MS = 5 * 60_000
 const CLAUDE_MIN_VALIDITY_MS = 60_000
+const CLAUDE_MISSING_CREDENTIALS_MESSAGE =
+  'Claude OAuth credentials not found. Please run `bun zero provider login anthropic`.'
 const CLAUDE_REAUTH_MESSAGE =
   'Claude OAuth session can no longer be refreshed. Please re-authenticate with `bun zero provider login anthropic`.'
 
@@ -365,9 +367,7 @@ export class AnthropicAdapter implements ProviderAdapter {
   private async getClaudeSession(): Promise<ClaudeOAuthSession> {
     const session = this.readClaudeSession()
     if (!session) {
-      throw new Error(
-        'Claude OAuth credentials not found. Please run `bun zero provider login anthropic`.',
-      )
+      throw new Error(CLAUDE_MISSING_CREDENTIALS_MESSAGE)
     }
 
     if (
@@ -389,9 +389,7 @@ export class AnthropicAdapter implements ProviderAdapter {
   private getRequiredClaudeSession(): ClaudeOAuthSession {
     const session = this.readClaudeSession()
     if (!session) {
-      throw new Error(
-        'Claude OAuth credentials not found. Please run `bun zero provider login anthropic`.',
-      )
+      throw new Error(CLAUDE_MISSING_CREDENTIALS_MESSAGE)
     }
 
     if (this.isClaudeSessionExpiring(session, CLAUDE_MIN_VALIDITY_MS)) {
