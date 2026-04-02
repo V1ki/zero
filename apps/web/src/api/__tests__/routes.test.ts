@@ -2,10 +2,13 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { SessionManager } from '@zero-os/core'
 import { serializeChatGptOAuthSession, serializeClaudeOAuthSession } from '@zero-os/model'
 import type { ProviderAdapter } from '@zero-os/model'
 import { encryptSecrets } from '@zero-os/secrets'
+import type { Session as SessionData } from '@zero-os/shared'
 import { readYaml } from '@zero-os/shared/utils'
+import { SessionDB } from '../../../../../packages/observe/src/session-db'
 import { getChatgptOAuthTokenRef } from '../../../../server/src/chatgpt-provider'
 import { getClaudeOAuthSessionRef } from '../../../../server/src/claude-provider'
 import { startZeroOS } from '../../../../server/src/main'
@@ -170,6 +173,50 @@ describe('API Routes (Real)', () => {
   test('GET /api/sessions/:id returns 404 for missing session', async () => {
     const res = await app.request('/api/sessions/nonexistent')
     expect(res.status).toBe(404)
+  })
+
+  test('GET /api/sessions/:id returns preserved systemPrompt for restored sessions', async () => {
+    const createdAt = new Date().toISOString()
+    const sessionId = 'sess_routes_restored_prompt'
+    const renderedSystemPrompt = '<role>restored prompt for api route</role>'
+    const isolatedDb = SessionDB.createInMemory()
+    const data: SessionData = {
+      id: sessionId,
+      createdAt,
+      updatedAt: createdAt,
+      source: 'web',
+      status: 'active',
+      currentModel: 'openai-codex/gpt-5.4-medium',
+      modelHistory: [{ model: 'openai-codex/gpt-5.4-medium', from: createdAt, to: null }],
+      tags: [],
+    }
+
+    isolatedDb.saveSession(
+      data,
+      '{"name":"route-agent","agentInstruction":"route prompt"}',
+      renderedSystemPrompt,
+    )
+    const isolatedManager = new SessionManager(
+      zero.modelRouter,
+      zero.toolRegistry,
+      { sessionDb: isolatedDb },
+      isolatedDb,
+    )
+    isolatedManager.restoreFromDB()
+
+    const originalManager = zero.sessionManager
+    zero.sessionManager = isolatedManager
+
+    try {
+      const res = await app.request(`/api/sessions/${sessionId}`)
+      expect(res.status).toBe(200)
+
+      const responseData = await res.json()
+      expect(responseData.systemPrompt).toBe(renderedSystemPrompt)
+    } finally {
+      zero.sessionManager = originalManager
+      isolatedDb.close()
+    }
   })
 
   test('GET /api/memory returns memories', async () => {

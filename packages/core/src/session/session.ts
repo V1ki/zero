@@ -193,7 +193,6 @@ export class Session {
     this.lastAgentConfig = config
     this.cachedSystemPrompt = null
     this.cachedToolNames = []
-    this.lastSystemPrompt = ''
     this.knownSkillNames.clear()
     const resolved =
       this.activeModel ?? this.modelRouter.getDefaultModel() ?? this.modelRouter.getCurrentModel()
@@ -276,7 +275,11 @@ export class Session {
     this.pendingAgentRefresh = false
 
     // Persist session with agent config
-    this.deps.sessionDb?.saveSession(this.data, JSON.stringify(config))
+    this.deps.sessionDb?.saveSession(
+      this.data,
+      JSON.stringify(config),
+      this.lastSystemPrompt || undefined,
+    )
   }
 
   /**

@@ -191,6 +191,38 @@ describe('Session Persistence', () => {
     })
   })
 
+  test('SessionManager.restoreFromDB preserves rendered systemPrompt after initAgent', () => {
+    const createdAt = new Date().toISOString()
+    const data: SessionData = {
+      id: 'sess_mgr_restore_prompt',
+      createdAt,
+      updatedAt: createdAt,
+      source: 'web',
+      status: 'active',
+      currentModel: 'gpt-5.3-codex-medium',
+      modelHistory: [{ model: 'gpt-5.3-codex-medium', from: createdAt, to: null }],
+      tags: [],
+    }
+    const renderedSystemPrompt = '<role>restored rendered prompt</role>'
+
+    sessionDb.saveSession(
+      data,
+      '{"name":"restored-agent","agentInstruction":"restored prompt"}',
+      renderedSystemPrompt,
+    )
+
+    const manager = new SessionManager(modelRouter, toolRegistry, { sessionDb }, sessionDb)
+    manager.restoreFromDB()
+
+    const session = expectDefined(manager.get(data.id))
+    expect(session.getAgentConfig()).toEqual({
+      name: 'restored-agent',
+      agentInstruction: 'restored prompt',
+    })
+    expect(session.getSystemPrompt()).toBe(renderedSystemPrompt)
+    expect(expectDefined(sessionDb.getSession(data.id)).systemPrompt).toBe(renderedSystemPrompt)
+  })
+
   test('SessionManager.flushAll saves all sessions to DB', () => {
     const manager = new SessionManager(modelRouter, toolRegistry, { sessionDb }, sessionDb)
 
@@ -205,6 +237,33 @@ describe('Session Persistence', () => {
     expect(row1).not.toBeNull()
     expect(row2).not.toBeNull()
     expect(expectDefined(row2).channelId).toBe('tg_flush')
+  })
+
+  test('SessionManager.flushAll preserves rendered systemPrompt after restoreFromDB', () => {
+    const createdAt = new Date().toISOString()
+    const data: SessionData = {
+      id: 'sess_mgr_flush_prompt',
+      createdAt,
+      updatedAt: createdAt,
+      source: 'web',
+      status: 'active',
+      currentModel: 'gpt-5.3-codex-medium',
+      modelHistory: [{ model: 'gpt-5.3-codex-medium', from: createdAt, to: null }],
+      tags: [],
+    }
+    const renderedSystemPrompt = '<role>flush rendered prompt</role>'
+
+    sessionDb.saveSession(
+      data,
+      '{"name":"flush-agent","agentInstruction":"flush prompt"}',
+      renderedSystemPrompt,
+    )
+
+    const manager = new SessionManager(modelRouter, toolRegistry, { sessionDb }, sessionDb)
+    manager.restoreFromDB()
+    manager.flushAll()
+
+    expect(expectDefined(sessionDb.getSession(data.id)).systemPrompt).toBe(renderedSystemPrompt)
   })
 
   test('SessionManager.drainAndCollectInterrupted returns empty after active turns drain cleanly', async () => {
