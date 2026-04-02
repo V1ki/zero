@@ -363,14 +363,19 @@ export class AnthropicAdapter implements ProviderAdapter {
   }
 
   private async getClaudeSession(): Promise<ClaudeOAuthSession> {
-    const session = this.getRequiredClaudeSession()
+    const session = this.readClaudeSession()
+    if (!session) {
+      throw new Error(
+        'Claude OAuth credentials not found. Please run `bun zero provider login anthropic`.',
+      )
+    }
+
     if (
       this.isClaudeSessionExpiring(session, CLAUDE_PREEMPTIVE_REFRESH_WINDOW_MS) &&
       this.oauthTokenRefresher
     ) {
       try {
         await this.oauthTokenRefresher('expiring')
-        return this.getRequiredClaudeSession()
       } catch (error) {
         if (this.isClaudeSessionExpiring(session, CLAUDE_MIN_VALIDITY_MS)) {
           throw error
@@ -378,7 +383,7 @@ export class AnthropicAdapter implements ProviderAdapter {
       }
     }
 
-    return session
+    return this.getRequiredClaudeSession()
   }
 
   private getRequiredClaudeSession(): ClaudeOAuthSession {

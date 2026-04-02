@@ -840,6 +840,66 @@ describe('Anthropic Adapter (Pure Logic)', () => {
       globalThis.fetch = originalFetch
     }
   })
+
+  test('oauth requests refresh already-expired sessions before failing reauth', async () => {
+    const originalFetch = globalThis.fetch
+    let currentSession = makeClaudeOAuthSessionJson('claude-expired-token', Date.now() - 5_000)
+    const seenAuthHeaders: string[] = []
+    let refreshCalls = 0
+
+    const oauthAdapter = new AnthropicAdapter({
+      baseUrl: 'https://api.anthropic.test',
+      auth: { type: 'oauth2', oauthTokenRef: 'CLAUDE_CODE_OAUTH_TOKEN' },
+      modelConfig: {
+        modelId: 'claude-sonnet-4-6',
+        maxContext: 200000,
+        maxOutput: 8192,
+        capabilities: ['tools', 'vision'],
+        tags: ['balanced'],
+      },
+      oauthToken: currentSession,
+      oauthTokenProvider: () => currentSession,
+      oauthTokenRefresher: async (reason) => {
+        expect(reason).toBe('expiring')
+        refreshCalls += 1
+        currentSession = makeClaudeOAuthSessionJson(
+          'claude-after-expired-refresh',
+          Date.now() + 30 * 60_000,
+        )
+      },
+    })
+
+    globalThis.fetch = (async (_input, init) => {
+      const headers = new Headers(init?.headers)
+      seenAuthHeaders.push(headers.get('authorization') ?? '')
+      return new Response(
+        JSON.stringify({
+          id: 'msg_expired_refresh_001',
+          content: [{ type: 'text', text: 'expired-ok' }],
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 9, output_tokens: 5 },
+          model: 'claude-sonnet-4-6',
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      )
+    }) as typeof fetch
+
+    try {
+      const response = await oauthAdapter.complete({
+        messages: [makeMessage('user', 'expired refresh')],
+        stream: false,
+      })
+
+      expect(response.content[0]).toEqual({ type: 'text', text: 'expired-ok' })
+      expect(refreshCalls).toBe(1)
+      expect(seenAuthHeaders).toEqual(['Bearer claude-after-expired-refresh'])
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
 })
 
 // Real API tests — only run when ANTHROPIC_API_KEY env var is set
