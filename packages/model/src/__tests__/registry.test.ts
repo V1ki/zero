@@ -102,4 +102,54 @@ describe('ModelRegistry', () => {
     const registry = new ModelRegistry(config, secrets)
     expect(registry.resolve('nonexistent')).toBeUndefined()
   })
+
+  test('injects oauth refresher for anthropic providers using the provider name key', () => {
+    const oauthConfig: SystemConfig = {
+      providers: {
+        anthropic: {
+          apiType: 'anthropic_messages',
+          baseUrl: 'https://api.anthropic.com',
+          auth: { type: 'oauth2', oauthTokenRef: 'claude_oauth_session' },
+          models: {
+            'claude-sonnet-4-6': {
+              modelId: 'claude-sonnet-4-6',
+              maxContext: 200000,
+              maxOutput: 8192,
+              capabilities: ['tools', 'vision'],
+              tags: ['balanced'],
+            },
+          },
+        },
+      },
+      defaultModel: 'anthropic/claude-sonnet-4-6',
+      fallbackChain: ['anthropic/claude-sonnet-4-6'],
+      schedules: [],
+      fuseList: [],
+    }
+    const oauthSecrets = new Map([
+      [
+        'claude_oauth_session',
+        JSON.stringify({
+          accessToken: 'test-access-token',
+          refreshToken: 'test-refresh-token',
+          expiresAt: Date.now() + 3600_000,
+          tokenType: 'Bearer',
+          scopes: ['user:profile', 'user:inference'],
+        }),
+      ],
+    ])
+    const refresher = async () => {}
+    const registry = new ModelRegistry(oauthConfig, oauthSecrets, {
+      oauthRefreshers: {
+        anthropic: refresher,
+      },
+    })
+
+    const resolved = registry.resolve('anthropic/claude-sonnet-4-6')
+    const adapter = resolved?.adapter as {
+      oauthTokenRefresher?: unknown
+    } | undefined
+
+    expect(adapter?.oauthTokenRefresher).toBe(refresher)
+  })
 })

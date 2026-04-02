@@ -284,7 +284,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
         }
         await chatgptTokenManager.refreshSession(reason)
       },
-      claude: async (reason) => {
+      anthropic: async (reason) => {
         if (reason === 'expiring') {
           await claudeTokenManager.ensureFreshSession()
           return
