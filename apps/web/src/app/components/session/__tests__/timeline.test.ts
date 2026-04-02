@@ -209,20 +209,20 @@ describe('buildTimeline', () => {
     }
   })
 
-  test('anchors memory inject notifications after the triggering user message', () => {
+  test('keeps memory inject notifications at their original timestamp', () => {
     const messages: Message[] = [
-      {
-        id: 'msg_memory_inject',
-        role: 'user',
-        messageType: 'notification',
-        content: [{ type: 'text', text: '<memory_inject layer="layer1">memory</memory_inject>' }],
-        createdAt: '2026-03-08T00:00:00.000Z',
-      },
       {
         id: 'msg_user',
         role: 'user',
         messageType: 'message',
         content: [{ type: 'text', text: 'please inspect this' }],
+        createdAt: '2026-03-08T00:00:00.000Z',
+      },
+      {
+        id: 'msg_memory_inject',
+        role: 'user',
+        messageType: 'notification',
+        content: [{ type: 'text', text: '<memory_inject layer="layer2">memory</memory_inject>' }],
         createdAt: '2026-03-08T00:00:00.001Z',
       },
       {
@@ -235,14 +235,29 @@ describe('buildTimeline', () => {
     ]
 
     const items = buildTimeline(messages)
-    expect(items.map((item) => item.type)).toEqual(['user-message', 'system-event', 'agent-text'])
-    if (items[1]?.type === 'system-event') {
-      expect(items[1].text).toContain('<memory_inject layer="layer1">')
-      expect(items[1].createdAt).toBe('2026-03-08T00:00:00.001Z')
-    }
+    const userIndex = items.findIndex(
+      (item) => item.type === 'user-message' && item.text === 'please inspect this',
+    )
+    const notificationIndex = items.findIndex(
+      (item) =>
+        item.type === 'system-event' && item.text.includes('<memory_inject layer="layer2">'),
+    )
+    const replyIndex = items.findIndex(
+      (item) => item.type === 'agent-text' && item.text === 'working on it',
+    )
+
+    expect(userIndex).toBeGreaterThanOrEqual(0)
+    expect(notificationIndex).toBeGreaterThanOrEqual(0)
+    expect(replyIndex).toBeGreaterThanOrEqual(0)
+    expect(notificationIndex).toBeGreaterThan(userIndex)
+    expect(notificationIndex).toBeLessThan(replyIndex)
+    expect(items[notificationIndex]).toMatchObject({
+      type: 'system-event',
+      createdAt: '2026-03-08T00:00:00.001Z',
+    })
   })
 
-  test('anchors later memory inject notifications to the most recent user message', () => {
+  test('keeps memory inject notifications after hidden tool results', () => {
     const messages: Message[] = [
       {
         id: 'msg_user',
@@ -252,27 +267,75 @@ describe('buildTimeline', () => {
         createdAt: '2026-03-08T00:00:00.000Z',
       },
       {
-        id: 'msg_assistant',
+        id: 'msg_tool_use',
         role: 'assistant',
         messageType: 'message',
-        content: [{ type: 'text', text: 'fetch failed, retrying' }],
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_browser',
+            name: 'browser',
+            input: { url: 'https://x.com/demo' },
+          },
+        ],
         createdAt: '2026-03-08T00:00:01.000Z',
+      },
+      {
+        id: 'msg_tool_result',
+        role: 'user',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: 'call_browser',
+            content: 'browser navigation failed',
+            isError: true,
+          },
+        ],
+        createdAt: '2026-03-08T00:00:02.000Z',
       },
       {
         id: 'msg_memory_hint',
         role: 'user',
         messageType: 'notification',
         content: [{ type: 'text', text: '<memory_inject layer="layer2">hint</memory_inject>' }],
-        createdAt: '2026-03-08T00:00:02.000Z',
+        createdAt: '2026-03-08T00:00:03.000Z',
+      },
+      {
+        id: 'msg_assistant_reply',
+        role: 'assistant',
+        messageType: 'message',
+        content: [{ type: 'text', text: 'retrying with memory hint' }],
+        createdAt: '2026-03-08T00:00:04.000Z',
       },
     ]
 
     const items = buildTimeline(messages)
-    expect(items.map((item) => item.type)).toEqual(['user-message', 'system-event', 'agent-text'])
-    if (items[1]?.type === 'system-event') {
-      expect(items[1].text).toContain('<memory_inject layer="layer2">')
-      expect(items[1].createdAt).toBe('2026-03-08T00:00:00.000Z')
-    }
+    const toolIndex = items.findIndex(
+      (item) => item.type === 'tool-call' && item.id === 'call_browser',
+    )
+    const notificationIndex = items.findIndex(
+      (item) =>
+        item.type === 'system-event' && item.text.includes('<memory_inject layer="layer2">'),
+    )
+    const replyIndex = items.findIndex(
+      (item) => item.type === 'agent-text' && item.text === 'retrying with memory hint',
+    )
+
+    expect(toolIndex).toBeGreaterThanOrEqual(0)
+    expect(notificationIndex).toBeGreaterThanOrEqual(0)
+    expect(replyIndex).toBeGreaterThanOrEqual(0)
+    expect(notificationIndex).toBeGreaterThan(toolIndex)
+    expect(notificationIndex).toBeLessThan(replyIndex)
+    expect(items[toolIndex]).toMatchObject({
+      type: 'tool-call',
+      id: 'call_browser',
+      isError: true,
+    })
+    expect(items[notificationIndex]).toMatchObject({
+      type: 'system-event',
+      createdAt: '2026-03-08T00:00:03.000Z',
+    })
   })
 
   test('adds projected decision items and keeps task_closure decisions out of the decision lane', () => {

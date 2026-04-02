@@ -155,8 +155,6 @@ export function buildTimeline(
   const toolDurations = extractToolDurations(traces)
   const handledSubAgentIds = new Set<string>()
   const spawnToolCallIds = new Set<string>()
-  const pendingAnchoredNotifications: Array<Extract<TimelineItem, { type: 'system-event' }>> = []
-  let lastUserMessageCreatedAt: string | undefined
 
   for (const msg of messages) {
     if (msg.role === 'user' || msg.role === 'system') {
@@ -204,19 +202,7 @@ export function buildTimeline(
           text,
           createdAt: msg.createdAt,
         }
-
-        if (isMemoryInjectNotification(text)) {
-          if (lastUserMessageCreatedAt) {
-            items.push({
-              ...event,
-              createdAt: lastUserMessageCreatedAt,
-            })
-          } else {
-            pendingAnchoredNotifications.push(event)
-          }
-        } else {
-          items.push(event)
-        }
+        items.push(event)
       }
       continue
     }
@@ -248,16 +234,6 @@ export function buildTimeline(
           images: imageBlocks.length > 0 ? imageBlocks : undefined,
           createdAt: msg.createdAt,
         })
-        lastUserMessageCreatedAt = msg.createdAt
-        if (pendingAnchoredNotifications.length > 0) {
-          for (const notification of pendingAnchoredNotifications) {
-            items.push({
-              ...notification,
-              createdAt: msg.createdAt,
-            })
-          }
-          pendingAnchoredNotifications.length = 0
-        }
       }
       continue
     }
@@ -362,17 +338,9 @@ export function buildTimeline(
     }
   }
 
-  for (const notification of pendingAnchoredNotifications) {
-    items.push(notification)
-  }
-
   items.push(...buildDecisionEvents(decisions))
   items.push(...buildTaskClosureEvents(traces, taskClosureEvents))
   return items.sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-}
-
-function isMemoryInjectNotification(text: string): boolean {
-  return text.includes('<memory_inject')
 }
 
 function buildTaskClosureEvents(
