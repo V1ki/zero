@@ -64,6 +64,7 @@ export interface SessionDeps {
   schedulerHandle?: import('@zero-os/shared').ToolContext['schedulerHandle']
   scheduleStore?: import('@zero-os/shared').ToolContext['scheduleStore']
   taskClosureModel?: string
+  projectRoot?: string
 }
 
 /**
@@ -205,7 +206,7 @@ export class Session {
       : undefined
     const closureAdapter = closureResolved?.adapter
 
-    const projectRoot = process.cwd()
+    const projectRoot = this.deps.projectRoot ?? process.cwd()
     const workspacePath = join(projectRoot, '.zero', 'workspace', config.name)
     if (!existsSync(workspacePath)) {
       mkdirSync(workspacePath, { recursive: true })
@@ -400,7 +401,7 @@ export class Session {
     const tools = this.toolRegistry.getDefinitions()
     const toolNames = this.getToolNames(tools)
     const agentName = this.getAgentName()
-    const projectRoot = process.cwd()
+    const projectRoot = this.deps.projectRoot ?? process.cwd()
     const workspacePath = join(projectRoot, '.zero', 'workspace', agentName)
 
     if (!this.cachedSystemPrompt || !Session.sameStringArray(toolNames, this.cachedToolNames)) {

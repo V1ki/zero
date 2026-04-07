@@ -1,10 +1,11 @@
-import { describe, expect, test } from 'bun:test'
+import { afterAll, describe, expect, test } from 'bun:test'
 import { ModelRouter } from '@zero-os/model'
 import type { ProviderAdapter } from '@zero-os/model'
 import type { Message, SystemConfig } from '@zero-os/shared'
 import { BashTool } from '../../tool/bash'
 import { ReadTool } from '../../tool/read'
 import { ToolRegistry } from '../../tool/registry'
+import { createTestProjectRoot } from './test-helpers'
 import { SessionManager } from '../manager'
 
 const API_KEY = 'sk-c6c02cbd0c25473f97f9be0da6070f6d'
@@ -40,6 +41,7 @@ const config: SystemConfig = {
 }
 
 const secrets = new Map([['openai_codex_api_key', API_KEY]])
+const testProject = createTestProjectRoot('zero-session-manager-')
 
 function createRouter() {
   const router = new ModelRouter(config, secrets)
@@ -55,7 +57,9 @@ function createToolRegistry() {
 }
 
 function createManager() {
-  return new SessionManager(createRouter(), createToolRegistry())
+  return new SessionManager(createRouter(), createToolRegistry(), {
+    projectRoot: testProject.projectRoot,
+  })
 }
 
 function createDeferred<T = void>() {
@@ -113,6 +117,10 @@ function seedMeaningfulSession(session: unknown): void {
 }
 
 describe('SessionManager', () => {
+  afterAll(() => {
+    testProject.cleanup()
+  })
+
   test('create assigns unique ID', () => {
     const manager = createManager()
     const s1 = manager.create('web')
@@ -442,6 +450,7 @@ describe('SessionManager', () => {
     const router = createRouter()
     const manager = new SessionManager(router, createToolRegistry(), {
       taskClosureModel: 'openai-codex/gpt-5.3-codex-medium',
+      projectRoot: testProject.projectRoot,
     })
     const current = manager.create('web')
     current.initAgent({

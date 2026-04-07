@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { once } from 'node:events'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,12 +8,14 @@ import { MemoryStore } from '@zero-os/memory'
 import { MetricsDB } from '@zero-os/observe'
 import { LiteLLMPricing, type ProviderAdapter } from '@zero-os/model'
 import { encryptSecrets } from '@zero-os/secrets'
+import { createTestProjectRoot } from '../../../../packages/core/src/session/__tests__/test-helpers'
 import { createUsageRecorder, startZeroOS } from '../main'
 import type { ZeroOS } from '../main'
 
 let zero: ZeroOS
 let testDataDir: string
 const TEST_MASTER_KEY = Buffer.alloc(32, 7)
+const testProject = createTestProjectRoot('zero-main-integration-')
 
 function writeConfig(
   dataDir: string,
@@ -168,7 +170,7 @@ async function createEmbeddingApiServer(options?: {
 }
 
 beforeAll(async () => {
-  testDataDir = mkdtempSync(join(tmpdir(), 'zero-test-'))
+  testDataDir = testProject.zeroDir
   process.env.ZERO_MASTER_KEY_BASE64 = TEST_MASTER_KEY.toString('base64')
   writeConfig(testDataDir)
   encryptSecrets(
@@ -178,13 +180,17 @@ beforeAll(async () => {
     TEST_MASTER_KEY,
     join(testDataDir, 'secrets.enc'),
   )
-  zero = await startZeroOS({ dataDir: testDataDir, skipProcessExit: true })
+  zero = await startZeroOS({
+    dataDir: testDataDir,
+    projectRoot: testProject.projectRoot,
+    skipProcessExit: true,
+  })
 })
 
 afterAll(async () => {
   await zero.shutdown()
   process.env.ZERO_MASTER_KEY_BASE64 = undefined
-  rmSync(testDataDir, { recursive: true, force: true })
+  testProject.cleanup()
 })
 
 describe('startZeroOS Integration', () => {
@@ -226,6 +232,7 @@ describe('startZeroOS Integration', () => {
 
     const hookedZero = await startZeroOS({
       dataDir: testDataDir,
+      projectRoot: testProject.projectRoot,
       skipProcessExit: true,
       onCoreReady: (runtime) => {
         observed.webRegistered = runtime.channels.has('web')
@@ -268,7 +275,8 @@ describe('startZeroOS Integration', () => {
   })
 
   test('passes taskClosureModel into new session agents as a dedicated closure adapter', async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), 'zero-task-closure-'))
+    const closureProject = createTestProjectRoot('zero-task-closure-')
+    const dataDir = closureProject.zeroDir
     process.env.ZERO_MASTER_KEY_BASE64 = TEST_MASTER_KEY.toString('base64')
     writeConfig(dataDir, {
       includeClosureModel: true,
@@ -285,7 +293,11 @@ describe('startZeroOS Integration', () => {
     let closureZero: ZeroOS | undefined
 
     try {
-      closureZero = await startZeroOS({ dataDir, skipProcessExit: true })
+      closureZero = await startZeroOS({
+        dataDir,
+        projectRoot: closureProject.projectRoot,
+        skipProcessExit: true,
+      })
       const session = closureZero.sessionManager.create('web')
       session.initAgent({
         name: 'closure-test-agent',
@@ -303,9 +315,12 @@ describe('startZeroOS Integration', () => {
         closureZero.modelRouter.resolveModel('openai-codex/gpt-5.3-codex-medium')?.adapter,
       )
       expect(agent?.closureAdapter).not.toBe(agent?.adapter)
+      expect(
+        existsSync(join(closureProject.projectRoot, '.zero', 'workspace', 'closure-test-agent')),
+      ).toBe(true)
     } finally {
       await closureZero?.shutdown()
-      rmSync(dataDir, { recursive: true, force: true })
+      closureProject.cleanup()
     }
   })
 

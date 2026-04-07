@@ -5,11 +5,13 @@ import { SessionDB } from '@zero-os/observe'
 import type { Message, Session as SessionData } from '@zero-os/shared'
 import { loadConfig } from '../../config/loader'
 import { ToolRegistry } from '../../tool/registry'
+import { createTestProjectRoot } from './test-helpers'
 import { SessionManager } from '../manager'
 import { Session } from '../session'
 
 const config = loadConfig(join(process.cwd(), '.zero', 'config.yaml'))
 const secrets = new Map<string, string>([['openai_codex_api_key', 'sk-test-placeholder']])
+const testProject = createTestProjectRoot('zero-session-persistence-')
 
 function expectDefined<T>(value: T | null | undefined): NonNullable<T> {
   expect(value).toBeDefined()
@@ -26,6 +28,7 @@ describe('Session Persistence', () => {
 
   afterAll(() => {
     sessionDb?.close()
+    testProject.cleanup()
   })
 
   test('setup', () => {
@@ -36,7 +39,10 @@ describe('Session Persistence', () => {
   })
 
   test('Session constructor persists to DB when sessionDb provided', () => {
-    const session = new Session('web', modelRouter, toolRegistry, { sessionDb })
+    const session = new Session('web', modelRouter, toolRegistry, {
+      sessionDb,
+      projectRoot: testProject.projectRoot,
+    })
     const row = expectDefined(sessionDb.getSession(session.data.id))
     expect(row.id).toBe(session.data.id)
     expect(row.source).toBe('web')
@@ -44,7 +50,10 @@ describe('Session Persistence', () => {
   })
 
   test('setStatus persists status change', () => {
-    const session = new Session('web', modelRouter, toolRegistry, { sessionDb })
+    const session = new Session('web', modelRouter, toolRegistry, {
+      sessionDb,
+      projectRoot: testProject.projectRoot,
+    })
     session.setStatus('completed')
 
     const row = expectDefined(sessionDb.getSession(session.data.id))
@@ -52,7 +61,10 @@ describe('Session Persistence', () => {
   })
 
   test('initAgent persists agent config', () => {
-    const session = new Session('web', modelRouter, toolRegistry, { sessionDb })
+    const session = new Session('web', modelRouter, toolRegistry, {
+      sessionDb,
+      projectRoot: testProject.projectRoot,
+    })
     session.initAgent({ name: 'test-agent', agentInstruction: 'You are a test.' })
 
     const row = expectDefined(sessionDb.getSession(session.data.id))
@@ -96,7 +108,9 @@ describe('Session Persistence', () => {
       },
     ]
 
-    const session = Session.restore(data, messages, modelRouter, toolRegistry)
+    const session = Session.restore(data, messages, modelRouter, toolRegistry, {
+      projectRoot: testProject.projectRoot,
+    })
     expect(session.data.id).toBe('sess_restore_test')
     expect(session.data.source).toBe('feishu')
     expect(session.data.channelName).toBe('feishu:ops')
@@ -145,7 +159,12 @@ describe('Session Persistence', () => {
     }
     sessionDb.saveSession(data2)
 
-    const manager = new SessionManager(modelRouter, toolRegistry, { sessionDb }, sessionDb)
+    const manager = new SessionManager(
+      modelRouter,
+      toolRegistry,
+      { sessionDb, projectRoot: testProject.projectRoot },
+      sessionDb,
+    )
     const count = manager.restoreFromDB()
 
     expect(count).toBeGreaterThanOrEqual(2)
@@ -181,7 +200,12 @@ describe('Session Persistence', () => {
       '<role>older rendered prompt</role>',
     )
 
-    const manager = new SessionManager(modelRouter, toolRegistry, { sessionDb }, sessionDb)
+    const manager = new SessionManager(
+      modelRouter,
+      toolRegistry,
+      { sessionDb, projectRoot: testProject.projectRoot },
+      sessionDb,
+    )
     manager.restoreFromDB()
 
     const session = manager.get('sess_mgr_older')
@@ -211,7 +235,12 @@ describe('Session Persistence', () => {
       renderedSystemPrompt,
     )
 
-    const manager = new SessionManager(modelRouter, toolRegistry, { sessionDb }, sessionDb)
+    const manager = new SessionManager(
+      modelRouter,
+      toolRegistry,
+      { sessionDb, projectRoot: testProject.projectRoot },
+      sessionDb,
+    )
     manager.restoreFromDB()
 
     const session = expectDefined(manager.get(data.id))
@@ -224,7 +253,12 @@ describe('Session Persistence', () => {
   })
 
   test('SessionManager.flushAll saves all sessions to DB', () => {
-    const manager = new SessionManager(modelRouter, toolRegistry, { sessionDb }, sessionDb)
+    const manager = new SessionManager(
+      modelRouter,
+      toolRegistry,
+      { sessionDb, projectRoot: testProject.projectRoot },
+      sessionDb,
+    )
 
     const s1 = manager.create('web')
     const s2 = manager.create('telegram')
@@ -259,7 +293,12 @@ describe('Session Persistence', () => {
       renderedSystemPrompt,
     )
 
-    const manager = new SessionManager(modelRouter, toolRegistry, { sessionDb }, sessionDb)
+    const manager = new SessionManager(
+      modelRouter,
+      toolRegistry,
+      { sessionDb, projectRoot: testProject.projectRoot },
+      sessionDb,
+    )
     manager.restoreFromDB()
     manager.flushAll()
 
@@ -267,7 +306,12 @@ describe('Session Persistence', () => {
   })
 
   test('SessionManager.drainAndCollectInterrupted returns empty after active turns drain cleanly', async () => {
-    const manager = new SessionManager(modelRouter, toolRegistry, { sessionDb }, sessionDb)
+    const manager = new SessionManager(
+      modelRouter,
+      toolRegistry,
+      { sessionDb, projectRoot: testProject.projectRoot },
+      sessionDb,
+    )
     const session = manager.create('feishu', {
       channelId: 'chat_drain_ok',
       channelName: 'feishu',
@@ -283,7 +327,12 @@ describe('Session Persistence', () => {
   })
 
   test('SessionManager.drainAndCollectInterrupted returns only still-interrupted sessions', async () => {
-    const manager = new SessionManager(modelRouter, toolRegistry, { sessionDb }, sessionDb)
+    const manager = new SessionManager(
+      modelRouter,
+      toolRegistry,
+      { sessionDb, projectRoot: testProject.projectRoot },
+      sessionDb,
+    )
     const session = manager.create('telegram', {
       channelId: 'chat_drain_timeout',
       channelName: 'telegram',
@@ -308,7 +357,12 @@ describe('Session Persistence', () => {
   })
 
   test('SessionManager DB query proxies work', () => {
-    const manager = new SessionManager(modelRouter, toolRegistry, { sessionDb }, sessionDb)
+    const manager = new SessionManager(
+      modelRouter,
+      toolRegistry,
+      { sessionDb, projectRoot: testProject.projectRoot },
+      sessionDb,
+    )
 
     const row = manager.getFromDB('sess_roundtrip')
     expect(row === null || row?.id === 'sess_roundtrip').toBe(true)

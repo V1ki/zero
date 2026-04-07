@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'bun:test'
+import { afterAll, describe, expect, test } from 'bun:test'
+import { join } from 'node:path'
 import type { ProviderAdapter } from '@zero-os/model'
 import { ModelRouter } from '@zero-os/model'
 import { SessionDB } from '@zero-os/observe'
@@ -16,9 +17,11 @@ import { Agent } from '../../agent/agent'
 import type { QueuedMessage } from '../../agent/queue'
 import { BaseTool } from '../../tool/base'
 import { ToolRegistry } from '../../tool/registry'
+import { createTestProjectRoot } from './test-helpers'
 import { Session } from '../session'
 
 const API_KEY = 'sk-test-placeholder'
+const testProject = createTestProjectRoot('zero-session-queue-')
 
 const config: SystemConfig = {
   providers: {
@@ -217,7 +220,7 @@ function attachCustomAgent(
     registry,
     {
       sessionId: session.data.id,
-      workDir: process.cwd(),
+      workDir: join(testProject.projectRoot, '.zero', 'workspace', 'queue-agent'),
       logger: {
         info: () => {},
         warn: () => {},
@@ -270,6 +273,10 @@ function makeToolResultMessage(sessionId: string, toolUseId: string, output: str
 }
 
 describe('Session queue handling', () => {
+  afterAll(() => {
+    testProject.cleanup()
+  })
+
   test('queues running input as a persisted queued message and emits a session update', async () => {
     const sessionDb = SessionDB.createInMemory()
     const tool = new BlockingTool()
@@ -279,6 +286,7 @@ describe('Session queue handling', () => {
     const events: Array<{ topic: string; data: Record<string, unknown> }> = []
     const session = new Session('web', createRouter(), registry, {
       sessionDb,
+      projectRoot: testProject.projectRoot,
       bus: {
         emit(topic, data) {
           events.push({ topic, data })
@@ -324,7 +332,9 @@ describe('Session queue handling', () => {
 
   test('draining queued messages clears the interrupt flag', async () => {
     const registry = new ToolRegistry()
-    const session = new Session('web', createRouter(), registry)
+    const session = new Session('web', createRouter(), registry, {
+      projectRoot: testProject.projectRoot,
+    })
     session.initAgent({ name: 'queue-agent', agentInstruction: 'queue test agent' })
 
     const ready = createDeferred<void>()
@@ -388,7 +398,9 @@ describe('Session queue handling', () => {
     registry.register(tool)
 
     const adapter = new QueueResumeAdapter()
-    const session = new Session('web', createRouter(), registry)
+    const session = new Session('web', createRouter(), registry, {
+      projectRoot: testProject.projectRoot,
+    })
     attachCustomAgent(session, registry, adapter)
 
     const turnPromise = session.handleMessage('生成架构图')
@@ -421,7 +433,9 @@ describe('Session queue handling', () => {
   test('queued messages do not advance recovered turn indexes', async () => {
     const router = createRouter()
     const registry = new ToolRegistry()
-    const seed = new Session('web', router, registry)
+    const seed = new Session('web', router, registry, {
+      projectRoot: testProject.projectRoot,
+    })
 
     const restored = Session.restore(
       seed.data,
@@ -432,6 +446,7 @@ describe('Session queue handling', () => {
       ],
       router,
       registry,
+      { projectRoot: testProject.projectRoot },
     )
     restored.initAgent({ name: 'queue-agent', agentInstruction: 'queue test agent' })
 
@@ -479,7 +494,9 @@ describe('Session queue handling', () => {
   test('notification messages do not advance recovered turn indexes', async () => {
     const router = createRouter()
     const registry = new ToolRegistry()
-    const seed = new Session('web', router, registry)
+    const seed = new Session('web', router, registry, {
+      projectRoot: testProject.projectRoot,
+    })
 
     const restored = Session.restore(
       seed.data,
@@ -490,6 +507,7 @@ describe('Session queue handling', () => {
       ],
       router,
       registry,
+      { projectRoot: testProject.projectRoot },
     )
     restored.initAgent({ name: 'queue-agent', agentInstruction: 'queue test agent' })
 
@@ -537,7 +555,9 @@ describe('Session queue handling', () => {
   test('control messages do not advance recovered turn indexes', async () => {
     const router = createRouter()
     const registry = new ToolRegistry()
-    const seed = new Session('web', router, registry)
+    const seed = new Session('web', router, registry, {
+      projectRoot: testProject.projectRoot,
+    })
 
     const restored = Session.restore(
       seed.data,
@@ -551,6 +571,7 @@ describe('Session queue handling', () => {
       ],
       router,
       registry,
+      { projectRoot: testProject.projectRoot },
     )
     restored.initAgent({ name: 'queue-agent', agentInstruction: 'queue test agent' })
 
@@ -596,7 +617,9 @@ describe('Session queue handling', () => {
   })
 
   test('passes a prebuilt user message entry into the agent request metadata', async () => {
-    const session = new Session('web', createRouter(), new ToolRegistry())
+    const session = new Session('web', createRouter(), new ToolRegistry(), {
+      projectRoot: testProject.projectRoot,
+    })
     session.initAgent({ name: 'queue-agent', agentInstruction: 'queue test agent' })
 
     let capturedUserMessage: Message | undefined
@@ -650,6 +673,7 @@ describe('Session queue handling', () => {
     const completedTurnMessages: Message[] = []
 
     const session = new Session('web', createRouter(), new ToolRegistry(), {
+      projectRoot: testProject.projectRoot,
       bus: {
         emit(topic, data) {
           events.push({ topic, data })
@@ -715,6 +739,7 @@ describe('Session queue handling', () => {
   test('failed turn with no completed assistant output fully rolls back and keeps queued messages', async () => {
     const events: Array<{ topic: string; data: Record<string, unknown> }> = []
     const session = new Session('web', createRouter(), new ToolRegistry(), {
+      projectRoot: testProject.projectRoot,
       bus: {
         emit(topic, data) {
           events.push({ topic, data })
@@ -765,7 +790,9 @@ describe('Session queue handling', () => {
 
   test('logs leaked queued messages after a turn finishes without draining them', async () => {
     const warnings: Array<{ event: string; data?: Record<string, unknown> }> = []
-    const session = new Session('web', createRouter(), new ToolRegistry())
+    const session = new Session('web', createRouter(), new ToolRegistry(), {
+      projectRoot: testProject.projectRoot,
+    })
     session.initAgent({ name: 'queue-agent', agentInstruction: 'queue test agent' })
     ;(
       session as unknown as {

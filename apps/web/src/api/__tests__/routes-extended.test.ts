@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { cpSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Message } from '@zero-os/shared'
 import { getSessionLogRelativeDir } from '@zero-os/shared'
+import { createTestProjectRoot } from '../../../../../packages/core/src/session/__tests__/test-helpers'
 import { startZeroOS } from '../../../../server/src/main'
 import type { ZeroOS } from '../../../../server/src/main'
 import { createRoutes } from '../routes'
@@ -11,9 +11,10 @@ import { createRoutes } from '../routes'
 let app: ReturnType<typeof createRoutes>
 let zero: ZeroOS
 let testDataDir: string
+const testProject = createTestProjectRoot('zero-routes-extended-')
 
 beforeAll(async () => {
-  testDataDir = mkdtempSync(join(tmpdir(), 'zero-test-'))
+  testDataDir = testProject.zeroDir
   const prodDir = join(process.cwd(), '.zero')
   for (const file of ['secrets.enc', 'config.yaml', 'fuse_list.yaml']) {
     const src = join(prodDir, file)
@@ -21,13 +22,17 @@ beforeAll(async () => {
       cpSync(src, join(testDataDir, file))
     }
   }
-  zero = await startZeroOS({ dataDir: testDataDir, skipProcessExit: true })
+  zero = await startZeroOS({
+    dataDir: testDataDir,
+    projectRoot: testProject.projectRoot,
+    skipProcessExit: true,
+  })
   app = createRoutes(zero)
 })
 
 afterAll(async () => {
   await zero.shutdown()
-  rmSync(testDataDir, { recursive: true, force: true })
+  testProject.cleanup()
 })
 
 describe('API Routes Extended', () => {

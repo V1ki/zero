@@ -92,6 +92,7 @@ import { rebuildWebBundle } from './web-build'
 
 export interface StartOptions {
   dataDir?: string
+  projectRoot?: string
   skipProcessExit?: boolean
   onCoreReady?: (zero: ZeroOS) => Promise<void> | void
 }
@@ -452,6 +453,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
       schedulerHandle,
       scheduleStore,
       taskClosureModel: config.taskClosureModel,
+      projectRoot: options?.projectRoot ?? process.cwd(),
     },
     sessionDb,
   )

@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { afterAll, describe, expect, test } from 'bun:test'
 import type { MemoryRetriever } from '@zero-os/memory'
 import { ModelRouter, TrackedAdapter, type ProviderAdapter, type ResolvedModel } from '@zero-os/model'
 import { MetricsDB, Tracer, flattenTraceSpans } from '@zero-os/observe'
@@ -12,9 +12,11 @@ import type {
   SystemConfig,
 } from '@zero-os/shared'
 import { ToolRegistry } from '../../tool/registry'
+import { createTestProjectRoot } from './test-helpers'
 import { Session } from '../session'
 
 const API_KEY = 'sk-test-placeholder'
+const testProject = createTestProjectRoot('zero-session-memory-retrieval-')
 
 const config: SystemConfig = {
   providers: {
@@ -205,6 +207,10 @@ function trackAdapter(
 }
 
 describe('Session memory retrieval', () => {
+  afterAll(() => {
+    testProject.cleanup()
+  })
+
   test('injects retrieved memories into dynamic context before agent.run', async () => {
     const metrics = MetricsDB.createInMemory()
     const router = createRouter(metrics)
@@ -214,6 +220,7 @@ describe('Session memory retrieval', () => {
       identityMemory: '用户曾经要求优先使用浏览器插件',
       tracer,
       metrics,
+      projectRoot: testProject.projectRoot,
       memoryRetriever: {
         async retrieve() {
           return []
@@ -382,6 +389,7 @@ describe('Session memory retrieval', () => {
     const session = new Session('web', router, new ToolRegistry(), {
       identityMemory: '用户曾经要求优先使用浏览器插件',
       tracer,
+      projectRoot: testProject.projectRoot,
       memoryRetriever: {
         async retrieve() {
           return []
@@ -491,6 +499,7 @@ describe('Session memory retrieval', () => {
     const session = Session.restore(data, [], router, new ToolRegistry(), {
       identityMemory: '用户曾经要求优先使用浏览器插件',
       tracer,
+      projectRoot: testProject.projectRoot,
       memoryRetriever: {
         async retrieve() {
           return []

@@ -1,9 +1,10 @@
-import { describe, expect, test } from 'bun:test'
+import { afterAll, describe, expect, test } from 'bun:test'
 import { ModelRouter } from '@zero-os/model'
 import type { SystemConfig } from '@zero-os/shared'
 import { BashTool } from '../../tool/bash'
 import { ReadTool } from '../../tool/read'
 import { ToolRegistry } from '../../tool/registry'
+import { createTestProjectRoot } from './test-helpers'
 import { Session } from '../session'
 
 const API_KEY = 'sk-c6c02cbd0c25473f97f9be0da6070f6d'
@@ -32,6 +33,7 @@ const config: SystemConfig = {
 }
 
 const secrets = new Map([['openai_codex_api_key', API_KEY]])
+const testProject = createTestProjectRoot('zero-session-lifecycle-')
 
 function createRouter() {
   const router = new ModelRouter(config, secrets)
@@ -47,10 +49,16 @@ function createToolRegistry() {
 }
 
 describe('Session Lifecycle', () => {
+  afterAll(() => {
+    testProject.cleanup()
+  })
+
   test('complete lifecycle: create → init → message → get messages (real API)', async () => {
     const router = createRouter()
     const registry = createToolRegistry()
-    const session = new Session('web', router, registry)
+    const session = new Session('web', router, registry, {
+      projectRoot: testProject.projectRoot,
+    })
 
     expect(session.getStatus()).toBe('active')
 
@@ -73,7 +81,9 @@ describe('Session Lifecycle', () => {
   test('session status starts active', () => {
     const router = createRouter()
     const registry = createToolRegistry()
-    const session = new Session('web', router, registry)
+    const session = new Session('web', router, registry, {
+      projectRoot: testProject.projectRoot,
+    })
     expect(session.getStatus()).toBe('active')
     expect(session.data.source).toBe('web')
   })
@@ -81,7 +91,9 @@ describe('Session Lifecycle', () => {
   test('session setStatus changes status', () => {
     const router = createRouter()
     const registry = createToolRegistry()
-    const session = new Session('web', router, registry)
+    const session = new Session('web', router, registry, {
+      projectRoot: testProject.projectRoot,
+    })
     session.setStatus('completed')
     expect(session.getStatus()).toBe('completed')
   })
@@ -89,7 +101,9 @@ describe('Session Lifecycle', () => {
   test('session setStatus to archived', () => {
     const router = createRouter()
     const registry = createToolRegistry()
-    const session = new Session('web', router, registry)
+    const session = new Session('web', router, registry, {
+      projectRoot: testProject.projectRoot,
+    })
     session.setStatus('archived')
     expect(session.getStatus()).toBe('archived')
   })
@@ -97,7 +111,9 @@ describe('Session Lifecycle', () => {
   test('session data has correct initial fields', () => {
     const router = createRouter()
     const registry = createToolRegistry()
-    const session = new Session('feishu', router, registry)
+    const session = new Session('feishu', router, registry, {
+      projectRoot: testProject.projectRoot,
+    })
     expect(session.data.id).toMatch(/^sess_/)
     expect(session.data.source).toBe('feishu')
     expect(session.data.currentModel).toBe('openai-codex/gpt-5.3-codex-medium')
@@ -108,7 +124,9 @@ describe('Session Lifecycle', () => {
   test('getMessages returns empty before any message', () => {
     const router = createRouter()
     const registry = createToolRegistry()
-    const session = new Session('web', router, registry)
+    const session = new Session('web', router, registry, {
+      projectRoot: testProject.projectRoot,
+    })
     expect(session.getMessages()).toEqual([])
   })
 })

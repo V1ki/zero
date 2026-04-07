@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { afterAll, describe, expect, test } from 'bun:test'
 import { MEMORY_NUDGE_PROMPT } from '@zero-os/memory'
 import { ModelRouter } from '@zero-os/model'
 import type { TraceSpan } from '@zero-os/observe'
@@ -6,9 +6,11 @@ import type { Message, SystemConfig } from '@zero-os/shared'
 import { BashTool } from '../../tool/bash'
 import { ReadTool } from '../../tool/read'
 import { ToolRegistry } from '../../tool/registry'
+import { createTestProjectRoot } from './test-helpers'
 import { Session } from '../session'
 
 const API_KEY = 'sk-test-placeholder'
+const testProject = createTestProjectRoot('zero-session-memory-eval-')
 
 const config: SystemConfig = {
   providers: {
@@ -70,6 +72,7 @@ function createTracingSession() {
   }> = []
 
   const session = new Session('web', createRouter(), createToolRegistry(), {
+    projectRoot: testProject.projectRoot,
     tracer: {
       startSpan: (
         sessionId: string,
@@ -108,6 +111,10 @@ function createTracingSession() {
 }
 
 describe('Session.evaluateSessionMemory', () => {
+  afterAll(() => {
+    testProject.cleanup()
+  })
+
   test('routes evaluation through handleMessage and records a session_evaluate trace', async () => {
     const { session, endedSpans } = createTracingSession()
 

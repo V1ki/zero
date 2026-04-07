@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, describe, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -10,10 +10,12 @@ import { BaseTool } from '../../tool/base'
 import { BashTool } from '../../tool/bash'
 import { ReadTool } from '../../tool/read'
 import { ToolRegistry } from '../../tool/registry'
+import { createTestProjectRoot } from './test-helpers'
 import { Session } from '../session'
 
 const API_KEY = 'sk-test-placeholder'
 const tempDirs: string[] = []
+const testProject = createTestProjectRoot('zero-session-snapshot-')
 
 const config: SystemConfig = {
   providers: {
@@ -161,6 +163,10 @@ afterEach(() => {
   }
 })
 
+afterAll(() => {
+  testProject.cleanup()
+})
+
 describe('Session snapshot lifecycle', () => {
   test('first handled message writes a complete session_start snapshot', async () => {
     const { observability, tracer } = createTempObservability()
@@ -168,7 +174,7 @@ describe('Session snapshot lifecycle', () => {
       'web',
       createRouter(),
       createRegistry(),
-      { observability, tracer },
+      { observability, tracer, projectRoot: testProject.projectRoot },
     )
     session.initAgent({ name: 'snapshot-agent', agentInstruction: 'Test snapshot prompt' })
     installFakeAgent(session)
@@ -187,7 +193,11 @@ describe('Session snapshot lifecycle', () => {
   test('tool registry changes write a tools_changed snapshot with parent linkage', async () => {
     const { observability, tracer } = createTempObservability()
     const registry = createRegistry()
-    const session = new Session('web', createRouter(), registry, { observability, tracer })
+    const session = new Session('web', createRouter(), registry, {
+      observability,
+      tracer,
+      projectRoot: testProject.projectRoot,
+    })
     session.initAgent({ name: 'snapshot-agent', agentInstruction: 'Test snapshot prompt' })
     installFakeAgent(session)
 
@@ -210,7 +220,7 @@ describe('Session snapshot lifecycle', () => {
       'web',
       createRouter(),
       createRegistry(),
-      { observability, tracer },
+      { observability, tracer, projectRoot: testProject.projectRoot },
     )
     session.initAgent({ name: 'snapshot-agent', agentInstruction: 'First prompt' })
     installFakeAgent(session)
@@ -236,7 +246,7 @@ describe('Session snapshot lifecycle', () => {
       'web',
       createRouter(),
       createRegistry(),
-      { observability, tracer },
+      { observability, tracer, projectRoot: testProject.projectRoot },
     )
     session.initAgent({ name: 'snapshot-agent', agentInstruction: 'Test snapshot prompt' })
     installFakeAgent(session)
@@ -258,7 +268,11 @@ describe('Session snapshot lifecycle', () => {
     const { observability, tracer } = createTempObservability()
     const router = createRouter()
     const registry = createRegistry()
-    const session = new Session('web', router, registry, { observability, tracer })
+    const session = new Session('web', router, registry, {
+      observability,
+      tracer,
+      projectRoot: testProject.projectRoot,
+    })
     session.initAgent({ name: 'snapshot-agent', agentInstruction: 'Test snapshot prompt' })
     installFakeAgent(session)
 
@@ -270,7 +284,7 @@ describe('Session snapshot lifecycle', () => {
       session.getMessages(),
       router,
       registry,
-      { observability, tracer },
+      { observability, tracer, projectRoot: testProject.projectRoot },
       session.getSystemPrompt(),
     )
     restored.initAgent({ name: 'snapshot-agent', agentInstruction: 'Test snapshot prompt' })
@@ -288,7 +302,11 @@ describe('Session snapshot lifecycle', () => {
     const { observability, tracer } = createTempObservability()
     const router = createRouter()
     const registry = createRegistry()
-    const session = new Session('web', router, registry, { observability, tracer })
+    const session = new Session('web', router, registry, {
+      observability,
+      tracer,
+      projectRoot: testProject.projectRoot,
+    })
     session.initAgent({ name: 'snapshot-agent', agentInstruction: 'Test snapshot prompt' })
 
     const initialTurns: number[] = []
@@ -303,7 +321,7 @@ describe('Session snapshot lifecycle', () => {
       session.getMessages(),
       router,
       registry,
-      { observability, tracer },
+      { observability, tracer, projectRoot: testProject.projectRoot },
       session.getSystemPrompt(),
     )
     restored.initAgent({ name: 'snapshot-agent', agentInstruction: 'Test snapshot prompt' })
@@ -321,7 +339,7 @@ describe('Session snapshot lifecycle', () => {
       'web',
       createRouter(),
       createRegistry(),
-      { observability, tracer },
+      { observability, tracer, projectRoot: testProject.projectRoot },
     )
     session.initAgent({ name: 'snapshot-agent', agentInstruction: 'Test snapshot prompt' })
     installFakeAgent(session)

@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { SessionManager } from '@zero-os/core'
 import { serializeChatGptOAuthSession, serializeClaudeOAuthSession } from '@zero-os/model'
@@ -9,6 +8,7 @@ import { encryptSecrets } from '@zero-os/secrets'
 import type { Session as SessionData } from '@zero-os/shared'
 import { readYaml } from '@zero-os/shared/utils'
 import { SessionDB } from '../../../../../packages/observe/src/session-db'
+import { createTestProjectRoot } from '../../../../../packages/core/src/session/__tests__/test-helpers'
 import { getChatgptOAuthTokenRef } from '../../../../server/src/chatgpt-provider'
 import { getClaudeOAuthSessionRef } from '../../../../server/src/claude-provider'
 import { startZeroOS } from '../../../../server/src/main'
@@ -22,6 +22,7 @@ const previousZeroDataDir = process.env.ZERO_DATA_DIR
 const previousMasterKey = process.env.ZERO_MASTER_KEY_BASE64
 const TEST_MASTER_KEY = Buffer.alloc(32, 9)
 const originalFetch = globalThis.fetch
+const testProject = createTestProjectRoot('zero-routes-api-')
 
 function recordAgentLoopUsage(
   zero: ZeroOS,
@@ -122,7 +123,7 @@ fuse_list: []
 }
 
 beforeAll(async () => {
-  testDataDir = mkdtempSync(join(tmpdir(), 'zero-test-'))
+  testDataDir = testProject.zeroDir
   process.env.ZERO_DATA_DIR = testDataDir
   process.env.ZERO_MASTER_KEY_BASE64 = TEST_MASTER_KEY.toString('base64')
   writeConfig(testDataDir)
@@ -133,7 +134,11 @@ beforeAll(async () => {
     TEST_MASTER_KEY,
     join(testDataDir, 'secrets.enc'),
   )
-  zero = await startZeroOS({ dataDir: testDataDir, skipProcessExit: true })
+  zero = await startZeroOS({
+    dataDir: testDataDir,
+    projectRoot: testProject.projectRoot,
+    skipProcessExit: true,
+  })
   app = createRoutes(zero)
 })
 
@@ -150,7 +155,7 @@ afterAll(async () => {
   } else {
     process.env.ZERO_DATA_DIR = previousZeroDataDir
   }
-  rmSync(testDataDir, { recursive: true, force: true })
+  testProject.cleanup()
 })
 
 describe('API Routes (Real)', () => {
@@ -199,7 +204,7 @@ describe('API Routes (Real)', () => {
     const isolatedManager = new SessionManager(
       zero.modelRouter,
       zero.toolRegistry,
-      { sessionDb: isolatedDb },
+      { sessionDb: isolatedDb, projectRoot: testProject.projectRoot },
       isolatedDb,
     )
     isolatedManager.restoreFromDB()
