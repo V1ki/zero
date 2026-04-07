@@ -35,6 +35,7 @@ export function buildSystemPrompt(components: PromptComponents): string {
       components.agentName,
       components.agentDescription,
       components.workspacePath,
+      components.sharedWorkspacePath,
       components.projectRoot,
     ),
   )
@@ -101,6 +102,7 @@ export function buildRoleBlock(
   agentName: string,
   agentDescription: string,
   workspacePath?: string,
+  sharedWorkspacePath?: string,
   projectRoot?: string,
 ): string {
   const lines = [
@@ -108,8 +110,9 @@ export function buildRoleBlock(
     agentDescription,
   ]
   if (workspacePath && projectRoot) {
+    const archivePath = sharedWorkspacePath ?? `${projectRoot}/.zero/workspace/shared/`
     lines.push(
-      `你的工作目录是 ${workspacePath}，下载和临时文件放在此目录。最终产出物放到 ${projectRoot}/.zero/workspace/shared/。`,
+      `你的工作目录是 ${workspacePath}，下载和临时文件放在此目录。最终产出物放到 ${archivePath} 留档。同时必须在对话中输出完整内容或关键摘要，不能只写文件不回复。`,
     )
     lines.push(`项目根目录是 ${projectRoot}，源代码在此目录下。`)
   }
