@@ -38,8 +38,14 @@ ZeRo OS 是一个可在本机自动执行任务的 AI 系统。
 │  │  │ Read │ │Write │ │ Edit │ │ Bash │ │ Fetch    ││ │
 │  │  └──────┘ └──────┘ └──────┘ └──────┘ └──────────┘│ │
 │  │  ┌──────────────────────────────────────────────┐ │ │
-│  │  │ Task（SubAgent 编排）                         │ │ │
+│  │  │ Task（DAG 批量编排）                          │ │ │
 │  │  └──────────────────────────────────────────────┘ │ │
+│  │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ │ │
+│  │  │ SpawnAgent  │ │ WaitAgent   │ │ CloseAgent  │ │ │
+│  │  └─────────────┘ └─────────────┘ └─────────────┘ │ │
+│  │  ┌─────────────┐                                  │ │
+│  │  │ SendInput   │  ← 异步交互式 SubAgent 工具组     │ │
+│  │  └─────────────┘                                  │ │
 │  └────────────────────────────────────────────────────┘ │
 │                         │                                │
 │  ┌──────────────────────▼─────────────────────────────┐ │
@@ -135,14 +141,32 @@ ZeRo OS 的所有数据统一存放在 `.zero/` 目录下：
 
 ## 工具
 
-系统提供 6 个基础能力：
+系统提供两类工具：基础能力工具和 SubAgent 编排工具。
+
+### 基础能力工具
 
 1. `Read`：读取文件内容，支持按范围读取。
 2. `Write`：在工作区写入新内容。
 3. `Edit`：对现有文件做精确修改。
 4. `Bash`：执行系统命令（Mac）。
 5. `Fetch`：HTTP 请求，读取网页内容 / API / 下载文件。底层使用 Bun 内置 `fetch()` + `@mozilla/readability` + `turndown`（HTML → Markdown），依赖极轻（~100KB），无锁完全并发。
-6. `Task`：启动 SubAgent 执行特定任务，包含预设 SubAgent（Explorer 等），也支持用户自定义。
+
+### SubAgent 编排工具
+
+系统提供两种互补的 SubAgent 编排模式：**DAG 批量编排**和**异步交互式编排**。
+
+**模式一：`Task`（DAG 批量编排）**
+
+一次性声明多个子任务及依赖关系，由 `TaskOrchestrator` 按拓扑排序并发执行。适用于可预先规划的批量任务（如多路调研后汇总）。
+
+**模式二：异步交互式编排（4 个工具）**
+
+主 Agent 手动控制 SubAgent 生命周期，适用于需要多轮交互、动态决策的场景。
+
+6. `SpawnAgent`：异步启动一个 SubAgent，立即返回 `agent_id`。支持 `standard`（一次性执行）和 `interactive`（等待输入的多轮交互）两种模式。
+7. `WaitAgent`：等待一个或多个 SubAgent 完成。支持 `waitAny`（任一完成即返回）和 `waitAll`（全部完成才返回），可设超时。
+8. `CloseAgent`：关闭一个 SubAgent 并释放其状态。
+9. `SendInput`：向 `interactive` 模式的 SubAgent 发送消息，唤醒其执行下一轮。支持 `interrupt` 标志请求协作式中断。
 
 ### Fetch 工具
 
@@ -526,7 +550,11 @@ claude-opus → claude-sonnet → gpt-4o
 
 ## 任务编排
 
-任务编排是 SubAgent 之间的依赖和执行顺序管理。主 Agent 通过 Task 工具启动多个 SubAgent，并定义它们之间的依赖关系。
+系统提供两种互补的 SubAgent 编排模式，覆盖从批量任务到动态交互的全部场景。
+
+### 模式一：Task（DAG 批量编排）
+
+主 Agent 通过 `Task` 工具一次性声明多个 SubAgent 及依赖关系，由 `TaskOrchestrator` 按 DAG 拓扑排序自动调度执行。适用于可预先规划的结构化任务。
 
 ```
 ┌──────────────────────────────────────────────────┐
@@ -551,12 +579,124 @@ claude-opus → claude-sonnet → gpt-4o
 │         └──────────────┘                         │
 │                                                  │
 │  编排规则：                                       │
-│  - 无依赖的 SubAgent 并发执行                     │
+│  - 无依赖的 SubAgent 并发执行（Promise.allSettled）│
 │  - 有依赖的 SubAgent 等上游全部完成后再启动        │
-│  - 任一 SubAgent 失败，下游取消并通知用户          │
-│  - 每个 SubAgent 有独立的超时时间                  │
+│  - 任一 SubAgent 失败，下游自动取消               │
+│  - 每个 SubAgent 有独立的超时时间（默认 120s）     │
+│  - 无就绪节点但仍有 pending → 抛出死锁错误        │
 └──────────────────────────────────────────────────┘
 ```
+
+**Task 输入结构：**
+
+```typescript
+interface SubAgentSpec {
+  id: string              // 任务 ID，用于依赖引用
+  instruction: string     // 任务描述
+  preset?: string         // 预设角色（内置或 .zero/roles/*）
+  name?: string           // 自定义 Agent 名称
+  agentInstruction?: string // 自定义角色指令
+  dependsOn?: string[]    // 依赖的任务 ID 列表
+  timeout?: number        // 超时时间（ms，默认 120000）
+  tools?: string[]        // 工具白名单
+}
+```
+
+**上游结果注入：** 有依赖的 SubAgent 启动时，上游任务的输出会自动拼接到指令前方：
+
+```
+## Output from task "taskA":
+{上游输出}
+
+---
+
+## Your task:
+{当前任务指令}
+```
+
+同时通过 `buildSubAgentPrompt()` 将上游结果注入 `<upstream_results>` XML 块。
+
+### 模式二：异步交互式编排（Spawn/Wait/Close/SendInput）
+
+主 Agent 通过 4 个独立工具手动控制 SubAgent 的生命周期。适用于需要多轮交互、动态决策、或无法预先规划依赖的场景。
+
+```
+┌──────────────────────────────────────────────────────┐
+│              主 Agent                                 │
+│                                                      │
+│  spawn_agent(instruction, mode='interactive')        │
+│       │  ← 立即返回 agent_id                         │
+│       ▼                                              │
+│  ┌──────────────────────────────┐                    │
+│  │  SubAgent（interactive 模式） │                    │
+│  │  state: running → waiting    │                    │
+│  └──────────────┬───────────────┘                    │
+│                 │                                    │
+│  send_input(agent_id, message)                       │
+│       │  ← 唤醒 SubAgent，state: waiting → running   │
+│       ▼                                              │
+│  wait_agent(ids, resolveOn='ready')                  │
+│       │  ← 等待 SubAgent 再次进入 waiting 状态        │
+│       ▼                                              │
+│  （重复 send_input / wait_agent 多轮交互）            │
+│       │                                              │
+│  close_agent(agent_id)                               │
+│       └  ← state → closed，释放资源                   │
+└──────────────────────────────────────────────────────┘
+```
+
+**SubAgent 状态机：**
+
+```
+         spawn()
+           │
+           ▼
+       ┌────────┐   agent.run() 完成   ┌───────────┐
+       │running │ ─────────────────── │ completed │
+       └───┬────┘                     └───────────┘
+           │                               ▲
+  (interactive   agent.run() 异常    ┌──────┴──┐
+   模式暂停)│  ────────────────────  │ failed  │
+           ▼                        └─────────┘
+       ┌────────┐
+       │waiting │ ◄── send_input() 后再次 run
+       └───┬────┘     state → running
+           │
+    close_agent()
+           │
+           ▼
+       ┌────────┐
+       │ closed │
+       └────────┘
+```
+
+**两种等待策略：**
+
+| 方法 | 行为 | 适用场景 |
+|------|------|----------|
+| `waitAny(ids)` | 任一 Agent 到达终态即返回 | 竞争式执行，取最快结果 |
+| `waitAll(ids)` | 全部 Agent 到达终态才返回 | 汇总多个结果 |
+| `waitReady(ids)` | Agent 进入 `waiting` 状态即返回 | 多轮交互中等待 SubAgent 就绪 |
+
+### 两种模式的选型
+
+| 维度 | Task（DAG） | Spawn/Wait/Close |
+|------|------------|-------------------|
+| 依赖声明 | 声明式，一次性提交 | 命令式，逐步控制 |
+| 并发调度 | 自动拓扑排序 + 并发 | 主 Agent 手动 spawn 多个 |
+| 多轮交互 | 不支持（单次执行） | 支持（interactive 模式） |
+| 上游结果传递 | 自动注入 | 主 Agent 通过 send_input 传递 |
+| 失败处理 | 自动取消下游 | 主 Agent 自行决策 |
+| 典型场景 | 多路调研→汇总、批量代码审查 | 引导式对话、迭代式调试、动态探索 |
+
+### SubAgent 通用约束
+
+- **工具隔离**：SubAgent 不能使用 `spawn_agent`、`wait_agent`、`close_agent`、`send_input`（防止无限递归嵌套）。
+- **工作区隔离**：每个 SubAgent 拥有独立工作目录 `{workDir}/subagents/{label}-{id}/`。
+- **Prompt 精简**：SubAgent 使用 `promptMode: 'minimal'`（仅 Role + ToolRules + Constraints + BootstrapContext），不加载身份记忆和检索记忆。
+- **角色解析**：支持内置角色（explorer、coder、reviewer）和 `.zero/roles/*.toml` 自定义角色。
+- **Trace 追踪**：每个 SubAgent 在父 Agent 的 Trace 中生成独立的子 span，形成完整调用链。
+- **快照恢复**：`AgentControl.getSnapshot()` 序列化所有 SubAgent 状态；进程重启时 running/waiting 状态标记为 failed。
 
 ---
 
@@ -636,7 +776,7 @@ Agent 进入 tool use loop:
 
 - **Agent 空闲时**：用户消息直接触发新一轮 `handleUserMessage`，走正常流程。
 - **Scheduler 任务**：无交互对象，不接受排队消息。
-- **SubAgent**：不接受外部消息，由主 Agent 管理。
+- **SubAgent（standard 模式）**：不接受外部消息，由主 Agent 管理。`interactive` 模式的 SubAgent 通过 `send_input` 接收主 Agent 发来的消息，但不接受 Session 外部的排队消息。
 
 ---
 
