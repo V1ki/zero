@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { join } from 'node:path'
 import { ModelRouter } from '@zero-os/model'
-import { SessionDB } from '@zero-os/observe'
+import { type ObservabilityStore, SessionDB } from '@zero-os/observe'
 import type { Message, Session as SessionData } from '@zero-os/shared'
 import { loadConfig } from '../../config/loader'
 import { ToolRegistry } from '../../tool/registry'
@@ -180,6 +180,187 @@ describe('Session Persistence', () => {
     )
     expect(isNew).toBe(false)
     expect(session.data.id).toBe('sess_mgr_1')
+  })
+
+  test('SessionManager.restoreFromDB deduplicates active sessions by source and channelId', () => {
+    const isolatedDb = SessionDB.createInMemory()
+    const olderAt = '2026-04-08T08:09:41.520Z'
+    const newerAt = '2026-04-08T08:37:17.836Z'
+
+    isolatedDb.saveSession({
+      id: 'sess_mgr_dup_old',
+      createdAt: olderAt,
+      updatedAt: olderAt,
+      source: 'feishu',
+      status: 'active',
+      currentModel: 'gpt-5.3-codex-medium',
+      modelHistory: [{ model: 'gpt-5.3-codex-medium', from: olderAt, to: null }],
+      tags: [],
+      channelName: 'nanoclaw',
+      channelId: 'chat_dup',
+    })
+    isolatedDb.saveSession({
+      id: 'sess_mgr_dup_new',
+      createdAt: newerAt,
+      updatedAt: newerAt,
+      source: 'feishu',
+      status: 'active',
+      currentModel: 'gpt-5.3-codex-medium',
+      modelHistory: [{ model: 'gpt-5.3-codex-medium', from: newerAt, to: null }],
+      tags: [],
+      channelName: 'nanoclaw',
+      channelId: 'chat_dup',
+    })
+
+    const manager = new SessionManager(
+      modelRouter,
+      toolRegistry,
+      { sessionDb: isolatedDb, projectRoot: testProject.projectRoot },
+      isolatedDb,
+    )
+
+    try {
+      const restoredCount = manager.restoreFromDB()
+
+      expect(restoredCount).toBe(1)
+      expect(manager.get('sess_mgr_dup_new')).toBeDefined()
+      expect(manager.get('sess_mgr_dup_old')).toBeUndefined()
+      expect(expectDefined(isolatedDb.getSession('sess_mgr_dup_new')).status).toBe('active')
+      expect(expectDefined(isolatedDb.getSession('sess_mgr_dup_old')).status).toBe('completed')
+      expect(expectDefined(isolatedDb.getSession('sess_mgr_dup_old')).updatedAt).toBe(olderAt)
+
+      const { session, isNew } = manager.getOrCreateForChannel('feishu', 'chat_dup', 'nanoclaw')
+      expect(isNew).toBe(false)
+      expect(session.data.id).toBe('sess_mgr_dup_new')
+      expect(manager.listActive().map((active) => active.data.id)).toEqual(['sess_mgr_dup_new'])
+    } finally {
+      isolatedDb.close()
+    }
+  })
+
+  test('SessionManager.restoreFromDB deduplicates null and named channel sessions by source and channelId', () => {
+    const isolatedDb = SessionDB.createInMemory()
+    const olderAt = '2026-03-08T23:55:29.793Z'
+    const newerAt = '2026-03-09T07:00:46.065Z'
+
+    isolatedDb.saveSession({
+      id: 'sess_mgr_null_old',
+      createdAt: olderAt,
+      updatedAt: olderAt,
+      source: 'feishu',
+      status: 'active',
+      currentModel: 'gpt-5.3-codex-medium',
+      modelHistory: [{ model: 'gpt-5.3-codex-medium', from: olderAt, to: null }],
+      tags: [],
+      channelId: 'chat_shared',
+    })
+    isolatedDb.saveSession({
+      id: 'sess_mgr_named_new',
+      createdAt: newerAt,
+      updatedAt: newerAt,
+      source: 'feishu',
+      status: 'active',
+      currentModel: 'gpt-5.3-codex-medium',
+      modelHistory: [{ model: 'gpt-5.3-codex-medium', from: newerAt, to: null }],
+      tags: [],
+      channelName: 'web-auto',
+      channelId: 'chat_shared',
+    })
+
+    const manager = new SessionManager(
+      modelRouter,
+      toolRegistry,
+      { sessionDb: isolatedDb, projectRoot: testProject.projectRoot },
+      isolatedDb,
+    )
+
+    try {
+      const restoredCount = manager.restoreFromDB()
+
+      expect(restoredCount).toBe(1)
+      expect(manager.get('sess_mgr_named_new')).toBeDefined()
+      expect(manager.get('sess_mgr_null_old')).toBeUndefined()
+      expect(expectDefined(isolatedDb.getSession('sess_mgr_null_old')).status).toBe('completed')
+      expect(expectDefined(isolatedDb.getSession('sess_mgr_named_new')).status).toBe('active')
+
+      const named = manager.getOrCreateForChannel('feishu', 'chat_shared', 'web-auto')
+      expect(named.isNew).toBe(false)
+      expect(named.session.data.id).toBe('sess_mgr_named_new')
+    } finally {
+      isolatedDb.close()
+    }
+  })
+
+  test('SessionManager.restoreFromDB skips lifecycle side effects for deduplicated sessions', () => {
+    const isolatedDb = SessionDB.createInMemory()
+    const syncCalls: Array<{ sessionId: string; status: string }> = []
+    const eventCalls: Array<{ sessionId: string; status: string }> = []
+    const olderAt = '2026-04-08T08:09:41.520Z'
+    const newerAt = '2026-04-08T08:37:17.836Z'
+
+    isolatedDb.saveSession({
+      id: 'sess_mgr_side_old',
+      createdAt: olderAt,
+      updatedAt: olderAt,
+      source: 'feishu',
+      status: 'active',
+      currentModel: 'gpt-5.3-codex-medium',
+      modelHistory: [{ model: 'gpt-5.3-codex-medium', from: olderAt, to: null }],
+      tags: [],
+      channelName: 'nanoclaw',
+      channelId: 'chat_side',
+    })
+    isolatedDb.saveSession({
+      id: 'sess_mgr_side_new',
+      createdAt: newerAt,
+      updatedAt: newerAt,
+      source: 'feishu',
+      status: 'active',
+      currentModel: 'gpt-5.3-codex-medium',
+      modelHistory: [{ model: 'gpt-5.3-codex-medium', from: newerAt, to: null }],
+      tags: [],
+      channelName: 'web-auto',
+      channelId: 'chat_side',
+    })
+
+    const manager = new SessionManager(
+      modelRouter,
+      toolRegistry,
+      {
+        sessionDb: isolatedDb,
+        projectRoot: testProject.projectRoot,
+        observability: {
+          readSessionRequests() {
+            return []
+          },
+          readSessionSnapshots() {
+            return []
+          },
+          syncSessionActiveState(sessionId, status) {
+            syncCalls.push({ sessionId, status })
+          },
+        } as ObservabilityStore,
+        bus: {
+          emit(_event, payload: { sessionId: string; status: string }) {
+            eventCalls.push(payload)
+          },
+        },
+      },
+      isolatedDb,
+    )
+
+    try {
+      const restoredCount = manager.restoreFromDB()
+
+      expect(restoredCount).toBe(1)
+      expect(syncCalls).toEqual([{ sessionId: 'sess_mgr_side_new', status: 'active' }])
+      expect(eventCalls).toEqual([])
+      expect(manager.get('sess_mgr_side_old')).toBeUndefined()
+      expect(manager.get('sess_mgr_side_new')).toBeDefined()
+      expect(expectDefined(isolatedDb.getSession('sess_mgr_side_old')).status).toBe('completed')
+    } finally {
+      isolatedDb.close()
+    }
   })
 
   test('SessionManager.restoreFromDB migrates older agent config payloads', () => {

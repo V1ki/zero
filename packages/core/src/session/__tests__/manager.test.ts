@@ -308,7 +308,7 @@ describe('SessionManager', () => {
     manager.startNewForChannel('web', 'meaningful-session')
 
     expect(receivedPrompt).toContain('session 类型的记忆')
-    expect(first.session.getStatus()).toBe('active')
+    expect(first.session.getStatus()).toBe('completed')
 
     gate.resolve()
     await Promise.resolve()
@@ -339,6 +339,7 @@ describe('SessionManager', () => {
 
     try {
       manager.startNewForChannel('web', 'failed-eval-session')
+      expect(first.session.getStatus()).toBe('completed')
 
       await Promise.resolve()
       await Promise.resolve()
@@ -382,6 +383,7 @@ describe('SessionManager', () => {
         evaluateSessionMemory: () => Promise<void>
       }
     ).evaluateSessionMemory = async () => {
+      expect(first.session.getStatus()).toBe('completed')
       evaluationCalled = true
     }
 
@@ -390,7 +392,7 @@ describe('SessionManager', () => {
     await Promise.resolve()
     expect(waited).toBe(true)
     expect(evaluationCalled).toBe(false)
-    expect(first.session.getStatus()).toBe('active')
+    expect(first.session.getStatus()).toBe('completed')
 
     waitGate.resolve()
     await new Promise((resolve) => setTimeout(resolve, 0))

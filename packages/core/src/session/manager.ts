@@ -295,13 +295,13 @@ export class SessionManager {
       return
     }
 
+    session.setStatus(finalStatus)
+
     const runEvaluation = async () => {
       try {
         await session.evaluateSessionMemory(SESSION_MEMORY_PROMPT)
       } catch (error) {
         console.warn('[SessionMemory] evaluation failed:', error)
-      } finally {
-        session.setStatus(finalStatus)
       }
     }
 
@@ -311,7 +311,6 @@ export class SessionManager {
         .then(runEvaluation)
         .catch((error) => {
           console.warn('[SessionMemory] wait for turn completion failed:', error)
-          session.setStatus(finalStatus)
         })
       return
     }
@@ -371,9 +370,19 @@ export class SessionManager {
 
     this.loadChannelModelPreferences()
     const rows = this.sessionDb.loadActiveSessions().map((row) => this.normalizeRow(row))
+    const restoredChannels = new Set<string>()
     let restored = 0
 
     for (const row of rows) {
+      if (row.channelId) {
+        const dedupKey = `${row.source}:${row.channelId}`
+        if (restoredChannels.has(dedupKey)) {
+          this.sessionDb.updateStatus(row.id, 'completed', row.updatedAt)
+          continue
+        }
+        restoredChannels.add(dedupKey)
+      }
+
       const data: SessionData = {
         id: row.id,
         createdAt: row.createdAt,
