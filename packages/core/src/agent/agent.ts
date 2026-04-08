@@ -852,6 +852,15 @@ export class Agent {
               this.adapter,
               this.toolContext.sessionId,
               { parentSessionId: this.obs.parentSessionId },
+              {
+                tracer: this.obs.tracer,
+                parentSpanId: currentRequestSpanId,
+                agentName: this.config.name,
+                providerName: this.obs.providerName,
+                modelLabel: this.obs.modelLabel,
+                pricing: this.obs.pricing,
+                secretFilter: this.obs.secretFilter,
+              },
             )
 
             ctx.messages.length = 0

@@ -382,6 +382,32 @@ describe('ObservabilityStore', () => {
 
     writeSessionTraceEntries(testDir, sessionId, [
       {
+        spanId: 'span_compression_1',
+        parentSpanId: 'span_parent_req_1',
+        sessionId,
+        kind: 'llm_request',
+        name: 'compression',
+        startTime: '2026-03-16T01:34:58.000Z',
+        endTime: '2026-03-16T01:34:59.000Z',
+        durationMs: 1000,
+        status: 'success',
+        data: {
+          compression: {
+            model: 'trace-provider/trace-model',
+            provider: 'trace-provider',
+            tokens: {
+              input: 120,
+              output: 40,
+              cacheWrite: 10,
+              cacheRead: 5,
+              reasoning: 3,
+            },
+            cost: 0.0042,
+            durationMs: 1000,
+          },
+        },
+      },
+      {
         spanId: 'span_snapshot_decision',
         sessionId,
         kind: 'snapshot',
@@ -503,6 +529,17 @@ describe('ObservabilityStore', () => {
         messagesBefore: 24,
         messagesAfter: 12,
         compressedRange: '4-18',
+        model: 'trace-provider/trace-model',
+        provider: 'trace-provider',
+        tokens: {
+          input: 120,
+          output: 40,
+          cacheWrite: 10,
+          cacheRead: 5,
+          reasoning: 3,
+        },
+        cost: 0.0042,
+        durationMs: 1000,
       },
     })
     expect(entries[1]).toMatchObject({
@@ -529,6 +566,214 @@ describe('ObservabilityStore', () => {
       decisionType: 'task_closure',
       outcome: 'finish',
       rationale: 'All requested checks are complete.',
+    })
+  })
+
+  test('readSessionDecisions matches each compression snapshot to the nearest successful span once', () => {
+    const store = new ObservabilityStore(testDir)
+    const sessionId = 'sess_20260316_0205_multi_compression'
+
+    writeSessionTraceEntries(testDir, sessionId, [
+      {
+        spanId: 'span_compression_a',
+        sessionId,
+        kind: 'llm_request',
+        name: 'compression',
+        startTime: '2026-03-16T02:05:00.000Z',
+        endTime: '2026-03-16T02:05:01.000Z',
+        durationMs: 1000,
+        status: 'success',
+        data: {
+          compression: {
+            model: 'provider/model-a',
+            provider: 'provider',
+            tokens: { input: 80, output: 20 },
+            cost: 0.001,
+            durationMs: 1000,
+          },
+        },
+      },
+      {
+        spanId: 'span_snapshot_a',
+        sessionId,
+        kind: 'snapshot',
+        name: 'snapshot:context_compression',
+        startTime: '2026-03-16T02:05:03.000Z',
+        endTime: '2026-03-16T02:05:03.050Z',
+        durationMs: 50,
+        status: 'success',
+        data: {
+          snapshot: {
+            id: 'snap_a',
+            trigger: 'context_compression',
+            model: 'trace-model',
+            systemPrompt: 'trace system prompt',
+            messagesBefore: 20,
+            messagesAfter: 10,
+            compressedRange: '0..9',
+          },
+        },
+      },
+      {
+        spanId: 'span_compression_b',
+        sessionId,
+        kind: 'llm_request',
+        name: 'compression',
+        startTime: '2026-03-16T02:05:10.000Z',
+        endTime: '2026-03-16T02:05:11.000Z',
+        durationMs: 1000,
+        status: 'success',
+        data: {
+          compression: {
+            model: 'provider/model-b',
+            provider: 'provider',
+            tokens: { input: 120, output: 30 },
+            cost: 0.002,
+            durationMs: 1000,
+          },
+        },
+      },
+      {
+        spanId: 'span_snapshot_b',
+        sessionId,
+        kind: 'snapshot',
+        name: 'snapshot:context_compression',
+        startTime: '2026-03-16T02:05:12.000Z',
+        endTime: '2026-03-16T02:05:12.050Z',
+        durationMs: 50,
+        status: 'success',
+        data: {
+          snapshot: {
+            id: 'snap_b',
+            trigger: 'context_compression',
+            model: 'trace-model',
+            systemPrompt: 'trace system prompt',
+            messagesBefore: 18,
+            messagesAfter: 9,
+            compressedRange: '0..8',
+          },
+        },
+      },
+    ])
+
+    const entries = store.readSessionDecisions(sessionId)
+    expect(entries).toHaveLength(2)
+    expect(entries[0]).toMatchObject({
+      decisionType: 'context_compression',
+      detail: {
+        model: 'provider/model-a',
+        cost: 0.001,
+      },
+    })
+    expect(entries[1]).toMatchObject({
+      decisionType: 'context_compression',
+      detail: {
+        model: 'provider/model-b',
+        cost: 0.002,
+      },
+    })
+  })
+
+  test('readSessionDecisions prefers the closest compression span and consumes each span once', () => {
+    const store = new ObservabilityStore(testDir)
+    const sessionId = 'sess_20260316_0210_competition'
+
+    writeSessionTraceEntries(testDir, sessionId, [
+      {
+        spanId: 'span_compression_older',
+        sessionId,
+        kind: 'llm_request',
+        name: 'compression',
+        startTime: '2026-03-16T02:10:00.000Z',
+        endTime: '2026-03-16T02:10:01.000Z',
+        durationMs: 1000,
+        status: 'success',
+        data: {
+          compression: {
+            model: 'provider/model-older',
+            provider: 'provider',
+            tokens: { input: 60, output: 10 },
+            cost: 0.001,
+            durationMs: 1000,
+          },
+        },
+      },
+      {
+        spanId: 'span_compression_newer',
+        sessionId,
+        kind: 'llm_request',
+        name: 'compression',
+        startTime: '2026-03-16T02:10:01.500Z',
+        endTime: '2026-03-16T02:10:02.000Z',
+        durationMs: 500,
+        status: 'success',
+        data: {
+          compression: {
+            model: 'provider/model-newer',
+            provider: 'provider',
+            tokens: { input: 70, output: 15 },
+            cost: 0.002,
+            durationMs: 500,
+          },
+        },
+      },
+      {
+        spanId: 'span_snapshot_first',
+        sessionId,
+        kind: 'snapshot',
+        name: 'snapshot:context_compression',
+        startTime: '2026-03-16T02:10:03.000Z',
+        endTime: '2026-03-16T02:10:03.050Z',
+        durationMs: 50,
+        status: 'success',
+        data: {
+          snapshot: {
+            id: 'snap_first',
+            trigger: 'context_compression',
+            model: 'trace-model',
+            systemPrompt: 'trace system prompt',
+            messagesBefore: 20,
+            messagesAfter: 10,
+            compressedRange: '0..9',
+          },
+        },
+      },
+      {
+        spanId: 'span_snapshot_second',
+        sessionId,
+        kind: 'snapshot',
+        name: 'snapshot:context_compression',
+        startTime: '2026-03-16T02:10:04.000Z',
+        endTime: '2026-03-16T02:10:04.050Z',
+        durationMs: 50,
+        status: 'success',
+        data: {
+          snapshot: {
+            id: 'snap_second',
+            trigger: 'context_compression',
+            model: 'trace-model',
+            systemPrompt: 'trace system prompt',
+            messagesBefore: 18,
+            messagesAfter: 9,
+            compressedRange: '0..8',
+          },
+        },
+      },
+    ])
+
+    const entries = store.readSessionDecisions(sessionId)
+    expect(entries).toHaveLength(2)
+    expect(entries[0]).toMatchObject({
+      detail: {
+        model: 'provider/model-newer',
+        cost: 0.002,
+      },
+    })
+    expect(entries[1]).toMatchObject({
+      detail: {
+        model: 'provider/model-older',
+        cost: 0.001,
+      },
     })
   })
 

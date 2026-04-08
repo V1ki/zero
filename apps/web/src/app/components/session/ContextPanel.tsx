@@ -9,6 +9,7 @@ import type {
 import { apiFetch, apiPost } from '../../lib/api'
 import { toolColors } from '../../lib/colors'
 import { formatCost, formatModelHistory, formatNumber, formatTimeAgo } from '../../lib/format'
+import { CompressionSpanCard } from './CompressionSpanCard'
 import { SubAgentSpanCard } from './SubAgentSpanCard'
 import {
   type DecisionTimelineItem,
@@ -689,7 +690,9 @@ export function ContextPanel({
             ) : (
               <div className="space-y-2">
                 {traces.map((span) =>
-                  isSubAgentSpan(span) ? (
+                  isCompressionSpan(span) ? (
+                    <CompressionSpanCard key={span.id} span={span} depth={0} />
+                  ) : isSubAgentSpan(span) ? (
                     <SubAgentSpanCard
                       key={span.id}
                       span={span}
@@ -2105,6 +2108,10 @@ function isSubAgentSpan(span: TraceSpan): boolean {
   )
 }
 
+function isCompressionSpan(span: TraceSpan): boolean {
+  return span.name === 'compression' && span.kind === 'llm_request'
+}
+
 function TraceTreeWithSubAgents({
   span,
   depth,
@@ -2149,7 +2156,9 @@ function TraceTreeWithSubAgents({
       </div>
 
       {span.children.map((child) =>
-        isSubAgentSpan(child) ? (
+        isCompressionSpan(child) ? (
+          <CompressionSpanCard key={child.id} span={child} depth={depth + 1} />
+        ) : isSubAgentSpan(child) ? (
           <SubAgentSpanCard
             key={child.id}
             span={child}

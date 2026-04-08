@@ -1,6 +1,7 @@
 import {
   type DecisionLogEntry,
   type DecisionType,
+  type TraceKind,
   asRecord,
   asString,
   flattenTraceSpans,
@@ -76,6 +77,7 @@ export interface TraceSpan {
   id: string
   parentId?: string
   sessionId: string
+  kind?: TraceKind
   name: string
   startTime: string
   endTime?: string

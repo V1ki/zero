@@ -48,10 +48,17 @@ function getDecisionPreviewText(
   if (decisionType === 'context_compression') {
     const before = typeof detail?.messagesBefore === 'number' ? detail.messagesBefore : undefined
     const after = typeof detail?.messagesAfter === 'number' ? detail.messagesAfter : undefined
+    const model = typeof detail?.model === 'string' ? detail.model : undefined
+    const cost = typeof detail?.cost === 'number' ? `$${detail.cost.toFixed(4)}` : undefined
 
+    const parts: string[] = []
     if (before !== undefined && after !== undefined) {
-      return `messages ${before} -> ${after}`
+      parts.push(`messages ${before} -> ${after}`)
     }
+    if (model) parts.push(model)
+    if (cost) parts.push(cost)
+
+    if (parts.length > 0) return parts.join(' | ')
   }
 
   if (decisionType === 'memory_retrieval') {

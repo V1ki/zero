@@ -349,6 +349,8 @@ describe('buildTimeline', () => {
         detail: {
           messagesBefore: 14,
           messagesAfter: 8,
+          model: 'anthropic/claude-sonnet-4-6',
+          cost: 0.05,
         },
         sourceKind: 'snapshot',
       },
@@ -388,6 +390,14 @@ describe('buildTimeline', () => {
       decisionType: 'tool_selection',
       outcome: 'read, bash',
       rationale: 'Need to inspect first, then validate in shell.',
+    })
+    expect(decisionItems[0]).toMatchObject({
+      type: 'decision',
+      decisionType: 'context_compression',
+      detail: {
+        model: 'anthropic/claude-sonnet-4-6',
+        cost: 0.05,
+      },
     })
   })
 

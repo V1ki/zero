@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { ProviderAdapter } from '@zero-os/model'
-import { generateId, now } from '@zero-os/shared'
-import type { Message } from '@zero-os/shared'
+import type { TraceSpan as ObserveTraceSpan } from '@zero-os/observe'
+import { generateId, now, type Message, type SecretFilter } from '@zero-os/shared'
 import { compressConversation } from '../compress'
 
 function makeMessage(role: 'user' | 'assistant', text: string): Message {
@@ -31,6 +31,69 @@ const mockAdapter = {
     return true
   },
 } satisfies ProviderAdapter
+
+function makeTraceRecorder() {
+  const startCalls: Array<{
+    sessionId: string
+    name: string
+    parentId?: string
+    options?: Record<string, unknown>
+  }> = []
+  const updateCalls: Array<{ spanId: string; update: Record<string, unknown> }> = []
+  const endCalls: Array<{ spanId: string; status?: string; metadata?: Record<string, unknown> }> =
+    []
+  const spans = new Map<string, ObserveTraceSpan>()
+
+  return {
+    tracer: {
+      startSpan(
+        sessionId: string,
+        name: string,
+        parentId?: string,
+        options: Record<string, unknown> = {},
+      ) {
+        startCalls.push({ sessionId, name, parentId, options })
+        const span = {
+          id: 'span_compression',
+          sessionId,
+          parentId,
+          kind: 'llm_request' as const,
+          name,
+          startTime: now(),
+          status: 'running' as const,
+          children: [],
+        }
+        spans.set(span.id, span)
+        return span
+      },
+      updateSpan(spanId: string, update: Record<string, unknown>) {
+        updateCalls.push({ spanId, update })
+      },
+      endSpan(spanId: string, status?: string, metadata?: Record<string, unknown>) {
+        endCalls.push({ spanId, status, metadata })
+        const span = spans.get(spanId)
+        if (span && !span.endTime) {
+          span.endTime = now()
+          span.status = (status as 'success' | 'error' | undefined) ?? 'success'
+        }
+      },
+      getSpan(spanId: string) {
+        return spans.get(spanId)
+      },
+    },
+    startCalls,
+    updateCalls,
+    endCalls,
+  }
+}
+
+const secretFilter: SecretFilter = {
+  filter(text: string) {
+    return text.replaceAll('secret-token', '[REDACTED]')
+  },
+  addSecret() {},
+  removeSecret() {},
+}
 
 describe('compressConversation', () => {
   test('returns messages unchanged when nothing to compress', async () => {
@@ -144,5 +207,207 @@ describe('compressConversation', () => {
       purpose: 'compression',
       parentSessionId: 'parent-session',
     })
+  })
+
+  test('writes a compression trace span on success', async () => {
+    const messages: Message[] = []
+    for (let i = 0; i < 20; i++) {
+      const role = i % 2 === 0 ? 'user' : 'assistant'
+      messages.push(
+        makeMessage(role as 'user' | 'assistant', `Msg ${i}: ${'secret-token '.repeat(40)}`),
+      )
+    }
+
+    const trace = makeTraceRecorder()
+    const adapter = {
+      ...mockAdapter,
+      async complete() {
+        return {
+          id: 'resp_trace',
+          content: [{ type: 'text' as const, text: 'Summary with secret-token removed' }],
+          stopReason: 'end_turn' as const,
+          usage: {
+            input: 100,
+            output: 50,
+            cacheWrite: 25,
+            cacheRead: 10,
+            reasoning: 5,
+          },
+          model: 'provider/model-trace',
+        }
+      },
+    } satisfies ProviderAdapter
+
+    await compressConversation(
+      messages,
+      100,
+      adapter,
+      'test-session',
+      { parentSessionId: 'parent-session' },
+      {
+        tracer: trace.tracer,
+        parentSpanId: 'parent-span',
+        agentName: 'agent-trace',
+        providerName: 'provider-x',
+        modelLabel: 'provider-x/model-y',
+        pricing: {
+          input: 1,
+          output: 2,
+          cacheWrite: 3,
+          cacheRead: 4,
+        },
+        secretFilter,
+      },
+    )
+
+    expect(trace.startCalls).toEqual([
+      {
+        sessionId: 'test-session',
+        name: 'compression',
+        parentId: 'parent-span',
+        options: {
+          kind: 'llm_request',
+          agentName: 'agent-trace',
+          metadata: {
+            purpose: 'compression',
+          },
+        },
+      },
+    ])
+    expect(trace.updateCalls).toHaveLength(1)
+    expect(trace.updateCalls[0]?.spanId).toBe('span_compression')
+    expect(trace.updateCalls[0]?.update).toMatchObject({
+      data: {
+        compression: {
+          model: 'provider-x/model-y',
+          provider: 'provider-x',
+          tokens: {
+            input: 100,
+            output: 50,
+            cacheWrite: 25,
+            cacheRead: 10,
+            reasoning: 5,
+          },
+        },
+      },
+    })
+    const compressionData = (
+      trace.updateCalls[0]?.update.data as { compression?: Record<string, unknown> } | undefined
+    )?.compression
+    expect(compressionData?.compressedMessageCount).toBeGreaterThan(0)
+    expect(compressionData?.compressedMessageCount).toBeLessThan(messages.length)
+    expect(typeof compressionData?.durationMs).toBe('number')
+    expect((compressionData?.cost as number | undefined) ?? 0).toBeCloseTo(0.000325, 8)
+    expect(
+      (
+        trace.updateCalls[0]?.update.metadata as { compressedMessageCount?: number } | undefined
+      )?.compressedMessageCount,
+    ).toBe(compressionData?.compressedMessageCount as number | undefined)
+    expect((compressionData?.prompt as string | undefined)?.includes('[REDACTED]')).toBe(true)
+    expect((compressionData?.response as string | undefined)?.includes('[REDACTED]')).toBe(true)
+    expect((compressionData?.prompt as string | undefined)?.includes('secret-token')).toBe(false)
+    expect((compressionData?.response as string | undefined)?.includes('secret-token')).toBe(
+      false,
+    )
+    expect((compressionData?.prompt as string | undefined)?.length).toBeLessThanOrEqual(500)
+    expect((compressionData?.response as string | undefined)?.length).toBeLessThanOrEqual(500)
+    expect(trace.endCalls).toEqual([{ spanId: 'span_compression', status: 'success' }])
+  })
+
+  test('falls back to response model and tolerates missing optional usage fields', async () => {
+    const messages: Message[] = []
+    for (let i = 0; i < 20; i++) {
+      const role = i % 2 === 0 ? 'user' : 'assistant'
+      messages.push(makeMessage(role as 'user' | 'assistant', `Msg ${i}: ${'m'.repeat(200)}`))
+    }
+
+    const trace = makeTraceRecorder()
+    const adapter = {
+      ...mockAdapter,
+      async complete() {
+        return {
+          id: 'resp_fallback',
+          content: [{ type: 'text' as const, text: 'Summary fallback model' }],
+          stopReason: 'end_turn' as const,
+          usage: {
+            input: 80,
+            output: 20,
+          },
+          model: 'provider/model-fallback',
+        }
+      },
+    } satisfies ProviderAdapter
+
+    await compressConversation(messages, 100, adapter, 'test-session', undefined, {
+      tracer: trace.tracer,
+      providerName: 'provider-x',
+      pricing: {
+        input: 1,
+        output: 2,
+      },
+    })
+
+    const compressionData = (
+      trace.updateCalls[0]?.update.data as { compression?: Record<string, unknown> } | undefined
+    )?.compression
+    expect(compressionData?.model).toBe('provider/model-fallback')
+    expect(compressionData?.provider).toBe('provider-x')
+    expect(compressionData?.tokens).toEqual({
+      input: 80,
+      output: 20,
+      cacheWrite: undefined,
+      cacheRead: undefined,
+      reasoning: undefined,
+    })
+    expect((compressionData?.cost as number | undefined) ?? 0).toBeCloseTo(0.00012, 8)
+  })
+
+  test('ends compression trace span with error and rethrows', async () => {
+    const messages: Message[] = []
+    for (let i = 0; i < 20; i++) {
+      const role = i % 2 === 0 ? 'user' : 'assistant'
+      messages.push(makeMessage(role as 'user' | 'assistant', `Msg ${i}: ${'x'.repeat(200)}`))
+    }
+
+    const trace = makeTraceRecorder()
+    const adapter = {
+      ...mockAdapter,
+      async complete() {
+        throw new Error('compression failed')
+      },
+    } satisfies ProviderAdapter
+
+    await expect(
+      compressConversation(messages, 100, adapter, 'test-session', undefined, {
+        tracer: trace.tracer,
+      }),
+    ).rejects.toThrow('compression failed')
+
+    expect(trace.updateCalls).toEqual([
+      {
+        spanId: 'span_compression',
+        update: {
+          metadata: {
+            error: 'compression failed',
+          },
+        },
+      },
+    ])
+    expect(trace.endCalls).toEqual([{ spanId: 'span_compression', status: 'error' }])
+  })
+
+  test('remains backward compatible when trace options are omitted', async () => {
+    const messages: Message[] = []
+    for (let i = 0; i < 20; i++) {
+      const role = i % 2 === 0 ? 'user' : 'assistant'
+      messages.push(makeMessage(role as 'user' | 'assistant', `Msg ${i}: ${'q'.repeat(200)}`))
+    }
+
+    const result = await compressConversation(messages, 100, mockAdapter, 'test-session', {
+      parentSessionId: 'parent-session',
+    })
+
+    expect(result.summary).toBe('Summary of conversation')
+    expect(result.retainedMessages[0]?.sessionId).toBe('test-session')
   })
 })

@@ -1,7 +1,23 @@
-import type { ProviderAdapter } from '@zero-os/model'
-import type { CompressionResult, Message } from '@zero-os/shared'
+import { computeCost, type ProviderAdapter } from '@zero-os/model'
+import type { Tracer } from '@zero-os/observe'
+import type {
+  CompressionResult,
+  Message,
+  ModelPricing,
+  SecretFilter,
+} from '@zero-os/shared'
 import { estimateMessageTokens, generateId, now } from '@zero-os/shared'
 import { CONTEXT_PARAMS } from './params'
+
+interface CompressionTraceOptions {
+  tracer?: Pick<Tracer, 'startSpan' | 'updateSpan' | 'endSpan' | 'getSpan'>
+  parentSpanId?: string
+  agentName?: string
+  providerName?: string
+  modelLabel?: string
+  pricing?: ModelPricing
+  secretFilter?: SecretFilter
+}
 
 /**
  * Compress conversation history when it exceeds the budget.
@@ -14,6 +30,7 @@ export async function compressConversation(
   adapter: ProviderAdapter,
   sessionId: string,
   meta?: { parentSessionId?: string },
+  trace?: CompressionTraceOptions,
 ): Promise<CompressionResult> {
   const tokensBefore = messages.reduce((sum, m) => sum + estimateMessageTokens(m.content) + 4, 0)
 
@@ -66,7 +83,7 @@ export async function compressConversation(
   const retained = messages.slice(splitIndex)
 
   // Generate summary via LLM
-  const summaryResponse = await generateSummary(toSummarize, adapter, meta)
+  const summaryResponse = await generateSummary(toSummarize, adapter, sessionId, meta, trace)
   const summary = summaryResponse.text
 
   // Create summary message
@@ -106,7 +123,9 @@ export async function compressConversation(
 async function generateSummary(
   messages: Message[],
   adapter: ProviderAdapter,
+  sessionId: string,
   meta?: { parentSessionId?: string },
+  trace?: CompressionTraceOptions,
 ): Promise<{ text: string; response: import('@zero-os/shared').CompletionResponse }> {
   const conversationText = messages
     .map((m) => {
@@ -145,30 +164,98 @@ async function generateSummary(
 ${conversationText}
 </conversation>`
 
-  const response = await adapter.complete({
-    messages: [
-      {
-        id: generateId(),
-        sessionId: 'compression',
-        role: 'user',
-        messageType: 'message',
-        content: [{ type: 'text', text: prompt }],
-        createdAt: now(),
-      },
-    ],
-    system: '你是一个对话摘要助手。请将提供的对话历史压缩为简洁的摘要。',
-    stream: false,
-    maxTokens: 1024,
-    meta: {
-      sessionId: messages[0]?.sessionId ?? 'compression',
+  const traceSpanId = trace?.tracer?.startSpan(sessionId, 'compression', trace.parentSpanId, {
+    kind: 'llm_request',
+    agentName: trace.agentName,
+    metadata: {
       purpose: 'compression',
-      ...(meta?.parentSessionId ? { parentSessionId: meta.parentSessionId } : {}),
     },
-  })
+  })?.id
+  const startTime = Date.now()
 
-  const textBlocks = response.content.filter((b) => b.type === 'text')
-  return {
-    text: textBlocks.map((b) => (b as { type: 'text'; text: string }).text).join('\n'),
-    response,
+  try {
+    const response = await adapter.complete({
+      messages: [
+        {
+          id: generateId(),
+          sessionId: 'compression',
+          role: 'user',
+          messageType: 'message',
+          content: [{ type: 'text', text: prompt }],
+          createdAt: now(),
+        },
+      ],
+      system: '你是一个对话摘要助手。请将提供的对话历史压缩为简洁的摘要。',
+      stream: false,
+      maxTokens: 1024,
+      meta: {
+        sessionId: messages[0]?.sessionId ?? 'compression',
+        purpose: 'compression',
+        ...(meta?.parentSessionId ? { parentSessionId: meta.parentSessionId } : {}),
+      },
+    })
+
+    const responseText = response.content
+      .filter((block) => block.type === 'text')
+      .map((block) => (block as { type: 'text'; text: string }).text)
+      .join('\n')
+    const durationMs = Date.now() - startTime
+
+    if (traceSpanId) {
+      trace.tracer?.updateSpan(traceSpanId, {
+        data: {
+          compression: {
+            model: trace.modelLabel ?? response.model,
+            provider: trace.providerName ?? 'unknown',
+            prompt: truncateText(sanitizeText(prompt, trace.secretFilter), 500),
+            response: truncateText(sanitizeText(responseText, trace.secretFilter), 500),
+            compressedMessageCount: messages.length,
+            tokens: {
+              input: response.usage.input,
+              output: response.usage.output,
+              cacheWrite: response.usage.cacheWrite,
+              cacheRead: response.usage.cacheRead,
+              reasoning: response.usage.reasoning,
+            },
+            cost: computeCost(response.usage, trace.pricing),
+            durationMs,
+          },
+        },
+        metadata: {
+          compressedMessageCount: messages.length,
+        },
+      })
+    }
+
+    return {
+      text: responseText,
+      response,
+    }
+  } catch (error) {
+    if (traceSpanId) {
+      trace.tracer?.updateSpan(traceSpanId, {
+        metadata: {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      })
+      trace.tracer?.endSpan(traceSpanId, 'error')
+    }
+    throw error
+  } finally {
+    if (traceSpanId) {
+      const current = trace.tracer?.getSpan?.(traceSpanId)
+      if (current && !current.endTime) {
+        trace.tracer?.endSpan(traceSpanId, 'success')
+      }
+    }
   }
+}
+
+function sanitizeText(text: string, secretFilter?: SecretFilter): string {
+  return secretFilter ? secretFilter.filter(text) : text
+}
+
+function truncateText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text
+  return `${text.slice(0, maxChars - 3)}...`
 }

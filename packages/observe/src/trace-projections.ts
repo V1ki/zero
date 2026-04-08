@@ -41,6 +41,19 @@ function asTokens(value: unknown): { input: number; output: number } | undefined
   }
 }
 
+function asCompressionTokens(value: unknown): Record<string, number> | undefined {
+  const record = asRecord(value)
+  if (!record) return undefined
+
+  return compactRecord({
+    input: asNumber(record.input),
+    output: asNumber(record.output),
+    cacheWrite: asNumber(record.cacheWrite),
+    cacheRead: asNumber(record.cacheRead),
+    reasoning: asNumber(record.reasoning),
+  }) as Record<string, number> | undefined
+}
+
 function asSelectedMemories(
   value: unknown,
 ): Array<{ id: string; type: string; title: string; score?: number }> | undefined {
@@ -223,6 +236,61 @@ function sortByTs<T extends { ts: string }>(entries: T[]): T[] {
   return entries.sort((left, right) => left.ts.localeCompare(right.ts))
 }
 
+function toMs(value?: string): number | undefined {
+  if (!value) return undefined
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function findNearestCompressionSpan(
+  entries: TraceEntry[],
+  snapshotEntry: TraceEntry,
+  usedCompressionSpanIds: Set<string>,
+): TraceEntry | undefined {
+  const snapshotStartMs = toMs(snapshotEntry.startTime)
+  if (snapshotStartMs === undefined) return undefined
+
+  const snapshotParentId = snapshotEntry.parentSpanId
+  const candidates = entries
+    .filter((entry) => {
+      if (usedCompressionSpanIds.has(entry.spanId)) return false
+      if (entry.sessionId !== snapshotEntry.sessionId) return false
+      if (entry.kind !== 'llm_request' || entry.name !== 'compression') return false
+      if (entry.status !== 'success') return false
+
+      const candidateEndMs = toMs(entry.endTime)
+      if (candidateEndMs === undefined || candidateEndMs > snapshotStartMs) return false
+
+      return snapshotStartMs - candidateEndMs <= 5_000
+    })
+    .sort((left, right) => {
+      const leftSharesParent =
+        snapshotParentId !== undefined &&
+        left.parentSpanId !== undefined &&
+        left.parentSpanId === snapshotParentId
+      const rightSharesParent =
+        snapshotParentId !== undefined &&
+        right.parentSpanId !== undefined &&
+        right.parentSpanId === snapshotParentId
+
+      if (leftSharesParent !== rightSharesParent) {
+        return leftSharesParent ? -1 : 1
+      }
+
+      const leftGap = snapshotStartMs - (toMs(left.endTime) ?? snapshotStartMs)
+      const rightGap = snapshotStartMs - (toMs(right.endTime) ?? snapshotStartMs)
+      if (leftGap !== rightGap) return leftGap - rightGap
+
+      return left.startTime.localeCompare(right.startTime)
+    })
+
+  const matched = candidates[0]
+  if (matched) {
+    usedCompressionSpanIds.add(matched.spanId)
+  }
+  return matched
+}
+
 export function projectSessionRequestsFromTraceEntries(entries: TraceEntry[]): RequestLogEntry[] {
   return sortByTs(
     entries.flatMap((entry) => {
@@ -401,6 +469,7 @@ export function projectSessionClosuresFromTraceEntries(entries: TraceEntry[]): C
 
 export function projectSessionDecisionsFromTraceEntries(entries: TraceEntry[]): DecisionLogEntry[] {
   const results: DecisionLogEntry[] = []
+  const usedCompressionSpanIds = new Set<string>()
 
   for (const entry of entries) {
     const base = {
@@ -416,6 +485,8 @@ export function projectSessionDecisionsFromTraceEntries(entries: TraceEntry[]): 
       const snapshot = asRecord(asRecord(entry.data)?.snapshot)
       if (!snapshot || asString(snapshot.trigger) !== 'context_compression') continue
       const decisionContext = asCompressionDecisionContext(snapshot.decisionContext)
+      const compressionSpan = findNearestCompressionSpan(entries, entry, usedCompressionSpanIds)
+      const compressionData = asRecord(asRecord(compressionSpan?.data)?.compression)
 
       results.push({
         ...base,
@@ -426,6 +497,11 @@ export function projectSessionDecisionsFromTraceEntries(entries: TraceEntry[]): 
           messagesBefore: asNumber(snapshot.messagesBefore),
           messagesAfter: asNumber(snapshot.messagesAfter),
           compressedRange: asString(snapshot.compressedRange),
+          model: asString(compressionData?.model),
+          provider: asString(compressionData?.provider),
+          tokens: asCompressionTokens(compressionData?.tokens),
+          cost: asNumber(compressionData?.cost),
+          durationMs: asNumber(compressionData?.durationMs),
         }),
         ts: asString(snapshot.ts) ?? entry.endTime ?? entry.startTime,
       })

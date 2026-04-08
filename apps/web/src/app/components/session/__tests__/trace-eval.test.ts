@@ -261,4 +261,62 @@ describe('evaluateTraceSession', () => {
     expect(report.metrics.subAgentSuccessRate).toBe(0)
     expect(report.metrics.subAgentTotalDurationMs).toBe(0)
   })
+
+  test('ignores compression spans when computing request coverage', () => {
+    const traces: TraceSpan[] = [
+      {
+        id: 'turn_1',
+        sessionId: 'sess_1',
+        name: 'turn:zero',
+        startTime: '2026-03-08T00:00:00.000Z',
+        endTime: '2026-03-08T00:00:06.000Z',
+        durationMs: 6000,
+        status: 'success',
+        children: [
+          {
+            id: 'compression_1',
+            parentId: 'turn_1',
+            sessionId: 'sess_1',
+            kind: 'llm_request',
+            name: 'compression',
+            startTime: '2026-03-08T00:00:00.100Z',
+            endTime: '2026-03-08T00:00:00.500Z',
+            durationMs: 400,
+            status: 'success',
+            children: [],
+          },
+          {
+            id: 'req_1',
+            parentId: 'turn_1',
+            sessionId: 'sess_1',
+            kind: 'llm_request',
+            name: 'llm_request',
+            startTime: '2026-03-08T00:00:01.000Z',
+            endTime: '2026-03-08T00:00:02.000Z',
+            durationMs: 1000,
+            status: 'success',
+            children: [],
+          },
+        ],
+      },
+    ]
+
+    const report = evaluateTraceSession({
+      traces,
+      llmRequests: [
+        {
+          id: 'req_1',
+          stopReason: 'end_turn',
+          toolUseCount: 0,
+          durationMs: 1000,
+          cost: 0.01,
+          ts: '2026-03-08T00:00:02.000Z',
+        },
+      ],
+    })
+
+    expect(report.metrics.llmRequestSpanCount).toBe(1)
+    expect(report.metrics.projectedRequestCount).toBe(1)
+    expect(report.metrics.requestCoverage).toBe(1)
+  })
 })

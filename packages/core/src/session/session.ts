@@ -815,6 +815,14 @@ export class Session {
           result.model.adapter,
           this.data.id,
           {},
+          {
+            tracer: this.deps.tracer,
+            agentName: this.lastAgentConfig?.name,
+            providerName: result.model.providerName,
+            modelLabel: this.modelRouter.getModelLabel(result.model),
+            pricing: result.model.modelConfig.pricing,
+            secretFilter: this.deps.secretFilter,
+          },
         )
         this.messages.length = 0
         this.messages.push(...compResult.retainedMessages)
