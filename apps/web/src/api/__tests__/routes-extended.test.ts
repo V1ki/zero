@@ -1746,4 +1746,183 @@ describe('API Routes Extended', () => {
     const data = await res.json()
     expect(data.sessions[0].channelName).toBe('feishu:ops')
   })
+
+  test('GET /api/dataset/* returns filtered summaries, detail, stats, and traits', async () => {
+    const session = zero.sessionManager.create('web')
+    const createdAt = '2026-04-08T10:00:00.000Z'
+    const updatedAt = '2026-04-08T10:05:00.000Z'
+
+    session.data.summary = 'Dataset route coverage session'
+    session.data.tags = ['incident/dataset-route', 'ops']
+    session.data.createdAt = createdAt
+    session.data.updatedAt = updatedAt
+
+    zero.sessionDb.saveSession(session.data, '{"mode":"agent"}', 'session prompt')
+    zero.sessionDb.saveMessages(session.data.id, [
+      {
+        id: 'dataset_route_user_001',
+        sessionId: session.data.id,
+        role: 'user',
+        messageType: 'message',
+        content: [{ type: 'text', text: 'inspect the failing deploy logs' }],
+        createdAt,
+      },
+      {
+        id: 'dataset_route_assistant_001',
+        sessionId: session.data.id,
+        role: 'assistant',
+        messageType: 'message',
+        content: [{ type: 'text', text: 'I inspected the logs and summarized the result.' }],
+        createdAt: updatedAt,
+      },
+    ])
+
+    zero.metrics.recordUsage({
+      id: 'usage_dataset_route_001',
+      sessionId: session.data.id,
+      category: 'completion',
+      purpose: 'agent_loop',
+      model: 'openai-codex/gpt-5.4-medium',
+      provider: 'openai-codex',
+      inputTokens: 42,
+      outputTokens: 18,
+      cost: 0.21,
+      durationMs: 850,
+      createdAt: updatedAt,
+    })
+    zero.metrics.recordEvaluation({
+      sessionId: session.data.id,
+      model: 'judge/gpt-5.4',
+      overallScore: 92,
+      verdict: 'strong',
+      confidence: 'high',
+      summary: 'Clear grounded tool use.',
+      dimensions: [],
+      findings: [],
+      generatedAt: updatedAt,
+      createdAt: updatedAt,
+    })
+
+    const requestSpan = zero.tracer.startSpan(session.data.id, 'llm_request', undefined, {
+      kind: 'llm_request',
+      data: {
+        request: {
+          id: 'req_dataset_route_001',
+          turnIndex: 1,
+          sessionId: session.data.id,
+          model: 'openai-codex/gpt-5.4-medium',
+          provider: 'openai-codex',
+          userPrompt: 'inspect the failing deploy logs',
+          response: 'I used tools to inspect the logs.',
+          stopReason: 'end_turn',
+          toolUseCount: 1,
+          toolNames: ['bash'],
+          toolCalls: [{ id: 'call_dataset_route_001', name: 'bash', input: { cmd: 'pwd' } }],
+          toolResults: [
+            {
+              type: 'tool_result',
+              toolUseId: 'call_dataset_route_001',
+              content: '/workspace',
+            },
+          ],
+          tokens: { input: 21, output: 12 },
+          cost: 0.18,
+          durationMs: 700,
+        },
+      },
+    })
+    zero.tracer.endSpan(requestSpan.id, 'success')
+
+    const snapshotSpan = zero.tracer.startSpan(
+      session.data.id,
+      'snapshot:context_updated',
+      undefined,
+      {
+        kind: 'snapshot',
+        data: {
+          snapshot: {
+            id: 'snap_dataset_route_001',
+            trigger: 'context_updated',
+            tools: ['bash', 'read'],
+            identityMemory: 'You are ZeRo',
+            systemPrompt: 'snapshot system prompt',
+          },
+        },
+      },
+    )
+    zero.tracer.endSpan(snapshotSpan.id, 'success')
+
+    const closureSpan = zero.tracer.startSpan(
+      session.data.id,
+      'task_closure_decision',
+      undefined,
+      {
+        kind: 'closure_decision',
+        data: {
+          closure: {
+            sessionId: session.data.id,
+            event: 'task_closure_decision',
+            action: 'finish',
+            reason: 'done',
+            classifierRequest: {
+              system: 'system',
+              prompt: 'prompt',
+              maxTokens: 100,
+            },
+          },
+        },
+      },
+    )
+    zero.tracer.endSpan(closureSpan.id, 'success')
+
+    const filterQuery = '/api/dataset/episodes?sources=web&traits=uses-tools&hasEvaluation=true&tags=incident/dataset-route'
+    const listRes = await app.request(filterQuery)
+    expect(listRes.status).toBe(200)
+    const listData = await listRes.json()
+    expect(listData.total).toBeGreaterThanOrEqual(1)
+    const summary = listData.episodes.find(
+      (entry: { id: string }) => entry.id === session.data.id,
+    ) as
+      | {
+          id: string
+          metadata: { summary?: string }
+          traits: string[]
+          latestEvaluation?: { overallScore: number; verdict: string }
+          recordedContext: { toolsSource: string }
+        }
+      | undefined
+    expect(summary).toBeDefined()
+    expect(summary?.metadata.summary).toBe('Dataset route coverage session')
+    expect(summary?.traits).toContain('uses-tools')
+    expect(summary?.latestEvaluation?.overallScore).toBe(92)
+    expect(summary?.latestEvaluation?.verdict).toBe('strong')
+    expect(summary?.recordedContext).toEqual({
+      toolsSource: 'snapshot',
+    })
+
+    const detailRes = await app.request(`/api/dataset/episodes/${session.data.id}`)
+    expect(detailRes.status).toBe(200)
+    const detail = await detailRes.json()
+    expect(detail.id).toBe(session.data.id)
+    expect(detail.evaluations).toHaveLength(1)
+    expect(detail.recordedContext.snapshotId).toBe('snap_dataset_route_001')
+    expect(detail.recordedContext.identityMemory).toBe('You are ZeRo')
+    expect(detail.trace.counts.toolCallCount).toBe(1)
+
+    const statsRes = await app.request('/api/dataset/stats')
+    expect(statsRes.status).toBe(200)
+    const stats = await statsRes.json()
+    expect(stats.totalEpisodes).toBeGreaterThanOrEqual(1)
+    expect(stats.evaluated).toBeGreaterThanOrEqual(1)
+    expect(
+      stats.bySource.some((entry: { key: string; count: number }) => entry.key === 'web'),
+    ).toBe(true)
+
+    const traitsRes = await app.request('/api/dataset/traits')
+    expect(traitsRes.status).toBe(200)
+    const traitsData = await traitsRes.json()
+    expect(traitsData.traits).toEqual(
+      expect.arrayContaining(['uses-tools', 'has-closure-finish']),
+    )
+  })
 })

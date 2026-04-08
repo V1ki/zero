@@ -1,11 +1,14 @@
 import { createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
 import { RootLayout } from './RootLayout'
 import { ConfigPage } from './routes/config'
+import { DatasetDetailPage } from './routes/dataset-detail'
+import { DatasetPage } from './routes/dataset'
 import { DashboardPage } from './routes/dashboard'
 import { LogsPage } from './routes/logs'
 import { MemoPage } from './routes/memo'
 import { MemoryPage } from './routes/memory'
 import { MetricsPage } from './routes/metrics'
+import { validateDatasetSearch } from './routes/dataset-helpers'
 import { SessionChannelDetailPage } from './routes/session-channel-detail'
 import { SessionDetailPage } from './routes/session-detail'
 import { SessionsPage } from './routes/sessions'
@@ -25,6 +28,20 @@ const sessionsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/sessions',
   component: SessionsPage,
+})
+
+const datasetRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/dataset',
+  validateSearch: (search: Record<string, unknown>) => validateDatasetSearch(search),
+  component: DatasetPage,
+})
+
+const datasetDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/dataset/$id',
+  validateSearch: (search: Record<string, unknown>) => validateDatasetSearch(search),
+  component: DatasetDetailPage,
 })
 
 const sessionDetailRoute = createRoute({
@@ -82,6 +99,8 @@ const metricsRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   indexRoute,
   sessionsRoute,
+  datasetRoute,
+  datasetDetailRoute,
   sessionDetailRoute,
   sessionChannelDetailRoute,
   memoryRoute,

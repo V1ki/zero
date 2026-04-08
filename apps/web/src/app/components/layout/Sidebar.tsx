@@ -5,6 +5,7 @@ import {
   ChatCircle,
   ClipboardText,
   ClockCounterClockwise,
+  Database,
   Gauge,
   Gear,
   List,
@@ -19,6 +20,7 @@ import { useUIStore } from '../../stores/ui'
 const navItems = [
   { name: 'Dashboard', icon: Gauge, path: '/' },
   { name: 'Sessions', icon: ClockCounterClockwise, path: '/sessions' },
+  { name: 'Dataset', icon: Database, path: '/dataset' },
   { name: 'Memory', icon: Brain, path: '/memory' },
   { name: 'Memo', icon: ClipboardText, path: '/memo' },
   { name: 'Tools', icon: Wrench, path: '/tools' },

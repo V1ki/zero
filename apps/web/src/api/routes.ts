@@ -11,6 +11,13 @@ import { readYaml, writeYaml } from '@zero-os/shared/utils'
 import { GitOps } from '@zero-os/supervisor'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import {
+  DatasetBuilder,
+  KNOWN_EPISODE_TRAITS,
+  type DatasetFilter,
+  type Episode,
+} from '../../../../packages/observe/src'
+import type { EvaluationEntry } from '../../../../packages/observe/src/metrics'
 import { getConfigPath } from '../../../server/src/chatgpt-provider'
 import { ChatGptUsageService } from '../../../server/src/chatgpt-usage'
 import { ClaudeUsageService } from '../../../server/src/claude-usage'
@@ -28,6 +35,7 @@ export function createRoutes(zero: ZeroOS) {
   const managedOAuth = createManagedOAuthCoordinator(zero.vault)
   const chatgptUsage = new ChatGptUsageService(zero.vault)
   const claudeUsage = new ClaudeUsageService(zero.vault)
+  const datasetBuilder = new DatasetBuilder(zero.sessionDb, zero.metrics, zero.observability)
 
   interface TraceLogEntry {
     spanId: string
@@ -38,6 +46,18 @@ export function createRoutes(zero: ZeroOS) {
     status: string
     durationMs?: number
     childCount: number
+  }
+
+  interface EpisodeSummary {
+    id: string
+    sessionId: string
+    metadata: Episode['metadata']
+    conversation: Pick<Episode['conversation'], 'messageCount' | 'userTurnCount' | 'assistantTurnCount'>
+    recordedContext: Pick<Episode['recordedContext'], 'toolsSource'>
+    trace: Pick<Episode['trace'], 'counts'>
+    usage: Pick<Episode['usage'], 'totalCost' | 'totalTokens' | 'requestCount'>
+    latestEvaluation?: Pick<EvaluationEntry, 'overallScore' | 'verdict' | 'confidence' | 'createdAt'>
+    traits: string[]
   }
 
   function readCurrentConfig() {
@@ -207,6 +227,90 @@ export function createRoutes(zero: ZeroOS) {
       ...entry,
       classifierRequest: sanitizeClassifierRequestForClient(entry.classifierRequest),
     }
+  }
+
+  function parseCsvQuery(value?: string): string[] | undefined {
+    if (!value) return undefined
+
+    const values = value
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+
+    return values.length > 0 ? values : undefined
+  }
+
+  function parseBooleanQuery(value?: string): boolean | undefined {
+    if (value === 'true') return true
+    if (value === 'false') return false
+    return undefined
+  }
+
+  function parseIntegerQuery(value?: string): number | undefined {
+    if (!value) return undefined
+    const parsed = Number.parseInt(value, 10)
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined
+  }
+
+  function parseDatasetFilter(c: { req: { query: (key: string) => string | undefined } }): DatasetFilter {
+    return {
+      statuses: parseCsvQuery(c.req.query('statuses')) as DatasetFilter['statuses'],
+      sources: parseCsvQuery(c.req.query('sources')) as DatasetFilter['sources'],
+      tags: parseCsvQuery(c.req.query('tags')),
+      traits: parseCsvQuery(c.req.query('traits')),
+      hasEvaluation: parseBooleanQuery(c.req.query('hasEvaluation')),
+      since: c.req.query('since') || undefined,
+      until: c.req.query('until') || undefined,
+      limit: parseIntegerQuery(c.req.query('limit')),
+      offset: parseIntegerQuery(c.req.query('offset')),
+    }
+  }
+
+  function toEpisodeSummary(episode: Episode): EpisodeSummary {
+    const latestEvaluation = episode.evaluations[0]
+
+    return {
+      id: episode.id,
+      sessionId: episode.sessionId,
+      metadata: episode.metadata,
+      conversation: {
+        messageCount: episode.conversation.messageCount,
+        userTurnCount: episode.conversation.userTurnCount,
+        assistantTurnCount: episode.conversation.assistantTurnCount,
+      },
+      recordedContext: {
+        toolsSource: episode.recordedContext.toolsSource,
+      },
+      trace: {
+        counts: episode.trace.counts,
+      },
+      usage: {
+        totalCost: episode.usage.totalCost,
+        totalTokens: episode.usage.totalTokens,
+        requestCount: episode.usage.requestCount,
+      },
+      latestEvaluation: latestEvaluation
+        ? {
+            overallScore: latestEvaluation.overallScore,
+            verdict: latestEvaluation.verdict,
+            confidence: latestEvaluation.confidence,
+            createdAt: latestEvaluation.createdAt,
+          }
+        : undefined,
+      traits: episode.traits,
+    }
+  }
+
+  function countByKey(values: string[]): Array<{ key: string; count: number }> {
+    const counts = new Map<string, number>()
+
+    for (const value of values) {
+      counts.set(value, (counts.get(value) ?? 0) + 1)
+    }
+
+    return [...counts.entries()]
+      .map(([key, count]) => ({ key, count }))
+      .sort((left, right) => right.count - left.count || left.key.localeCompare(right.key))
   }
 
   const app = new Hono()
@@ -424,6 +528,48 @@ export function createRoutes(zero: ZeroOS) {
         }))
 
       return c.json({ sessions })
+    })
+
+    .get('/api/dataset/episodes', (c) => {
+      const filter = parseDatasetFilter(c)
+      const { limit: _limit, offset: _offset, ...countFilter } = filter
+      const episodes = datasetBuilder.extractEpisodes(filter).map(toEpisodeSummary)
+      const total = datasetBuilder.listMatchingSessionIds(countFilter).length
+
+      return c.json({
+        episodes,
+        total,
+      })
+    })
+
+    .get('/api/dataset/episodes/:id', (c) => {
+      const id = c.req.param('id')
+      const episode = datasetBuilder.extractEpisode(id)
+      if (!episode) {
+        return c.json({ error: 'Episode not found' }, 404)
+      }
+
+      return c.json(episode)
+    })
+
+    .get('/api/dataset/stats', (c) => {
+      const episodes = datasetBuilder.extractEpisodes()
+      const evaluated = episodes.filter((episode) => episode.evaluations.length > 0).length
+      const totalCost = episodes.reduce((sum, episode) => sum + episode.usage.totalCost, 0)
+
+      return c.json({
+        totalEpisodes: episodes.length,
+        byTrait: countByKey(episodes.flatMap((episode) => episode.traits)),
+        bySource: countByKey(episodes.map((episode) => episode.metadata.source)),
+        byStatus: countByKey(episodes.map((episode) => episode.metadata.status)),
+        evaluated,
+        unevaluated: episodes.length - evaluated,
+        avgCost: episodes.length > 0 ? totalCost / episodes.length : 0,
+      })
+    })
+
+    .get('/api/dataset/traits', (c) => {
+      return c.json({ traits: [...KNOWN_EPISODE_TRAITS] })
     })
 
     .get('/api/sessions/:id', (c) => {
