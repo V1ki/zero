@@ -203,4 +203,35 @@ describe('SessionDB', () => {
   test('getSession returns null for non-existent ID', () => {
     expect(db.getSession('sess_nonexistent')).toBeNull()
   })
+
+  test('loadSessionsByDateRange filters by updatedAt inclusively', () => {
+    const rangeDb = SessionDB.createInMemory()
+
+    rangeDb.saveSession(
+      makeSessionData({
+        id: 'sess_range_old',
+        updatedAt: '2026-04-01T00:00:00.000Z',
+      }),
+    )
+    rangeDb.saveSession(
+      makeSessionData({
+        id: 'sess_range_mid',
+        updatedAt: '2026-04-05T12:00:00.000Z',
+      }),
+    )
+    rangeDb.saveSession(
+      makeSessionData({
+        id: 'sess_range_new',
+        updatedAt: '2026-04-08T00:00:00.000Z',
+      }),
+    )
+
+    const rows = rangeDb.loadSessionsByDateRange(
+      '2026-04-05T00:00:00.000Z',
+      '2026-04-08T00:00:00.000Z',
+    )
+
+    expect(rows.map((row) => row.id)).toEqual(['sess_range_new', 'sess_range_mid'])
+    rangeDb.close()
+  })
 })
