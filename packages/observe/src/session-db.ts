@@ -304,34 +304,6 @@ export class SessionDB {
   }
 
   /**
-   * Load sessions updated within an inclusive ISO timestamp range.
-   */
-  loadSessionsByDateRange(since?: string, until?: string): SessionRow[] {
-    let sql = 'SELECT * FROM sessions'
-    const params: SQLQueryBindings[] = []
-    const conditions: string[] = []
-
-    if (since) {
-      conditions.push('updated_at >= ?')
-      params.push(since)
-    }
-
-    if (until) {
-      conditions.push('updated_at <= ?')
-      params.push(until)
-    }
-
-    if (conditions.length > 0) {
-      sql += ` WHERE ${conditions.join(' AND ')}`
-    }
-
-    sql += ' ORDER BY updated_at DESC'
-
-    const rows = this.db.query(sql).all(...params) as RawSessionRow[]
-    return rows.map(toSessionRow)
-  }
-
-  /**
    * Get a single session by ID.
    */
   getSession(sessionId: string): SessionRow | null {

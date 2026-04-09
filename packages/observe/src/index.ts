@@ -48,4 +48,3 @@ export {
 } from './trace-projections'
 export { createFilteredWriter, filterLogEntry } from './secret-filter'
 export { asRecord, asString, flattenTraceSpans } from './utils'
-export * from './dataset'
