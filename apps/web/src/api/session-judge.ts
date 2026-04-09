@@ -37,7 +37,7 @@ Be fair to legitimate blockers, retries after real errors, and tasks that genuin
 Score these dimensions from 0 to 5:
 - task_completion: did the agent actually complete the user task or clearly end in a justified block?
 - context_management: did it preserve relevant context, avoid losing track, and keep the session coherent?
-- memory_usage: did it use memory_search / memory_get / memory write appropriately when memory would help? Do not penalize if memory was unnecessary or identity memory already covered it.
+- memory_usage: did it use memory_search / memory_read / memory write appropriately when memory would help? Do not penalize if memory was unnecessary or identity memory already covered it.
 - evidence_grounding: are conclusions grounded in tool outputs, memory evidence, or trace evidence?
 - tool_efficiency: were tools chosen well, with minimal useless duplicate calls?
 - cost_efficiency: was request/tool usage proportionate, or obviously wasteful?
@@ -498,7 +498,7 @@ function normalizeSeverity(value: unknown): SessionJudgeFinding['severity'] {
 function collectSignals(requests: RequestLogEntry[], closureCount: number): SessionJudgeSignals {
   let toolCallCount = 0
   let memorySearchCount = 0
-  let memoryGetCount = 0
+  let memoryReadCount = 0
   let memoryWriteCount = 0
   const duplicateMap = new Map<string, number>()
 
@@ -508,7 +508,7 @@ function collectSignals(requests: RequestLogEntry[], closureCount: number): Sess
       const signature = `${toolCall.name}:${stableStringify(toolCall.input)}`
       duplicateMap.set(signature, (duplicateMap.get(signature) ?? 0) + 1)
       if (toolCall.name === 'memory_search') memorySearchCount++
-      if (toolCall.name === 'memory_get') memoryGetCount++
+      if (toolCall.name === 'memory_read') memoryReadCount++
       if (toolCall.name === 'memory') memoryWriteCount++
     }
   }
@@ -523,7 +523,7 @@ function collectSignals(requests: RequestLogEntry[], closureCount: number): Sess
     toolCallCount,
     duplicateToolCallCount,
     memorySearchCount,
-    memoryGetCount,
+    memoryReadCount,
     memoryWriteCount,
     closureCount,
   }
@@ -539,7 +539,7 @@ function collectMemorySignals(requests: RequestLogEntry[], filter: (value: strin
       if (toolCall.name === 'memory_search' && typeof toolCall.input.query === 'string') {
         queries.push(previewText(filter(toolCall.input.query), 120))
       }
-      if (toolCall.name === 'memory_get' && typeof toolCall.input.path === 'string') {
+      if (toolCall.name === 'memory_read' && typeof toolCall.input.path === 'string') {
         paths.push(previewText(filter(toolCall.input.path), 120))
       }
       if (toolCall.name === 'memory') {

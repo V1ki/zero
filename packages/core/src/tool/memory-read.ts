@@ -1,14 +1,14 @@
 import type { ToolContext, ToolResult } from '@zero-os/shared'
 import { BaseTool } from './base'
 
-interface MemoryGetInput {
+interface MemoryReadInput {
   path: string
   from?: number
   lines?: number
 }
 
-export class MemoryGetTool extends BaseTool {
-  name = 'memory_get'
+export class MemoryReadTool extends BaseTool {
+  name = 'memory_read'
   description =
     '按 path 读取 `.zero/memory/**` 下的记忆文件，可选 from/lines 窗口。memo.md 不在此工具范围内。'
   parameters = {
@@ -25,7 +25,7 @@ export class MemoryGetTool extends BaseTool {
   }
 
   protected async execute(ctx: ToolContext, input: unknown): Promise<ToolResult> {
-    const { path, from, lines } = input as MemoryGetInput
+    const { path, from, lines } = input as MemoryReadInput
 
     if (!ctx.memoryStore?.readByPath) {
       return {

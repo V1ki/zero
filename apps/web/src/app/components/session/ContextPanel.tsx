@@ -1610,7 +1610,7 @@ function JudgeResultCard({
           dup tools {result.signals.duplicateToolCallCount}
         </span>
         <span className="rounded bg-black/15 px-2 py-1">
-          memory {result.signals.memorySearchCount}/{result.signals.memoryGetCount}/
+          memory {result.signals.memorySearchCount}/{result.signals.memoryReadCount}/
           {result.signals.memoryWriteCount}
         </span>
         <span className="rounded bg-black/15 px-2 py-1">

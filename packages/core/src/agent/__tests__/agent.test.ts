@@ -8,6 +8,7 @@ import type {
   ToolContext,
 } from '@zero-os/shared'
 import { BashTool } from '../../tool/bash'
+import { BaseTool } from '../../tool/base'
 import { ReadTool } from '../../tool/read'
 import { ToolRegistry } from '../../tool/registry'
 import { Agent, type AgentConfig, type AgentContext, type AgentObservability } from '../agent'
@@ -189,6 +190,70 @@ class ReadToolCallAdapter implements ProviderAdapter {
   }
 }
 
+class MemoryReadToolCallAdapter implements ProviderAdapter {
+  readonly apiType = 'fake-memory-read-tool'
+  private completeCalls = 0
+
+  async complete(_req: CompletionRequest): Promise<CompletionResponse> {
+    this.completeCalls += 1
+
+    if (this.completeCalls === 1) {
+      return {
+        id: 'resp_memory_read_tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_memory_read_1',
+            name: 'memory_read',
+            input: { path: '/tmp/memory.md' },
+          },
+        ],
+        stopReason: 'tool_use',
+        usage: { input: 5, output: 2 },
+        model: 'fake-model',
+      }
+    }
+
+    return {
+      id: 'resp_memory_read_final',
+      content: [{ type: 'text', text: 'memory read complete' }],
+      stopReason: 'end_turn',
+      usage: { input: 4, output: 2 },
+      model: 'fake-model',
+    }
+  }
+
+  async *stream(_req: CompletionRequest): AsyncIterable<StreamEvent> {
+    yield* []
+    throw new Error('stream not supported in test')
+  }
+
+  async healthCheck(): Promise<boolean> {
+    return true
+  }
+}
+
+class FakeMemoryReadTool extends BaseTool {
+  name = 'memory_read'
+  description = 'Read a memory file by path'
+  parameters = {
+    type: 'object',
+    properties: {
+      path: { type: 'string' },
+    },
+    required: ['path'],
+  }
+
+  protected async execute(_ctx: ToolContext, input: unknown) {
+    const path = typeof input === 'object' && input && 'path' in input ? input.path : 'unknown'
+    return {
+      success: true,
+      output: `read ${String(path)}`,
+      outputSummary: `read ${String(path)}`,
+    }
+  }
+}
+
 function expectDefined<T>(value: T | null | undefined): NonNullable<T> {
   expect(value).toBeDefined()
   if (value == null) {
@@ -257,6 +322,47 @@ describe('Agent', () => {
     // Check that at least one message contains tool_result content
     const hasToolResult = messages.some((m) => m.content.some((b) => b.type === 'tool_result'))
     expect(hasToolResult).toBe(true)
+  }, 30000)
+
+  test('run: memory_read tool executes directly when registered', async () => {
+    const registry = new ToolRegistry()
+    registry.register(new FakeMemoryReadTool())
+
+    const context: AgentContext = {
+      systemPrompt: 'You are a helpful assistant. Reply briefly.',
+      conversationHistory: [],
+      tools: [
+        {
+          name: 'memory_read',
+          description: 'Read a memory file by path',
+          parameters: {
+            type: 'object',
+            properties: { path: { type: 'string' } },
+            required: ['path'],
+          },
+        },
+      ],
+    }
+
+    const agentConfig: AgentConfig = {
+      name: 'test-agent',
+      agentInstruction: 'Use memory_read when needed.',
+      promptMode: 'minimal',
+    }
+
+    const agent = new Agent(agentConfig, new MemoryReadToolCallAdapter(), registry, toolContext)
+    const messages = await agent.run(context, 'Use memory_read on /tmp/memory.md.')
+
+    const toolResultMsg = expectDefined(
+      messages.find((m) => m.content.some((b) => b.type === 'tool_result')),
+    )
+    const toolResultBlock = expectDefined(
+      toolResultMsg.content.find((b) => b.type === 'tool_result'),
+    )
+    if (toolResultBlock.type === 'tool_result') {
+      expect(toolResultBlock.isError).not.toBe(true)
+      expect(toolResultBlock.content).toContain('read /tmp/memory.md')
+    }
   }, 30000)
 
   test('run: tool result appears in message history', async () => {

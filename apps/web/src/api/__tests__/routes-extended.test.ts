@@ -1476,7 +1476,7 @@ describe('API Routes Extended', () => {
             toolCallCount: 0,
             duplicateToolCallCount: 0,
             memorySearchCount: 0,
-            memoryGetCount: 0,
+            memoryReadCount: 0,
             memoryWriteCount: 0,
             closureCount: 1,
           },

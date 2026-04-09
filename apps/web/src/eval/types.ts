@@ -30,7 +30,7 @@ export interface SessionJudgeSignals {
   toolCallCount: number
   duplicateToolCallCount: number
   memorySearchCount: number
-  memoryGetCount: number
+  memoryReadCount: number
   memoryWriteCount: number
   closureCount: number
 }

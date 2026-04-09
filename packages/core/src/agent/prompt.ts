@@ -213,8 +213,8 @@ export function buildToolRulesBlock(tools: ToolDefinition[]): string {
       'Fetch：用于读取网页内容、调用 API、下载文件。HTML 自动通过 readability 提取正文转为 Markdown。(适用于无 JavaScript 渲染以及登录状态的网页)',
     memory_search:
       'Memory Search：回答过往工作、决策、偏好前，先搜索 `.zero/memory/**`。查询要具体（项目名/技术名/日期），支持语义搜索。搜索无结果时明确告知用户。',
-    memory_get:
-      'Memory Get：根据 memory_search 返回的 path 精读记忆文件。仅在 snippet 不足以回答时使用。',
+    memory_read:
+      'Memory Read：根据 memory_search 返回的 path 精读记忆文件。仅在 snippet 不足以回答时使用。',
     memory:
       'Memory：写入或维护长期记忆。完成工作步骤后，评估是否产生了值得跨会话保留的信息（偏好、决策、经验、流程），如有则调用 create 或 update。不要等到会话结束才写，每个阶段性成果完成时就评估。',
     task: 'Task：拆分 SubAgent 时明确每个子任务的输入、输出和依赖关系。不要把含糊的大任务直接丢给 SubAgent。',
@@ -379,7 +379,7 @@ export function buildRuntimeBlock(info: RuntimeInfo): string {
 }
 
 function hasMemoryTools(tools: ToolDefinition[]): boolean {
-  const memoryToolNames = new Set(['memory', 'memory_search', 'memory_get'])
+  const memoryToolNames = new Set(['memory', 'memory_search', 'memory_read'])
   return tools.some((tool) => memoryToolNames.has(tool.name.toLowerCase()))
 }
 

@@ -23,7 +23,7 @@ import {
   CodexTool,
   EditTool,
   FetchTool,
-  MemoryGetTool,
+  MemoryReadTool,
   MemorySearchTool,
   MemoryTool,
   ReadTool,
@@ -306,7 +306,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
   toolRegistry.register(new BashTool(fuseRules))
   toolRegistry.register(new FetchTool())
   toolRegistry.register(new MemorySearchTool())
-  toolRegistry.register(new MemoryGetTool())
+  toolRegistry.register(new MemoryReadTool())
   toolRegistry.register(new MemoryTool())
   toolRegistry.register(new TaskTool(modelRouter, toolRegistry, metrics))
   toolRegistry.register(new ScheduleTool())

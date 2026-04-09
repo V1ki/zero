@@ -31,6 +31,10 @@ export class AnthropicAdapter implements ProviderAdapter {
   private static readonly TOOL_ID_RE = /^[a-zA-Z0-9_-]+$/
   private static readonly CLAUDE_CODE_SYSTEM_PROMPT =
     "You are Claude Code, Anthropic's official CLI for Claude."
+  private static readonly CLAUDE_CODE_BETA =
+    'claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,effort-2025-11-24'
+  private static readonly CLAUDE_CODE_USER_AGENT = 'claude-cli/2.1.97 (external, cli)'
+  private static readonly CLAUDE_CODE_OUTPUT_EFFORT = 'high'
   private client: Anthropic
   private baseUrl: string
   private modelId: string
@@ -52,7 +56,9 @@ export class AnthropicAdapter implements ProviderAdapter {
   }
 
   async complete(req: CompletionRequest): Promise<CompletionResponse> {
-    const response = await this.withOauthRetry((client) => client.messages.create(this.buildRequest(req)))
+    const response = await this.withOauthRetry((client, session) =>
+      client.messages.create(this.buildRequest(req), this.buildRequestOptions(req, session)),
+    )
 
     return {
       id: response.id,
@@ -70,11 +76,11 @@ export class AnthropicAdapter implements ProviderAdapter {
   }
 
   async *stream(req: CompletionRequest): AsyncIterable<StreamEvent> {
-    const stream = await this.withOauthRetry((client) =>
+    const stream = await this.withOauthRetry((client, session) =>
       client.messages.create({
         ...this.buildRequest(req),
         stream: true,
-      }),
+      }, this.buildRequestOptions(req, session)),
     )
 
     let streamModel: string | undefined
@@ -161,8 +167,8 @@ export class AnthropicAdapter implements ProviderAdapter {
 
   private buildRequest(req: CompletionRequest): Anthropic.MessageCreateParamsNonStreaming {
     const thinking = this.buildThinkingConfig()
-
-    return {
+    const session = this.readClaudeSession()
+    const request: Anthropic.MessageCreateParamsNonStreaming = {
       model: req.model ?? this.modelId,
       cache_control: AnthropicAdapter.REQUEST_CACHE_CONTROL,
       system: this.buildSystem(req.system),
@@ -171,6 +177,23 @@ export class AnthropicAdapter implements ProviderAdapter {
       ...(thinking ? { thinking } : {}),
       max_tokens: req.maxTokens ?? 4096,
     }
+
+    if (this.isOAuthClient) {
+      request.output_config = { effort: AnthropicAdapter.CLAUDE_CODE_OUTPUT_EFFORT }
+      if (req.meta?.sessionId) {
+        const userIdentity: Record<string, string> = {
+          session_id: req.meta.sessionId,
+        }
+        if (session?.account?.accountUuid) {
+          userIdentity.account_uuid = session.account.accountUuid
+        }
+        request.metadata = {
+          user_id: JSON.stringify(userIdentity),
+        }
+      }
+    }
+
+    return request
   }
 
   private buildSystem(system?: string): Anthropic.TextBlockParam[] | undefined {
@@ -323,16 +346,37 @@ export class AnthropicAdapter implements ProviderAdapter {
       authToken: oauthAccessToken ?? null,
       baseURL: this.baseUrl,
       ...(this.isOAuthClient && {
+        defaultQuery: {
+          beta: 'true',
+        },
         defaultHeaders: {
-          'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20',
-          'user-agent': 'claude-cli/0.0.0 (external, cli)',
+          'anthropic-beta': AnthropicAdapter.CLAUDE_CODE_BETA,
+          'anthropic-dangerous-direct-browser-access': 'true',
+          'user-agent': AnthropicAdapter.CLAUDE_CODE_USER_AGENT,
           'x-app': 'cli',
         },
       }),
     })
   }
 
-  private async withOauthRetry<T>(request: (client: Anthropic) => Promise<T>): Promise<T> {
+  private buildRequestOptions(
+    req: CompletionRequest,
+    session?: ClaudeOAuthSession,
+  ): Anthropic.RequestOptions | undefined {
+    if (!this.isOAuthClient || !req.meta?.sessionId) {
+      return undefined
+    }
+
+    return {
+      headers: {
+        'x-claude-code-session-id': req.meta.sessionId,
+      },
+    }
+  }
+
+  private async withOauthRetry<T>(
+    request: (client: Anthropic, session?: ClaudeOAuthSession) => Promise<T>,
+  ): Promise<T> {
     if (!this.isOAuthClient) {
       return request(this.client)
     }
@@ -344,7 +388,7 @@ export class AnthropicAdapter implements ProviderAdapter {
     let session = await this.getClaudeSession()
 
     try {
-      return await request(this.getClientForSession(session))
+      return await request(this.getClientForSession(session), session)
     } catch (error) {
       if (!this.isUnauthorizedError(error) || !this.oauthTokenRefresher) {
         throw error
@@ -352,7 +396,7 @@ export class AnthropicAdapter implements ProviderAdapter {
 
       await this.oauthTokenRefresher('unauthorized')
       session = this.getRequiredClaudeSession()
-      return request(this.getClientForSession(session))
+      return request(this.getClientForSession(session), session)
     }
   }
 

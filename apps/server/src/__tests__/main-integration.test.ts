@@ -334,7 +334,7 @@ describe('startZeroOS Integration', () => {
     expect(names).toContain('bash')
     expect(names).toContain('fetch')
     expect(names).toContain('memory_search')
-    expect(names).toContain('memory_get')
+    expect(names).toContain('memory_read')
     expect(names).toContain('memory')
     expect(names).toContain('task')
     expect(names).toContain('schedule')

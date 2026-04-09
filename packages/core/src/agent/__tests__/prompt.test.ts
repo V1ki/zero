@@ -135,7 +135,7 @@ describe('buildToolRulesBlock', () => {
       makeTool('Read'),
       makeTool('Bash'),
       makeTool('memory_search'),
-      makeTool('memory_get'),
+      makeTool('memory_read'),
       makeTool('memory'),
     ]
     const result = buildToolRulesBlock(tools)
@@ -146,7 +146,7 @@ describe('buildToolRulesBlock', () => {
     expect(result).toContain('Bash：命令在工作目录中执行')
     expect(result).toContain('Memory Search：回答过往工作、决策、偏好前')
     expect(result).toContain('支持语义搜索')
-    expect(result).toContain('Memory Get：根据 memory_search 返回的 path')
+    expect(result).toContain('Memory Read：根据 memory_search 返回的 path')
     expect(result).toContain('仅在 snippet 不足以回答时使用')
     expect(result).toContain('每个阶段性成果完成时就评估')
     // Should not contain rules for tools not in the list

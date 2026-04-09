@@ -598,7 +598,7 @@ describe('API Routes (Real)', () => {
     expect(names).toContain('fetch')
     expect(names).toContain('memory')
     expect(names).toContain('memory_search')
-    expect(names).toContain('memory_get')
+    expect(names).toContain('memory_read')
     expect(names).toContain('task')
     expect(names).toContain('schedule')
     expect(names).toContain('codex')

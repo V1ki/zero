@@ -5,6 +5,8 @@ import { ModelRouter } from '@zero-os/model'
 import { ObservabilityStore } from '@zero-os/observe'
 import type { SystemConfig } from '@zero-os/shared'
 import { BashTool } from '../../tool/bash'
+import { MemoryReadTool } from '../../tool/memory-read'
+import { MemorySearchTool } from '../../tool/memory-search'
 import { ReadTool } from '../../tool/read'
 import { ToolRegistry } from '../../tool/registry'
 import { createTestProjectRoot } from './test-helpers'
@@ -12,6 +14,13 @@ import { SessionManager } from '../manager'
 import { Session } from '../session'
 
 const API_KEY = 'sk-c6c02cbd0c25473f97f9be0da6070f6d'
+const CLAUDE_OAUTH_JSON = JSON.stringify({
+  accessToken: 'claude-access-token',
+  refreshToken: 'claude-refresh-token',
+  expiresAt: Date.now() + 3600_000,
+  tokenType: 'Bearer',
+  scopes: ['user:profile', 'user:inference', 'user:sessions:claude_code'],
+})
 
 const config: SystemConfig = {
   providers: {
@@ -44,11 +53,40 @@ const config: SystemConfig = {
 }
 
 const secrets = new Map([['openai_codex_api_key', API_KEY]])
+const anthropicSecrets = new Map([['claude_oauth_session', CLAUDE_OAUTH_JSON]])
 const loggerDir = join(import.meta.dir, '__fixtures__/session-logs')
 const testProject = createTestProjectRoot('zero-session-test-')
 
 function createRouter() {
   const router = new ModelRouter(config, secrets)
+  router.init()
+  return router
+}
+
+function createAnthropicRouter() {
+  const anthropicConfig: SystemConfig = {
+    providers: {
+      anthropic: {
+        apiType: 'anthropic_messages',
+        baseUrl: 'https://api.anthropic.com',
+        auth: { type: 'oauth2', oauthTokenRef: 'claude_oauth_session' },
+        models: {
+          'claude-opus-4-6': {
+            modelId: 'claude-opus-4-6',
+            maxContext: 200000,
+            maxOutput: 32000,
+            capabilities: ['tools', 'vision', 'reasoning'],
+            tags: ['powerful'],
+          },
+        },
+      },
+    },
+    defaultModel: 'claude-opus-4-6',
+    fallbackChain: ['claude-opus-4-6'],
+    schedules: [],
+    fuseList: [],
+  }
+  const router = new ModelRouter(anthropicConfig, anthropicSecrets)
   router.init()
   return router
 }
@@ -187,6 +225,29 @@ describe('Session', () => {
     expect(staticContext.projectRoot).toBe(testProject.projectRoot)
     expect(staticContext.workspacePath).toBe(workspacePath)
     expect(staticContext.systemPrompt).toContain(workspacePath)
+  })
+
+  test('uses memory_read in tool context when memory_search is present', () => {
+    const router = createAnthropicRouter()
+    const registry = new ToolRegistry()
+    registry.register(new ReadTool())
+    registry.register(new MemorySearchTool())
+    registry.register(new MemoryReadTool())
+
+    const session = new Session('web', router, registry, {
+      projectRoot: testProject.projectRoot,
+    })
+
+    const staticContext = (
+      session as unknown as {
+        ensureStaticContext: () => {
+          tools: Array<{ name: string }>
+        }
+      }
+    ).ensureStaticContext()
+
+    expect(staticContext.tools.map((tool) => tool.name)).toContain('memory_search')
+    expect(staticContext.tools.map((tool) => tool.name)).toContain('memory_read')
   })
 
   test('handles real conversation with AI (real API)', async () => {

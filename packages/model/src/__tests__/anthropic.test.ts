@@ -705,6 +705,12 @@ describe('Anthropic Adapter (Pure Logic)', () => {
     const originalFetch = globalThis.fetch
     let currentSession = makeClaudeOAuthSessionJson('claude-stale-token', Date.now() + 2 * 60_000)
     const seenAuthHeaders: string[] = []
+    const seenUrls: string[] = []
+    const seenBetaHeaders: string[] = []
+    const seenBrowserHeaders: string[] = []
+    const seenUserAgents: string[] = []
+    const seenSessionIds: string[] = []
+    const seenBodies: Array<Record<string, unknown>> = []
     let refreshCalls = 0
 
     const oauthAdapter = new AnthropicAdapter({
@@ -729,8 +735,15 @@ describe('Anthropic Adapter (Pure Logic)', () => {
     })
 
     globalThis.fetch = (async (_input, init) => {
+      const request = new Request(_input, init)
       const headers = new Headers(init?.headers)
+      seenUrls.push(request.url)
       seenAuthHeaders.push(headers.get('authorization') ?? '')
+      seenBetaHeaders.push(headers.get('anthropic-beta') ?? '')
+      seenBrowserHeaders.push(headers.get('anthropic-dangerous-direct-browser-access') ?? '')
+      seenUserAgents.push(headers.get('user-agent') ?? '')
+      seenSessionIds.push(headers.get('x-claude-code-session-id') ?? '')
+      seenBodies.push((await request.clone().json()) as Record<string, unknown>)
       return new Response(
         JSON.stringify({
           id: 'msg_refresh_001',
@@ -749,12 +762,26 @@ describe('Anthropic Adapter (Pure Logic)', () => {
     try {
       const response = await oauthAdapter.complete({
         messages: [makeMessage('user', 'refresh me')],
+        meta: { sessionId: 'sess-1', purpose: 'chat' },
         stream: false,
       })
 
       expect(response.content[0]).toEqual({ type: 'text', text: 'ok' })
       expect(refreshCalls).toBe(1)
       expect(seenAuthHeaders).toEqual(['Bearer claude-fresh-token'])
+      expect(seenUrls).toEqual(['https://api.anthropic.test/v1/messages?beta=true'])
+      expect(seenBetaHeaders).toEqual([
+        'claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,effort-2025-11-24',
+      ])
+      expect(seenBrowserHeaders).toEqual(['true'])
+      expect(seenUserAgents).toEqual(['claude-cli/2.1.97 (external, cli)'])
+      expect(seenSessionIds).toEqual(['sess-1'])
+      expect(seenBodies).toEqual([
+        expect.objectContaining({
+          output_config: { effort: 'high' },
+          metadata: { user_id: JSON.stringify({ session_id: 'sess-1' }) },
+        }),
+      ])
     } finally {
       globalThis.fetch = originalFetch
     }

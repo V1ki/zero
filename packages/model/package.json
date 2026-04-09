@@ -10,7 +10,7 @@
     "@zero-os/secrets": "workspace:*",
     "@zero-os/observe": "workspace:*",
     "openai": "^4.82.0",
-    "@anthropic-ai/sdk": "^0.78.0"
+    "@anthropic-ai/sdk": "^0.81.0"
   },
   "devDependencies": {
     "bun-types": "latest"

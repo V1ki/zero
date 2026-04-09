@@ -9,7 +9,7 @@ import {
   MemoryStore,
   VectorIndex,
 } from '@zero-os/memory'
-import { MemoryGetTool } from '../memory-get'
+import { MemoryReadTool } from '../memory-read'
 import { MemorySearchTool } from '../memory-search'
 
 let testDir = ''
@@ -153,8 +153,8 @@ describe('Memory recall tools', () => {
     expect(result.output).toContain('No relevant memories found')
   })
 
-  test('memory_get reads a full memory file by path', async () => {
-    const tool = new MemoryGetTool()
+  test('memory_read reads a full memory file by path', async () => {
+    const tool = new MemoryReadTool()
     const result = await tool.run(makeCtx(), {
       path: '.zero/memory/notes/manual.md',
     })
@@ -165,8 +165,8 @@ describe('Memory recall tools', () => {
     expect(result.output).toContain('line4')
   })
 
-  test('memory_get supports line windows', async () => {
-    const tool = new MemoryGetTool()
+  test('memory_read supports line windows', async () => {
+    const tool = new MemoryReadTool()
     const result = await tool.run(makeCtx(), {
       path: '.zero/memory/notes/manual.md',
       from: 2,
@@ -179,8 +179,8 @@ describe('Memory recall tools', () => {
     expect(result.output).not.toContain('line1')
   })
 
-  test('memory_get returns empty content for missing files', async () => {
-    const tool = new MemoryGetTool()
+  test('memory_read returns empty content for missing files', async () => {
+    const tool = new MemoryReadTool()
     const result = await tool.run(makeCtx(), {
       path: '.zero/memory/notes/missing.md',
     })
@@ -190,8 +190,8 @@ describe('Memory recall tools', () => {
     expect(result.outputSummary).toContain('empty or missing')
   })
 
-  test('memory_get rejects memo path', async () => {
-    const tool = new MemoryGetTool()
+  test('memory_read rejects memo path', async () => {
+    const tool = new MemoryReadTool()
     const result = await tool.run(makeCtx(), {
       path: '.zero/memory/memo.md',
     })
@@ -200,8 +200,8 @@ describe('Memory recall tools', () => {
     expect(result.output).toContain('Invalid memory path')
   })
 
-  test('memory_get rejects traversal paths', async () => {
-    const tool = new MemoryGetTool()
+  test('memory_read rejects traversal paths', async () => {
+    const tool = new MemoryReadTool()
     const result = await tool.run(makeCtx(), {
       path: '.zero/memory/../secrets.enc',
     })
