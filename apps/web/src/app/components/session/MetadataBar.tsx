@@ -65,8 +65,6 @@ export function MetadataBar({
   const [showArchiveConfirm, setShowArchiveConfirm] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const { addToast } = useUIStore()
-  const canArchive = typeof onArchived === 'function'
-  const canDelete = typeof onDeleted === 'function'
   const purposeBreakdownTitle = purposeBreakdown
     .filter((row) => row.totalCost > 0 || row.requestCount > 0)
     .map(
@@ -103,30 +101,24 @@ export function MetadataBar({
             <Clock size={12} className="inline -mt-0.5" /> {formatTimeRange(createdAt, updatedAt)}
           </p>
         </div>
-        {(canArchive || canDelete) && (
-          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
-            {canDelete && (
-              <button
-                type="button"
-                onClick={() => setShowDeleteConfirm(true)}
-                className="px-3 py-1.5 rounded-md text-[11px] text-red-400/70 border border-red-400/20 hover:text-red-400 hover:border-red-400/40 hover:bg-red-400/5 transition-colors flex items-center gap-1.5"
-              >
-                <Trash size={14} />
-                Delete
-              </button>
-            )}
-            {canArchive && (
-              <button
-                type="button"
-                onClick={() => setShowArchiveConfirm(true)}
-                className="px-3 py-1.5 rounded-md text-[11px] text-[var(--color-text-muted)] border border-[var(--color-border)] hover:text-red-400 hover:border-red-400/30 transition-colors flex items-center gap-1.5"
-              >
-                <Archive size={14} />
-                Archive
-              </button>
-            )}
-          </div>
-        )}
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
+          <button
+            type="button"
+            onClick={() => setShowDeleteConfirm(true)}
+            className="px-3 py-1.5 rounded-md text-[11px] text-red-400/70 border border-red-400/20 hover:text-red-400 hover:border-red-400/40 hover:bg-red-400/5 transition-colors flex items-center gap-1.5"
+          >
+            <Trash size={14} />
+            Delete
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowArchiveConfirm(true)}
+            className="px-3 py-1.5 rounded-md text-[11px] text-[var(--color-text-muted)] border border-[var(--color-border)] hover:text-red-400 hover:border-red-400/30 transition-colors flex items-center gap-1.5"
+          >
+            <Archive size={14} />
+            Archive
+          </button>
+        </div>
       </div>
 
       {/* Stats row */}
@@ -166,29 +158,25 @@ export function MetadataBar({
         </span>
       </div>
 
-      {canArchive && (
-        <ConfirmDialog
-          open={showArchiveConfirm}
-          title="归档此 Session？"
-          description="归档后 Session 将从活跃列表中移除，历史数据仍可查看。"
-          confirmText="归档"
-          danger
-          onConfirm={handleArchive}
-          onCancel={() => setShowArchiveConfirm(false)}
-        />
-      )}
+      <ConfirmDialog
+        open={showArchiveConfirm}
+        title="归档此 Session？"
+        description="归档后 Session 将从活跃列表中移除，历史数据仍可查看。"
+        confirmText="归档"
+        danger
+        onConfirm={handleArchive}
+        onCancel={() => setShowArchiveConfirm(false)}
+      />
 
-      {canDelete && (
-        <ConfirmDialog
-          open={showDeleteConfirm}
-          title="删除此 Session？"
-          description="删除后 Session 及其关联的记忆数据将被永久移除，无法恢复。"
-          confirmText="删除"
-          danger
-          onConfirm={handleDelete}
-          onCancel={() => setShowDeleteConfirm(false)}
-        />
-      )}
+      <ConfirmDialog
+        open={showDeleteConfirm}
+        title="删除此 Session？"
+        description="删除后 Session 及其关联的记忆数据将被永久移除，无法恢复。"
+        confirmText="删除"
+        danger
+        onConfirm={handleDelete}
+        onCancel={() => setShowDeleteConfirm(false)}
+      />
     </div>
   )
 }

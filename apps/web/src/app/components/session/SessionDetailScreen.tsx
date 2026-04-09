@@ -129,20 +129,12 @@ interface SessionDetailScreenProps {
   sessionId?: string | null
   topContent?: ReactNode
   emptyState?: ReactNode
-  backLabel?: string
-  onBack?: () => void
-  allowJudgeActions?: boolean
-  hideSessionActions?: boolean
 }
 
 export function SessionDetailScreen({
   sessionId,
   topContent,
   emptyState,
-  backLabel = 'Sessions',
-  onBack,
-  allowJudgeActions = true,
-  hideSessionActions = false,
 }: SessionDetailScreenProps) {
   const { setSelectedSessionId } = useUIStore()
   const navigate = useNavigate()
@@ -328,10 +320,6 @@ export function SessionDetailScreen({
 
   function goBack() {
     setSelectedSessionId(null)
-    if (onBack) {
-      onBack()
-      return
-    }
     navigate({ to: '/sessions' })
   }
 
@@ -496,7 +484,7 @@ export function SessionDetailScreen({
         onClick={goBack}
         className="flex items-center gap-1.5 text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-accent)] transition-colors mb-4"
       >
-        <ArrowLeft size={16} /> {backLabel}
+        <ArrowLeft size={16} /> Sessions
       </button>
       {topContent ? <div className="mb-4">{topContent}</div> : null}
     </>
@@ -591,8 +579,8 @@ export function SessionDetailScreen({
         totalCost={session.totalCost}
         auxiliaryCost={session.auxiliaryCost}
         purposeBreakdown={session.purposeBreakdown}
-        onArchived={hideSessionActions ? undefined : goBack}
-        onDeleted={hideSessionActions ? undefined : goBack}
+        onArchived={goBack}
+        onDeleted={goBack}
       />
 
       <div className="mt-4 grid min-h-0 grid-cols-1 items-stretch gap-4 lg:grid-cols-[65fr_35fr] lg:h-[calc(100vh-280px)]">
@@ -651,7 +639,6 @@ export function SessionDetailScreen({
           decisions={decisions}
           taskClosureEvents={taskClosureEvents}
           traceLoading={traceLoading}
-          allowJudgeActions={allowJudgeActions}
           onJumpToAssistantMessage={jumpToAssistantMessage}
           onJumpToSubAgentInTimeline={handleJumpToSubAgentInTimeline}
         />

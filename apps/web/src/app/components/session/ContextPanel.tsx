@@ -129,7 +129,6 @@ interface LlmRequestEntry {
 
 interface Props {
   sessionId?: string
-  allowJudgeActions?: boolean
   summary?: string
   systemPrompt?: string
   modelHistory: ModelHistoryEntry[]
@@ -161,7 +160,6 @@ interface Props {
 
 export function ContextPanel({
   sessionId,
-  allowJudgeActions = true,
   summary,
   systemPrompt,
   modelHistory,
@@ -413,7 +411,7 @@ export function ContextPanel({
               judgeLoading={judgeLoading}
               judgeHistoryLoading={judgeHistoryLoading}
               judgeHistoryError={judgeHistoryError}
-              onRunJudge={sessionId && allowJudgeActions ? runJudge : undefined}
+              onRunJudge={sessionId ? runJudge : undefined}
               onSelectJudgeEntry={setSelectedJudgeSavedAt}
             />
           </Section>
