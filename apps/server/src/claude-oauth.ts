@@ -180,6 +180,25 @@ function isReauthRequiredRefreshFailure(
   return normalizedCode === 'invalid_grant' || normalizedCode === 'invalid_token' || status === 401
 }
 
+function buildReauthErrorMessage(status: number, detail: { code?: string; message?: string }) {
+  const context: string[] = []
+
+  if (status > 0) {
+    context.push(`status=${status}`)
+  }
+
+  if (detail.code) {
+    context.push(`code=${detail.code}`)
+  } else if (detail.message) {
+    const normalizedMessage = detail.message.trim().replace(/\s+/g, ' ')
+    if (normalizedMessage) {
+      context.push(`reason=${normalizedMessage.slice(0, 120)}`)
+    }
+  }
+
+  return context.length > 0 ? `${CLAUDE_REAUTH_MESSAGE} [${context.join(', ')}]` : CLAUDE_REAUTH_MESSAGE
+}
+
 function buildSession(
   data: ClaudeTokenExchangeResponse,
   profile: ClaudeProfileResponse | null,
@@ -417,7 +436,7 @@ export class ClaudeTokenManager {
       const body = await response.text()
       const detail = extractRefreshErrorDetail(body)
       if (isReauthRequiredRefreshFailure(response.status, detail)) {
-        throw new Error(CLAUDE_REAUTH_MESSAGE)
+        throw new Error(buildReauthErrorMessage(response.status, detail))
       }
 
       const message = detail.message ?? body.trim() ?? response.statusText

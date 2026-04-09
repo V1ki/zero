@@ -163,7 +163,7 @@ describe('ClaudeTokenManager', () => {
 
     try {
       await expect(manager.refreshSession('unauthorized')).rejects.toThrow(
-        'Claude OAuth session can no longer be refreshed',
+        /Claude OAuth session can no longer be refreshed.*status=401.*code=invalid_grant/,
       )
     } finally {
       rmSync(dir, { recursive: true, force: true })
