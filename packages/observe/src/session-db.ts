@@ -2,6 +2,7 @@ import { Database, type SQLQueryBindings } from 'bun:sqlite'
 import type {
   Message,
   ModelHistoryEntry,
+  ReasoningEffort,
   ScheduleChannelBinding,
   ScheduleConfig,
   Session as SessionData,
@@ -14,6 +15,7 @@ export interface SessionRow {
   source: SessionSource
   status: SessionStatus
   currentModel: string
+  reasoningEffort?: ReasoningEffort
   modelHistory: ModelHistoryEntry[]
   summary?: string
   tags: string[]
@@ -30,6 +32,7 @@ interface RawSessionRow {
   source: string
   status: string
   current_model: string
+  reasoning_effort: string | null
   model_history_json: string
   summary: string | null
   tags_json: string
@@ -84,6 +87,7 @@ export class SessionDB {
         source TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'active',
         current_model TEXT NOT NULL,
+        reasoning_effort TEXT,
         model_history_json TEXT NOT NULL DEFAULT '[]',
         summary TEXT,
         tags_json TEXT NOT NULL DEFAULT '[]',
@@ -128,6 +132,12 @@ export class SessionDB {
       // Column already exists
     }
 
+    try {
+      this.db.run('ALTER TABLE sessions ADD COLUMN reasoning_effort TEXT')
+    } catch {
+      // Column already exists
+    }
+
     this.db.run('CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)')
     this.db.run('CREATE INDEX IF NOT EXISTS idx_sessions_channel ON sessions(source, channel_id)')
     this.db.run(
@@ -163,13 +173,14 @@ export class SessionDB {
   saveSession(data: SessionData, agentConfigJson?: string, systemPrompt?: string): void {
     this.db.run(
       `INSERT OR REPLACE INTO sessions
-       (id, source, status, current_model, model_history_json, summary, tags_json, channel_name, channel_id, agent_config_json, system_prompt, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, source, status, current_model, reasoning_effort, model_history_json, summary, tags_json, channel_name, channel_id, agent_config_json, system_prompt, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         data.id,
         data.source,
         data.status,
         data.currentModel,
+        data.reasoningEffort ?? null,
         JSON.stringify(data.modelHistory),
         data.summary ?? null,
         JSON.stringify(data.tags),
@@ -422,6 +433,7 @@ function toSessionRow(row: RawSessionRow): SessionRow {
     source: row.source as SessionSource,
     status: row.status as SessionStatus,
     currentModel: row.current_model,
+    reasoningEffort: normalizeReasoningEffort(row.reasoning_effort),
     modelHistory: JSON.parse(row.model_history_json) as ModelHistoryEntry[],
     summary: row.summary ?? undefined,
     tags: JSON.parse(row.tags_json) as string[],
@@ -432,4 +444,8 @@ function toSessionRow(row: RawSessionRow): SessionRow {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
+}
+
+function normalizeReasoningEffort(value: string | null): ReasoningEffort | undefined {
+  return value === 'low' || value === 'medium' || value === 'high' ? value : undefined
 }

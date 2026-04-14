@@ -5,6 +5,7 @@ import type {
   CompletionResponse,
   ContentBlock,
   Message,
+  ReasoningEffort,
   ToolDefinition,
   ToolLogger,
   ToolResult,
@@ -47,6 +48,7 @@ export interface AgentLoopConfig {
   system: string
   tools: ToolDefinition[]
   maxOutputTokens?: number
+  reasoningEffort?: ReasoningEffort
   maxIterations?: number
   stream?: boolean
   logger: ToolLogger
@@ -248,6 +250,7 @@ export class AgentLoop {
       system: this.config.system,
       stream: this.config.stream ?? true,
       maxTokens: this.config.maxOutputTokens ?? 16384,
+      reasoningEffort: this.config.reasoningEffort,
       meta: this.config.getMeta?.(ctx) ?? this.config.meta,
     }
   }

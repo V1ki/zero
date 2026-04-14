@@ -1,3 +1,5 @@
+import type { ReasoningEffort } from './reasoning'
+
 export type SessionSource = 'feishu' | 'telegram' | 'scheduler' | 'web'
 
 export type SessionStatus = 'active' | 'idle' | 'completed' | 'failed' | 'archived'
@@ -15,6 +17,7 @@ export interface Session {
   source: SessionSource
   status: SessionStatus
   currentModel: string
+  reasoningEffort?: ReasoningEffort
   modelHistory: ModelHistoryEntry[]
   summary?: string
   tags: string[]

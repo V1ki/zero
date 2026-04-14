@@ -1,9 +1,10 @@
 import { describe, expect, test } from 'bun:test'
-import type { ChannelCapabilities, Message, SessionSource } from '@zero-os/shared'
+import type { ChannelCapabilities, Message, ReasoningEffort, SessionSource } from '@zero-os/shared'
 import type { SessionManager } from '../../session/manager'
 import { modelCommand } from '../builtins/model'
 import { newSessionCommand } from '../builtins/new-session'
 import { sessionCommand } from '../builtins/session'
+import { thinkCommand } from '../builtins/think'
 import type { CommandContext } from '../types'
 
 interface MockSession {
@@ -18,6 +19,13 @@ interface MockSession {
   setChannelCapabilities(capabilities: ChannelCapabilities): void
   listModels(): string[]
   getMessages(): Message[]
+  getReasoningEffort(): ReasoningEffort | undefined
+  setReasoningEffort(
+    effort?: ReasoningEffort,
+  ): {
+    changed: boolean
+    message: string
+  }
 }
 
 function createContext(
@@ -62,6 +70,8 @@ describe('builtin commands', () => {
       },
       listModels: () => [],
       getMessages: () => [],
+      getReasoningEffort: () => undefined,
+      setReasoningEffort: () => ({ changed: true, message: 'ok' }),
     }
 
     const startCalls: Array<[SessionSource, string, { channelName?: string }]> = []
@@ -112,6 +122,8 @@ describe('builtin commands', () => {
       setChannelCapabilities: () => {},
       listModels: () => [],
       getMessages: () => [],
+      getReasoningEffort: () => undefined,
+      setReasoningEffort: () => ({ changed: true, message: 'ok' }),
     }
 
     const sessionManager = {
@@ -141,6 +153,8 @@ describe('builtin commands', () => {
       setChannelCapabilities: () => {},
       listModels: () => [],
       getMessages: () => [],
+      getReasoningEffort: () => undefined,
+      setReasoningEffort: () => ({ changed: true, message: 'ok' }),
     }
 
     const sessionManager = {
@@ -168,6 +182,8 @@ describe('builtin commands', () => {
       setChannelCapabilities: () => {},
       listModels: () => ['openai-codex/gpt-5.3-codex-medium', 'openai-codex/gpt-5.4-medium'],
       getMessages: () => [],
+      getReasoningEffort: () => undefined,
+      setReasoningEffort: () => ({ changed: true, message: 'ok' }),
     }
 
     const sessionManager = {
@@ -203,6 +219,8 @@ describe('builtin commands', () => {
       setChannelCapabilities: () => {},
       listModels: () => [],
       getMessages: () => [],
+      getReasoningEffort: () => undefined,
+      setReasoningEffort: () => ({ changed: true, message: 'ok' }),
     }
 
     const sessionManager = {
@@ -223,8 +241,145 @@ describe('builtin commands', () => {
     expect(newSessionCommand.parse('/NeW@ZeroBot gpt-4')).toEqual({ modelArg: 'gpt-4' })
     expect(modelCommand.parse('/MoDeL@ZeroBot')).toEqual({})
     expect(modelCommand.parse('/MODEL@ZeroBot list')).toEqual({ target: 'list' })
+    expect(thinkCommand.parse('/THINK@ZeroBot')).toEqual({})
+    expect(thinkCommand.parse('/THINK@ZeroBot high')).toEqual({ effort: 'high' })
     expect(sessionCommand.parse('/SESSION@ZeroBot')).toEqual({})
     expect(sessionCommand.parse('/session extra')).toBeNull()
+  })
+
+  test('/think with no args returns current session setting', async () => {
+    const mockSession: MockSession = {
+      data: {
+        id: 'sess_think_1',
+        currentModel: 'chatgpt/gpt-5.4',
+        createdAt: '2026-03-27T14:30:05',
+        updatedAt: '2026-03-27T14:30:05',
+      },
+      switchModel: async () => ({ success: true, message: 'ok' }),
+      initAgent: () => {},
+      setChannelCapabilities: () => {},
+      listModels: () => [],
+      getMessages: () => [],
+      getReasoningEffort: () => 'high',
+      setReasoningEffort: () => ({ changed: true, message: 'ok' }),
+    }
+
+    const sessionManager = {
+      getOrCreateForChannel: () => ({ session: mockSession, isNew: false }),
+    } as unknown as SessionManager
+
+    const result = await thinkCommand.execute({}, createContext(sessionManager, 'web'))
+
+    expect(result).toEqual({
+      handled: true,
+      reply: 'Current thinking effort: high',
+    })
+  })
+
+  test('/think high updates the whole session setting', async () => {
+    const calls: Array<ReasoningEffort | undefined> = []
+    const mockSession: MockSession = {
+      data: {
+        id: 'sess_think_2',
+        currentModel: 'chatgpt/gpt-5.4',
+        createdAt: '2026-03-27T14:30:05',
+        updatedAt: '2026-03-27T14:30:05',
+      },
+      switchModel: async () => ({ success: true, message: 'ok' }),
+      initAgent: () => {},
+      setChannelCapabilities: () => {},
+      listModels: () => [],
+      getMessages: () => [],
+      getReasoningEffort: () => undefined,
+      setReasoningEffort: (effort) => {
+        calls.push(effort)
+        return { changed: true, message: `Thinking effort set to ${effort} for this session.` }
+      },
+    }
+
+    const sessionManager = {
+      getOrCreateForChannel: () => ({ session: mockSession, isNew: false }),
+    } as unknown as SessionManager
+
+    const result = await thinkCommand.execute(
+      { effort: 'high' },
+      createContext(sessionManager, 'telegram'),
+    )
+
+    expect(calls).toEqual(['high'])
+    expect(result).toEqual({
+      handled: true,
+      reply: 'Thinking effort set to high for this session.',
+    })
+  })
+
+  test('/think off resets the session setting', async () => {
+    const calls: Array<ReasoningEffort | undefined> = []
+    const mockSession: MockSession = {
+      data: {
+        id: 'sess_think_3',
+        currentModel: 'chatgpt/gpt-5.4',
+        createdAt: '2026-03-27T14:30:05',
+        updatedAt: '2026-03-27T14:30:05',
+      },
+      switchModel: async () => ({ success: true, message: 'ok' }),
+      initAgent: () => {},
+      setChannelCapabilities: () => {},
+      listModels: () => [],
+      getMessages: () => [],
+      getReasoningEffort: () => 'medium',
+      setReasoningEffort: (effort) => {
+        calls.push(effort)
+        return { changed: true, message: 'Thinking effort reset to provider default for this session.' }
+      },
+    }
+
+    const sessionManager = {
+      getOrCreateForChannel: () => ({ session: mockSession, isNew: false }),
+    } as unknown as SessionManager
+
+    const result = await thinkCommand.execute(
+      { effort: 'off' },
+      createContext(sessionManager, 'telegram'),
+    )
+
+    expect(calls).toEqual([undefined])
+    expect(result).toEqual({
+      handled: true,
+      reply: 'Thinking effort reset to provider default for this session.',
+    })
+  })
+
+  test('/think rejects invalid values with usage guidance', async () => {
+    const mockSession: MockSession = {
+      data: {
+        id: 'sess_think_4',
+        currentModel: 'chatgpt/gpt-5.4',
+        createdAt: '2026-03-27T14:30:05',
+        updatedAt: '2026-03-27T14:30:05',
+      },
+      switchModel: async () => ({ success: true, message: 'ok' }),
+      initAgent: () => {},
+      setChannelCapabilities: () => {},
+      listModels: () => [],
+      getMessages: () => [],
+      getReasoningEffort: () => undefined,
+      setReasoningEffort: () => ({ changed: true, message: 'ok' }),
+    }
+
+    const sessionManager = {
+      getOrCreateForChannel: () => ({ session: mockSession, isNew: false }),
+    } as unknown as SessionManager
+
+    const result = await thinkCommand.execute(
+      { effort: 'turbo' },
+      createContext(sessionManager, 'telegram'),
+    )
+
+    expect(result).toEqual({
+      handled: true,
+      reply: 'Usage: /think [low|medium|high|off]',
+    })
   })
 
   test('/session returns formatted session info with metrics', async () => {
@@ -269,6 +424,8 @@ describe('builtin commands', () => {
       setChannelCapabilities: () => {},
       listModels: () => [],
       getMessages: () => messages,
+      getReasoningEffort: () => undefined,
+      setReasoningEffort: () => ({ changed: true, message: 'ok' }),
     }
 
     const sessionManager = {
@@ -338,6 +495,8 @@ describe('builtin commands', () => {
           createdAt: '2026-03-27T14:30:11',
         },
       ],
+      getReasoningEffort: () => undefined,
+      setReasoningEffort: () => ({ changed: true, message: 'ok' }),
     }
 
     const sessionManager = {
@@ -365,6 +524,8 @@ describe('builtin commands', () => {
       setChannelCapabilities: () => {},
       listModels: () => [],
       getMessages: () => [],
+      getReasoningEffort: () => undefined,
+      setReasoningEffort: () => ({ changed: true, message: 'ok' }),
     }
 
     const sessionManager = {

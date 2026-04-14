@@ -1,3 +1,5 @@
+import type { ReasoningEffort } from './reasoning'
+
 export type MessageRole = 'user' | 'assistant' | 'system'
 
 export type MessageType = 'message' | 'notification' | 'queued' | 'control'
@@ -75,6 +77,7 @@ export interface CompletionRequest {
   stream: boolean
   maxTokens?: number
   model?: string
+  reasoningEffort?: ReasoningEffort
   meta?: CompletionRequestMeta
 }
 

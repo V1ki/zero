@@ -20,6 +20,7 @@ import type {
   ContentBlock,
   ControlKind,
   Message,
+  ReasoningEffort,
   SecretFilter,
   ToolContext,
   ToolDefinition,
@@ -92,6 +93,7 @@ export interface AgentContext {
   tools: ToolDefinition[]
   maxContext?: number
   maxOutput?: number
+  reasoningEffort?: ReasoningEffort
 }
 
 /**
@@ -234,6 +236,7 @@ export class Agent {
           system,
           tools: context.tools,
           maxOutputTokens: context.maxOutput ?? 16384,
+          reasoningEffort: context.reasoningEffort,
           stream: true,
           logger: this.toolContext.logger,
           transientRetryDelayMs: this.transientRetryDelayMs.bind(this),
@@ -592,6 +595,7 @@ export class Agent {
             appliedQueuedIntentText,
             ctx.messages,
             response,
+            options.context.reasoningEffort,
             currentRequestSpanId,
           )
         }
@@ -915,6 +919,7 @@ export class Agent {
     appliedQueuedIntentText: string | undefined,
     messages: Message[],
     response: CompletionResponse,
+    reasoningEffort: ReasoningEffort | undefined,
     parentSpanId?: string,
   ): Promise<TaskClosureEvaluation> {
     const taskClosureSpan = this.obs.tracer?.startSpan(
@@ -979,6 +984,7 @@ export class Agent {
         system: classifierRequest.system,
         stream: false,
         maxTokens: classifierRequest.maxTokens,
+        reasoningEffort,
         meta: {
           sessionId: this.toolContext.sessionId,
           purpose: 'task_closure',

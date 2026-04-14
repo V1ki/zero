@@ -33,6 +33,7 @@ export class OpenAIChatAdapter implements ProviderAdapter {
       model: req.model ?? this.modelId,
       messages,
       tools,
+      ...(req.reasoningEffort ? { reasoning_effort: req.reasoningEffort } : {}),
       max_tokens: req.maxTokens,
       stream: false,
     })
@@ -62,6 +63,7 @@ export class OpenAIChatAdapter implements ProviderAdapter {
       model: req.model ?? this.modelId,
       messages,
       tools,
+      ...(req.reasoningEffort ? { reasoning_effort: req.reasoningEffort } : {}),
       max_tokens: req.maxTokens,
       stream: true,
     })

@@ -476,4 +476,69 @@ describe('OpenAI Chat Completions Adapter (Pure Logic)', () => {
 
     expect(toolMsg.content).toBe('file contents here')
   })
+
+  test('complete forwards session reasoning effort to chat completions', async () => {
+    const createCalls: unknown[] = []
+    const mockAdapter = new OpenAIChatAdapter({
+      baseUrl: BASE_URL,
+      auth: { type: 'api_key', apiKeyRef: 'test' },
+      modelConfig: {
+        modelId: MODEL_ID,
+        maxContext: 400000,
+        maxOutput: 128000,
+        capabilities: ['tools', 'vision', 'reasoning'],
+        tags: ['powerful', 'coding'],
+      },
+      apiKey: API_KEY,
+    }) as unknown as {
+      complete(req: CompletionRequest): Promise<unknown>
+      client: {
+        chat: {
+          completions: {
+            create(input: unknown): Promise<{
+              id: string
+              model: string
+              choices: Array<{
+                finish_reason: 'stop'
+                message: { content: string; tool_calls?: undefined }
+              }>
+              usage: null
+            }>
+          }
+        }
+      }
+    }
+
+    mockAdapter.client = {
+      chat: {
+        completions: {
+          create: async (input: unknown) => {
+            createCalls.push(input)
+            return {
+              id: 'chatcmpl_test',
+              model: MODEL_ID,
+              choices: [
+                {
+                  finish_reason: 'stop',
+                  message: { content: 'ok' },
+                },
+              ],
+              usage: null,
+            }
+          },
+        },
+      },
+    }
+
+    await mockAdapter.complete({
+      messages: [makeMessage('user', 'hello')],
+      stream: false,
+      reasoningEffort: 'high',
+    })
+
+    expect(createCalls).toHaveLength(1)
+    expect(createCalls[0]).toMatchObject({
+      reasoning_effort: 'high',
+    })
+  })
 })

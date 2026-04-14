@@ -52,7 +52,11 @@ describe('Supervisor monitor', () => {
     expect(repairCalls).toBe(1)
     expect(logs.some((entry) => entry.includes('Repair already in progress'))).toBe(true)
 
-    releaseRepair?.()
+    const finishRepair = releaseRepair as (() => void) | null
+    if (!finishRepair) {
+      throw new Error('expected repair release function to be defined')
+    }
+    finishRepair()
     await firstTick
     await overlappingTicks
 

@@ -8,4 +8,5 @@ export {
   parseSessionArgs,
   registerBuiltinCommands,
   sessionCommand,
+  thinkCommand,
 } from './builtins'

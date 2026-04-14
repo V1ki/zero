@@ -393,6 +393,36 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
     expect(body.reasoning).toEqual({ summary: 'auto' })
   })
 
+  test('buildChatGptBody includes request reasoning effort when set', () => {
+    const chatgptAdapter = new OpenAIResponsesAdapter({
+      providerName: 'chatgpt',
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
+      modelConfig: {
+        modelId: 'gpt-5.4',
+        maxContext: 128000,
+        maxOutput: 8192,
+        capabilities: [],
+        tags: [],
+      },
+      oauthToken: JSON.stringify({
+        accessToken: 'access-token',
+        refreshToken: 'refresh-token',
+        expiresAt: Date.now() + 180_000,
+        tokenType: 'Bearer',
+        accountId: 'acct_123',
+      }),
+    })
+
+    const body = getResponsesHarness(chatgptAdapter).buildChatGptBody({
+      messages: [],
+      stream: true,
+      reasoningEffort: 'high',
+    })
+
+    expect(body.reasoning).toEqual({ summary: 'auto', effort: 'high' })
+  })
+
   test('buildChatGptBody omits unsupported max_output_tokens', () => {
     const chatgptAdapter = new OpenAIResponsesAdapter({
       providerName: 'chatgpt',

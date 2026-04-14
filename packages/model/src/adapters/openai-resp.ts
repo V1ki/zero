@@ -111,7 +111,7 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
       model: req.model ?? this.modelId,
       input,
       tools,
-      reasoning: this.buildReasoningConfig(),
+      reasoning: this.buildReasoningConfig(req),
       max_output_tokens: req.maxTokens,
       stream: false,
     })
@@ -133,7 +133,7 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
       model: req.model ?? this.modelId,
       input,
       tools,
-      reasoning: this.buildReasoningConfig(),
+      reasoning: this.buildReasoningConfig(req),
       max_output_tokens: req.maxTokens,
       stream: true,
     })
@@ -450,7 +450,7 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
       instructions: req.system?.trim() || DEFAULT_CHATGPT_INSTRUCTIONS,
       input: this.buildInput({ ...req, system: undefined }),
       ...(tools ? { tools, tool_choice: 'auto', parallel_tool_calls: true } : {}),
-      reasoning: this.buildReasoningConfig(),
+      reasoning: this.buildReasoningConfig(req),
       text: { verbosity: 'medium' },
       include: ['reasoning.encrypted_content'],
       prompt_cache_key: this.computePromptCacheKey(req),
@@ -772,8 +772,12 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
     }))
   }
 
-  private buildReasoningConfig(): { summary: 'auto' } {
-    return { summary: 'auto' }
+  private buildReasoningConfig(
+    req: CompletionRequest,
+  ): OpenAI.Responses.ResponseCreateParams['reasoning'] {
+    return req.reasoningEffort
+      ? { summary: 'auto', effort: req.reasoningEffort }
+      : { summary: 'auto' }
   }
 
   private getReasoningSummaryKey(event: {

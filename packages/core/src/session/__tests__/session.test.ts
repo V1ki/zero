@@ -165,6 +165,29 @@ describe('Session', () => {
     expect(session.data.modelHistory.at(-1)?.model).toBe('openai-codex/gpt-5.4-medium')
   })
 
+  test('setReasoningEffort updates session state', () => {
+    const router = createRouter()
+    const registry = createToolRegistry()
+    const session = new Session('web', router, registry, {
+      projectRoot: testProject.projectRoot,
+    })
+
+    const setResult = session.setReasoningEffort('high')
+    expect(setResult).toEqual({
+      changed: true,
+      message: 'Thinking effort set to high for this session.',
+    })
+    expect(session.getReasoningEffort()).toBe('high')
+    expect(session.data.reasoningEffort).toBe('high')
+
+    const resetResult = session.setReasoningEffort(undefined)
+    expect(resetResult).toEqual({
+      changed: true,
+      message: 'Thinking effort reset to provider default for this session.',
+    })
+    expect(session.getReasoningEffort()).toBeUndefined()
+  })
+
   test('initAgent resolves dedicated closure adapter when taskClosureModel is configured', () => {
     const router = createRouter()
     const registry = createToolRegistry()

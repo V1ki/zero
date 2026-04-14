@@ -6,6 +6,7 @@ import type {
   LoopRunner,
   LoopToolCallRecord,
   ModelPricing,
+  ReasoningEffort,
   SecretFilter,
   ToolLogger,
 } from '@zero-os/shared'
@@ -15,6 +16,7 @@ import { CONTEXT_PARAMS } from './params'
 interface RetrieveMemoriesWithDecisionOptions {
   adapter: ProviderAdapter
   sessionId: string
+  reasoningEffort?: ReasoningEffort
   memoryRetriever?: {
     retrieve(
       query: string,
@@ -46,6 +48,7 @@ export function createLoopRunner(
   adapter: ProviderAdapter,
   sessionId: string,
   logger: ToolLogger,
+  reasoningEffort?: ReasoningEffort,
 ): LoopRunner {
   return async (config) => {
     const startedAt = Date.now()
@@ -80,6 +83,7 @@ export function createLoopRunner(
           parameters: tool.inputSchema,
         })),
         maxOutputTokens: config.maxTokens ?? 512,
+        reasoningEffort,
         maxIterations: config.maxIterations ?? 3,
         stream: false,
         logger,
@@ -120,6 +124,7 @@ export function createLoopRunner(
 export async function retrieveMemoriesWithDecision({
   adapter,
   sessionId,
+  reasoningEffort,
   memoryRetriever,
   identitySummary = '',
   userMessage,
@@ -143,7 +148,7 @@ export async function retrieveMemoriesWithDecision({
 
   try {
     const result = await runMemoryRetrievalAgentDetailed({
-      runLoop: createLoopRunner(adapter, sessionId, logger),
+      runLoop: createLoopRunner(adapter, sessionId, logger, reasoningEffort),
       memoryRetriever: {
         retrieve: (query, options) =>
           memoryRetriever.retrieve(query, {

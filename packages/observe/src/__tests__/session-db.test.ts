@@ -52,7 +52,11 @@ describe('SessionDB', () => {
   })
 
   test('saveSession + getSession round-trip', () => {
-    const data = makeSessionData({ id: 'sess_roundtrip', tags: ['test', 'unit'] })
+    const data = makeSessionData({
+      id: 'sess_roundtrip',
+      tags: ['test', 'unit'],
+      reasoningEffort: 'high',
+    })
     db.saveSession(data, '{"name":"zero"}')
 
     const row = db.getSession('sess_roundtrip')
@@ -62,6 +66,7 @@ describe('SessionDB', () => {
     expect(savedRow.status).toBe('active')
     expect(savedRow.currentModel).toBe('gpt-5.3-codex-medium')
     expect(savedRow.tags).toEqual(['test', 'unit'])
+    expect(savedRow.reasoningEffort).toBe('high')
     expect(savedRow.modelHistory).toHaveLength(1)
     expect(savedRow.modelHistory[0].model).toBe('gpt-5.3-codex-medium')
     expect(savedRow.agentConfigJson).toBe('{"name":"zero"}')

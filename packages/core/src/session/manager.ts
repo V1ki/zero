@@ -191,6 +191,7 @@ export class SessionManager {
         ...entry,
         model: this.modelRouter.normalizeModelReference(entry.model) ?? entry.model,
       })),
+      reasoningEffort: row.reasoningEffort,
     }
   }
 
@@ -390,6 +391,7 @@ export class SessionManager {
         source: row.source,
         status: row.status,
         currentModel: row.currentModel,
+        reasoningEffort: row.reasoningEffort,
         modelHistory: row.modelHistory,
         summary: row.summary,
         tags: row.tags,

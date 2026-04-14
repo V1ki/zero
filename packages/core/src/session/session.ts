@@ -16,6 +16,7 @@ import type {
   ChannelCapabilities,
   CompressionResult,
   Message,
+  ReasoningEffort,
   SecretFilter,
   Session as SessionData,
   SessionSource,
@@ -79,6 +80,11 @@ export interface HandleMessageOptions {
   images?: Array<{ mediaType: string; data: string }>
 }
 
+interface ReasoningEffortUpdateResult {
+  changed: boolean
+  message: string
+}
+
 interface SnapshotContext {
   model: string
   systemPrompt: string
@@ -136,6 +142,7 @@ export class Session {
       source,
       status: 'active',
       currentModel: currentModel ? modelRouter.getModelLabel(currentModel) : 'unknown',
+      reasoningEffort: undefined,
       modelHistory: [
         {
           model: currentModel ? modelRouter.getModelLabel(currentModel) : 'unknown',
@@ -641,6 +648,7 @@ export class Session {
       tools,
       maxContext: currentModel?.modelConfig.maxContext,
       maxOutput: currentModel?.modelConfig.maxOutput,
+      reasoningEffort: this.data.reasoningEffort,
     }
 
     // Push messages to session in real-time so getMessages() reflects in-progress state
@@ -738,6 +746,7 @@ export class Session {
     const memories = await retrieveMemoriesWithDecision({
       adapter: resolved.adapter,
       sessionId: this.data.id,
+      reasoningEffort: this.data.reasoningEffort,
       memoryRetriever: this.deps.memoryRetriever,
       identitySummary: this.deps.identityMemory ?? '',
       userMessage,
@@ -844,6 +853,38 @@ export class Session {
       .map((model) => `${model.providerName}/${model.modelName}`)
   }
 
+  getReasoningEffort(): ReasoningEffort | undefined {
+    return this.data.reasoningEffort
+  }
+
+  setReasoningEffort(effort?: ReasoningEffort): ReasoningEffortUpdateResult {
+    if (this.data.reasoningEffort === effort) {
+      return {
+        changed: false,
+        message: effort
+          ? `Thinking effort already set to ${effort} for this session.`
+          : 'Thinking effort already using provider default for this session.',
+      }
+    }
+
+    this.data.reasoningEffort = effort
+    this.data.updatedAt = now()
+    this.persistState()
+
+    this.deps.bus?.emit('session:update', {
+      sessionId: this.data.id,
+      event: 'reasoning_effort_changed',
+      reasoningEffort: effort ?? null,
+    })
+
+    return {
+      changed: true,
+      message: effort
+        ? `Thinking effort set to ${effort} for this session.`
+        : 'Thinking effort reset to provider default for this session.',
+    }
+  }
+
   private reinitializeAgent(): void {
     if (!this.agent || !this.lastAgentConfig) return
     this.initAgent(this.lastAgentConfig)
@@ -938,6 +979,7 @@ export class Session {
         ...data,
         currentModel: normalizedCurrentModel,
         modelHistory: normalizedHistory,
+        reasoningEffort: data.reasoningEffort,
       },
       messages,
       modelRouter,
