@@ -223,10 +223,12 @@ export class AnthropicAdapter implements ProviderAdapter {
 
   private convertMessages(req: CompletionRequest): Anthropic.MessageParam[] {
     const raw: Anthropic.MessageParam[] = []
+    const pairedCallIds = this.collectPairedToolCallIds(req)
 
     for (const msg of req.messages) {
       if (msg.role === 'user') {
         const parts: Anthropic.ContentBlockParam[] = []
+        const hadOriginalContent = msg.content.length > 0
         for (const block of msg.content) {
           if (block.type === 'text') {
             parts.push({ type: 'text', text: block.text })
@@ -240,6 +242,7 @@ export class AnthropicAdapter implements ProviderAdapter {
               },
             })
           } else if (block.type === 'tool_result') {
+            if (!pairedCallIds.has(block.toolUseId)) continue
             parts.push({
               type: 'tool_result',
               tool_use_id: this.sanitizeToolId(block.toolUseId),
@@ -248,13 +251,17 @@ export class AnthropicAdapter implements ProviderAdapter {
             })
           }
         }
-        raw.push({ role: 'user', content: parts })
+        if (parts.length > 0 || !hadOriginalContent) {
+          raw.push({ role: 'user', content: parts })
+        }
       } else if (msg.role === 'assistant') {
         const parts: Anthropic.ContentBlockParam[] = []
+        const hadOriginalContent = msg.content.length > 0
         for (const block of msg.content) {
           if (block.type === 'text') {
             parts.push({ type: 'text', text: block.text })
           } else if (block.type === 'tool_use') {
+            if (!pairedCallIds.has(block.id)) continue
             parts.push({
               type: 'tool_use',
               id: this.sanitizeToolId(block.id),
@@ -263,7 +270,9 @@ export class AnthropicAdapter implements ProviderAdapter {
             })
           }
         }
-        raw.push({ role: 'assistant', content: parts })
+        if (parts.length > 0 || !hadOriginalContent) {
+          raw.push({ role: 'assistant', content: parts })
+        }
       }
     }
 
@@ -281,6 +290,33 @@ export class AnthropicAdapter implements ProviderAdapter {
     }
 
     return messages
+  }
+
+  /**
+   * Keep only tool calls that have a matching tool result in history.
+   * This avoids replaying interrupted tool turns back into Anthropic.
+   */
+  private collectPairedToolCallIds(req: CompletionRequest): Set<string> {
+    const toolUseIds = new Set<string>()
+    const toolResultIds = new Set<string>()
+
+    for (const msg of req.messages) {
+      for (const block of msg.content) {
+        if (block.type === 'tool_use') {
+          toolUseIds.add(block.id)
+        } else if (block.type === 'tool_result') {
+          toolResultIds.add(block.toolUseId)
+        }
+      }
+    }
+
+    const paired = new Set<string>()
+    for (const id of toolUseIds) {
+      if (toolResultIds.has(id)) {
+        paired.add(id)
+      }
+    }
+    return paired
   }
 
   private convertTools(tools: CompletionRequest['tools']): Anthropic.Tool[] | undefined {

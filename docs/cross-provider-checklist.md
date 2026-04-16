@@ -165,7 +165,7 @@
   - 中断经常发生在 tool_use 发出后、tool_result 返回前，或者 queued user message 插入中间。
   - 如果切换模型后直接重放原始历史，可能破坏 Anthropic 要求的相邻关系，也可能让 OpenAI 家族误重放函数调用。
 - 当前代码现状
-  - OpenAI Chat / Responses 已通过 paired-call 过滤避免重放 dangling tool call。
+  - Anthropic / OpenAI Chat / Responses 都会只序列化成对的 tool_use/tool_result，避免重放 dangling tool call。
   - `mergeInterleavedQueuedMessages()` 专门处理 queued message 打断 tool_use -> tool_result 的情况。
   - `prepareConversationHistory()` 会进一步对老旧 tool_result 做渐进压缩，但不会生成新的 provider-specific repair。
   - model 层目前没有“半完成 assistant text + reasoning + tool call” 的复原抽象，只能依赖 unified message 的现有字段。
@@ -202,7 +202,7 @@
 | --- | --- | --- |
 | message/history 结构一致性 | 已覆盖 | `cross-provider-switch.test.ts` 已覆盖 text/tool_use/tool_result 基础互转；本次新增 `cross-provider-coverage.test.ts` 覆盖 text+image 保留。 |
 | system prompt / instructions 注入差异 | 部分覆盖 | 之前仅单 adapter 零散覆盖；本次补了 Anthropic OAuth、OpenAI Chat system、ChatGPT instructions，但真实 API 切换后的端到端验证仍有限。 |
-| tool call / tool result 配对与 dangling state | 已覆盖 | 原有 `openai-chat.test.ts`、`openai-resp.test.ts` 覆盖 paired filtering；本次补了跨 provider 下“保留文本、丢弃 dangling tool_use”。 |
+| tool call / tool result 配对与 dangling state | 已覆盖 | `anthropic`、`openai-chat.test.ts`、`openai-resp.test.ts` 都覆盖 paired filtering；本次补了跨 provider 下“保留文本、丢弃 dangling tool_use”。 |
 | reasoning/thinking 内容继承 | 部分覆盖 | 单 adapter 提取 reasoning 已有测试；但 unified history 无 reasoning block，跨 provider 继承本身尚无实现，也无端到端覆盖。 |
 | stop reason / turn completion 语义 | 部分覆盖 | Anthropic 映射已有；OpenAI Chat/Responses completion 逻辑有覆盖，但跨 provider / 流式 done 语义覆盖仍不全面。 |
 | streaming event 聚合一致性 | 已覆盖 | 原有 Anthropic/OpenAI Chat/ChatGPT SSE 覆盖；本次补了标准 OpenAI Responses 流式 tool call 聚合，并修复实现。 |

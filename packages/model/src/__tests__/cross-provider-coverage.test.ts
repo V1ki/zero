@@ -213,6 +213,33 @@ describe('Cross-provider system prompt and instructions fidelity', () => {
 })
 
 describe('Cross-provider dangling tool state and tool_result normalization', () => {
+  test('Anthropic drops dangling tool_use while preserving assistant text', () => {
+    const adapter = createAnthropicAdapter()
+    const danglingId = `toolu_${generateId()}`
+    const messages = [
+      makeTextMessage('user', 'Start'),
+      makeMessage('assistant', [
+        { type: 'text', text: 'I started a tool call but it was interrupted.' },
+        { type: 'tool_use', id: danglingId, name: 'read_file', input: { path: 'AGENTS.md' } },
+      ]),
+      makeTextMessage('user', 'Continue without reusing the interrupted call.'),
+    ]
+
+    const converted = getAnthropicHarness(adapter).convertMessages(makeRequest(messages))
+
+    expect(converted).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'Start' }] },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'I started a tool call but it was interrupted.' }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'Continue without reusing the interrupted call.' }],
+      },
+    ])
+  })
+
   test('OpenAI Chat drops dangling tool_use while preserving assistant text', () => {
     const adapter = createOpenAIChatAdapter()
     const danglingId = `call_${generateId()}`
