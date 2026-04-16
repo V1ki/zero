@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 
 const ALGORITHM = 'aes-256-gcm'
 const IV_LENGTH = 16
@@ -56,6 +56,7 @@ export class Vault {
   private secrets: SecretStore = {}
   private filePath: string
   private masterKey: Buffer
+  private fileVersion: string | null = null
 
   constructor(masterKey: Buffer, filePath: string) {
     this.masterKey = masterKey
@@ -67,6 +68,7 @@ export class Vault {
    */
   load(): void {
     this.secrets = decryptSecrets(this.masterKey, this.filePath)
+    this.fileVersion = this.readFileVersion()
   }
 
   /**
@@ -74,12 +76,14 @@ export class Vault {
    */
   save(): void {
     encryptSecrets(this.secrets, this.masterKey, this.filePath)
+    this.fileVersion = this.readFileVersion()
   }
 
   /**
    * Get a secret value by key.
    */
   get(key: string): string | undefined {
+    this.syncFromDiskIfChanged()
     return this.secrets[key]
   }
 
@@ -87,6 +91,7 @@ export class Vault {
    * Set a secret value.
    */
   set(key: string, value: string): void {
+    this.syncFromDiskIfChanged()
     this.secrets[key] = value
     this.save()
   }
@@ -95,6 +100,7 @@ export class Vault {
    * Delete a secret.
    */
   delete(key: string): void {
+    this.syncFromDiskIfChanged()
     delete this.secrets[key]
     this.save()
   }
@@ -103,6 +109,7 @@ export class Vault {
    * List all secret keys (values are never exposed).
    */
   keys(): string[] {
+    this.syncFromDiskIfChanged()
     return Object.keys(this.secrets)
   }
 
@@ -110,6 +117,26 @@ export class Vault {
    * Get all secret key-value pairs (for SecretFilter initialization).
    */
   entries(): [string, string][] {
+    this.syncFromDiskIfChanged()
     return Object.entries(this.secrets)
+  }
+
+  private syncFromDiskIfChanged(): void {
+    const nextVersion = this.readFileVersion()
+    if (nextVersion === this.fileVersion) {
+      return
+    }
+
+    this.secrets = nextVersion ? decryptSecrets(this.masterKey, this.filePath) : {}
+    this.fileVersion = nextVersion
+  }
+
+  private readFileVersion(): string | null {
+    if (!existsSync(this.filePath)) {
+      return null
+    }
+
+    const stats = statSync(this.filePath)
+    return `${stats.mtimeMs}:${stats.size}`
   }
 }

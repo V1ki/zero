@@ -138,6 +138,8 @@ bun zero logs out -f
 - 依赖 macOS Keychain 中的主密钥
 - 若还没有主密钥，命令会失败
 - 值会写入 `.zero/secrets.enc`，不要手改该文件
+- 运行中的 Zero server 会在后续读取或写入 vault 时自动检测磁盘更新，外部 `secret set` 不会再被下一次 OAuth refresh 静默覆盖
+- 如果某个组件在启动时就把凭据解析成了长期存活的运行时对象，补写全新 secret 后仍建议重启一次 `bun zero restart`
 
 示例：
 

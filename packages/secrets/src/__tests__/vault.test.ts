@@ -73,4 +73,43 @@ describe('Vault class', () => {
     vault2.load()
     expect(vault2.get('persistent_key')).toBe('persistent_value')
   })
+
+  test('refreshes reads when another process writes to disk', () => {
+    mkdirSync(testDir, { recursive: true })
+    const filePath = join(testDir, 'vault-refresh-read.enc')
+
+    const serverVault = new Vault(testKey, filePath)
+    serverVault.set('oauth_key', 'oauth-value')
+
+    const externalVault = new Vault(testKey, filePath)
+    externalVault.load()
+    externalVault.set('dingtalk_key', 'dingtalk-value')
+
+    expect(serverVault.get('dingtalk_key')).toBe('dingtalk-value')
+    expect(serverVault.keys().sort()).toEqual(['dingtalk_key', 'oauth_key'])
+  })
+
+  test('preserves newer disk secrets when a stale instance writes', () => {
+    mkdirSync(testDir, { recursive: true })
+    const filePath = join(testDir, 'vault-preserve-external.enc')
+
+    const bootstrapVault = new Vault(testKey, filePath)
+    bootstrapVault.set('oauth_key', 'oauth-initial')
+
+    const serverVault = new Vault(testKey, filePath)
+    serverVault.load()
+
+    const externalVault = new Vault(testKey, filePath)
+    externalVault.load()
+    externalVault.set('dingtalk_key', 'dingtalk-value')
+
+    serverVault.set('oauth_key', 'oauth-refreshed')
+
+    const reloadedVault = new Vault(testKey, filePath)
+    reloadedVault.load()
+    expect(reloadedVault.entries().sort()).toEqual([
+      ['dingtalk_key', 'dingtalk-value'],
+      ['oauth_key', 'oauth-refreshed'],
+    ])
+  })
 })
