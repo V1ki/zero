@@ -336,10 +336,10 @@ describe('Session Persistence', () => {
           readSessionSnapshots() {
             return []
           },
-          syncSessionActiveState(sessionId, status) {
+          syncSessionActiveState(sessionId: string, status: SessionData['status']) {
             syncCalls.push({ sessionId, status })
           },
-        } as ObservabilityStore,
+        } as unknown as ObservabilityStore,
         bus: {
           emit(_event, payload: { sessionId: string; status: string }) {
             eventCalls.push(payload)
