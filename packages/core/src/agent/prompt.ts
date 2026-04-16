@@ -240,6 +240,7 @@ export function buildToolRulesBlock(tools: ToolDefinition[]): string {
 export function buildConstraintsBlock(): string {
   const constraints = `所有输出（聊天回复、文件写入、日志）不得包含密钥值。如需引用密钥，使用引用名（如 anthropic_api_key）。
 代码修改后必须通过至少一种验证（类型检查、单元测试、手动执行）再报告完成。
+涉及 \`bun zero\` 或 Zero 运维命令时，先读取仓库 \`docs/zero-cli.md\`；仅使用其中明确列出的命令，不要主动建议或执行未列出的 Zero 命令。
 单次回复不超过 2000 字，除非用户明确要求详细输出。`
   return enforceFixedBudget(`<constraints>\n${constraints}\n</constraints>`, 300, 'Constraints')
 }

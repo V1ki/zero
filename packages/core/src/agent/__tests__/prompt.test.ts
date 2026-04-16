@@ -172,6 +172,8 @@ describe('buildConstraintsBlock', () => {
     expect(result).toContain('</constraints>')
     expect(result).toContain('不得包含密钥值')
     expect(result).toContain('代码修改后必须通过至少一种验证')
+    expect(result).toContain('docs/zero-cli.md')
+    expect(result).toContain('不要主动建议或执行未列出的 Zero 命令')
     expect(result).toContain('单次回复不超过 2000 字')
   })
 })
@@ -595,6 +597,7 @@ describe('buildSystemPrompt', () => {
       expect(result).toContain('<tool_rules>')
       expect(result).toContain('<memory_policy>')
       expect(result).toContain('<constraints>')
+      expect(result).toContain('docs/zero-cli.md')
       // Full-only sections should be absent
       expect(result).not.toContain('<rules>')
       expect(result).not.toContain('<safety>')

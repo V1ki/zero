@@ -211,7 +211,6 @@ bun zero <command>
 Useful commands:
 
 ```bash
-bun zero init [api-key]
 bun zero start
 bun zero restart
 bun zero status
@@ -219,16 +218,17 @@ bun zero logs all --follow
 bun zero secret set <key> <value>
 bun zero secret list
 bun zero secret delete <key>
-bun zero provider login chatgpt
-bun zero provider login claude
 bun zero launchctl install
 bun zero launchctl status
 bun zero launchctl uninstall
 ```
 
+Agent-visible Zero command guidance lives in `docs/zero-cli.md`. Treat that file as the
+controlled command surface for `bun zero ...` operations.
+
 ChatGPT OAuth sessions now refresh on demand before expiry and after a single 401 recovery attempt. Re-run `bun zero provider login chatgpt` only if the refresh token has been invalidated or expired.
 
-Claude browser OAuth is also available through the same managed callback flow. ZeRo OS stores the Claude credential in the vault as session JSON, resolves the access token at runtime, and refreshes the session automatically until the refresh grant is no longer valid. Re-run `bun zero provider login claude` only when Claude asks for re-authentication.
+Claude browser OAuth is also available through the same managed callback flow. ZeRo OS stores the Claude credential in the vault as session JSON, resolves the access token at runtime, and refreshes the session automatically until the refresh grant is no longer valid. Re-run `bun zero provider login anthropic` only when Claude asks for re-authentication.
 
 ## Development Workflow
 

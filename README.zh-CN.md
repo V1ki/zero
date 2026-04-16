@@ -203,7 +203,6 @@ bun zero <command>
 常用命令：
 
 ```bash
-bun zero init [api-key]
 bun zero start
 bun zero restart
 bun zero status
@@ -211,16 +210,17 @@ bun zero logs all --follow
 bun zero secret set <key> <value>
 bun zero secret list
 bun zero secret delete <key>
-bun zero provider login chatgpt
-bun zero provider login claude
 bun zero launchctl install
 bun zero launchctl status
 bun zero launchctl uninstall
 ```
 
+Agent 可见的 Zero 命令手册统一放在 `docs/zero-cli.md`。涉及 `bun zero ...`
+操作时，以这份文档作为受控暴露面。
+
 ChatGPT OAuth 会在请求前按需自动续期，并在首次 401 后尝试刷新一次再重试。只有当 refresh token 已失效或被撤销时，才需要重新执行 `bun zero provider login chatgpt`。
 
-Claude browser OAuth 也已经接入到同一套 managed callback 流程中。ZeRo OS 会把 Claude 凭证以 session JSON 的形式保存到 vault，运行时再解析出 access token，并在 refresh grant 仍有效时自动续期。只有当 Claude 明确要求重新认证时，才需要重新执行 `bun zero provider login claude`。
+Claude browser OAuth 也已经接入到同一套 managed callback 流程中。ZeRo OS 会把 Claude 凭证以 session JSON 的形式保存到 vault，运行时再解析出 access token，并在 refresh grant 仍有效时自动续期。只有当 Claude 明确要求重新认证时，才需要重新执行 `bun zero provider login anthropic`。
 
 ## 开发工作流
 
