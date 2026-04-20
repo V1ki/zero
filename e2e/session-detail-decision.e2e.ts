@@ -20,6 +20,18 @@ test.describe('Session Detail Decisions', () => {
           createdAt: '2026-03-24T10:00:00.000Z',
         },
         {
+          id: 'msg_memory_inject',
+          role: 'user',
+          messageType: 'notification',
+          content: [
+            {
+              type: 'text',
+              text: '<memory_inject layer="layer2"><memory_hint>retry with browser</memory_hint></memory_inject>',
+            },
+          ],
+          createdAt: '2026-03-24T10:00:01.500Z',
+        },
+        {
           id: 'msg_assistant_1',
           role: 'assistant',
           messageType: 'message',
@@ -28,6 +40,38 @@ test.describe('Session Detail Decisions', () => {
           ],
           model: 'openai-codex/gpt-5.4-medium',
           createdAt: '2026-03-24T10:00:02.000Z',
+        },
+        {
+          id: 'msg_subagent_spawn',
+          role: 'assistant',
+          messageType: 'message',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'call_spawn_worker',
+              name: 'spawn_agent',
+              input: {
+                label: 'Worker 1',
+                role: 'explorer',
+                instruction: 'Trace the missing task closure signal and verify the classifier path',
+              },
+            },
+          ],
+          model: 'openai-codex/gpt-5.4-medium',
+          createdAt: '2026-03-24T10:00:02.050Z',
+        },
+        {
+          id: 'msg_subagent_spawn_result',
+          role: 'user',
+          messageType: 'message',
+          content: [
+            {
+              type: 'tool_result',
+              toolUseId: 'call_spawn_worker',
+              content: '{"agentId":"agent_worker_1"}',
+            },
+          ],
+          createdAt: '2026-03-24T10:00:02.080Z',
         },
       ],
       tags: [],
@@ -77,12 +121,22 @@ test.describe('Session Detail Decisions', () => {
           id: 'decision_memory',
           ts: '2026-03-24T10:00:01.200Z',
           decisionType: 'memory_retrieval',
-          outcome: 'retrieve',
+          outcome: 'injected',
           detail: {
             need: true,
+            layer: 'layer2',
+            turnIndex: 1,
             queries: ['deployment rollback', 'service recovery'],
             searchResultCount: 3,
             selectedMemoryIds: ['mem_1', 'mem_2'],
+            selectedMemories: [
+              {
+                id: 'mem_1',
+                type: 'runbook',
+                title: 'Deployment rollback runbook',
+                score: 0.91,
+              },
+            ],
           },
           sourceKind: 'llm_request',
           durationMs: 280,
@@ -128,7 +182,187 @@ test.describe('Session Detail Decisions', () => {
           await route.fulfill({
             status: 200,
             contentType: 'application/json',
-            body: JSON.stringify({ traces: [] }),
+            body: JSON.stringify({
+              traces: [
+                {
+                  id: 'span_root',
+                  sessionId,
+                  name: 'agent.run:main',
+                  startTime: '2026-03-24T10:00:00.000Z',
+                  status: 'success',
+                  children: [
+                    {
+                      id: 'span_sub_agent',
+                      parentId: 'span_root',
+                      sessionId,
+                      name: 'sub_agent',
+                      startTime: '2026-03-24T10:00:02.100Z',
+                      endTime: '2026-03-24T10:00:03.380Z',
+                      durationMs: 1280,
+                      status: 'success',
+                      metadata: { agentId: 'agent_worker_1' },
+                      data: {
+                        kind: 'sub_agent',
+                        agentId: 'agent_worker_1',
+                        output: 'Found the classifier branch in the trace tree.',
+                        durationMs: 1280,
+                      },
+                      children: [
+                        {
+                          id: 'span_sub_turn',
+                          parentId: 'span_sub_agent',
+                          sessionId,
+                          name: 'turn:worker-1',
+                          startTime: '2026-03-24T10:00:02.150Z',
+                          endTime: '2026-03-24T10:00:02.220Z',
+                          durationMs: 70,
+                          status: 'success',
+                          data: {
+                            goal: 'Trace the missing task closure signal and verify the classifier path',
+                          },
+                          children: [
+                            {
+                              id: 'span_sub_request',
+                              parentId: 'span_sub_turn',
+                              sessionId,
+                              name: 'llm_request',
+                              startTime: '2026-03-24T10:00:02.220Z',
+                              endTime: '2026-03-24T10:00:02.480Z',
+                              durationMs: 260,
+                              status: 'success',
+                              metadata: {
+                                model: 'openai-codex/gpt-5.4-medium',
+                              },
+                              data: {
+                                responseSummary: 'Read the routes file, then grep for the classifier path.',
+                                stopReason: 'tool_use',
+                                inputTokens: 420,
+                                outputTokens: 73,
+                              },
+                              children: [
+                                {
+                                  id: 'span_child_read',
+                                  parentId: 'span_sub_request',
+                                  sessionId,
+                                  name: 'tool:read',
+                                  startTime: '2026-03-24T10:00:02.250Z',
+                                  endTime: '2026-03-24T10:00:02.380Z',
+                                  durationMs: 130,
+                                  status: 'success',
+                                  metadata: {
+                                    toolUseId: 'child_call_1',
+                                    input: { path: 'apps/web/src/api/routes.ts' },
+                                    outputSummary: 'Read routes file',
+                                  },
+                                  children: [],
+                                },
+                                {
+                                  id: 'span_child_bash',
+                                  parentId: 'span_sub_request',
+                                  sessionId,
+                                  name: 'tool:bash',
+                                  startTime: '2026-03-24T10:00:02.500Z',
+                                  endTime: '2026-03-24T10:00:02.920Z',
+                                  durationMs: 420,
+                                  status: 'success',
+                                  metadata: {
+                                    toolUseId: 'child_call_2',
+                                    input: { command: 'rg task_closure apps/web/src' },
+                                    result:
+                                      'apps/web/src/app/components/session/ContextPanel.tsx:734',
+                                  },
+                                  children: [],
+                                },
+                              ],
+                            },
+                          ],
+                        },
+                        {
+                          id: 'span_child_reason',
+                          parentId: 'span_sub_agent',
+                          sessionId,
+                          name: 'agent.reason',
+                          startTime: '2026-03-24T10:00:02.390Z',
+                          endTime: '2026-03-24T10:00:02.480Z',
+                          durationMs: 90,
+                          status: 'success',
+                          data: {
+                            note: 'planning next trace hop',
+                          },
+                          children: [],
+                        },
+                      ],
+                    },
+                    {
+                      id: 'span_memory_nudge',
+                      parentId: 'span_root',
+                      sessionId,
+                      name: 'memory_nudge',
+                      startTime: '2026-03-24T10:00:03.600Z',
+                      endTime: '2026-03-24T10:00:03.920Z',
+                      durationMs: 320,
+                      status: 'success',
+                      metadata: {
+                        purpose: 'memory_nudge',
+                        iteration: 3,
+                        memoryWritten: true,
+                      },
+                      data: {
+                        memoryNudge: {
+                          prompt:
+                            '<system_notice>当前阶段已完成。请快速评估：本次交互是否产生了值得跨会话保留的信息？</system_notice>',
+                          iteration: 3,
+                        },
+                      },
+                      children: [
+                        {
+                          id: 'span_memory_search',
+                          parentId: 'span_memory_nudge',
+                          sessionId,
+                          name: 'tool:memory_search',
+                          startTime: '2026-03-24T10:00:03.640Z',
+                          endTime: '2026-03-24T10:00:03.680Z',
+                          durationMs: 40,
+                          status: 'success',
+                          metadata: {
+                            toolUseId: 'memory_search_call_1',
+                            toolName: 'memory_search',
+                            input: { query: 'deployment rollback runbook' },
+                            outputSummary: 'Found 2 relevant memories',
+                            result: 'Found 2 relevant memories',
+                          },
+                          children: [],
+                        },
+                        {
+                          id: 'span_memory_write',
+                          parentId: 'span_memory_nudge',
+                          sessionId,
+                          name: 'tool:memory',
+                          startTime: '2026-03-24T10:00:03.760Z',
+                          endTime: '2026-03-24T10:00:03.810Z',
+                          durationMs: 50,
+                          status: 'success',
+                          metadata: {
+                            toolUseId: 'memory_write_call_1',
+                            toolName: 'memory',
+                            input: {
+                              action: 'create',
+                              type: 'runbook',
+                              title: 'Deployment rollback checklist',
+                              content:
+                                '1. Pause rollout\\n2. Restore previous image\\n3. Verify recovery',
+                            },
+                            outputSummary: 'Created memory: Deployment rollback checklist',
+                            result: 'Created memory: Deployment rollback checklist',
+                          },
+                          children: [],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            }),
           })
           return
         }
@@ -146,7 +380,31 @@ test.describe('Session Detail Decisions', () => {
           await route.fulfill({
             status: 200,
             contentType: 'application/json',
-            body: JSON.stringify({ requests: [] }),
+            body: JSON.stringify({
+              requests: [
+                {
+                  id: 'req_memory',
+                  turnIndex: 1,
+                  model: 'openai-codex/gpt-5.4-medium',
+                  provider: 'openai',
+                  userPrompt: 'Check the deployment state and explain the result',
+                  response: 'I retrieved the rollback memory and injected it.',
+                  stopReason: 'end_turn',
+                  toolUseCount: 0,
+                  tokens: { input: 12, output: 7 },
+                  cost: 0.0021,
+                  ts: '2026-03-24T10:00:01.550Z',
+                  memoryInjections: [
+                    {
+                      layer: 'layer2',
+                      source: 'memory_hint',
+                      formattedText:
+                        '<memory_inject layer="layer2"><memory_hint>retry with browser</memory_hint></memory_inject>',
+                    },
+                  ],
+                },
+              ],
+            }),
           })
           return
         }
@@ -156,6 +414,20 @@ test.describe('Session Detail Decisions', () => {
             status: 200,
             contentType: 'application/json',
             body: JSON.stringify(decisionResponse),
+          })
+          return
+        }
+
+        if (pathname === '/api/memory/runbook/mem_1') {
+          await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              memory: {
+                content:
+                  '# Deployment rollback runbook\n\n1. Pause rollout\n2. Restore previous image\n3. Verify service recovery',
+              },
+            }),
           })
           return
         }
@@ -172,6 +444,24 @@ test.describe('Session Detail Decisions', () => {
         await route.continue()
       },
     )
+
+    await page.route('**/api/memory/runbook/mem_1', async (route) => {
+      if (route.request().method() !== 'GET') {
+        await route.continue()
+        return
+      }
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          memory: {
+            content:
+              '# Deployment rollback runbook\n\n1. Pause rollout\n2. Restore previous image\n3. Verify service recovery',
+          },
+        }),
+      })
+    })
   }
 
   test('renders decision cards, opens detail view, and shows persisted decisions in Trace tab', async ({
@@ -183,7 +473,7 @@ test.describe('Session Detail Decisions', () => {
     await expect(page.locator('main')).toContainText(sessionId)
 
     const compressionCard = page.locator('[data-decision-id="decision_compress"]')
-    const memoryCard = page.locator('[data-decision-id="decision_memory"]')
+    const memoryCard = page.locator('[data-memory-retrieval-id="decision_memory"]')
     const toolCard = page.locator('[data-decision-id="decision_tools"]')
 
     await expect(compressionCard).toBeVisible()
@@ -207,7 +497,10 @@ test.describe('Session Detail Decisions', () => {
     await expect(page.locator('main')).not.toContainText('Decision Detail')
     await expect(page.locator('main')).toContainText('Summary')
 
-    await page.getByRole('button', { name: 'Trace' }).click()
+    await page
+      .locator('[data-testid="session-context-panel"]')
+      .getByRole('button', { name: 'Trace' })
+      .click()
     await expect(page.locator('main')).toContainText('DECISIONS')
     await expect(page.locator('main')).toContainText('context_compression')
     await expect(page.locator('main')).toContainText('tool_selection')
@@ -221,13 +514,20 @@ test.describe('Session Detail Decisions', () => {
     await mockDecisionSession(page)
     await page.goto(`/sessions/${sessionId}`)
 
-    const memoryCard = page.locator('[data-decision-id="decision_memory"]')
+    const memoryCard = page.locator('[data-memory-retrieval-id="decision_memory"]')
     await expect(memoryCard).toBeVisible()
 
     await memoryCard.click()
-    await expect(page.locator('main')).toContainText('Decision Detail')
+    await expect(memoryCard).toContainText('Injected Context')
+    await memoryCard.getByRole('button', { name: /Expand \(\d+ chars\)/ }).first().click()
+    await expect(memoryCard).toContainText('retry with browser')
+    await expect(page.locator('main')).not.toContainText('Runtime Warning')
     await expect(page.locator('main')).toContainText('memory_retrieval')
     await expect(page.locator('main')).toContainText('deployment rollback')
+    await expect(page.locator('main')).toContainText('memory_nudge')
+    await expect(page.locator('[data-testid="session-context-panel"]')).not.toContainText(
+      'Memory Retrieval Detail',
+    )
 
     const layout = await page.evaluate(() => ({
       canScrollX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
@@ -235,12 +535,91 @@ test.describe('Session Detail Decisions', () => {
     expect(layout.canScrollX).toBe(false)
 
     const decisionCardBox = await memoryCard.boundingBox()
-    const detailHeaderBox = await page.getByText('Decision Detail').boundingBox()
+    const expandedInjectionBox = await memoryCard.getByText('Injected Context').boundingBox()
 
     expect(decisionCardBox).not.toBeNull()
-    expect(detailHeaderBox).not.toBeNull()
-    expect(detailHeaderBox?.y ?? 0).toBeGreaterThan(
-      (decisionCardBox?.y ?? 0) + (decisionCardBox?.height ?? 0),
+    expect(expandedInjectionBox).not.toBeNull()
+    expect((expandedInjectionBox?.y ?? 0) - (decisionCardBox?.y ?? 0)).toBeGreaterThan(40)
+  })
+
+  test('opens selected memory from inline retrieval card without switching the sidebar', async ({
+    page,
+  }) => {
+    await mockDecisionSession(page)
+    await page.goto(`/sessions/${sessionId}`)
+
+    const memoryCard = page.locator('[data-memory-retrieval-id="decision_memory"]')
+    await memoryCard.locator('button').first().click()
+
+    const memoryEntry = memoryCard.locator('[data-memory-entry-id="mem_1"]')
+    await expect(memoryEntry).toBeVisible()
+    await memoryEntry.click()
+
+    const dialog = page.getByTestId('memory-detail-dialog')
+    await expect(dialog).toBeVisible()
+    await expect(dialog).toContainText('Deployment rollback runbook')
+    await expect(dialog).toContainText('Pause rollout')
+    await expect(page.locator('[data-testid="session-context-panel"]')).not.toContainText(
+      'Memory Retrieval Detail',
+    )
+
+    await dialog.getByRole('button', { name: 'Close' }).click()
+    await expect(dialog).toBeHidden()
+  })
+
+  test('expands memory nudge cards and shows nested memory tool details inline', async ({
+    page,
+  }) => {
+    await mockDecisionSession(page)
+    await page.goto(`/sessions/${sessionId}`)
+
+    const memoryNudge = page.locator('[data-memory-nudge-id="memory-nudge-trace-span_memory_nudge"]')
+    await expect(memoryNudge).toBeVisible()
+    await expect(memoryNudge).toContainText('wrote memory')
+
+    await memoryNudge.locator('button').first().click()
+    await expect(memoryNudge).toContainText('Memory Activity')
+    await expect(memoryNudge).toContainText('deployment rollback runbook')
+    await expect(memoryNudge).toContainText('Deployment rollback checklist')
+
+    const memoryWriteRow = memoryNudge.locator('[data-memory-nudge-tool-id="memory_write_call_1"]')
+    await expect(memoryWriteRow).toBeVisible()
+    await memoryWriteRow.click()
+
+    await expect(memoryNudge).toContainText('Memory Target')
+    await expect(memoryNudge).toContainText('Created memory: Deployment rollback checklist')
+    await expect(memoryNudge).toContainText('1. Pause rollout')
+    await expect(page.locator('[data-testid="session-context-panel"]')).not.toContainText(
+      'Memory Retrieval Detail',
+    )
+    await expect(page.locator('[data-testid="session-context-panel"]')).not.toContainText(
+      'Sub-agent Detail',
+    )
+  })
+
+  test('renders sub-agent process inline and keeps the sidebar on summary', async ({ page }) => {
+    await mockDecisionSession(page)
+    await page.goto(`/sessions/${sessionId}`)
+
+    const subAgentCard = page.locator('[data-sub-agent-id="agent_worker_1"]')
+    await expect(subAgentCard).toBeVisible()
+
+    await subAgentCard.getByRole('button', { expanded: false }).click()
+    await expect(subAgentCard).toContainText('Mission')
+    await expect(subAgentCard).toContainText('Activity')
+    await expect(subAgentCard).toContainText('Internal Timeline')
+    await expect(subAgentCard).toContainText('turn:worker-1')
+    await expect(subAgentCard).toContainText('llm_request')
+    await expect(subAgentCard).toContainText('agent.reason')
+    await expect(subAgentCard).toContainText('Final Output')
+    await expect(subAgentCard).toContainText('Found the classifier branch in the trace tree.')
+
+    const childReadTool = subAgentCard.getByRole('button', { name: /read tool:read/i })
+    await expect(childReadTool).toBeVisible()
+    await childReadTool.click()
+    await expect(subAgentCard).toContainText('apps/web/src/api/routes.ts')
+    await expect(page.locator('[data-testid="session-context-panel"]')).not.toContainText(
+      'Sub-agent Detail',
     )
   })
 })

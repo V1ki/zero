@@ -182,11 +182,14 @@ test.describe('Session Detail Task Closure', () => {
     await expect(page.locator('main')).toContainText('Task Closure Detail')
 
     await toolCallCard.click()
-    await expect(page.locator('main')).toContainText('Tool Detail')
-    await expect(page.locator('main')).not.toContainText('Task Closure Detail')
+    await expect(page.locator('main')).toContainText('Task Closure Detail')
+    await expect(page.locator('main')).not.toContainText('Tool Detail')
+    await expect(toolCallCard).toContainText('File Snapshot')
+    await expect(toolCallCard).toContainText('demo file contents')
 
     await page.keyboard.press('Escape')
     await expect(page.locator('main')).not.toContainText('Tool Detail')
+    await expect(page.locator('main')).not.toContainText('Task Closure Detail')
     await expect(page.locator('main')).toContainText('Summary')
   })
 

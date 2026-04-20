@@ -6,6 +6,13 @@ import {
   asString,
   flattenTraceSpans,
 } from '@zero-os/observe'
+import {
+  type MemoryInjectionEntry,
+  isMemoryHintText,
+  isMemoryInjectText,
+  pickMemoryInjectionPreview,
+  readMemoryRetrievalDetail,
+} from './memory-retrieval'
 
 export interface ContentBlock {
   type: string
@@ -73,6 +80,17 @@ export interface DecisionTimelineItem {
   createdAt: string
 }
 
+export interface SystemEventTimelineItem {
+  type: 'system-event'
+  variant: 'warning' | 'info'
+  text: string
+  createdAt: string
+  label?: string
+  chips?: string[]
+  source?: 'notification' | 'control' | 'trace'
+  controlKind?: string
+}
+
 export interface TraceSpan {
   id: string
   parentId?: string
@@ -86,6 +104,21 @@ export interface TraceSpan {
   data?: Record<string, unknown>
   metadata?: Record<string, unknown>
   children: TraceSpan[]
+}
+
+interface TimelineToolResult {
+  toolUseId: string
+  content?: string
+  isError?: boolean
+  outputSummary?: string
+}
+
+interface TimelineRequestLike {
+  id?: string
+  turnIndex?: number
+  ts?: string
+  memoryInjections?: MemoryInjectionEntry[]
+  toolResults?: TimelineToolResult[]
 }
 
 interface TaskClosureTraceDetails {
@@ -106,8 +139,37 @@ export interface SubAgentChildToolCall {
   name: string
   input: Record<string, unknown>
   result?: string
+  summary?: string
   isError?: boolean
   durationMs?: number
+}
+
+export interface MemoryNudgeTimelineItem {
+  type: 'memory-nudge'
+  id: string
+  prompt: string
+  createdAt: string
+  source: 'control' | 'trace'
+  iteration?: number
+  memoryWritten?: boolean
+  durationMs?: number
+  status: TraceSpan['status']
+  relatedToolCalls: SubAgentChildToolCall[]
+}
+
+export interface SubAgentTimelineItem {
+  type: 'sub-agent'
+  agentId: string
+  label: string
+  role?: string
+  instruction: string
+  status: 'running' | 'waiting' | 'completed' | 'errored' | 'closed'
+  output?: string
+  durationMs?: number
+  spawnToolCallId: string
+  childToolCalls: SubAgentChildToolCall[]
+  traceSpan?: TraceSpan | null
+  createdAt: string
 }
 
 export type TimelineItem =
@@ -125,66 +187,54 @@ export type TimelineItem =
       name: string
       input: Record<string, unknown>
       result?: string
+      summary?: string
       isError?: boolean
       durationMs?: number
       createdAt: string
     }
   | DecisionTimelineItem
   | TaskClosureTimelineItem
-  | { type: 'system-event'; variant: 'warning' | 'info'; text: string; createdAt: string }
-  | {
-      type: 'sub-agent'
-      agentId: string
-      label: string
-      role?: string
-      instruction: string
-      status: 'running' | 'waiting' | 'completed' | 'errored' | 'closed'
-      output?: string
-      durationMs?: number
-      spawnToolCallId: string
-      childToolCalls: SubAgentChildToolCall[]
-      createdAt: string
-    }
+  | SystemEventTimelineItem
+  | MemoryNudgeTimelineItem
+  | SubAgentTimelineItem
 
 export function buildTimeline(
   messages: Message[],
   traces: TraceSpan[] = [],
   taskClosureEvents: SessionTaskClosureEvent[] = [],
   decisions: SessionDecisionEvent[] = [],
+  llmRequests: TimelineRequestLike[] = [],
 ): TimelineItem[] {
   const items: TimelineItem[] = []
-  const toolResults = new Map<string, { content: string; isError: boolean }>()
+  const toolResults = buildToolResultMap(messages, traces, llmRequests)
   const toolDurations = extractToolDurations(traces)
+  const matchedMemoryInjectionTexts = buildMatchedMemoryInjectionTextSet(decisions, llmRequests)
   const handledSubAgentIds = new Set<string>()
   const spawnToolCallIds = new Set<string>()
-
-  for (const msg of messages) {
-    if (msg.role === 'user' || msg.role === 'system') {
-      for (const block of msg.content) {
-        if (block.type === 'tool_result') {
-          toolResults.set(block.toolUseId as string, {
-            content: block.content as string,
-            isError: !!block.isError,
-          })
-        }
-      }
-    }
-  }
+  const memoryNudgeSpans = collectMemoryNudgeSpans(traces)
+  const usedMemoryNudgeSpanIds = new Set<string>()
+  const nestedMemoryNudgeToolUseIds = buildMemoryNudgeToolUseIdSet(
+    memoryNudgeSpans,
+    traces,
+  )
 
   for (const msg of messages) {
     if (msg.messageType === 'control') {
-      const text = msg.content
-        .filter((b) => b.type === 'text')
-        .map((b) => b.text as string)
-        .join('\n')
-      if (text) {
-        items.push({
-          type: 'system-event',
-          variant: 'info',
-          text,
-          createdAt: msg.createdAt,
-        })
+      if (msg.controlKind === 'memory_nudge') {
+        items.push(
+          buildMemoryNudgeTimelineItemFromMessage(
+            msg,
+            memoryNudgeSpans,
+            usedMemoryNudgeSpanIds,
+            traces,
+            toolResults,
+            toolDurations,
+          ),
+        )
+        continue
       }
+      const event = buildControlSystemEvent(msg)
+      if (event) items.push(event)
       continue
     }
 
@@ -194,15 +244,22 @@ export function buildTimeline(
         .map((b) => b.text as string)
         .join('\n')
       if (text) {
+        if (isMemoryInjectText(text) && matchedMemoryInjectionTexts.has(text.trim())) {
+          continue
+        }
+        const isMemoryNotice = isMemoryInjectText(text) || isMemoryHintText(text)
         const isWarning =
-          text.toLowerCase().includes('timeout') ||
-          text.toLowerCase().includes('error') ||
-          text.toLowerCase().includes('degrad')
-        const event: Extract<TimelineItem, { type: 'system-event' }> = {
+          !isMemoryNotice &&
+          (text.toLowerCase().includes('timeout') ||
+            text.toLowerCase().includes('error') ||
+            text.toLowerCase().includes('degrad'))
+        const event: SystemEventTimelineItem = {
           type: 'system-event',
           variant: isWarning ? 'warning' : 'info',
           text,
           createdAt: msg.createdAt,
+          label: isMemoryNotice ? 'Memory Notice' : undefined,
+          source: 'notification',
         }
         items.push(event)
       }
@@ -256,6 +313,10 @@ export function buildTimeline(
           const toolInput = (block.input as Record<string, unknown>) ?? {}
           const result = toolResults.get(toolId)
 
+          if (nestedMemoryNudgeToolUseIds.has(toolId)) {
+            continue
+          }
+
           if (toolName === 'spawn_agent') {
             // Try multiple sources for agentId:
             // 1. Parse from tool result JSON (may be artifactized to non-JSON)
@@ -286,8 +347,9 @@ export function buildTimeline(
             const instruction = (toolInput.instruction as string | undefined) ?? ''
 
             const waitInfo = findWaitAgentResult(messages, agentId, toolResults)
-            const traceInfo = getSubAgentTraceInfo(traces, agentId, toolId)
-            const childToolCalls = extractSubAgentChildToolCalls(traces, agentId, toolId)
+            const traceSpan = findSubAgentSpan(traces, agentId, toolId)
+            const traceInfo = getSubAgentTraceInfoFromSpan(traceSpan)
+            const childToolCalls = extractSubAgentChildToolCallsFromSpan(traceSpan)
 
             handledSubAgentIds.add(agentId)
             spawnToolCallIds.add(toolId)
@@ -314,6 +376,7 @@ export function buildTimeline(
               durationMs: resolvedDurationMs,
               spawnToolCallId: toolId,
               childToolCalls,
+              traceSpan,
               createdAt: msg.createdAt,
             })
           } else if (
@@ -330,6 +393,7 @@ export function buildTimeline(
               name: toolName,
               input: toolInput,
               result: result?.content,
+              summary: result?.summary,
               isError: result?.isError,
               durationMs: toolDurations.get(toolId),
               createdAt: msg.createdAt,
@@ -342,7 +406,344 @@ export function buildTimeline(
 
   items.push(...buildDecisionEvents(decisions))
   items.push(...buildTaskClosureEvents(traces, taskClosureEvents))
+  items.push(
+    ...buildTraceMemoryNudgeItems(
+      memoryNudgeSpans,
+      usedMemoryNudgeSpanIds,
+      traces,
+      toolResults,
+      toolDurations,
+    ),
+  )
   return items.sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+}
+
+function buildControlSystemEvent(message: Message): SystemEventTimelineItem | null {
+  const text = message.content
+    .filter((block) => block.type === 'text')
+    .map((block) => block.text as string)
+    .join('\n')
+    .trim()
+
+  if (!text) return null
+
+  const controlKind = message.controlKind
+  const sanitizedText = sanitizeSystemEventText(text)
+  const chips = controlKind ? buildControlEventChips(controlKind) : undefined
+
+  return {
+    type: 'system-event',
+    variant: controlKind === 'empty_retry' ? 'warning' : 'info',
+    text: summarizeControlEventText(controlKind, sanitizedText),
+    createdAt: message.createdAt,
+    label: controlKind ? formatControlKindLabel(controlKind) : 'System Event',
+    chips,
+    source: 'control',
+    controlKind,
+  }
+}
+
+function collectMemoryNudgeSpans(traces: TraceSpan[]): TraceSpan[] {
+  return flattenTraceSpans(traces)
+    .filter((span) => span.name === 'memory_nudge')
+    .sort(compareTimelineSpans)
+}
+
+function buildMemoryNudgeTimelineItemFromMessage(
+  message: Message,
+  memoryNudgeSpans: TraceSpan[],
+  usedMemoryNudgeSpanIds: Set<string>,
+  traces: TraceSpan[],
+  toolResults: Map<string, { content?: string; summary?: string; isError?: boolean }>,
+  toolDurations: Map<string, number>,
+): MemoryNudgeTimelineItem {
+  const text = message.content
+    .filter((block) => block.type === 'text')
+    .map((block) => block.text as string)
+    .join('\n')
+    .trim()
+  const matchedSpan = findMatchingMemoryNudgeSpan(message.createdAt, memoryNudgeSpans, usedMemoryNudgeSpanIds)
+
+  if (matchedSpan) {
+    usedMemoryNudgeSpanIds.add(matchedSpan.id)
+  }
+
+  return buildMemoryNudgeTimelineItem({
+    id: `memory-nudge-msg-${message.id}`,
+    prompt: sanitizeSystemEventText(extractMemoryNudgePrompt(matchedSpan) ?? text),
+    createdAt: message.createdAt,
+    source: 'control',
+    iteration: extractMemoryNudgeIteration(matchedSpan),
+    memoryWritten: matchedSpan ? asBoolean(matchedSpan.metadata?.memoryWritten) : undefined,
+    durationMs: matchedSpan?.durationMs,
+    status: matchedSpan?.status ?? 'success',
+    relatedToolCalls: matchedSpan
+      ? extractMemoryNudgeRelatedToolCalls(matchedSpan, traces, toolResults, toolDurations)
+      : [],
+  })
+}
+
+function buildTraceMemoryNudgeItems(
+  memoryNudgeSpans: TraceSpan[],
+  usedMemoryNudgeSpanIds: Set<string>,
+  traces: TraceSpan[],
+  toolResults: Map<string, { content?: string; summary?: string; isError?: boolean }>,
+  toolDurations: Map<string, number>,
+): MemoryNudgeTimelineItem[] {
+  return memoryNudgeSpans
+    .filter((span) => !usedMemoryNudgeSpanIds.has(span.id))
+    .map((span) => {
+      usedMemoryNudgeSpanIds.add(span.id)
+      return mapMemoryNudgeTraceSpan(span, traces, toolResults, toolDurations)
+    })
+}
+
+function mapMemoryNudgeTraceSpan(
+  span: TraceSpan,
+  traces: TraceSpan[],
+  toolResults: Map<string, { content?: string; summary?: string; isError?: boolean }>,
+  toolDurations: Map<string, number>,
+): MemoryNudgeTimelineItem {
+  const metadata = span.metadata ?? {}
+  return buildMemoryNudgeTimelineItem({
+    id: `memory-nudge-trace-${span.id}`,
+    prompt: sanitizeSystemEventText(
+      extractMemoryNudgePrompt(span) ?? '当前阶段已完成。请快速评估是否需要保留跨会话记忆。',
+    ),
+    createdAt: span.endTime ?? span.startTime,
+    source: 'trace',
+    iteration: extractMemoryNudgeIteration(span),
+    memoryWritten: asBoolean(metadata.memoryWritten),
+    durationMs: span.durationMs,
+    status: span.status,
+    relatedToolCalls: extractMemoryNudgeRelatedToolCalls(span, traces, toolResults, toolDurations),
+  })
+}
+
+function buildMemoryNudgeTimelineItem(
+  item: Omit<MemoryNudgeTimelineItem, 'type'>,
+): MemoryNudgeTimelineItem {
+  return {
+    type: 'memory-nudge',
+    ...item,
+  }
+}
+
+function extractMemoryNudgePrompt(span: TraceSpan | null | undefined): string | undefined {
+  if (!span) return undefined
+  const metadata = span.metadata ?? {}
+  const nudge = asRecord(span.data?.memoryNudge)
+  return (
+    asString(nudge?.prompt) ??
+    asString(span.data?.prompt) ??
+    asString(metadata.prompt) ??
+    undefined
+  )
+}
+
+function extractMemoryNudgeIteration(span: TraceSpan | null | undefined): number | undefined {
+  if (!span) return undefined
+  const metadata = span.metadata ?? {}
+  const nudge = asRecord(span.data?.memoryNudge)
+  return numberFromUnknown(metadata.iteration) ?? numberFromUnknown(nudge?.iteration)
+}
+
+function findMatchingMemoryNudgeSpan(
+  createdAt: string,
+  memoryNudgeSpans: TraceSpan[],
+  usedMemoryNudgeSpanIds: Set<string>,
+): TraceSpan | null {
+  const targetTime = Date.parse(createdAt)
+  const candidates = memoryNudgeSpans.filter((span) => !usedMemoryNudgeSpanIds.has(span.id))
+  if (candidates.length === 0) return null
+
+  if (!Number.isFinite(targetTime)) {
+    return candidates[0] ?? null
+  }
+
+  let bestMatch: TraceSpan | null = null
+  let bestDistance = Number.POSITIVE_INFINITY
+
+  for (const span of candidates) {
+    const referenceTime = Date.parse(span.endTime ?? span.startTime)
+    if (!Number.isFinite(referenceTime)) {
+      if (!bestMatch) bestMatch = span
+      continue
+    }
+
+    const distance = Math.abs(referenceTime - targetTime)
+    if (distance < bestDistance) {
+      bestDistance = distance
+      bestMatch = span
+    }
+  }
+
+  return bestMatch
+}
+
+function buildMemoryNudgeToolUseIdSet(
+  memoryNudgeSpans: TraceSpan[],
+  traces: TraceSpan[],
+): Set<string> {
+  const toolUseIds = new Set<string>()
+
+  for (const span of memoryNudgeSpans) {
+    for (const toolSpan of findMemoryToolSpansForNudge(span, traces)) {
+      const toolUseId = asString(toolSpan.metadata?.toolUseId)
+      if (toolUseId) toolUseIds.add(toolUseId)
+    }
+  }
+
+  return toolUseIds
+}
+
+function extractMemoryNudgeRelatedToolCalls(
+  memoryNudgeSpan: TraceSpan,
+  traces: TraceSpan[],
+  toolResults: Map<string, { content?: string; summary?: string; isError?: boolean }>,
+  toolDurations: Map<string, number>,
+): SubAgentChildToolCall[] {
+  const relatedToolCalls: SubAgentChildToolCall[] = []
+  const seenToolIds = new Set<string>()
+
+  for (const toolSpan of findMemoryToolSpansForNudge(memoryNudgeSpan, traces)) {
+    const metadata = toolSpan.metadata ?? {}
+    const toolUseId = asString(metadata.toolUseId) ?? toolSpan.id
+    if (seenToolIds.has(toolUseId)) continue
+    seenToolIds.add(toolUseId)
+
+    const toolName = asString(metadata.toolName) ?? toolSpan.name.replace(/^tool:/, '') ?? 'memory'
+    const toolResult = toolResults.get(toolUseId)
+    relatedToolCalls.push({
+      id: toolUseId,
+      name: toolName,
+      input: asRecord(metadata.input) ?? {},
+      result: toolResult?.content ?? normalizeTraceToolResult(toolName, asString(metadata.result)),
+      summary:
+        toolResult?.summary ??
+        normalizeToolText(
+          asString(metadata.outputSummary) ?? asString(toolSpan.data?.outputSummary),
+        ),
+      isError: toolResult?.isError === true || toolSpan.status === 'error',
+      durationMs: toolDurations.get(toolUseId) ?? toolSpan.durationMs,
+    })
+  }
+
+  return relatedToolCalls
+}
+
+function findMemoryToolSpansForNudge(memoryNudgeSpan: TraceSpan, traces: TraceSpan[]): TraceSpan[] {
+  const startTime = Date.parse(memoryNudgeSpan.startTime)
+  const endTime = Date.parse(memoryNudgeSpan.endTime ?? memoryNudgeSpan.startTime)
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) return []
+
+  return flattenTraceSpans(traces)
+    .filter((span) => span.sessionId === memoryNudgeSpan.sessionId)
+    .filter((span) => span.id !== memoryNudgeSpan.id)
+    .filter(isMemoryToolSpan)
+    .filter((span) => doesSpanOverlapWindow(span, startTime, endTime))
+    .sort(compareTimelineSpans)
+}
+
+function isMemoryToolSpan(span: TraceSpan): boolean {
+  if (!span.name.startsWith('tool:')) return false
+  const toolName = (asString(span.metadata?.toolName) ?? span.name.replace(/^tool:/, '')).toLowerCase()
+  return toolName === 'memory' || toolName === 'memory_search' || toolName === 'memory_read'
+}
+
+function doesSpanOverlapWindow(span: TraceSpan, windowStart: number, windowEnd: number): boolean {
+  const spanStart = Date.parse(span.startTime)
+  const spanEnd = Date.parse(span.endTime ?? span.startTime)
+  if (!Number.isFinite(spanStart) || !Number.isFinite(spanEnd)) return false
+  return spanStart <= windowEnd && spanEnd >= windowStart
+}
+
+function compareTimelineSpans(left: TraceSpan, right: TraceSpan): number {
+  const leftTime = Date.parse(left.startTime)
+  const rightTime = Date.parse(right.startTime)
+
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+    return leftTime - rightTime
+  }
+
+  return left.name.localeCompare(right.name)
+}
+
+function summarizeControlEventText(controlKind: string | undefined, text: string): string {
+  if (!text) return 'Internal control step'
+
+  if (controlKind === 'memory_nudge') {
+    const questionSentence = text.match(/^(.+?[?？])/u)?.[1]?.trim()
+    if (questionSentence) return questionSentence
+    const firstSentence = text.match(/^[^!?。！？]+[!?。！？]?/u)?.[0]?.trim()
+    return firstSentence || truncateSystemEventText(text)
+  }
+
+  return truncateSystemEventText(text)
+}
+
+function sanitizeSystemEventText(text: string): string {
+  return text
+    .replace(/<\/?system_notice>/g, ' ')
+    .replace(/<\/?memory_hint>/g, ' ')
+    .replace(/<\/?memory_inject[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function truncateSystemEventText(text: string): string {
+  return text.length <= 200 ? text : `${text.slice(0, 197).trimEnd()}...`
+}
+
+function formatControlKindLabel(controlKind: string): string {
+  if (controlKind === 'memory_nudge') return 'Memory Nudge'
+  if (controlKind === 'task_closure') return 'Task Closure Prompt'
+  if (controlKind === 'queued_injection') return 'Queued Injection'
+  if (controlKind === 'empty_retry') return 'Empty Retry'
+  if (controlKind === 'continuation') return 'Continuation'
+
+  return controlKind
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+function buildControlEventChips(controlKind: string): string[] | undefined {
+  if (controlKind === 'memory_nudge') return ['post-turn', 'memory check']
+  if (controlKind === 'queued_injection') return ['queue']
+  if (controlKind === 'task_closure') return ['closure gate']
+  if (controlKind === 'empty_retry') return ['retry']
+  return undefined
+}
+
+function buildMatchedMemoryInjectionTextSet(
+  decisions: SessionDecisionEvent[],
+  llmRequests: TimelineRequestLike[],
+): Set<string> {
+  const matched = new Set<string>()
+
+  for (const decision of filterDisplayableDecisions(decisions)) {
+    if (decision.decisionType !== 'memory_retrieval') continue
+    const detail = readMemoryRetrievalDetail(decision.detail)
+    const preview = pickMemoryInjectionPreview(
+      { outcome: decision.outcome, createdAt: decision.ts },
+      detail,
+      llmRequests.map((request) => ({
+        turnIndex: 'turnIndex' in request ? request.turnIndex : undefined,
+        ts: 'ts' in request && typeof request.ts === 'string' ? request.ts : decision.ts,
+        memoryInjections:
+          'memoryInjections' in request && Array.isArray(request.memoryInjections)
+            ? request.memoryInjections
+            : undefined,
+      })),
+    )
+
+    for (const injection of preview) {
+      matched.add(injection.formattedText.trim())
+    }
+  }
+
+  return matched
 }
 
 function buildTaskClosureEvents(
@@ -485,6 +886,179 @@ function extractToolDurations(traces: TraceSpan[]): Map<string, number> {
   return toolDurations
 }
 
+function buildToolResultMap(
+  messages: Message[],
+  traces: TraceSpan[],
+  llmRequests: TimelineRequestLike[],
+): Map<string, { content?: string; summary?: string; isError?: boolean }> {
+  const toolResults = new Map<string, { content?: string; summary?: string; isError?: boolean }>()
+  const toolNames = buildToolNameMap(messages, traces)
+
+  for (const msg of messages) {
+    if (msg.role !== 'user' && msg.role !== 'system') continue
+    for (const block of msg.content) {
+      if (block.type !== 'tool_result') continue
+      const toolUseId = block.toolUseId as string
+      mergeToolResult(toolResults, toolUseId, toolNames.get(toolUseId) ?? 'generic', {
+        content: asString(block.content),
+        summary: asString(block.outputSummary),
+        isError: block.isError === true,
+      })
+    }
+  }
+
+  for (const request of llmRequests) {
+    for (const result of request.toolResults ?? []) {
+      mergeToolResult(toolResults, result.toolUseId, toolNames.get(result.toolUseId) ?? 'generic', {
+        content: result.content,
+        summary: result.outputSummary,
+        isError: result.isError === true,
+      })
+    }
+  }
+
+  for (const span of flattenTraceSpans(traces)) {
+    if (!span.name.startsWith('tool:')) continue
+    const metadata = span.metadata ?? {}
+    const data = span.data ?? {}
+    const toolUseId = asString(metadata.toolUseId)
+    if (!toolUseId) continue
+
+    const toolName = asString(metadata.toolName) ?? span.name.replace('tool:', '')
+    const traceResult = normalizeTraceToolResult(toolName, asString(metadata.result))
+    const traceSummary = normalizeToolText(
+      asString(metadata.outputSummary) ?? asString(data.outputSummary),
+    )
+
+    mergeToolResult(toolResults, toolUseId, toolName, {
+      content: traceResult,
+      summary: traceSummary,
+      isError: span.status === 'error',
+    })
+  }
+
+  return toolResults
+}
+
+function buildToolNameMap(messages: Message[], traces: TraceSpan[]): Map<string, string> {
+  const toolNames = new Map<string, string>()
+
+  for (const msg of messages) {
+    if (msg.role !== 'assistant') continue
+    for (const block of msg.content) {
+      if (block.type !== 'tool_use') continue
+      if (typeof block.id === 'string' && typeof block.name === 'string') {
+        toolNames.set(block.id, block.name.toLowerCase())
+      }
+    }
+  }
+
+  for (const span of flattenTraceSpans(traces)) {
+    if (!span.name.startsWith('tool:')) continue
+    const toolUseId = asString(span.metadata?.toolUseId)
+    const toolName = asString(span.metadata?.toolName) ?? span.name.replace('tool:', '')
+    if (toolUseId && toolName) {
+      toolNames.set(toolUseId, toolName.toLowerCase())
+    }
+  }
+
+  return toolNames
+}
+
+function mergeToolResult(
+  target: Map<string, { content?: string; summary?: string; isError?: boolean }>,
+  toolUseId: string,
+  toolName: string,
+  incoming: { content?: string; summary?: string; isError?: boolean },
+) {
+  const current = target.get(toolUseId)
+
+  target.set(toolUseId, {
+    content: pickPreferredToolText(toolName, current?.content, incoming.content, 'content'),
+    summary: pickPreferredToolText(
+      toolName,
+      current?.summary,
+      incoming.summary ?? incoming.content,
+      'summary',
+    ),
+    isError: current?.isError === true || incoming.isError === true,
+  })
+}
+
+function pickPreferredToolText(
+  toolName: string,
+  current: string | undefined,
+  incoming: string | undefined,
+  purpose: 'content' | 'summary',
+): string | undefined {
+  const normalizedCurrent = normalizeToolText(current)
+  const normalizedIncoming = normalizeToolText(incoming)
+  if (!normalizedIncoming) return normalizedCurrent
+  if (!normalizedCurrent) return normalizedIncoming
+
+  return scoreToolResultText(toolName, normalizedIncoming, purpose) >
+    scoreToolResultText(toolName, normalizedCurrent, purpose)
+    ? normalizedIncoming
+    : normalizedCurrent
+}
+
+function scoreToolResultText(
+  toolName: string,
+  value: string,
+  purpose: 'content' | 'summary',
+): number {
+  const trimmed = normalizeToolText(value)
+  if (!trimmed) return 0
+  if (isGenericToolStatusText(trimmed)) return purpose === 'summary' ? 1 : 0
+
+  let score = purpose === 'summary' ? 1 : 2
+
+  if (toolName === 'bash' && trimmed.startsWith('Executed:')) {
+    score += purpose === 'summary' ? 1 : 0
+  } else if (trimmed.startsWith('Wrote ') || trimmed.startsWith('Edited ')) {
+    score += 2
+  }
+
+  if (/\[stderr\]/.test(trimmed)) score += 4
+  if (/traceback|error|failed|http \d{3}/i.test(trimmed)) score += 4
+  if (trimmed.includes('\n')) score += 5
+  if (trimmed.length > 200) score += 5
+  else if (trimmed.length > 80) score += 4
+  else if (trimmed.length > 24) score += 3
+  else score += 1
+
+  return score
+}
+
+function normalizeTraceToolResult(toolName: string, value: string | undefined): string | undefined {
+  const text = normalizeToolText(value)
+  if (!text) return undefined
+  if (toolName === 'bash' && text.startsWith('Executed:')) return undefined
+  return text
+}
+
+function normalizeToolText(value: string | undefined): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed ? trimmed : undefined
+}
+
+function isGenericToolStatusText(value: string): boolean {
+  const normalized = value
+    .replace(/^[✓✔]\s*/u, '')
+    .replace(/^[✗✘]\s*/u, '')
+    .trim()
+    .toLowerCase()
+
+  return (
+    normalized === 'success' ||
+    normalized === 'ok' ||
+    normalized === 'done' ||
+    normalized === 'completed' ||
+    normalized === 'passed'
+  )
+}
+
 function getTaskClosureTraceKey(span: TraceSpan): string | null {
   const details = getTaskClosureTraceDetails(span)
   const assistantMessageId = details.assistantMessageId ?? ''
@@ -524,13 +1098,29 @@ export function extractFilesTouched(items: TimelineItem[]): string[] {
   const files = new Set<string>()
   for (const item of items) {
     if (item.type === 'tool-call') {
-      const input = item.input
-      if (input.file_path && typeof input.file_path === 'string') {
-        files.add(input.file_path)
+      const path = getTouchedPath(item.input)
+      if (path) files.add(path)
+    }
+    if (item.type === 'memory-nudge') {
+      for (const childToolCall of item.relatedToolCalls) {
+        const path = getTouchedPath(childToolCall.input)
+        if (path) files.add(path)
+      }
+    }
+    if (item.type === 'sub-agent') {
+      for (const childToolCall of item.childToolCalls) {
+        const path = getTouchedPath(childToolCall.input)
+        if (path) files.add(path)
       }
     }
   }
   return Array.from(files)
+}
+
+function getTouchedPath(input: Record<string, unknown>): string | null {
+  if (typeof input.path === 'string') return input.path
+  if (typeof input.file_path === 'string') return input.file_path
+  return null
 }
 
 export function getTaskClosureTraceDetails(span: TraceSpan): TaskClosureTraceDetails {
@@ -581,6 +1171,10 @@ function resolveClassifierRequest(
 
 function asBoolean(value: unknown): boolean | undefined {
   return typeof value === 'boolean' ? value : undefined
+}
+
+function numberFromUnknown(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
 function asTaskClosureEvent(value: unknown): SessionTaskClosureEvent['event'] | undefined {
@@ -692,7 +1286,7 @@ function findLabelFromTraceSpan(traces: TraceSpan[], toolUseId: string): string 
 function findWaitAgentResult(
   messages: Message[],
   agentId: string,
-  toolResults: Map<string, { content: string; isError: boolean }>,
+  toolResults: Map<string, { content?: string; summary?: string; isError?: boolean }>,
 ): { status: 'waiting' | 'completed' | 'errored' | 'closed'; output?: string; durationMs?: number } | null {
   for (const msg of messages) {
     if (msg.role !== 'assistant') continue
@@ -707,7 +1301,7 @@ function findWaitAgentResult(
       const isMatch = targetId === agentId || ids?.includes(agentId)
       if (!isMatch) continue
       const result = toolResults.get(block.id as string)
-      if (!result) continue
+      if (!result?.content) continue
 
       let status: 'waiting' | 'completed' | 'errored' | 'closed' =
         name === 'close_agent' ? 'closed' : 'completed'
@@ -794,12 +1388,7 @@ function findSubAgentSpan(
   return null
 }
 
-function extractSubAgentChildToolCalls(
-  traces: TraceSpan[],
-  agentId: string,
-  spawnToolCallId?: string,
-): SubAgentChildToolCall[] {
-  const agentSpan = findSubAgentSpan(traces, agentId, spawnToolCallId)
+function extractSubAgentChildToolCallsFromSpan(agentSpan: TraceSpan | null): SubAgentChildToolCall[] {
   if (!agentSpan) return []
 
   const childCalls: SubAgentChildToolCall[] = []
@@ -813,9 +1402,8 @@ function extractSubAgentChildToolCalls(
       input: (meta.input as Record<string, unknown>) ?? {},
       result:
         (meta.result as string) ??
-        (meta.outputSummary as string) ??
-        (data.outputSummary as string) ??
         undefined,
+      summary: (meta.outputSummary as string) ?? (data.outputSummary as string) ?? undefined,
       isError: child.status === 'error' ? true : undefined,
       durationMs: child.durationMs,
     })
@@ -827,28 +1415,23 @@ function extractSubAgentChildToolCalls(
  * Extract the real duration and status from the sub_agent trace span.
  * This is the actual agent execution time, not just the spawn call time.
  */
-function getSubAgentTraceInfo(
-  traces: TraceSpan[],
-  agentId: string,
-  spawnToolCallId?: string,
-): {
+function getSubAgentTraceInfoFromSpan(agentSpan: TraceSpan | null): {
   durationMs?: number
   status?: 'completed' | 'errored' | 'running' | 'closed'
   output?: string
 } | null {
-  const span = findSubAgentSpan(traces, agentId, spawnToolCallId)
-  if (!span) return null
+  if (!agentSpan) return null
 
-  const data = span.data ?? {}
+  const data = agentSpan.data ?? {}
   const status =
-    span.status === 'success'
+    agentSpan.status === 'success'
       ? ('completed' as const)
-      : span.status === 'error'
+      : agentSpan.status === 'error'
         ? ('errored' as const)
         : ('running' as const)
 
   return {
-    durationMs: (data.durationMs as number) ?? span.durationMs ?? undefined,
+    durationMs: (data.durationMs as number) ?? agentSpan.durationMs ?? undefined,
     status,
     output: (data.output as string) ?? (data.outputSummary as string) ?? undefined,
   }

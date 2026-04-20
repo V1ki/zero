@@ -1,6 +1,4 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import type {
   SessionJudgeHistoryResponse,
   SessionJudgeResponse,
@@ -11,6 +9,15 @@ import { toolColors } from '../../lib/colors'
 import { formatCost, formatModelHistory, formatNumber, formatTimeAgo } from '../../lib/format'
 import { CompressionSpanCard } from './CompressionSpanCard'
 import { SubAgentSpanCard } from './SubAgentSpanCard'
+import {
+  type MemoryInjectionEntry,
+  type MemoryRetrievalDetail,
+  type MemoryRetrievalSearchSummary,
+  type MemoryRetrievalTokens,
+  getMemoryRetrievalSearchCount,
+  getMemoryRetrievalSelectedCount,
+  readMemoryRetrievalDetail,
+} from './memory-retrieval'
 import {
   type DecisionTimelineItem,
   type SessionDecisionEvent,
@@ -65,44 +72,6 @@ interface QueuedInjectionEntry {
   messages: QueuedInjectionMessageEntry[]
 }
 
-interface MemoryInjectionEntry {
-  layer: 'layer1' | 'layer2'
-  source: 'retrieved_memories' | 'memory_hint'
-  formattedText: string
-}
-
-interface MemoryRetrievalSearchSummary {
-  query: string
-  resultCount: number
-  topResultTitle?: string
-}
-
-interface MemoryRetrievalSelectedMemory {
-  id: string
-  type: string
-  title: string
-  score?: number
-}
-
-interface MemoryRetrievalTokens {
-  input: number
-  output: number
-}
-
-interface MemoryRetrievalDetail {
-  need?: boolean
-  layer?: string
-  turnIndex?: number
-  queries: string[]
-  searches: MemoryRetrievalSearchSummary[]
-  searchResultCount?: number
-  selectedMemoryIds: string[]
-  selectedMemories: MemoryRetrievalSelectedMemory[]
-  usedFallbackSelection: boolean
-  tokens?: MemoryRetrievalTokens
-  cost?: number
-}
-
 interface LlmRequestEntry {
   id: string
   turnIndex?: number
@@ -146,10 +115,8 @@ interface Props {
   grossAvoidedInputCost?: number
   netSavings?: number
   llmRequests?: LlmRequestEntry[]
-  selectedToolId: string | null
   selectedDecision?: DecisionTimelineItem | null
   selectedTaskClosure?: TaskClosureTimelineItem | null
-  selectedSubAgentId?: string | null
   traces?: TraceSpan[]
   decisions?: SessionDecisionEvent[]
   taskClosureEvents?: SessionTaskClosureEvent[]
@@ -177,7 +144,6 @@ export function ContextPanel({
   grossAvoidedInputCost,
   netSavings,
   llmRequests = [],
-  selectedToolId,
   selectedDecision = null,
   selectedTaskClosure = null,
   traces = [],
@@ -187,6 +153,7 @@ export function ContextPanel({
   onJumpToAssistantMessage,
   onJumpToSubAgentInTimeline,
 }: Props) {
+  const panelClassName = 'card p-4 h-full min-h-0 overflow-y-auto animate-fade-up'
   const [tab, setTab] = useState<'summary' | 'trace'>('summary')
   const [relatedMemory, setRelatedMemory] = useState<MemoryResult[]>([])
   const [judgeHistory, setJudgeHistory] = useState<StoredSessionJudgeEntry[]>([])
@@ -203,8 +170,6 @@ export function ContextPanel({
       .then((res) => setRelatedMemory(res.results ?? []))
       .catch(() => {})
   }, [summary])
-
-  const selectedTool = selectedToolId ? toolCalls.find((t) => t.id === selectedToolId) : null
 
   const toolDist = new Map<string, number>()
   for (const tc of toolCalls) {
@@ -313,61 +278,7 @@ export function ContextPanel({
     }
   }, [judgeLoading, loadJudgeHistory, sessionId])
 
-  if (selectedTool) {
-    return (
-      <div className="card p-4 h-full min-h-0 overflow-y-auto animate-fade-up">
-        <h3 className="text-[13px] font-semibold text-[var(--color-text-primary)] mb-3">
-          Tool Detail
-        </h3>
-        <div className="space-y-3">
-          <div>
-            <span className="text-[10px] font-semibold text-[var(--color-text-disabled)] tracking-wide">
-              TOOL
-            </span>
-            <p
-              className={`text-[13px] font-mono mt-0.5 ${toolColors[selectedTool.name.toLowerCase()] ?? 'text-slate-400'}`}
-            >
-              {selectedTool.name}
-            </p>
-          </div>
-          {selectedTool.durationMs !== undefined && (
-            <div>
-              <span className="text-[10px] font-semibold text-[var(--color-text-disabled)] tracking-wide">
-                DURATION
-              </span>
-              <p className="text-[12px] font-mono mt-0.5 text-[var(--color-text-secondary)]">
-                {formatDuration(selectedTool.durationMs)}
-              </p>
-            </div>
-          )}
-          <div>
-            <span className="text-[10px] font-semibold text-[var(--color-text-disabled)] tracking-wide">
-              INPUT
-            </span>
-            <pre className="text-[11px] font-mono text-[var(--color-text-secondary)] mt-1 whitespace-pre-wrap break-all bg-black/20 rounded p-2 max-h-[320px] overflow-y-auto">
-              {JSON.stringify(selectedTool.input, null, 2)}
-            </pre>
-          </div>
-          {selectedTool.result !== undefined && (
-            <div>
-              <span className="text-[10px] font-semibold text-[var(--color-text-disabled)] tracking-wide">
-                OUTPUT
-              </span>
-              <pre className="text-[11px] font-mono text-[var(--color-text-secondary)] mt-1 whitespace-pre-wrap break-all bg-black/20 rounded p-2 max-h-[400px] overflow-y-auto">
-                {selectedTool.result}
-              </pre>
-            </div>
-          )}
-        </div>
-      </div>
-    )
-  }
-
-  if (selectedDecision) {
-    if (selectedDecision.decisionType === 'memory_retrieval') {
-      return <MemoryRetrievalDetailPanel decision={selectedDecision} llmRequests={llmRequests} />
-    }
-
+  if (selectedDecision && selectedDecision.decisionType !== 'memory_retrieval') {
     return <DecisionDetailPanel decision={selectedDecision} />
   }
 
@@ -381,7 +292,7 @@ export function ContextPanel({
   }
 
   return (
-    <div className="card p-4 h-full min-h-0 overflow-y-auto animate-fade-up">
+    <div data-testid="session-context-panel" className={panelClassName}>
       <div className="flex gap-2 mb-4">
         {(['summary', 'trace'] as const).map((t) => (
           <button
@@ -730,7 +641,10 @@ function TaskClosureDetailPanel({
       : 'text-cyan-400'
 
   return (
-    <div className="card p-4 h-full min-h-0 overflow-y-auto animate-fade-up">
+    <div
+      data-testid="session-context-panel"
+      className="card p-4 h-full min-h-0 overflow-y-auto animate-fade-up"
+    >
       <h3 className="text-[13px] font-semibold text-[var(--color-text-primary)] mb-3">
         Task Closure Detail
       </h3>
@@ -809,289 +723,16 @@ function TaskClosureDetailPanel({
   )
 }
 
-export function MemoryRetrievalDetailPanel({
-  decision,
-  llmRequests = [],
-}: {
-  decision: DecisionTimelineItem
-  llmRequests?: LlmRequestEntry[]
-}) {
-  const detail = readMemoryRetrievalDetail(decision.detail)
-  const [viewingMemory, setViewingMemory] = useState<MemoryRetrievalSelectedMemory | null>(null)
-  const [memoryContent, setMemoryContent] = useState<string | null>(null)
-  const [memoryLoading, setMemoryLoading] = useState(false)
-  const [memoryError, setMemoryError] = useState<string | null>(null)
-  const injectionPreview = useMemo(
-    () => pickMemoryInjectionPreview(decision, detail, llmRequests),
-    [decision, detail, llmRequests],
-  )
-
-  useEffect(() => {
-    if (!viewingMemory) return
-
-    const controller = new AbortController()
-    setMemoryLoading(true)
-    setMemoryContent(null)
-    setMemoryError(null)
-
-    void fetch(`/api/memory/${viewingMemory.type}/${viewingMemory.id}`, {
-      signal: controller.signal,
-    })
-      .then(async (res) => {
-        if (res.status === 404) throw new Error('deleted')
-        if (!res.ok) throw new Error('fetch_failed')
-        return res.json() as Promise<{ memory?: { content?: string } }>
-      })
-      .then((data) => setMemoryContent(data.memory?.content ?? ''))
-      .catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === 'AbortError') return
-        setMemoryError(
-          error instanceof Error && error.message === 'deleted'
-            ? '该记忆已被删除或归档。'
-            : '加载失败。',
-        )
-      })
-      .finally(() => setMemoryLoading(false))
-
-    return () => controller.abort()
-  }, [viewingMemory])
-
-  useEffect(() => {
-    if (!viewingMemory) return
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        setViewingMemory(null)
-      }
-    }
-
-    document.addEventListener('keydown', handleKeyDown)
-    return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [viewingMemory])
-
-  return (
-    <>
-      <div className="card p-4 h-full min-h-0 overflow-y-auto animate-fade-up">
-        <h3 className="text-[13px] font-semibold text-[var(--color-text-primary)] mb-3">
-          Memory Retrieval Detail
-        </h3>
-        <div className="space-y-3">
-          <DetailField label="OUTCOME">
-            <DecisionOutcomeBadge decisionType="memory_retrieval" outcome={decision.outcome} />
-          </DetailField>
-
-          {detail.layer && (
-            <DetailField label="LAYER">
-              <p className="text-[12px] font-mono text-[var(--color-text-secondary)]">
-                {detail.layer}
-              </p>
-            </DetailField>
-          )}
-
-          {detail.queries.length > 0 && (
-            <DetailField label="QUERIES">
-              <div className="flex flex-wrap gap-1.5">
-                {detail.queries.map((query) => (
-                  <code
-                    key={query}
-                    className="rounded bg-black/20 px-2 py-1 text-[11px] text-[var(--color-text-secondary)]"
-                  >
-                    {query}
-                  </code>
-                ))}
-              </div>
-            </DetailField>
-          )}
-
-          {detail.searches.length > 0 && (
-            <DetailField label="SEARCHES">
-              <div className="space-y-2">
-                {detail.searches.map((search, index) => (
-                  <div key={`${search.query}-${index}`} className="rounded bg-black/15 p-2">
-                    <p className="text-[11px] font-mono text-[var(--color-text-secondary)]">
-                      {search.query}
-                    </p>
-                    <p className="mt-1 text-[11px] text-[var(--color-text-muted)]">
-                      {search.resultCount} result{search.resultCount === 1 ? '' : 's'}
-                      {search.topResultTitle ? ` · top: ${search.topResultTitle}` : ''}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </DetailField>
-          )}
-
-          {detail.selectedMemories.length > 0 && (
-            <DetailField label="SELECTED MEMORIES">
-              <div className="space-y-2">
-                {detail.selectedMemories.map((memory) => (
-                  <button
-                    key={memory.id}
-                    type="button"
-                    onClick={() => setViewingMemory(memory)}
-                    className="w-full rounded bg-black/15 p-2 text-left transition-colors hover:bg-black/25"
-                  >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <code className="text-[11px] text-[var(--color-accent)]">{memory.id}</code>
-                      <span className="text-[11px] text-[var(--color-text-secondary)]">
-                        {memory.title}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-[11px] text-[var(--color-text-muted)]">
-                      {memory.type}
-                      {memory.score !== undefined ? ` · score ${memory.score.toFixed(2)}` : ''}
-                    </p>
-                  </button>
-                ))}
-              </div>
-            </DetailField>
-          )}
-
-          {injectionPreview.length > 0 && (
-            <DetailField label="INJECTION PREVIEW">
-              <div className="space-y-3">
-                {injectionPreview.map((memoryInjection, index) => (
-                  <div
-                    key={`${memoryInjection.layer}-${memoryInjection.source}-${index}`}
-                    className="space-y-1"
-                  >
-                    <div className="flex items-center gap-2 text-[10px] text-[var(--color-text-secondary)]">
-                      <span className="rounded bg-white/5 px-1.5 py-0.5">
-                        {memoryInjection.layer}
-                      </span>
-                      <span>{memoryInjection.source}</span>
-                    </div>
-                    <ExpandableTextPanel value={memoryInjection.formattedText} />
-                  </div>
-                ))}
-              </div>
-            </DetailField>
-          )}
-
-          {detail.usedFallbackSelection && (
-            <DetailField label="FALLBACK">
-              <p className="text-[12px] text-amber-300">
-                Agent 输出无法可靠解析，使用了 fallback selection。
-              </p>
-            </DetailField>
-          )}
-
-          <DetailField label="COST">
-            <p className="text-[12px] font-mono text-[var(--color-text-secondary)]">
-              {decision.durationMs !== undefined ? formatDuration(decision.durationMs) : 'n/a'}
-              {' · '}
-              {detail.tokens
-                ? `${detail.tokens.input}+${detail.tokens.output} tokens`
-                : '0+0 tokens'}
-              {' · '}
-              {detail.cost !== undefined ? `$${formatCost(detail.cost)}` : '$0.0000'}
-            </p>
-          </DetailField>
-
-          {decision.rationale && (
-            <DetailField label="AGENT REASONING">
-              <div className="space-y-2">
-                <p className="text-[12px] whitespace-pre-wrap break-words text-[var(--color-text-secondary)]">
-                  {truncateInline(decision.rationale, 180)}
-                </p>
-                <ExpandableTextPanel value={decision.rationale} />
-              </div>
-            </DetailField>
-          )}
-        </div>
-      </div>
-
-      {viewingMemory && (
-        <div
-          className="fixed inset-0 z-[90] flex items-center justify-center overlay-enter"
-          style={{ backgroundColor: 'rgba(0, 0, 0, 0.6)', backdropFilter: 'blur(4px)' }}
-          onClick={(event) => {
-            if (event.target === event.currentTarget) setViewingMemory(null)
-          }}
-        >
-          <div
-            className="card mx-4 w-full max-w-[760px] dialog-enter"
-            style={{
-              background: 'var(--color-float)',
-              boxShadow:
-                '0 8px 40px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06)',
-            }}
-          >
-            <div className="flex items-start justify-between gap-4 border-b border-[var(--color-border)] p-4">
-              <div className="space-y-2">
-                <h4 className="text-[15px] font-semibold text-[var(--color-text-primary)]">
-                  {viewingMemory.title}
-                </h4>
-                <div className="flex flex-wrap items-center gap-2 text-[11px] text-[var(--color-text-secondary)]">
-                  <span className="rounded bg-white/5 px-2 py-1 font-mono">
-                    {viewingMemory.type}
-                  </span>
-                  <code className="text-[var(--color-text-muted)]">{viewingMemory.id}</code>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setViewingMemory(null)}
-                className="rounded border border-[var(--color-border)] px-2.5 py-1 text-[12px] text-[var(--color-text-secondary)] transition-colors hover:bg-white/[0.04]"
-              >
-                Close
-              </button>
-            </div>
-
-            <div className="max-h-[70vh] overflow-y-auto p-4">
-              {memoryLoading && (
-                <p className="text-[13px] text-[var(--color-text-muted)]">Loading...</p>
-              )}
-              {memoryError && <p className="text-[13px] text-red-300">{memoryError}</p>}
-              {!memoryLoading && !memoryError && memoryContent !== null && (
-                <div className="prose prose-invert max-w-none text-[13px] text-[var(--color-text-secondary)]">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{memoryContent}</ReactMarkdown>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-    </>
-  )
-}
-
-function pickMemoryInjectionPreview(
-  decision: DecisionTimelineItem,
-  detail: MemoryRetrievalDetail,
-  llmRequests: LlmRequestEntry[],
-): MemoryInjectionEntry[] {
-  if (decision.outcome !== 'injected' || !detail.layer) return []
-
-  const candidates = llmRequests.filter((request) =>
-    request.memoryInjections?.some((memoryInjection) => memoryInjection.layer === detail.layer),
-  )
-
-  const turnMatched =
-    detail.turnIndex === undefined
-      ? []
-      : candidates.filter((request) => request.turnIndex === detail.turnIndex)
-  const ranked = (turnMatched.length > 0
-    ? turnMatched
-    : candidates.filter((request) => request.ts >= decision.createdAt)
-  ).sort((left, right) => left.ts.localeCompare(right.ts))
-  const matchedRequest = ranked[0]
-
-  return (
-    matchedRequest?.memoryInjections?.filter(
-      (memoryInjection) => memoryInjection.layer === detail.layer,
-    ) ?? []
-  )
-}
-
 function DecisionDetailPanel({
   decision,
 }: {
   decision: DecisionTimelineItem
 }) {
   return (
-    <div className="card p-4 h-full min-h-0 overflow-y-auto animate-fade-up">
+    <div
+      data-testid="session-context-panel"
+      className="card p-4 h-full min-h-0 overflow-y-auto animate-fade-up"
+    >
       <h3 className="text-[13px] font-semibold text-[var(--color-text-primary)] mb-3">
         Decision Detail
       </h3>
@@ -1923,114 +1564,6 @@ function getDecisionOutcomeBadgeClass(
   }
 
   return 'bg-cyan-400/10 text-cyan-200'
-}
-
-function readMemoryRetrievalDetail(detail?: Record<string, unknown>): MemoryRetrievalDetail {
-  const record = detail ?? {}
-
-  return {
-    need: typeof record.need === 'boolean' ? record.need : undefined,
-    layer: typeof record.layer === 'string' ? record.layer : undefined,
-    turnIndex:
-      typeof record.turnIndex === 'number' && Number.isFinite(record.turnIndex)
-        ? record.turnIndex
-        : undefined,
-    queries: toStringArray(record.queries),
-    searches: toMemoryRetrievalSearchSummaries(record.searches),
-    searchResultCount:
-      typeof record.searchResultCount === 'number' && Number.isFinite(record.searchResultCount)
-        ? record.searchResultCount
-        : undefined,
-    selectedMemoryIds: toStringArray(record.selectedMemoryIds),
-    selectedMemories: toMemoryRetrievalSelectedMemories(record.selectedMemories),
-    usedFallbackSelection: record.usedFallbackSelection === true,
-    tokens: toMemoryRetrievalTokens(record.tokens),
-    cost: typeof record.cost === 'number' && Number.isFinite(record.cost) ? record.cost : undefined,
-  }
-}
-
-function toStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return []
-  return value.filter((item): item is string => typeof item === 'string')
-}
-
-function toMemoryRetrievalSearchSummaries(value: unknown): MemoryRetrievalSearchSummary[] {
-  if (!Array.isArray(value)) return []
-
-  return value.flatMap((item) => {
-    if (!item || typeof item !== 'object') return []
-    const summary = item as Record<string, unknown>
-    if (
-      typeof summary.query !== 'string' ||
-      typeof summary.resultCount !== 'number' ||
-      !Number.isFinite(summary.resultCount)
-    ) {
-      return []
-    }
-
-    return [
-      {
-        query: summary.query,
-        resultCount: summary.resultCount,
-        topResultTitle:
-          typeof summary.topResultTitle === 'string' ? summary.topResultTitle : undefined,
-      },
-    ]
-  })
-}
-
-function toMemoryRetrievalSelectedMemories(value: unknown): MemoryRetrievalSelectedMemory[] {
-  if (!Array.isArray(value)) return []
-
-  return value.flatMap((item) => {
-    if (!item || typeof item !== 'object') return []
-    const memory = item as Record<string, unknown>
-    if (
-      typeof memory.id !== 'string' ||
-      typeof memory.type !== 'string' ||
-      typeof memory.title !== 'string'
-    ) {
-      return []
-    }
-
-    return [
-      {
-        id: memory.id,
-        type: memory.type,
-        title: memory.title,
-        score:
-          typeof memory.score === 'number' && Number.isFinite(memory.score)
-            ? memory.score
-            : undefined,
-      },
-    ]
-  })
-}
-
-function toMemoryRetrievalTokens(value: unknown): MemoryRetrievalTokens | undefined {
-  if (!value || typeof value !== 'object') return undefined
-  const tokens = value as Record<string, unknown>
-  const input =
-    typeof tokens.input === 'number' && Number.isFinite(tokens.input) ? tokens.input : undefined
-  const output =
-    typeof tokens.output === 'number' && Number.isFinite(tokens.output) ? tokens.output : undefined
-
-  if (input === undefined && output === undefined) return undefined
-
-  return {
-    input: input ?? 0,
-    output: output ?? 0,
-  }
-}
-
-function getMemoryRetrievalSearchCount(detail: MemoryRetrievalDetail): number {
-  return detail.searches.length > 0 ? detail.searches.length : detail.queries.length
-}
-
-function getMemoryRetrievalSelectedCount(detail: MemoryRetrievalDetail): number {
-  return detail.selectedMemories.length > 0
-    ? detail.selectedMemories.length
-    : detail.selectedMemoryIds.length
 }
 
 function StatusBadge({ status }: { status: TraceSpan['status'] }) {

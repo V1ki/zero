@@ -1,11 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
-import {
-  ContextPanel,
-  MemoryRetrievalDetailPanel,
-  PersistedDecisionCard,
-  TraceSummaryCard,
-} from '../ContextPanel'
+import { ContextPanel, PersistedDecisionCard, TraceSummaryCard } from '../ContextPanel'
 
 describe('TraceSummaryCard', () => {
   test('renders classifier request details from trace data before metadata fallback', () => {
@@ -58,14 +53,13 @@ describe('TraceSummaryCard', () => {
         toolCalls={[]}
         filesTouched={[]}
         totalTokens={0}
-        selectedToolId={null}
       />,
     )
 
     expect(html).toContain('h-full min-h-0 overflow-y-auto')
   })
 
-  test('keeps selected tool detail scrollable', () => {
+  test('keeps summary visible without rendering tool detail panels in the sidebar', () => {
     const html = renderToStaticMarkup(
       <ContextPanel
         modelHistory={[]}
@@ -80,14 +74,13 @@ describe('TraceSummaryCard', () => {
         ]}
         filesTouched={[]}
         totalTokens={0}
-        selectedToolId="tool_1"
       />,
     )
 
     expect(html).toContain('h-full min-h-0 overflow-y-auto')
-    expect(html).toContain('max-h-[320px] overflow-y-auto')
-    expect(html).toContain('DURATION')
-    expect(html).toContain('1.3s')
+    expect(html).toContain('TRACE EVAL')
+    expect(html).not.toContain('Tool Detail')
+    expect(html).not.toContain('echo test')
   })
 
   test('renders selected task closure detail with classifier metadata', () => {
@@ -97,7 +90,6 @@ describe('TraceSummaryCard', () => {
         toolCalls={[]}
         filesTouched={[]}
         totalTokens={0}
-        selectedToolId={null}
         selectedTaskClosure={{
           type: 'task-closure',
           id: 'tc-sess-0',
@@ -138,7 +130,6 @@ describe('TraceSummaryCard', () => {
         toolCalls={[]}
         filesTouched={[]}
         totalTokens={0}
-        selectedToolId={null}
         selectedDecision={{
           type: 'decision',
           id: 'decision_1',
@@ -174,71 +165,6 @@ describe('TraceSummaryCard', () => {
     expect(html).toContain('&quot;currentTokens&quot;: 12000')
     expect(html).toContain('DETAIL')
     expect(html).toContain('&quot;selectedTools&quot;')
-  })
-
-  test('renders memory retrieval detail with searches, selections, fallback, and reasoning', () => {
-    const html = renderToStaticMarkup(
-      <MemoryRetrievalDetailPanel
-        decision={{
-          type: 'decision',
-          id: 'decision_memory_1',
-          decisionType: 'memory_retrieval',
-          outcome: 'injected',
-          sourceKind: 'llm_request',
-          rationale:
-            'Need the rollback memory for grounding.\n{"result":[{"id":"mem_1","reason":"matches rollback request"}]}',
-          detail: {
-            layer: 'layer2',
-            queries: ['deployment rollback runbook'],
-            searches: [
-              {
-                query: 'deployment rollback runbook',
-                resultCount: 2,
-                topResultTitle: 'Deploy rollback runbook',
-              },
-            ],
-            selectedMemories: [
-              {
-                id: 'mem_1',
-                type: 'runbook',
-                title: 'Deploy rollback runbook',
-                score: 0.92,
-              },
-            ],
-            usedFallbackSelection: true,
-            tokens: {
-              input: 14,
-              output: 9,
-            },
-            cost: 0.0042,
-          },
-          durationMs: 850,
-          createdAt: '2026-03-08T00:00:02.000Z',
-        }}
-      />,
-    )
-
-    expect(html).toContain('Memory Retrieval Detail')
-    expect(html).toContain('OUTCOME')
-    expect(html).toContain('injected')
-    expect(html).toContain('LAYER')
-    expect(html).toContain('layer2')
-    expect(html).toContain('QUERIES')
-    expect(html).toContain('deployment rollback runbook')
-    expect(html).toContain('SEARCHES')
-    expect(html).toContain('2 results · top: Deploy rollback runbook')
-    expect(html).toContain('SELECTED MEMORIES')
-    expect(html).toContain('type="button"')
-    expect(html).toContain('mem_1')
-    expect(html).toContain('Deploy rollback runbook')
-    expect(html).toContain('score 0.92')
-    expect(html).toContain('FALLBACK')
-    expect(html).toContain('fallback selection')
-    expect(html).toContain('COST')
-    expect(html).toContain('850ms · 14+9 tokens · $0.0042')
-    expect(html).toContain('AGENT REASONING')
-    expect(html).toContain('Need the rollback memory for grounding.')
-    expect(html).toContain('Expand')
   })
 
   test('renders memory retrieval decision cards with outcome states and layer tag', () => {
@@ -283,7 +209,7 @@ describe('TraceSummaryCard', () => {
     expect(html).toContain('&quot;browser login&quot;')
   })
 
-  test('keeps tool detail priority over selected task closure detail', () => {
+  test('keeps task closure detail priority when a tool is expanded inline', () => {
     const html = renderToStaticMarkup(
       <ContextPanel
         modelHistory={[]}
@@ -297,7 +223,6 @@ describe('TraceSummaryCard', () => {
         ]}
         filesTouched={[]}
         totalTokens={0}
-        selectedToolId="tool_1"
         selectedTaskClosure={{
           type: 'task-closure',
           id: 'tc-sess-0',
@@ -309,8 +234,8 @@ describe('TraceSummaryCard', () => {
       />,
     )
 
-    expect(html).toContain('Tool Detail')
-    expect(html).not.toContain('Task Closure Detail')
+    expect(html).toContain('Task Closure Detail')
+    expect(html).not.toContain('Tool Detail')
   })
 
   test('renders cache summary and savings fields', () => {
@@ -329,7 +254,6 @@ describe('TraceSummaryCard', () => {
         cacheWriteCost={0.01}
         grossAvoidedInputCost={0.08}
         netSavings={0.07}
-        selectedToolId={null}
       />,
     )
 
@@ -373,7 +297,6 @@ describe('TraceSummaryCard', () => {
             },
           },
         ]}
-        selectedToolId={null}
       />,
     )
 
@@ -423,7 +346,6 @@ describe('TraceSummaryCard', () => {
             },
           },
         ]}
-        selectedToolId={null}
       />,
     )
 
@@ -471,7 +393,6 @@ describe('TraceSummaryCard', () => {
             ],
           },
         ]}
-        selectedToolId={null}
       />,
     )
 
@@ -507,7 +428,6 @@ describe('TraceSummaryCard', () => {
             ts: '2026-03-08T00:00:01.000Z',
           },
         ]}
-        selectedToolId={null}
       />,
     )
 
@@ -515,15 +435,15 @@ describe('TraceSummaryCard', () => {
     expect(html).not.toContain('Queued injection:')
   })
 
-  test('renders the matching injection preview for a selected memory retrieval decision', () => {
+  test('keeps the summary panel active when memory retrieval is selected inline', () => {
     const html = renderToStaticMarkup(
       <ContextPanel
         sessionId="sess_1"
+        summary="Session summary"
         modelHistory={[]}
         toolCalls={[]}
         filesTouched={[]}
         totalTokens={0}
-        selectedToolId={null}
         selectedDecision={{
           type: 'decision',
           id: 'decision_memory_2',
@@ -588,9 +508,9 @@ describe('TraceSummaryCard', () => {
       />,
     )
 
-    expect(html).toContain('INJECTION PREVIEW')
-    expect(html).toContain('retrieved_memories')
-    expect(html).toContain('Expand (58 chars)')
-    expect(html).not.toContain('wrong turn')
+    expect(html).toContain('Summary')
+    expect(html).toContain('Session summary')
+    expect(html).not.toContain('Memory Retrieval Detail')
+    expect(html).not.toContain('INJECTION PREVIEW')
   })
 })

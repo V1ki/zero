@@ -7,6 +7,7 @@ import { useUIStore } from '../../stores/ui'
 import { Skeleton, SkeletonText } from '../shared/Skeleton'
 import { ContextPanel } from './ContextPanel'
 import { MetadataBar } from './MetadataBar'
+import { buildSessionDetailInsights } from './session-detail-insights'
 import { TimelineView } from './TimelineView'
 import {
   type DecisionTimelineItem,
@@ -94,6 +95,8 @@ interface SessionDetail {
   source: string
   status: string
   currentModel: string
+  channelName?: string
+  channelId?: string
   createdAt: string
   updatedAt: string
   messages: Message[]
@@ -149,6 +152,7 @@ export function SessionDetailScreen({
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null)
   const [selectedDecisionId, setSelectedDecisionId] = useState<string | null>(null)
   const [selectedTaskClosureId, setSelectedTaskClosureId] = useState<string | null>(null)
+  const [selectedMemoryNudgeId, setSelectedMemoryNudgeId] = useState<string | null>(null)
   const [selectedSubAgentId, setSelectedSubAgentId] = useState<string | null>(null)
   const [highlightedAssistantMessageId, setHighlightedAssistantMessageId] = useState<string | null>(
     null,
@@ -265,6 +269,7 @@ export function SessionDetailScreen({
     setSelectedToolId(null)
     setSelectedDecisionId(null)
     setSelectedTaskClosureId(null)
+    setSelectedMemoryNudgeId(null)
     setSelectedSubAgentId(null)
     setHighlightedAssistantMessageId(null)
     setHighlightedSubAgentId(null)
@@ -324,8 +329,11 @@ export function SessionDetailScreen({
   }
 
   const timelineItems = useMemo(
-    () => (session ? buildTimeline(session.messages, traces, taskClosureEvents, decisions) : []),
-    [session, traces, taskClosureEvents, decisions],
+    () =>
+      session
+        ? buildTimeline(session.messages, traces, taskClosureEvents, decisions, llmRequests)
+        : [],
+    [session, traces, taskClosureEvents, decisions, llmRequests],
   )
 
   const toolCalls = useMemo(() => {
@@ -334,6 +342,7 @@ export function SessionDetailScreen({
       name: string
       input: Record<string, unknown>
       result?: string
+      summary?: string
       isError?: boolean
       durationMs?: number
     }> = []
@@ -345,17 +354,31 @@ export function SessionDetailScreen({
           name: item.name,
           input: item.input,
           result: item.result,
+          summary: item.summary,
           isError: item.isError,
           durationMs: item.durationMs,
         })
+      } else if (item.type === 'memory-nudge') {
+        for (const tc of item.relatedToolCalls) {
+          calls.push({
+            id: tc.id,
+            name: tc.name,
+            input: tc.input,
+            result: tc.result,
+            summary: tc.summary,
+            isError: tc.isError,
+            durationMs: tc.durationMs,
+          })
+        }
       } else if (item.type === 'sub-agent' && item.childToolCalls) {
-        // Include child tool calls so they can be selected in the right panel
+        // Include child tool calls so summary cards and metrics see the whole session activity.
         for (const tc of item.childToolCalls) {
           calls.push({
             id: tc.id,
-            name: `${item.label}/${tc.name}`,
+            name: tc.name,
             input: tc.input,
             result: tc.result,
+            summary: tc.summary,
             isError: tc.isError,
             durationMs: tc.durationMs,
           })
@@ -388,26 +411,41 @@ export function SessionDetailScreen({
     )
   }, [selectedDecisionId, timelineItems])
 
+  const sessionInsights = useMemo(
+    () => buildSessionDetailInsights(timelineItems, traces, llmRequests),
+    [timelineItems, traces, llmRequests],
+  )
+
   const handleSelectTool = useCallback((toolId: string | null) => {
     setSelectedToolId(toolId)
-    setSelectedDecisionId(null)
-    setSelectedTaskClosureId(null)
   }, [])
 
   const handleSelectDecision = useCallback((decisionId: string | null) => {
     setSelectedDecisionId(decisionId)
-    setSelectedToolId(null)
     setSelectedTaskClosureId(null)
+    setSelectedMemoryNudgeId(null)
+    setSelectedSubAgentId(null)
   }, [])
 
   const handleSelectTaskClosure = useCallback((taskClosureId: string | null) => {
     setSelectedTaskClosureId(taskClosureId)
     setSelectedDecisionId(null)
-    setSelectedToolId(null)
+    setSelectedMemoryNudgeId(null)
+    setSelectedSubAgentId(null)
+  }, [])
+
+  const handleSelectMemoryNudge = useCallback((memoryNudgeId: string | null) => {
+    setSelectedMemoryNudgeId(memoryNudgeId)
+    setSelectedDecisionId(null)
+    setSelectedTaskClosureId(null)
+    setSelectedSubAgentId(null)
   }, [])
 
   const handleSelectSubAgent = useCallback((subAgentId: string | null) => {
     setSelectedSubAgentId(subAgentId)
+    setSelectedDecisionId(null)
+    setSelectedTaskClosureId(null)
+    setSelectedMemoryNudgeId(null)
   }, [])
 
   const jumpToAssistantMessage = useCallback((messageId: string) => {
@@ -423,6 +461,7 @@ export function SessionDetailScreen({
   }, [])
 
   const handleJumpToSubAgentInTimeline = useCallback((subAgentId: string) => {
+    setSelectedSubAgentId(subAgentId)
     setHighlightedSubAgentId(subAgentId)
 
     requestAnimationFrame(() => {
@@ -463,6 +502,7 @@ export function SessionDetailScreen({
       setSelectedToolId(null)
       setSelectedDecisionId(null)
       setSelectedTaskClosureId(null)
+      setSelectedSubAgentId(null)
     } else if (e.key === 'g' && lastKeyRef.current === 'g') {
       el.scrollTo({ top: 0, behavior: 'smooth' })
     } else if (e.key === 'G') {
@@ -478,21 +518,21 @@ export function SessionDetailScreen({
   }, [handleKeyDown])
 
   const pageHeader = (
-    <>
+    <div className="mb-5">
       <button
         type="button"
         onClick={goBack}
-        className="flex items-center gap-1.5 text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-accent)] transition-colors mb-4"
+        className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-3 py-2 text-[13px] text-[var(--color-text-muted)] transition-colors hover:border-white/18 hover:text-[var(--color-accent)]"
       >
         <ArrowLeft size={16} /> Sessions
       </button>
-      {topContent ? <div className="mb-4">{topContent}</div> : null}
-    </>
+      {topContent ? <div className="mt-4">{topContent}</div> : null}
+    </div>
   )
 
   if (!sessionId) {
     return (
-      <div className="p-6 max-w-[1400px] mx-auto">
+      <div className="relative mx-auto max-w-[1600px] px-4 py-6 sm:px-6">
         {pageHeader}
         {emptyState ?? (
           <div className="p-6 text-center text-[var(--color-text-muted)]">
@@ -508,7 +548,7 @@ export function SessionDetailScreen({
 
   if (loading && !session) {
     return (
-      <div className="p-6 max-w-[1400px] mx-auto">
+      <div className="relative mx-auto max-w-[1600px] px-4 py-6 sm:px-6">
         {pageHeader}
         <Skeleton className="h-3 w-48 mb-3" />
         <div className="card p-4 mb-4">
@@ -541,7 +581,7 @@ export function SessionDetailScreen({
 
   if (!session) {
     return (
-      <div className="p-6 max-w-[1400px] mx-auto">
+      <div className="relative mx-auto max-w-[1600px] px-4 py-6 sm:px-6">
         {pageHeader}
         <div className="card p-8 text-center text-[13px] text-[var(--color-text-muted)]">
           Session not found.
@@ -551,7 +591,8 @@ export function SessionDetailScreen({
   }
 
   return (
-    <div className="p-6 max-w-[1400px] mx-auto">
+    <div className="relative mx-auto max-w-[1720px] px-4 py-6 sm:px-6">
+      <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[480px] bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.12),transparent_35%),radial-gradient(circle_at_top_right,rgba(245,158,11,0.1),transparent_28%)]" />
       {pageHeader}
 
       <div className="flex items-center gap-2 mb-3 flex-wrap">
@@ -564,6 +605,10 @@ export function SessionDetailScreen({
         sessionId={session.id}
         summary={session.summary}
         source={session.source}
+        status={session.status}
+        currentModel={session.currentModel}
+        channelName={session.channelName}
+        channelId={session.channelId}
         createdAt={session.createdAt}
         updatedAt={session.updatedAt}
         modelHistory={session.modelHistory}
@@ -579,69 +624,116 @@ export function SessionDetailScreen({
         totalCost={session.totalCost}
         auxiliaryCost={session.auxiliaryCost}
         purposeBreakdown={session.purposeBreakdown}
+        toolCallCount={sessionInsights.toolCallCount}
+        decisionCount={sessionInsights.decisionCount}
+        taskClosureCount={sessionInsights.taskClosureCount}
+        timelineCount={sessionInsights.timelineCount}
+        systemEventCount={sessionInsights.systemEventCount}
+        subAgentCount={sessionInsights.subAgentCount}
         onArchived={goBack}
         onDeleted={goBack}
       />
 
-      <div className="mt-4 grid min-h-0 grid-cols-1 items-stretch gap-4 lg:grid-cols-[65fr_35fr] lg:h-[calc(100vh-280px)]">
-        <div
-          ref={timelineRef}
-          className="min-h-[320px] overflow-visible pr-0 lg:min-h-0 lg:overflow-y-auto lg:pr-2"
-        >
-          {session.messages.length === 0 ? (
-            <div className="card p-8 text-center text-[13px] text-[var(--color-text-muted)]">
-              No messages in this session.
+      <div
+        data-testid="session-detail-layout"
+        className="mt-5 grid min-h-0 grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_340px] xl:items-start 2xl:grid-cols-[minmax(0,1fr)_360px]"
+      >
+        <section data-testid="session-timeline-stage" className="card overflow-hidden p-0">
+          <div className="border-b border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01))] px-4 py-3 sm:px-5">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--color-text-disabled)]">
+                  Timeline
+                </p>
+                <h3 className="mt-1 text-[18px] font-semibold text-[var(--color-text-primary)]">
+                  Execution Story
+                </h3>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] font-mono text-[var(--color-text-secondary)]">
+                  {sessionInsights.assistantCount} assistant
+                </span>
+                <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] font-mono text-[var(--color-text-secondary)]">
+                  {sessionInsights.toolCallCount} tools
+                </span>
+                <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] font-mono text-[var(--color-text-secondary)]">
+                  {sessionInsights.decisionCount} decisions
+                </span>
+                <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] font-mono text-[var(--color-text-secondary)]">
+                  trace {sessionInsights.runningTraceCount} run / {sessionInsights.errorTraceCount}{' '}
+                  err
+                </span>
+                <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] font-mono text-[var(--color-text-secondary)]">
+                  files {filesTouched.length}
+                </span>
+                {sessionInsights.dominantTool ? (
+                  <span className="rounded-full border border-cyan-400/20 bg-cyan-400/7 px-2.5 py-1 text-[10px] font-mono text-cyan-100">
+                    top {sessionInsights.dominantTool.name}
+                  </span>
+                ) : null}
+              </div>
             </div>
-          ) : (
-            <TimelineView
-              messages={session.messages}
-              traces={traces}
-              taskClosureEvents={taskClosureEvents}
-              decisions={decisions}
-              selectedToolId={selectedToolId}
-              selectedDecisionId={selectedDecisionId}
-              selectedTaskClosureId={selectedTaskClosureId}
-              selectedSubAgentId={selectedSubAgentId}
-              highlightedAssistantMessageId={highlightedAssistantMessageId}
-              highlightedSubAgentId={highlightedSubAgentId}
-              onSelectTool={handleSelectTool}
-              onSelectDecision={handleSelectDecision}
-              onSelectTaskClosure={handleSelectTaskClosure}
-              onSelectSubAgent={handleSelectSubAgent}
-            />
-          )}
-        </div>
+          </div>
 
-        <ContextPanel
-          sessionId={session.id}
-          summary={session.summary}
-          systemPrompt={session.systemPrompt}
-          modelHistory={session.modelHistory}
-          toolCalls={toolCalls}
-          filesTouched={filesTouched}
-          totalTokens={session.totalTokens}
-          inputTokens={session.inputTokens}
-          outputTokens={session.outputTokens}
-          cacheWriteTokens={session.cacheWriteTokens}
-          cacheReadTokens={session.cacheReadTokens}
-          effectiveInputTokens={session.effectiveInputTokens}
-          cacheHitRate={session.cacheHitRate}
-          cacheReadCost={session.cacheReadCost}
-          cacheWriteCost={session.cacheWriteCost}
-          grossAvoidedInputCost={session.grossAvoidedInputCost}
-          netSavings={session.netSavings}
-          llmRequests={llmRequests}
-          selectedToolId={selectedToolId}
-          selectedDecision={selectedDecision}
-          selectedTaskClosure={selectedTaskClosure}
-          selectedSubAgentId={selectedSubAgentId}
-          traces={traces}
-          decisions={decisions}
-          taskClosureEvents={taskClosureEvents}
-          traceLoading={traceLoading}
-          onJumpToAssistantMessage={jumpToAssistantMessage}
-          onJumpToSubAgentInTimeline={handleJumpToSubAgentInTimeline}
-        />
+          <div
+            ref={timelineRef}
+            className="min-h-[360px] bg-[linear-gradient(180deg,rgba(10,14,20,0.72),rgba(9,11,16,0.98))] px-4 py-4 sm:px-5 xl:max-h-[calc(100vh-190px)] xl:overflow-y-auto xl:[scrollbar-gutter:stable]"
+          >
+            {session.messages.length === 0 ? (
+              <div className="rounded-[24px] border border-white/8 bg-white/[0.03] p-8 text-center text-[13px] text-[var(--color-text-muted)]">
+                No messages in this session.
+              </div>
+            ) : (
+              <TimelineView
+                items={timelineItems}
+                llmRequests={llmRequests}
+                selectedToolId={selectedToolId}
+                selectedDecisionId={selectedDecisionId}
+                selectedTaskClosureId={selectedTaskClosureId}
+                selectedMemoryNudgeId={selectedMemoryNudgeId}
+                selectedSubAgentId={selectedSubAgentId}
+                highlightedAssistantMessageId={highlightedAssistantMessageId}
+                highlightedSubAgentId={highlightedSubAgentId}
+                onSelectTool={handleSelectTool}
+                onSelectDecision={handleSelectDecision}
+                onSelectTaskClosure={handleSelectTaskClosure}
+                onSelectMemoryNudge={handleSelectMemoryNudge}
+                onSelectSubAgent={handleSelectSubAgent}
+              />
+            )}
+          </div>
+        </section>
+
+        <div className="min-h-0 xl:sticky xl:top-6 xl:h-[calc(100vh-190px)]">
+          <ContextPanel
+            sessionId={session.id}
+            summary={session.summary}
+            systemPrompt={session.systemPrompt}
+            modelHistory={session.modelHistory}
+            toolCalls={toolCalls}
+            filesTouched={filesTouched}
+            totalTokens={session.totalTokens}
+            inputTokens={session.inputTokens}
+            outputTokens={session.outputTokens}
+            cacheWriteTokens={session.cacheWriteTokens}
+            cacheReadTokens={session.cacheReadTokens}
+            effectiveInputTokens={session.effectiveInputTokens}
+            cacheHitRate={session.cacheHitRate}
+            cacheReadCost={session.cacheReadCost}
+            cacheWriteCost={session.cacheWriteCost}
+            grossAvoidedInputCost={session.grossAvoidedInputCost}
+            netSavings={session.netSavings}
+            llmRequests={llmRequests}
+            selectedDecision={selectedDecision}
+            selectedTaskClosure={selectedTaskClosure}
+            traces={traces}
+            decisions={decisions}
+            taskClosureEvents={taskClosureEvents}
+            traceLoading={traceLoading}
+            onJumpToAssistantMessage={jumpToAssistantMessage}
+            onJumpToSubAgentInTimeline={handleJumpToSubAgentInTimeline}
+          />
+        </div>
       </div>
     </div>
   )

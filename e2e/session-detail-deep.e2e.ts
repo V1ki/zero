@@ -53,9 +53,13 @@ test.describe('Session Detail Deep', () => {
     await page.locator('main .card.cursor-pointer').first().click()
     await expect(page.locator('main')).toContainText('sess_', { timeout: 10_000 })
 
-    // The 65/35 grid layout should be visible
-    const grid = page.locator('main .grid.grid-cols-\\[65fr_35fr\\]')
-    await expect(grid).toBeVisible({ timeout: 5_000 })
+    await expect(page.locator('[data-testid="session-detail-layout"]')).toBeVisible({
+      timeout: 5_000,
+    })
+    await expect(page.locator('[data-testid="session-signal-rail"]')).toHaveCount(0)
+    await expect(page.locator('[data-testid="session-timeline-stage"]')).toBeVisible({
+      timeout: 5_000,
+    })
 
     // Context panel should show MODEL HISTORY section
     await expect(page.locator('main')).toContainText('MODEL HISTORY', { timeout: 5_000 })

@@ -1,4 +1,4 @@
-import { Archive, Clock, CurrencyDollar, Trash } from '@phosphor-icons/react'
+import { Archive, CaretDown, CaretRight, Clock, Trash } from '@phosphor-icons/react'
 import { useState } from 'react'
 import { apiDelete, apiPost } from '../../lib/api'
 import { formatCost, formatModelHistory, formatNumber, formatTimeRange } from '../../lib/format'
@@ -15,6 +15,10 @@ interface Props {
   sessionId: string
   summary?: string
   source: string
+  status?: string
+  currentModel?: string
+  channelName?: string
+  channelId?: string
   createdAt: string
   updatedAt: string
   modelHistory: ModelHistoryEntry[]
@@ -24,18 +28,24 @@ interface Props {
   outputTokens: number
   cacheWriteTokens: number
   cacheReadTokens: number
-  reasoningTokens: number
+  reasoningTokens?: number
   effectiveInputTokens: number
   cacheHitRate: number
   totalCost: number
-  auxiliaryCost: number
-  purposeBreakdown: Array<{
+  auxiliaryCost?: number
+  purposeBreakdown?: Array<{
     purpose: string
     totalCost: number
     totalTokens: number
     reasoningTokens: number
     requestCount: number
   }>
+  toolCallCount?: number
+  decisionCount?: number
+  taskClosureCount?: number
+  timelineCount?: number
+  systemEventCount?: number
+  subAgentCount?: number
   onArchived?: () => void
   onDeleted?: () => void
 }
@@ -44,6 +54,10 @@ export function MetadataBar({
   sessionId,
   summary,
   source,
+  status,
+  currentModel,
+  channelName,
+  channelId,
   createdAt,
   updatedAt,
   modelHistory,
@@ -53,25 +67,31 @@ export function MetadataBar({
   outputTokens,
   cacheWriteTokens,
   cacheReadTokens,
-  reasoningTokens,
+  reasoningTokens = 0,
   effectiveInputTokens,
   cacheHitRate,
   totalCost,
-  auxiliaryCost,
-  purposeBreakdown,
+  auxiliaryCost = 0,
+  purposeBreakdown = [],
+  toolCallCount = 0,
+  decisionCount = 0,
+  taskClosureCount = 0,
+  timelineCount = 0,
+  systemEventCount = 0,
+  subAgentCount = 0,
   onArchived,
   onDeleted,
 }: Props) {
   const [showArchiveConfirm, setShowArchiveConfirm] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [detailsExpanded, setDetailsExpanded] = useState(false)
   const { addToast } = useUIStore()
-  const purposeBreakdownTitle = purposeBreakdown
-    .filter((row) => row.totalCost > 0 || row.requestCount > 0)
-    .map(
-      (row) =>
-        `${row.purpose}: ${formatCost(row.totalCost)} · ${formatNumber(row.totalTokens)} tokens · ${row.requestCount} calls`,
-    )
-    .join('\n')
+
+  const activePurposes = purposeBreakdown.filter((row) => row.totalCost > 0 || row.requestCount > 0)
+  const compactPurposeSummary = activePurposes
+    .slice(0, 2)
+    .map((row) => `${row.purpose}: ${formatCost(row.totalCost)}`)
+    .join(' · ')
 
   async function handleArchive() {
     await apiPost(`/api/sessions/${sessionId}/archive`, {})
@@ -88,74 +108,173 @@ export function MetadataBar({
   }
 
   return (
-    <div className="card p-4 animate-fade-up">
-      {/* Title row */}
-      <div className="mb-2 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <h2 className="text-[16px] font-semibold text-[var(--color-text-primary)]">
-            {summary || sessionId}
-          </h2>
-          <p className="text-[12px] text-[var(--color-text-muted)] mt-0.5">
-            <span className="capitalize">{source}</span>
-            {' · '}
-            <Clock size={12} className="inline -mt-0.5" /> {formatTimeRange(createdAt, updatedAt)}
-          </p>
-        </div>
-        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
-          <button
-            type="button"
-            onClick={() => setShowDeleteConfirm(true)}
-            className="px-3 py-1.5 rounded-md text-[11px] text-red-400/70 border border-red-400/20 hover:text-red-400 hover:border-red-400/40 hover:bg-red-400/5 transition-colors flex items-center gap-1.5"
-          >
-            <Trash size={14} />
-            Delete
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowArchiveConfirm(true)}
-            className="px-3 py-1.5 rounded-md text-[11px] text-[var(--color-text-muted)] border border-[var(--color-border)] hover:text-red-400 hover:border-red-400/30 transition-colors flex items-center gap-1.5"
-          >
-            <Archive size={14} />
-            Archive
-          </button>
-        </div>
-      </div>
+    <div data-testid="session-hero" className="card relative overflow-hidden p-0">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.12),transparent_36%),linear-gradient(180deg,rgba(13,18,26,0.97),rgba(9,11,16,0.94))]" />
+      <div className="relative p-4 sm:p-5">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              {status && (
+                <span
+                  className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] ${getStatusBadgeClass(status)}`}
+                >
+                  {status}
+                </span>
+              )}
+              <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-mono text-[var(--color-text-secondary)]">
+                {source}
+              </span>
+              {channelName || channelId ? (
+                <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-mono text-[var(--color-text-secondary)]">
+                  {channelName ?? channelId}
+                </span>
+              ) : null}
+            </div>
 
-      {/* Stats row */}
-      <div className="flex items-center gap-4 text-[11px] text-[var(--color-text-muted)] flex-wrap">
-        <span className="font-mono">{formatModelHistory(modelHistory)}</span>
-        <span className="text-[var(--color-text-disabled)]">·</span>
-        <span>{requestCount} calls</span>
-        <span className="text-[var(--color-text-disabled)]">·</span>
-        <span>
-          {formatNumber(totalTokens)} tokens
-          <span className="text-[var(--color-text-disabled)]">
-            {' '}
-            ({formatNumber(inputTokens)} in / {formatNumber(outputTokens)} out)
-          </span>
-        </span>
-        <span className="text-[var(--color-text-disabled)]">·</span>
-        <span>
-          cache {formatNumber(cacheReadTokens)} read / {formatNumber(cacheWriteTokens)} write
-        </span>
-        <span className="text-[var(--color-text-disabled)]">·</span>
-        <span>reasoning {formatNumber(reasoningTokens)}</span>
-        <span className="text-[var(--color-text-disabled)]">·</span>
-        <span>
-          eff {formatNumber(effectiveInputTokens)} · {(cacheHitRate * 100).toFixed(0)}% hit
-        </span>
-        <span className="text-[var(--color-text-disabled)]">·</span>
-        <span className="flex items-center gap-0.5">
-          <CurrencyDollar size={12} />
-          {formatCost(totalCost)}
-        </span>
-        <span className="text-[var(--color-text-disabled)]">·</span>
-        <span
-          title={purposeBreakdownTitle || undefined}
-          className={purposeBreakdownTitle ? 'cursor-help' : undefined}
-        >
-          aux {formatCost(auxiliaryCost)}
-        </span>
+            <h2 className="mt-3 max-w-4xl text-[18px] font-semibold leading-tight text-[var(--color-text-primary)] sm:text-[22px]">
+              {summary || sessionId}
+            </h2>
+
+            <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-[var(--color-text-muted)]">
+              <span className="font-mono text-[var(--color-text-secondary)]">{sessionId}</span>
+              <span className="text-[var(--color-text-disabled)]">·</span>
+              <span className="inline-flex items-center gap-1">
+                <Clock size={12} className="shrink-0" />
+                {formatTimeRange(createdAt, updatedAt)}
+              </span>
+              {currentModel && (
+                <>
+                  <span className="text-[var(--color-text-disabled)]">·</span>
+                  <span className="font-mono text-[var(--color-text-secondary)]">{currentModel}</span>
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+            <button
+              type="button"
+              onClick={() => setShowDeleteConfirm(true)}
+              className="rounded-xl border border-red-400/25 bg-red-400/6 px-3 py-2 text-[11px] text-red-200 transition-colors hover:border-red-400/45 hover:bg-red-400/12"
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <Trash size={14} />
+                Delete
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowArchiveConfirm(true)}
+              className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-[var(--color-text-secondary)] transition-colors hover:border-white/18 hover:bg-white/8"
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <Archive size={14} />
+                Archive
+              </span>
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          <MetricPill
+            label="Requests"
+            value={String(requestCount)}
+            detail={`${toolCallCount} tools`}
+          />
+          <MetricPill
+            label="Tokens"
+            value={formatNumber(totalTokens)}
+            detail={`${formatNumber(inputTokens)} in · ${formatNumber(outputTokens)} out`}
+          />
+          <MetricPill
+            label="Cache"
+            value={`${(cacheHitRate * 100).toFixed(0)}%`}
+            detail={`${formatNumber(cacheReadTokens)} read`}
+          />
+          <MetricPill
+            label="Spend"
+            value={`$${formatCost(totalCost)}`}
+            detail={`aux ${formatCost(auxiliaryCost)}`}
+          />
+          <MetricPill
+            label="Timeline"
+            value={formatNumber(timelineCount)}
+            detail={`${taskClosureCount} closure · ${subAgentCount} sub-agent`}
+          />
+        </div>
+
+        <div className="mt-4 flex flex-col gap-3 border-t border-white/8 pt-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[var(--color-text-muted)]">
+            <span>effective input {formatNumber(effectiveInputTokens)}</span>
+            <span>reasoning {formatNumber(reasoningTokens)}</span>
+            <span>aux {formatCost(auxiliaryCost)}</span>
+            {compactPurposeSummary ? <span>{compactPurposeSummary}</span> : null}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setDetailsExpanded((current) => !current)}
+            aria-expanded={detailsExpanded}
+            className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)]"
+          >
+            {detailsExpanded ? <CaretDown size={12} /> : <CaretRight size={12} />}
+            More Session Stats
+          </button>
+        </div>
+
+        {detailsExpanded && (
+          <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
+            <div className="rounded-[20px] border border-white/8 bg-black/15 p-4">
+              <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--color-text-disabled)]">
+                Model Route
+              </p>
+              <p className="mt-2 text-[12px] font-mono leading-6 text-[var(--color-text-secondary)]">
+                {formatModelHistory(modelHistory)}
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-[var(--color-text-muted)]">
+                <span>effective input {formatNumber(effectiveInputTokens)}</span>
+                <span className="text-[var(--color-text-disabled)]">·</span>
+                <span>reasoning {formatNumber(reasoningTokens)}</span>
+                <span className="text-[var(--color-text-disabled)]">·</span>
+                <span>decisions {decisionCount}</span>
+                <span className="text-[var(--color-text-disabled)]">·</span>
+                <span>system {systemEventCount}</span>
+              </div>
+            </div>
+
+            <div className="rounded-[20px] border border-white/8 bg-black/15 p-4">
+              <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--color-text-disabled)]">
+                Purpose Breakdown
+              </p>
+              {activePurposes.length === 0 ? (
+                <p className="mt-2 text-[12px] text-[var(--color-text-muted)]">
+                  No purpose-specific usage has been persisted yet.
+                </p>
+              ) : (
+                <div className="mt-3 space-y-2">
+                  {activePurposes.slice(0, 4).map((row) => (
+                    <div
+                      key={row.purpose}
+                      className="flex items-center justify-between gap-3 rounded-2xl border border-white/6 bg-white/[0.03] px-3 py-2"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-[12px] font-medium text-[var(--color-text-primary)]">
+                          {row.purpose}
+                        </p>
+                        <p className="mt-0.5 text-[10px] text-[var(--color-text-muted)]">
+                          {formatNumber(row.totalTokens)} tokens · {row.requestCount} calls
+                        </p>
+                      </div>
+                      <p className="shrink-0 text-[12px] font-mono text-[var(--color-text-secondary)]">
+                        ${formatCost(row.totalCost)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       <ConfirmDialog
@@ -179,4 +298,39 @@ export function MetadataBar({
       />
     </div>
   )
+}
+
+function MetricPill({
+  label,
+  value,
+  detail,
+}: {
+  label: string
+  value: string
+  detail: string
+}) {
+  return (
+    <div className="min-w-[132px] rounded-[18px] border border-white/8 bg-black/15 px-3 py-2.5">
+      <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--color-text-disabled)]">
+        {label}
+      </p>
+      <p className="mt-1.5 text-[17px] font-semibold text-[var(--color-text-primary)]">{value}</p>
+      <p className="mt-0.5 text-[10px] leading-5 text-[var(--color-text-muted)]">{detail}</p>
+    </div>
+  )
+}
+
+function getStatusBadgeClass(status: string): string {
+  switch (status) {
+    case 'active':
+      return 'border-emerald-400/40 bg-emerald-400/12 text-emerald-200'
+    case 'completed':
+      return 'border-cyan-400/40 bg-cyan-400/12 text-cyan-200'
+    case 'archived':
+      return 'border-slate-400/30 bg-slate-400/10 text-slate-300'
+    case 'failed':
+      return 'border-red-400/40 bg-red-400/12 text-red-200'
+    default:
+      return 'border-white/10 bg-white/5 text-[var(--color-text-secondary)]'
+  }
 }

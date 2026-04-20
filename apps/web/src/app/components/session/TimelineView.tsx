@@ -1,57 +1,53 @@
 import { ArrowsClockwise, Warning } from '@phosphor-icons/react'
-import { useMemo } from 'react'
+import { formatTime } from '../../lib/format'
 import { AgentMessageBlock } from './AgentMessageBlock'
 import { DecisionBlock } from './DecisionBlock'
+import { MemoryNudgeBlock } from './MemoryNudgeBlock'
+import { MemoryRetrievalBlock } from './MemoryRetrievalBlock'
 import { SubAgentBlock } from './SubAgentBlock'
 import { TaskClosureBlock } from './TaskClosureBlock'
 import { ToolCallBlock } from './ToolCallBlock'
 import { UserMessageBlock } from './UserMessageBlock'
+import type { MemoryRetrievalRequestLike } from './memory-retrieval'
 import {
-  type Message,
-  type SessionDecisionEvent,
-  type SessionTaskClosureEvent,
   type TimelineItem,
-  type TraceSpan,
-  buildTimeline,
 } from './timeline'
 
 interface Props {
-  messages: Message[]
-  traces?: TraceSpan[]
-  taskClosureEvents?: SessionTaskClosureEvent[]
-  decisions?: SessionDecisionEvent[]
+  items: TimelineItem[]
+  llmRequests?: MemoryRetrievalRequestLike[]
   selectedToolId: string | null
   selectedDecisionId: string | null
   selectedTaskClosureId: string | null
+  selectedMemoryNudgeId?: string | null
   selectedSubAgentId?: string | null
   highlightedAssistantMessageId?: string | null
   highlightedSubAgentId?: string | null
   onSelectTool: (id: string | null) => void
   onSelectDecision: (id: string | null) => void
   onSelectTaskClosure: (id: string | null) => void
+  onSelectMemoryNudge?: (id: string | null) => void
   onSelectSubAgent?: (id: string | null) => void
 }
 
 export function TimelineView({
-  messages,
-  traces,
-  taskClosureEvents,
-  decisions,
+  items,
+  llmRequests = [],
   selectedToolId,
   selectedDecisionId,
   selectedTaskClosureId,
+  selectedMemoryNudgeId,
+  selectedSubAgentId,
   highlightedAssistantMessageId,
+  highlightedSubAgentId,
   onSelectTool,
   onSelectDecision,
   onSelectTaskClosure,
+  onSelectMemoryNudge,
+  onSelectSubAgent,
 }: Props) {
-  const items = useMemo(
-    () => buildTimeline(messages, traces, taskClosureEvents, decisions),
-    [messages, traces, taskClosureEvents, decisions],
-  )
-
   return (
-    <div className="space-y-2">
+    <div data-testid="session-timeline" className="space-y-3">
       {items.map((item) => {
         switch (item.type) {
           case 'user-message':
@@ -71,6 +67,7 @@ export function TimelineView({
                 messageId={item.messageId}
                 text={item.text}
                 model={item.model}
+                createdAt={item.createdAt}
                 highlighted={highlightedAssistantMessageId === item.messageId}
               />
             )
@@ -82,13 +79,31 @@ export function TimelineView({
                 name={item.name}
                 input={item.input}
                 result={item.result}
+                summary={item.summary}
                 isError={item.isError}
                 durationMs={item.durationMs}
+                createdAt={item.createdAt}
                 selected={selectedToolId === item.id}
                 onSelect={(id) => onSelectTool(selectedToolId === id ? null : id)}
               />
             )
           case 'decision':
+            if (item.decisionType === 'memory_retrieval') {
+              return (
+                <MemoryRetrievalBlock
+                  key={item.id}
+                  id={item.id}
+                  outcome={item.outcome}
+                  detail={item.detail}
+                  rationale={item.rationale}
+                  durationMs={item.durationMs}
+                  createdAt={item.createdAt}
+                  selected={selectedDecisionId === item.id}
+                  llmRequests={llmRequests}
+                  onSelect={(id) => onSelectDecision(selectedDecisionId === id ? null : id)}
+                />
+              )
+            }
             return (
               <DecisionBlock
                 key={item.id}
@@ -96,6 +111,7 @@ export function TimelineView({
                 decisionType={item.decisionType}
                 outcome={item.outcome}
                 detail={item.detail}
+                createdAt={item.createdAt}
                 selected={selectedDecisionId === item.id}
                 onSelect={(id) => onSelectDecision(selectedDecisionId === id ? null : id)}
               />
@@ -109,8 +125,32 @@ export function TimelineView({
                 action={item.action}
                 reason={item.reason}
                 error={item.error}
+                createdAt={item.createdAt}
                 selected={selectedTaskClosureId === item.id}
                 onSelect={(id) => onSelectTaskClosure(selectedTaskClosureId === id ? null : id)}
+              />
+            )
+          case 'memory-nudge':
+            return (
+              <MemoryNudgeBlock
+                key={item.id}
+                id={item.id}
+                prompt={item.prompt}
+                createdAt={item.createdAt}
+                source={item.source}
+                iteration={item.iteration}
+                memoryWritten={item.memoryWritten}
+                durationMs={item.durationMs}
+                status={item.status}
+                relatedToolCalls={item.relatedToolCalls}
+                selected={selectedMemoryNudgeId === item.id}
+                selectedChildToolId={selectedToolId}
+                onSelect={(id) =>
+                  onSelectMemoryNudge?.(selectedMemoryNudgeId === id ? null : id)
+                }
+                onSelectChildTool={(toolId) =>
+                  onSelectTool(selectedToolId === toolId ? null : toolId)
+                }
               />
             )
           case 'sub-agent':
@@ -124,13 +164,14 @@ export function TimelineView({
                 status={item.status}
                 output={item.output}
                 durationMs={item.durationMs}
+                createdAt={item.createdAt}
                 childToolCalls={item.childToolCalls}
-                selected={selectedToolId === item.spawnToolCallId}
+                traceSpan={item.traceSpan}
+                selected={selectedSubAgentId === item.agentId}
+                highlighted={highlightedSubAgentId === item.agentId}
                 selectedChildToolId={selectedToolId}
-                onSelect={() =>
-                  onSelectTool(
-                    selectedToolId === item.spawnToolCallId ? null : item.spawnToolCallId,
-                  )
+                onSelect={(agentId) =>
+                  onSelectSubAgent?.(selectedSubAgentId === agentId ? null : agentId)
                 }
                 onSelectChildTool={(toolId) =>
                   onSelectTool(selectedToolId === toolId ? null : toolId)
@@ -143,6 +184,9 @@ export function TimelineView({
                 key={getTimelineItemKey(item)}
                 variant={item.variant}
                 text={item.text}
+                createdAt={item.createdAt}
+                label={item.label}
+                chips={item.chips}
               />
             )
           default:
@@ -165,6 +209,8 @@ function getTimelineItemKey(item: TimelineItem): string {
       return `decision-${item.id}`
     case 'task-closure':
       return `task-closure-${item.id}`
+    case 'memory-nudge':
+      return `memory-nudge-${item.id}`
     case 'sub-agent':
       return `sub-agent-${item.agentId}`
     case 'system-event':
@@ -172,18 +218,47 @@ function getTimelineItemKey(item: TimelineItem): string {
   }
 }
 
-function SystemEventBanner({ variant, text }: { variant: 'warning' | 'info'; text: string }) {
+function SystemEventBanner({
+  variant,
+  text,
+  createdAt,
+  label,
+  chips = [],
+}: {
+  variant: 'warning' | 'info'
+  text: string
+  createdAt: string
+  label?: string
+  chips?: string[]
+}) {
   const isWarning = variant === 'warning'
   const Icon = isWarning ? Warning : ArrowsClockwise
-  const borderColor = isWarning ? 'border-l-amber-400' : 'border-l-cyan-400'
-  const iconColor = isWarning ? 'text-amber-400' : 'text-cyan-400'
-  const textColor = isWarning ? 'text-amber-400' : 'text-cyan-400'
+  const accentClass = isWarning ? 'text-amber-300' : 'text-cyan-300'
+  const surfaceClass = isWarning
+    ? 'border-amber-400/25 bg-amber-400/8'
+    : 'border-cyan-400/20 bg-cyan-400/7'
 
   return (
-    <div className={`px-4 py-2 rounded-lg border-l-2 ${borderColor} bg-white/[0.02]`}>
-      <div className="flex items-center gap-2">
-        <Icon size={14} weight="bold" className={iconColor} />
-        <span className={`text-[12px] font-mono ${textColor}`}>{text}</span>
+    <div className={`rounded-[18px] border px-4 py-3 ${surfaceClass}`}>
+      <div className="flex flex-wrap items-center gap-2">
+        <Icon size={14} weight="bold" className={accentClass} />
+        <span className={`text-[10px] font-semibold uppercase tracking-[0.18em] ${accentClass}`}>
+          {label ?? (variant === 'warning' ? 'Runtime Warning' : 'System Event')}
+        </span>
+        <span className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] font-mono text-[var(--color-text-disabled)]">
+          {formatTime(createdAt)}
+        </span>
+        {chips.map((chip) => (
+          <span
+            key={chip}
+            className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[9px] font-mono text-[var(--color-text-disabled)]"
+          >
+            {chip}
+          </span>
+        ))}
+      </div>
+      <div className="mt-2 text-[12px] font-mono leading-6 text-[var(--color-text-secondary)]">
+        {text}
       </div>
     </div>
   )

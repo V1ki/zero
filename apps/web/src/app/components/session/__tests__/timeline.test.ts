@@ -5,6 +5,7 @@ import {
   type SessionTaskClosureEvent,
   type TraceSpan,
   buildTimeline,
+  extractFilesTouched,
   filterDisplayableDecisions,
 } from '../timeline'
 
@@ -169,6 +170,89 @@ describe('buildTimeline', () => {
     }
   })
 
+  test('prefers richer llm request tool results over generic success markers', () => {
+    const messages: Message[] = [
+      {
+        id: 'msg_tool_assistant',
+        role: 'assistant',
+        messageType: 'message',
+        content: [{ type: 'tool_use', id: 'call_1', name: 'bash', input: { command: 'pwd' } }],
+        createdAt: '2026-03-08T00:00:01.000Z',
+      },
+      {
+        id: 'msg_tool_result',
+        role: 'user',
+        messageType: 'message',
+        content: [{ type: 'tool_result', toolUseId: 'call_1', content: '✓ success' }],
+        createdAt: '2026-03-08T00:00:01.100Z',
+      },
+    ]
+
+    const items = buildTimeline(messages, [], [], [], [
+      {
+        toolResults: [
+          {
+            toolUseId: 'call_1',
+            content: '/Users/demo/project\n',
+            outputSummary: 'Executed: pwd',
+          },
+        ],
+      },
+    ])
+
+    const toolCall = items.find((item) => item.type === 'tool-call')
+    expect(toolCall).toBeDefined()
+    if (toolCall?.type === 'tool-call') {
+      expect(toolCall.result).toBe('/Users/demo/project')
+      expect(toolCall.summary).toBe('Executed: pwd')
+    }
+  })
+
+  test('keeps trace summaries for write tools when only generic success was persisted', () => {
+    const messages: Message[] = [
+      {
+        id: 'msg_tool_assistant',
+        role: 'assistant',
+        messageType: 'message',
+        content: [{ type: 'tool_use', id: 'call_write', name: 'write', input: { path: '/tmp/demo.ts' } }],
+        createdAt: '2026-03-08T00:00:01.000Z',
+      },
+      {
+        id: 'msg_tool_result',
+        role: 'user',
+        messageType: 'message',
+        content: [{ type: 'tool_result', toolUseId: 'call_write', content: '✓ success' }],
+        createdAt: '2026-03-08T00:00:01.100Z',
+      },
+    ]
+
+    const traces: TraceSpan[] = [
+      {
+        id: 'span_tool',
+        sessionId: 'sess_1',
+        name: 'tool:write',
+        startTime: '2026-03-08T00:00:01.000Z',
+        endTime: '2026-03-08T00:00:01.050Z',
+        durationMs: 50,
+        status: 'success',
+        metadata: {
+          toolUseId: 'call_write',
+          toolName: 'write',
+          outputSummary: 'Wrote /tmp/demo.ts',
+        },
+        children: [],
+      },
+    ]
+
+    const items = buildTimeline(messages, traces)
+    const toolCall = items.find((item) => item.type === 'tool-call')
+    expect(toolCall).toBeDefined()
+    if (toolCall?.type === 'tool-call') {
+      expect(toolCall.result).toBe('✓ success')
+      expect(toolCall.summary).toBe('Wrote /tmp/demo.ts')
+    }
+  })
+
   test('renders notification messages as system events', () => {
     const messages: Message[] = [
       {
@@ -206,7 +290,296 @@ describe('buildTimeline', () => {
     if (items[0].type === 'system-event') {
       expect(items[0].variant).toBe('info')
       expect(items[0].text).toContain('继续完成当前任务')
+      expect(items[0].label).toBe('Task Closure Prompt')
     }
+  })
+
+  test('projects memory_nudge control messages into expandable timeline cards', () => {
+    const messages: Message[] = [
+      {
+        id: 'msg_memory_nudge',
+        role: 'user',
+        messageType: 'control',
+        controlKind: 'memory_nudge',
+        content: [
+          {
+            type: 'text',
+            text: '<system_notice>\n当前阶段已完成。请快速评估：本次交互是否产生了值得跨会话保留的信息？\n- 用户偏好或习惯\n</system_notice>',
+          },
+        ],
+        createdAt: '2026-03-08T00:00:02.000Z',
+      },
+    ]
+
+    const traces: TraceSpan[] = [
+      {
+        id: 'span_root',
+        sessionId: 'sess_1',
+        name: 'agent.run:test',
+        startTime: '2026-03-08T00:00:00.000Z',
+        endTime: '2026-03-08T00:00:03.000Z',
+        durationMs: 3000,
+        status: 'success',
+        children: [
+          {
+            id: 'span_memory_nudge',
+            parentId: 'span_root',
+            sessionId: 'sess_1',
+            name: 'memory_nudge',
+            startTime: '2026-03-08T00:00:02.010Z',
+            endTime: '2026-03-08T00:00:02.310Z',
+            durationMs: 300,
+            status: 'success',
+            metadata: {
+              purpose: 'memory_nudge',
+              iteration: 3,
+              memoryWritten: true,
+            },
+            data: {
+              memoryNudge: {
+                prompt:
+                  '<system_notice>当前阶段已完成。请快速评估：本次交互是否产生了值得跨会话保留的信息？</system_notice>',
+                iteration: 3,
+              },
+            },
+            children: [],
+          },
+          {
+            id: 'span_memory_tool',
+            parentId: 'span_root',
+            sessionId: 'sess_1',
+            name: 'tool:memory',
+            startTime: '2026-03-08T00:00:02.120Z',
+            endTime: '2026-03-08T00:00:02.130Z',
+            durationMs: 10,
+            status: 'success',
+            metadata: {
+              toolUseId: 'tool_memory_1',
+              toolName: 'memory',
+              input: {
+                action: 'create',
+                type: 'note',
+                title: 'Deployment rollback details',
+              },
+              result: 'Created memory: Deployment rollback details',
+              outputSummary: 'Created memory: Deployment rollback details',
+            },
+            children: [],
+          },
+        ],
+      },
+    ]
+
+    const items = buildTimeline(messages, traces)
+    expect(items).toHaveLength(1)
+    expect(items[0].type).toBe('memory-nudge')
+    if (items[0].type === 'memory-nudge') {
+      expect(items[0].prompt).toContain('当前阶段已完成。请快速评估')
+      expect(items[0].iteration).toBe(3)
+      expect(items[0].memoryWritten).toBe(true)
+      expect(items[0].relatedToolCalls).toHaveLength(1)
+      expect(items[0].relatedToolCalls[0]?.name).toBe('memory')
+      expect(items[0].relatedToolCalls[0]?.summary).toBe(
+        'Created memory: Deployment rollback details',
+      )
+    }
+  })
+
+  test('renders trace-based memory_nudge when no control message was persisted', () => {
+    const traces: TraceSpan[] = [
+      {
+        id: 'span_root',
+        sessionId: 'sess_1',
+        name: 'agent.run:test',
+        startTime: '2026-03-08T00:00:00.000Z',
+        status: 'success',
+        children: [
+          {
+            id: 'span_memory_nudge',
+            parentId: 'span_root',
+            sessionId: 'sess_1',
+            name: 'memory_nudge',
+            startTime: '2026-03-08T00:00:02.000Z',
+            endTime: '2026-03-08T00:00:02.300Z',
+            durationMs: 300,
+            status: 'success',
+            metadata: {
+              purpose: 'memory_nudge',
+              iteration: 3,
+              memoryWritten: true,
+            },
+            data: {
+              memoryNudge: {
+                prompt:
+                  '<system_notice>当前阶段已完成。请快速评估：本次交互是否产生了值得跨会话保留的信息？</system_notice>',
+                iteration: 3,
+              },
+            },
+            children: [],
+          },
+          {
+            id: 'span_memory_search',
+            parentId: 'span_root',
+            sessionId: 'sess_1',
+            name: 'tool:memory_search',
+            startTime: '2026-03-08T00:00:02.050Z',
+            endTime: '2026-03-08T00:00:02.090Z',
+            durationMs: 40,
+            status: 'success',
+            metadata: {
+              toolUseId: 'tool_search_1',
+              toolName: 'memory_search',
+              input: { query: 'deployment rollback' },
+              result: 'Found 2 relevant memories',
+              outputSummary: 'Found 2 relevant memories',
+            },
+            children: [],
+          },
+          {
+            id: 'span_memory_write',
+            parentId: 'span_root',
+            sessionId: 'sess_1',
+            name: 'tool:memory',
+            startTime: '2026-03-08T00:00:02.120Z',
+            endTime: '2026-03-08T00:00:02.160Z',
+            durationMs: 40,
+            status: 'success',
+            metadata: {
+              toolUseId: 'tool_memory_1',
+              toolName: 'memory',
+              input: {
+                action: 'create',
+                type: 'runbook',
+                title: 'Rollback checklist',
+              },
+              result: 'Created memory: Rollback checklist',
+              outputSummary: 'Created memory: Rollback checklist',
+            },
+            children: [],
+          },
+        ],
+      },
+    ]
+
+    const items = buildTimeline([], traces)
+    const memoryNudge = items.find(
+      (item) => item.type === 'memory-nudge',
+    )
+
+    expect(memoryNudge).toBeDefined()
+    if (memoryNudge?.type === 'memory-nudge') {
+      expect(memoryNudge.prompt).toContain('当前阶段已完成。请快速评估')
+      expect(memoryNudge.iteration).toBe(3)
+      expect(memoryNudge.memoryWritten).toBe(true)
+      expect(memoryNudge.relatedToolCalls.map((toolCall) => toolCall.name)).toEqual([
+        'memory_search',
+        'memory',
+      ])
+      expect(memoryNudge.createdAt).toBe('2026-03-08T00:00:02.300Z')
+    }
+  })
+
+  test('extracts touched files from both top-level and sub-agent tool inputs', () => {
+    const items = buildTimeline(
+      [
+        {
+          id: 'msg_tool_use',
+          role: 'assistant',
+          messageType: 'message',
+          content: [
+            { type: 'tool_use', id: 'call_1', name: 'read', input: { path: '/tmp/demo.txt' } },
+            {
+              type: 'tool_use',
+              id: 'spawn_1',
+              name: 'spawn_agent',
+              input: {
+                agentId: 'agent_1',
+                label: 'Worker 1',
+                instruction: 'Inspect files',
+              },
+            },
+          ],
+          createdAt: '2026-03-08T00:00:01.000Z',
+        },
+        {
+          id: 'msg_tool_result',
+          role: 'user',
+          messageType: 'message',
+          content: [
+            { type: 'tool_result', toolUseId: 'spawn_1', content: '{"agentId":"agent_1"}' },
+          ],
+          createdAt: '2026-03-08T00:00:01.100Z',
+        },
+      ],
+      [
+        {
+          id: 'span_root',
+          sessionId: 'sess_1',
+          name: 'agent.run:test',
+          startTime: '2026-03-08T00:00:00.000Z',
+          endTime: '2026-03-08T00:00:02.000Z',
+          durationMs: 2000,
+          status: 'success',
+          children: [
+            {
+              id: 'span_spawn',
+              parentId: 'span_root',
+              sessionId: 'sess_1',
+              name: 'tool:spawn_agent',
+              startTime: '2026-03-08T00:00:01.000Z',
+              endTime: '2026-03-08T00:00:01.500Z',
+              durationMs: 500,
+              status: 'success',
+              metadata: {
+                toolUseId: 'spawn_1',
+                toolName: 'spawn_agent',
+                spawnedAgentId: 'agent_1',
+                spawnedAgentLabel: 'Worker 1',
+              },
+              children: [
+                {
+                  id: 'span_child_read',
+                  parentId: 'span_spawn',
+                  sessionId: 'sess_1',
+                  name: 'tool:read',
+                  startTime: '2026-03-08T00:00:01.100Z',
+                  endTime: '2026-03-08T00:00:01.200Z',
+                  durationMs: 100,
+                  status: 'success',
+                  data: {
+                    kind: 'sub_agent',
+                    agentId: 'agent_1',
+                  },
+                  metadata: {
+                    agentId: 'agent_1',
+                  },
+                  children: [
+                    {
+                      id: 'span_nested_read',
+                      parentId: 'span_child_read',
+                      sessionId: 'sess_1',
+                      name: 'tool:read',
+                      startTime: '2026-03-08T00:00:01.120Z',
+                      endTime: '2026-03-08T00:00:01.180Z',
+                      durationMs: 60,
+                      status: 'success',
+                      metadata: {
+                        toolUseId: 'child_read_1',
+                        toolName: 'read',
+                        input: { path: '/tmp/child.txt' },
+                      },
+                      children: [],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    )
+
+    expect(extractFilesTouched(items)).toEqual(['/tmp/demo.txt', '/tmp/child.txt'])
   })
 
   test('keeps memory inject notifications at their original timestamp', () => {
@@ -488,6 +861,79 @@ test('orders memory retrieval decisions after the triggering user message when t
   )
 
   expect(items.map((item) => item.type)).toEqual(['user-message', 'decision', 'agent-text'])
+})
+
+test('merges matched memory inject notifications into memory retrieval decisions', () => {
+  const items = buildTimeline(
+    [
+      {
+        id: 'msg_user',
+        role: 'user',
+        messageType: 'message',
+        content: [{ type: 'text', text: 'please inspect this' }],
+        createdAt: '2026-03-08T00:00:00.001Z',
+      },
+      {
+        id: 'msg_memory_inject',
+        role: 'user',
+        messageType: 'notification',
+        content: [
+          {
+            type: 'text',
+            text: '<memory_inject layer="layer2"><memory_hint>tool execution error, retry with browser</memory_hint></memory_inject>',
+          },
+        ],
+        createdAt: '2026-03-08T00:00:00.800Z',
+      },
+      {
+        id: 'msg_assistant',
+        role: 'assistant',
+        messageType: 'message',
+        content: [{ type: 'text', text: 'working on it' }],
+        createdAt: '2026-03-08T00:00:01.000Z',
+      },
+    ],
+    [],
+    [],
+    [
+      {
+        id: 'decision_memory',
+        sessionId: 'sess_1',
+        ts: '2026-03-08T00:00:00.700Z',
+        decisionType: 'memory_retrieval',
+        outcome: 'injected',
+        sourceKind: 'llm_request',
+        detail: {
+          layer: 'layer2',
+          turnIndex: 2,
+          selectedMemoryIds: ['mem_1'],
+        },
+      },
+    ],
+    [
+      {
+        id: 'req_memory',
+        turnIndex: 2,
+        ts: '2026-03-08T00:00:00.810Z',
+        memoryInjections: [
+          {
+            layer: 'layer2',
+            source: 'memory_hint',
+            formattedText:
+              '<memory_inject layer="layer2"><memory_hint>tool execution error, retry with browser</memory_hint></memory_inject>',
+          },
+        ],
+      },
+    ],
+  )
+
+  expect(items.map((item) => item.type)).toEqual(['user-message', 'decision', 'agent-text'])
+  expect(
+    items.find(
+      (item) =>
+        item.type === 'system-event' && item.text.includes('<memory_inject layer="layer2">'),
+    ),
+  ).toBeUndefined()
 })
 
 test('orders task closure event after its assistant message when assistant timestamp is available', () => {
@@ -968,7 +1414,7 @@ describe('sub-agent timeline items', () => {
     }
   })
 
-  test('sub-agent extracts child tool calls from traces', () => {
+  test('sub-agent extracts child tool calls from nested traces', () => {
     const messages: Message[] = [
       {
         id: 'msg_1',
@@ -1020,16 +1466,31 @@ describe('sub-agent timeline items', () => {
             metadata: { agentId: 'agent_3' },
             children: [
               {
-                id: 'span_child_tool',
+                id: 'span_request',
                 parentId: 'span_sub',
                 sessionId: 'sess_1',
-                name: 'tool:read',
+                name: 'llm_request',
                 startTime: '2026-03-08T00:00:00.200Z',
                 endTime: '2026-03-08T00:00:00.350Z',
                 durationMs: 150,
                 status: 'success',
-                metadata: { toolUseId: 'child_call_1' },
-                children: [],
+                children: [
+                  {
+                    id: 'span_child_tool',
+                    parentId: 'span_request',
+                    sessionId: 'sess_1',
+                    name: 'tool:read',
+                    startTime: '2026-03-08T00:00:00.210Z',
+                    endTime: '2026-03-08T00:00:00.350Z',
+                    durationMs: 140,
+                    status: 'success',
+                    metadata: {
+                      toolUseId: 'child_call_1',
+                      input: { path: 'apps/web/src/api/routes.ts' },
+                    },
+                    children: [],
+                  },
+                ],
               },
             ],
           },
@@ -1044,7 +1505,10 @@ describe('sub-agent timeline items', () => {
     if (subAgent?.type === 'sub-agent') {
       expect(subAgent.childToolCalls).toHaveLength(1)
       expect(subAgent.childToolCalls[0].name).toBe('read')
-      expect(subAgent.childToolCalls[0].durationMs).toBe(150)
+      expect(subAgent.childToolCalls[0].durationMs).toBe(140)
+      expect(subAgent.childToolCalls[0].input.path).toBe('apps/web/src/api/routes.ts')
+      expect(subAgent.traceSpan?.id).toBe('span_sub')
+      expect(subAgent.traceSpan?.children[0]?.id).toBe('span_request')
     }
   })
 })

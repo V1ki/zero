@@ -48,13 +48,31 @@ test.describe('Session Detail Page', () => {
     await expect(main).toContainText('Archive')
   })
 
-  test('shows 65/35 split layout with timeline and context panel', async ({ page }) => {
+  test('shows timeline-first two-column layout with compact header', async ({ page }) => {
     test.setTimeout(90_000)
     await createSessionAndNavigate(page)
 
-    // The split layout uses grid-cols-[65fr_35fr]
-    const grid = page.locator('main .grid.grid-cols-\\[65fr_35fr\\]')
-    await expect(grid).toBeVisible({ timeout: 5_000 })
+    await expect(page.locator('[data-testid="session-detail-layout"]')).toBeVisible({
+      timeout: 5_000,
+    })
+    await expect(page.locator('[data-testid="session-timeline-stage"]')).toBeVisible({
+      timeout: 5_000,
+    })
+    await expect(page.locator('[data-testid="session-context-panel"]')).toBeVisible({
+      timeout: 5_000,
+    })
+
+    await expect(page.locator('[data-testid="session-signal-rail"]')).toHaveCount(0)
+
+    const heroBox = await page.locator('[data-testid="session-hero"]').boundingBox()
+    const timelineBox = await page.locator('[data-testid="session-timeline-stage"]').boundingBox()
+    const contextBox = await page.locator('[data-testid="session-context-panel"]').boundingBox()
+
+    expect(heroBox).not.toBeNull()
+    expect(timelineBox).not.toBeNull()
+    expect(contextBox).not.toBeNull()
+    expect(heroBox?.height ?? 999).toBeLessThan(320)
+    expect(timelineBox?.width ?? 0).toBeGreaterThan((contextBox?.width ?? 0) * 1.8)
   })
 
   test('shows context panel with model history', async ({ page }) => {

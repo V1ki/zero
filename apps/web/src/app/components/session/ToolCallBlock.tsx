@@ -9,8 +9,9 @@ import {
   Terminal,
   XCircle,
 } from '@phosphor-icons/react'
-import { useState } from 'react'
+import { formatTime } from '../../lib/format'
 import { toolColors } from '../../lib/colors'
+import { ToolCallDetail, summarizeToolInput } from './ToolCallDetail'
 
 const toolIcons: Record<string, typeof Terminal> = {
   bash: Terminal,
@@ -25,8 +26,10 @@ interface Props {
   name: string
   input: Record<string, unknown>
   result?: string
+  summary?: string
   isError?: boolean
   durationMs?: number
+  createdAt?: string
   selected?: boolean
   onSelect?: (id: string) => void
 }
@@ -36,97 +39,81 @@ export function ToolCallBlock({
   name,
   input,
   result,
+  summary,
   isError,
   durationMs,
+  createdAt,
   selected,
   onSelect,
 }: Props) {
-  const [expanded, setExpanded] = useState(false)
-
   const Icon = toolIcons[name.toLowerCase()] ?? Terminal
   const colorClass = toolColors[name.toLowerCase()] ?? 'text-slate-400'
-
-  const inputPreview = getInputPreview(name, input)
-  const hasResult = result !== undefined
+  const inputPreview = summarizeToolInput(name, input)
   const handleSelect = () => onSelect?.(id)
 
   return (
     <div
       data-tool-call-id={id}
-      className={`rounded-lg border transition-colors cursor-pointer ${
+      className={`overflow-hidden rounded-[20px] border ${
         selected
-          ? 'border-[var(--color-accent)]/30 bg-white/[0.04]'
-          : 'border-white/[0.06] bg-white/[0.03] hover:bg-white/[0.05]'
+          ? 'border-[var(--color-accent)]/35 bg-cyan-400/8 ring-1 ring-cyan-400/20'
+          : 'border-white/[0.06] bg-[linear-gradient(135deg,rgba(19,24,33,0.92),rgba(12,15,21,0.84))] hover:border-white/12 hover:bg-white/[0.04]'
       }`}
-      onClick={handleSelect}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          handleSelect()
-        }
-      }}
     >
-      {/* Header */}
-      <div className="flex items-center gap-2 px-3 py-2">
-        <Icon size={14} weight="bold" className={colorClass} />
-        <span className={`text-[12px] font-mono font-semibold ${colorClass}`}>{name}</span>
-        <span className="flex-1" />
-        {isError !== undefined &&
-          (isError ? (
-            <XCircle size={14} weight="fill" className="text-red-400" />
-          ) : (
-            <CheckCircle size={14} weight="fill" className="text-emerald-400" />
-          ))}
-        {durationMs !== undefined && (
-          <span className="text-[10px] text-[var(--color-text-disabled)] font-mono">
-            {durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`}
-          </span>
-        )}
-        {hasResult && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation()
-              setExpanded(!expanded)
-            }}
-            className="text-[var(--color-text-disabled)] hover:text-[var(--color-text-muted)]"
+      <button
+        type="button"
+        onClick={handleSelect}
+        aria-expanded={selected}
+        className="w-full text-left"
+      >
+        <div className="flex items-center gap-2 px-4 py-3">
+          <Icon size={14} weight="bold" className={colorClass} />
+          <span
+            className={`text-[11px] font-mono font-semibold uppercase tracking-[0.16em] ${colorClass}`}
           >
-            {expanded ? <CaretDown size={12} /> : <CaretRight size={12} />}
-          </button>
-        )}
-      </div>
-
-      {/* Input preview */}
-      {inputPreview && (
-        <div className="px-3 pb-2">
-          <p className="text-[11px] font-mono text-[var(--color-text-muted)] truncate">
-            {inputPreview}
-          </p>
+            {name}
+          </span>
+          {createdAt && (
+            <span className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] font-mono text-[var(--color-text-disabled)]">
+              {formatTime(createdAt)}
+            </span>
+          )}
+          <span className="flex-1" />
+          {isError !== undefined &&
+            (isError ? (
+              <XCircle size={14} weight="fill" className="text-red-400" />
+            ) : (
+              <CheckCircle size={14} weight="fill" className="text-emerald-400" />
+            ))}
+          {durationMs !== undefined && (
+            <span className="text-[10px] text-[var(--color-text-disabled)] font-mono">
+              {durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`}
+            </span>
+          )}
+          <span className="text-[var(--color-text-disabled)]">
+            {selected ? <CaretDown size={12} /> : <CaretRight size={12} />}
+          </span>
         </div>
-      )}
 
-      {/* Expandable output */}
-      {expanded && result && (
-        <>
-          <div className="border-t border-white/[0.06] mx-3" />
-          <div className="px-3 py-2 max-h-[300px] overflow-y-auto">
-            <pre className="text-[11px] font-mono text-[var(--color-text-secondary)] whitespace-pre-wrap break-all">
-              {result}
-            </pre>
+        {inputPreview && (
+          <div className="px-4 pb-3">
+            <p className="text-[12px] font-mono text-[var(--color-text-muted)] truncate">
+              {inputPreview}
+            </p>
           </div>
-        </>
+        )}
+      </button>
+
+      {selected && (
+        <ToolCallDetail
+          name={name}
+          input={input}
+          result={result}
+          summary={summary}
+          isError={isError}
+          durationMs={durationMs}
+        />
       )}
     </div>
   )
-}
-
-function getInputPreview(tool: string, input: Record<string, unknown>): string {
-  const name = tool.toLowerCase()
-  if (name === 'bash' && input.command) return String(input.command)
-  if ((name === 'read' || name === 'edit' || name === 'write') && input.file_path)
-    return String(input.file_path)
-  if (name === 'browser' && input.url) return String(input.url)
-  const keys = Object.keys(input)
-  if (keys.length === 0) return ''
-  return `${keys[0]}: ${String(input[keys[0]]).slice(0, 80)}`
 }
