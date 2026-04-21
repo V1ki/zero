@@ -16,6 +16,7 @@ import type {
   ChannelCapabilities,
   CompressionResult,
   Message,
+  RunningToolAbortRequestStatus,
   ReasoningEffort,
   SecretFilter,
   Session as SessionData,
@@ -41,6 +42,7 @@ import { buildSnapshot } from '../agent/snapshot'
 import { loadBootstrapFiles } from '../bootstrap/loader'
 import { loadSkills } from '../skill/loader'
 import type { ToolRegistry } from '../tool/registry'
+import { SessionRunningToolRegistry } from './running-tool-registry'
 
 /**
  * Dependencies injected into Session for observability, memory, and eventing.
@@ -118,6 +120,7 @@ export class Session {
   private nextTurnIndex = 1
   private pendingAgentRefresh = false
   private injectedMemoryIds = new Map<string, string>()
+  private runningToolRegistry = new SessionRunningToolRegistry()
   /** Channel capabilities for system prompt injection */
   private channelCapabilities?: ChannelCapabilities
 
@@ -251,6 +254,7 @@ export class Session {
       schedulerHandle: this.deps.schedulerHandle,
       scheduleStore: this.deps.scheduleStore,
       agentControl: this.agentControl,
+      runningToolRegistry: this.runningToolRegistry,
     }
 
     const agentObs: AgentObservability = {
@@ -1005,6 +1009,7 @@ export class Session {
       nextTurnIndex: Session.deriveNextTurnIndex(data.id, messages, deps.observability),
       pendingAgentRefresh: false,
       injectedMemoryIds: new Map<string, string>(),
+      runningToolRegistry: new SessionRunningToolRegistry(),
     })
     session.restoreSnapshotStateFromLogger()
     session.deps.observability?.syncSessionActiveState(session.data.id, session.data.status)
@@ -1021,6 +1026,16 @@ export class Session {
 
   getMessages(): Message[] {
     return [...this.messages]
+  }
+
+  abortRunningTool(toolUseId: string): RunningToolAbortRequestStatus {
+    const liveEntry = this.runningToolRegistry.get(toolUseId)
+    if (liveEntry) {
+      return liveEntry.requestAbort('Command aborted by user from Session Detail.')
+    }
+
+    const toolName = this.findToolNameByUseId(toolUseId)
+    return toolName === 'bash' ? 'already_finished' : 'not_abortable'
   }
 
   getSubAgentSnapshot(): AgentSnapshot[] {
@@ -1095,5 +1110,19 @@ export class Session {
     if (message.content.some((block) => block.type === 'tool_result')) return false
 
     return message.content.some((block) => block.type === 'text' || block.type === 'image')
+  }
+
+  private findToolNameByUseId(toolUseId: string): string | undefined {
+    for (const message of this.messages) {
+      if (message.role !== 'assistant') continue
+      for (const block of message.content) {
+        if (block.type !== 'tool_use') continue
+        if (block.id === toolUseId && typeof block.name === 'string') {
+          return block.name.toLowerCase()
+        }
+      }
+    }
+
+    return undefined
   }
 }

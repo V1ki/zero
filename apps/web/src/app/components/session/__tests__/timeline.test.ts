@@ -167,6 +167,44 @@ describe('buildTimeline', () => {
     expect(toolCall).toBeDefined()
     if (toolCall?.type === 'tool-call') {
       expect(toolCall.durationMs).toBe(125)
+      expect(toolCall.status).toBe('success')
+    }
+  })
+
+  test('marks live tool calls as running from trace status', () => {
+    const messages: Message[] = [
+      {
+        id: 'msg_tool_assistant_running',
+        role: 'assistant',
+        messageType: 'message',
+        content: [{ type: 'tool_use', id: 'call_running_1', name: 'bash', input: { command: 'sleep 30' } }],
+        createdAt: '2026-03-08T00:00:01.000Z',
+      },
+    ]
+
+    const traces: TraceSpan[] = [
+      {
+        id: 'span_tool_running',
+        sessionId: 'sess_1',
+        name: 'tool:bash',
+        startTime: '2026-03-08T00:00:01.000Z',
+        durationMs: 120,
+        status: 'running',
+        metadata: {
+          toolUseId: 'call_running_1',
+          toolName: 'bash',
+        },
+        children: [],
+      },
+    ]
+
+    const items = buildTimeline(messages, traces)
+    const toolCall = items.find((item) => item.type === 'tool-call')
+
+    expect(toolCall).toBeDefined()
+    if (toolCall?.type === 'tool-call') {
+      expect(toolCall.status).toBe('running')
+      expect(toolCall.result).toBeUndefined()
     }
   })
 

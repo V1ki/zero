@@ -175,11 +175,50 @@ export interface AgentControlHandle {
   readonly activeAgentCount: number
 }
 
+export type RunningToolState = 'running' | 'abort_requested' | 'finished'
+
+export type RunningToolAbortRequestStatus =
+  | 'accepted'
+  | 'already_requested'
+  | 'already_finished'
+  | 'not_abortable'
+
+export type RunningToolTerminationCause = 'completed' | 'abort' | 'timeout' | 'spawn_error'
+
+export interface RunningToolTerminalMetadata {
+  finishedAt: string
+  cause: RunningToolTerminationCause
+  success: boolean
+  outputSummary?: string
+}
+
+export interface RunningToolHandle {
+  readonly toolUseId: string
+  readonly toolName: string
+  readonly abortable: boolean
+  getState(): RunningToolState
+  getAbortReason(): string | undefined
+  getTerminalMetadata(): RunningToolTerminalMetadata | undefined
+  requestAbort(reason?: string): RunningToolAbortRequestStatus
+  setAbortHandler(handler: (reason?: string) => void): void
+  markFinished(metadata: RunningToolTerminalMetadata): boolean
+}
+
+export interface RunningToolRegistry {
+  register(entry: {
+    toolUseId: string
+    toolName: string
+    abortable: boolean
+  }): RunningToolHandle
+  get(toolUseId: string): RunningToolHandle | undefined
+}
+
 export interface ToolContext {
   sessionId: string
   currentModel?: string
   currentRequestId?: string
   currentTraceSpanId?: string
+  currentToolUseId?: string
   spawnedByRequestId?: string
   workDir: string
   projectRoot?: string
@@ -229,6 +268,7 @@ export interface ToolContext {
     delete(name: string): boolean
   }
   agentControl?: AgentControlHandle
+  runningToolRegistry?: RunningToolRegistry
 }
 
 export interface ToolLogger {

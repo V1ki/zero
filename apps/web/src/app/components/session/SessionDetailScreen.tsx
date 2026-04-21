@@ -685,6 +685,7 @@ export function SessionDetailScreen({
               </div>
             ) : (
               <TimelineView
+                sessionId={session.id}
                 items={timelineItems}
                 llmRequests={llmRequests}
                 selectedToolId={selectedToolId}

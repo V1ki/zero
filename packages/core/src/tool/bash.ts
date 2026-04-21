@@ -1,4 +1,10 @@
-import type { FuseRule, ToolContext, ToolResult } from '@zero-os/shared'
+import type {
+  FuseRule,
+  RunningToolTerminationCause,
+  ToolContext,
+  ToolResult,
+} from '@zero-os/shared'
+import { now } from '@zero-os/shared'
 import { FuseListChecker } from '../config/fuse-list'
 import { BaseTool } from './base'
 import { buildToolProcessEnv } from './process-env'
@@ -7,6 +13,96 @@ interface BashInput {
   command: string
   description?: string
   timeout?: number
+}
+
+const PIPE_GRACE_MS = 1000
+const FORCE_KILL_GRACE_MS = 750
+const DEFAULT_ABORT_MESSAGE = 'Command aborted by user from Session Detail.'
+
+function formatExitCode(exitCode: number): string {
+  return `Exit code: ${exitCode}`
+}
+
+function buildOutput(stdout: string, stderr: string, abortMessage?: string): string {
+  const trimmedStdout = stdout.trimEnd()
+  const trimmedStderr = stderr.trimEnd()
+
+  let output = trimmedStdout
+  if (trimmedStderr) {
+    output = output ? `${output}\n[stderr]\n${trimmedStderr}` : `[stderr]\n${trimmedStderr}`
+  }
+  if (!output) {
+    output = '(no output)'
+  }
+
+  if (abortMessage) {
+    output = `${output}\n\n[abort]\n${abortMessage}`
+  }
+
+  return output
+}
+
+function createStreamCapture(stream?: ReadableStream<Uint8Array> | number | null) {
+  if (!stream || typeof stream === 'number') {
+    return {
+      done: Promise.resolve(),
+      cancel: async () => {},
+      getText: () => '',
+    }
+  }
+
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  const chunks: string[] = []
+  let flushed = false
+
+  const flushDecoder = () => {
+    if (flushed) return
+    const tail = decoder.decode()
+    if (tail) chunks.push(tail)
+    flushed = true
+  }
+
+  const done = (async () => {
+    try {
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        if (value) {
+          chunks.push(decoder.decode(value, { stream: true }))
+        }
+      }
+    } catch {
+      // Best effort — cancellation and subprocess teardown can end the stream abruptly.
+    } finally {
+      flushDecoder()
+    }
+  })()
+
+  return {
+    done,
+    cancel: async () => {
+      try {
+        await reader.cancel()
+      } catch {
+        // Ignore cancellation races.
+      } finally {
+        flushDecoder()
+      }
+    },
+    getText: () => {
+      flushDecoder()
+      return chunks.join('')
+    },
+  }
+}
+
+function tryKillProcess(proc: ReturnType<typeof Bun.spawn>, signal?: NodeJS.Signals) {
+  try {
+    signal ? proc.kill(signal) : proc.kill()
+  } catch {
+    // Ignore cases where the process already exited.
+  }
 }
 
 export class BashTool extends BaseTool {
@@ -37,46 +133,123 @@ export class BashTool extends BaseTool {
 
   protected async execute(ctx: ToolContext, input: unknown): Promise<ToolResult> {
     const { command, timeout = 120_000 } = input as BashInput
+    const toolUseId = ctx.currentToolUseId
+    const runningHandle =
+      toolUseId && ctx.runningToolRegistry ? ctx.runningToolRegistry.get(toolUseId) : undefined
 
-    const proc = Bun.spawn(['bash', '-c', command], {
-      cwd: ctx.workDir,
-      stdout: 'pipe',
-      stderr: 'pipe',
-      env: buildToolProcessEnv(ctx),
+    let proc: ReturnType<typeof Bun.spawn>
+    try {
+      proc = Bun.spawn(['bash', '-c', command], {
+        cwd: ctx.workDir,
+        stdout: 'pipe',
+        stderr: 'pipe',
+        env: buildToolProcessEnv(ctx),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      runningHandle?.markFinished({
+        finishedAt: now(),
+        cause: 'spawn_error',
+        success: false,
+        outputSummary: `Spawn failed: ${message.slice(0, 80)}`,
+      })
+      return {
+        success: false,
+        output: message,
+        outputSummary: `Spawn failed: ${message.slice(0, 80)}`,
+      }
+    }
+
+    const stdoutCapture = createStreamCapture(proc.stdout)
+    const stderrCapture = createStreamCapture(proc.stderr)
+    let terminationCause: RunningToolTerminationCause | undefined
+    let abortMessage: string | undefined
+    let forceKillTimer: ReturnType<typeof setTimeout> | undefined
+
+    const markFinished = (
+      cause: RunningToolTerminationCause,
+      success: boolean,
+      outputSummary?: string,
+    ) => {
+      runningHandle?.markFinished({
+        finishedAt: now(),
+        cause,
+        success,
+        outputSummary,
+      })
+    }
+
+    const latchTerminationCause = (cause: RunningToolTerminationCause) => {
+      if (terminationCause) return false
+      terminationCause = cause
+      return true
+    }
+
+    const scheduleForceKill = () => {
+      forceKillTimer = setTimeout(() => {
+        tryKillProcess(proc, 'SIGKILL')
+      }, FORCE_KILL_GRACE_MS)
+    }
+
+    runningHandle?.setAbortHandler((reason) => {
+      abortMessage = reason?.trim() || DEFAULT_ABORT_MESSAGE
+      if (!latchTerminationCause('abort')) return
+      tryKillProcess(proc, 'SIGTERM')
+      scheduleForceKill()
     })
 
     const timeoutId = setTimeout(() => {
-      proc.kill()
+      if (!latchTerminationCause('timeout')) return
+      markFinished('timeout', false, `Command timed out: ${command.slice(0, 80)}`)
+      tryKillProcess(proc, 'SIGTERM')
+      scheduleForceKill()
     }, timeout)
 
     const exitCode = await proc.exited
     clearTimeout(timeoutId)
+    if (forceKillTimer) clearTimeout(forceKillTimer)
 
-    // Read pipes with a grace period — background child processes may hold
-    // inherited fds open indefinitely (e.g. `cmd &`), so we don't wait forever.
-    const PIPE_GRACE_MS = 1000
-    const stdout = await Promise.race([
-      new Response(proc.stdout).text(),
-      Bun.sleep(PIPE_GRACE_MS).then(() => ''),
+    const finalCause = terminationCause ?? 'completed'
+    if (finalCause === 'abort') {
+      markFinished('abort', false, `Command aborted: ${command.slice(0, 80)}`)
+    } else if (finalCause === 'completed') {
+      markFinished('completed', exitCode === 0, undefined)
+    }
+
+    const streamDrain = Promise.allSettled([stdoutCapture.done, stderrCapture.done])
+    const drainResult = await Promise.race([
+      streamDrain.then(() => 'drained' as const),
+      Bun.sleep(PIPE_GRACE_MS).then(() => 'timeout' as const),
     ])
-    const stderr = await Promise.race([
-      new Response(proc.stderr).text(),
-      Bun.sleep(PIPE_GRACE_MS).then(() => ''),
-    ])
+    if (drainResult === 'timeout') {
+      await Promise.allSettled([stdoutCapture.cancel(), stderrCapture.cancel()])
+    }
 
-    const output = stdout + (stderr ? `\n[stderr]\n${stderr}` : '')
+    const output = buildOutput(
+      stdoutCapture.getText(),
+      stderrCapture.getText(),
+      finalCause === 'abort' ? abortMessage ?? DEFAULT_ABORT_MESSAGE : undefined,
+    )
 
-    if (exitCode !== 0) {
+    if (finalCause === 'abort') {
       return {
         success: false,
-        output: output || `Exit code: ${exitCode}`,
+        output,
+        outputSummary: `Command aborted: ${command.slice(0, 80)}`,
+      }
+    }
+
+    if (exitCode !== 0 || finalCause === 'timeout') {
+      return {
+        success: false,
+        output: output || formatExitCode(exitCode),
         outputSummary: `Command failed (exit ${exitCode}): ${command.slice(0, 80)}`,
       }
     }
 
     return {
       success: true,
-      output: output || '(no output)',
+      output,
       outputSummary: `Executed: ${command.slice(0, 80)}`,
     }
   }

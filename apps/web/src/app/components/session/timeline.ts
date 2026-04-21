@@ -189,6 +189,7 @@ export type TimelineItem =
       result?: string
       summary?: string
       isError?: boolean
+      status?: TraceSpan['status']
       durationMs?: number
       createdAt: string
     }
@@ -208,6 +209,7 @@ export function buildTimeline(
   const items: TimelineItem[] = []
   const toolResults = buildToolResultMap(messages, traces, llmRequests)
   const toolDurations = extractToolDurations(traces)
+  const toolStatuses = extractToolStatuses(traces)
   const matchedMemoryInjectionTexts = buildMatchedMemoryInjectionTextSet(decisions, llmRequests)
   const handledSubAgentIds = new Set<string>()
   const spawnToolCallIds = new Set<string>()
@@ -395,6 +397,9 @@ export function buildTimeline(
               result: result?.content,
               summary: result?.summary,
               isError: result?.isError,
+              status:
+                toolStatuses.get(toolId) ??
+                (result ? (result.isError ? 'error' : 'success') : 'running'),
               durationMs: toolDurations.get(toolId),
               createdAt: msg.createdAt,
             })
@@ -884,6 +889,20 @@ function extractToolDurations(traces: TraceSpan[]): Map<string, number> {
   }
 
   return toolDurations
+}
+
+function extractToolStatuses(traces: TraceSpan[]): Map<string, TraceSpan['status']> {
+  const toolStatuses = new Map<string, TraceSpan['status']>()
+
+  for (const span of flattenTraceSpans(traces)) {
+    if (!span.name.startsWith('tool:')) continue
+    const toolUseId =
+      span.metadata && typeof span.metadata.toolUseId === 'string' ? span.metadata.toolUseId : null
+    if (!toolUseId) continue
+    toolStatuses.set(toolUseId, span.status)
+  }
+
+  return toolStatuses
 }
 
 function buildToolResultMap(

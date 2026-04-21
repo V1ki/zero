@@ -17,7 +17,10 @@ interface ToolCallDetailProps {
   result?: string
   summary?: string
   isError?: boolean
+  status?: 'running' | 'success' | 'error'
   durationMs?: number
+  abortPending?: boolean
+  onAbort?: () => void
   nested?: boolean
 }
 
@@ -35,7 +38,10 @@ export function ToolCallDetail({
   result,
   summary,
   isError,
+  status,
   durationMs,
+  abortPending,
+  onAbort,
   nested = false,
 }: ToolCallDetailProps) {
   const toolName = getToolName(name)
@@ -48,7 +54,10 @@ export function ToolCallDetail({
           result={result}
           summary={summary}
           isError={isError}
+          status={status}
           durationMs={durationMs}
+          abortPending={abortPending}
+          onAbort={onAbort}
           nested={nested}
         />
       )
@@ -182,7 +191,10 @@ function BashToolDetail({
   result,
   summary,
   isError,
+  status,
   durationMs,
+  abortPending,
+  onAbort,
   nested,
 }: Omit<ToolCallDetailProps, 'name'>) {
   const command = stringValue(input.command) ?? '(missing command)'
@@ -205,6 +217,19 @@ function BashToolDetail({
         {hasOutput && stderr ? <MetaChip>stderr {stderrLines} lines</MetaChip> : null}
         <StatusChip isError={isError} />
       </ToolMetaRow>
+
+      {status === 'running' && onAbort ? (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={onAbort}
+            disabled={abortPending}
+            className="rounded-xl border border-rose-400/25 bg-rose-400/8 px-3 py-1.5 text-[11px] text-rose-100 transition-colors hover:border-rose-400/40 hover:bg-rose-400/14 disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            {abortPending ? 'Aborting...' : 'Abort'}
+          </button>
+        </div>
+      ) : null}
 
       {runSummary ? <InfoStrip tone="cyan" label="Run Summary" text={runSummary} /> : null}
 
@@ -244,8 +269,16 @@ function BashToolDetail({
         </TerminalSurface>
       ) : (
         <EmptyStateStrip
-          title="This run did not persist stdout/stderr in session history."
-          detail="The command succeeded, but only the execution marker was recorded for this step."
+          title={
+            status === 'running'
+              ? 'This command is still running and has not produced a persisted tool result yet.'
+              : 'This run did not persist stdout/stderr in session history.'
+          }
+          detail={
+            status === 'running'
+              ? 'Abort is available while the process is still live. Output will appear once the run finishes.'
+              : 'The command succeeded, but only the execution marker was recorded for this step.'
+          }
         />
       )}
     </DetailShell>

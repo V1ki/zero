@@ -6,11 +6,15 @@ import {
   FilePlus,
   Globe,
   PencilSimple,
+  Spinner,
   Terminal,
   XCircle,
 } from '@phosphor-icons/react'
+import { useEffect, useState } from 'react'
+import { apiPost } from '../../lib/api'
 import { formatTime } from '../../lib/format'
 import { toolColors } from '../../lib/colors'
+import { useUIStore } from '../../stores/ui'
 import { ToolCallDetail, summarizeToolInput } from './ToolCallDetail'
 
 const toolIcons: Record<string, typeof Terminal> = {
@@ -22,12 +26,14 @@ const toolIcons: Record<string, typeof Terminal> = {
 }
 
 interface Props {
+  sessionId?: string
   id: string
   name: string
   input: Record<string, unknown>
   result?: string
   summary?: string
   isError?: boolean
+  status?: 'running' | 'success' | 'error'
   durationMs?: number
   createdAt?: string
   selected?: boolean
@@ -35,21 +41,55 @@ interface Props {
 }
 
 export function ToolCallBlock({
+  sessionId,
   id,
   name,
   input,
   result,
   summary,
   isError,
+  status,
   durationMs,
   createdAt,
   selected,
   onSelect,
 }: Props) {
+  const { addToast } = useUIStore()
   const Icon = toolIcons[name.toLowerCase()] ?? Terminal
   const colorClass = toolColors[name.toLowerCase()] ?? 'text-slate-400'
   const inputPreview = summarizeToolInput(name, input)
+  const [abortPending, setAbortPending] = useState(false)
   const handleSelect = () => onSelect?.(id)
+  const isRunning = status === 'running'
+
+  useEffect(() => {
+    if (!isRunning) {
+      setAbortPending(false)
+    }
+  }, [isRunning])
+
+  async function handleAbort() {
+    if (!sessionId || abortPending) return
+    setAbortPending(true)
+
+    try {
+      const response = await apiPost<{
+        ok: boolean
+        status: 'accepted' | 'already_requested' | 'already_finished'
+      }>(`/api/sessions/${sessionId}/tool-calls/${id}/abort`, {})
+
+      if (response.status === 'accepted') {
+        addToast('success', 'Abort requested')
+        return
+      }
+
+      if (response.status === 'already_finished') {
+        setAbortPending(false)
+      }
+    } catch {
+      setAbortPending(false)
+    }
+  }
 
   return (
     <div
@@ -78,9 +118,17 @@ export function ToolCallBlock({
               {formatTime(createdAt)}
             </span>
           )}
+          {isRunning ? (
+            <span className="rounded-full border border-cyan-400/15 bg-cyan-400/[0.08] px-2 py-0.5 text-[10px] font-mono text-cyan-100">
+              <span className="inline-flex items-center gap-1">
+                <Spinner size={10} className="animate-spin" />
+                running
+              </span>
+            </span>
+          ) : null}
           <span className="flex-1" />
           {isError !== undefined &&
-            (isError ? (
+            (isRunning ? null : isError ? (
               <XCircle size={14} weight="fill" className="text-red-400" />
             ) : (
               <CheckCircle size={14} weight="fill" className="text-emerald-400" />
@@ -111,7 +159,10 @@ export function ToolCallBlock({
           result={result}
           summary={summary}
           isError={isError}
+          status={status}
           durationMs={durationMs}
+          abortPending={abortPending}
+          onAbort={name.toLowerCase() === 'bash' && isRunning ? handleAbort : undefined}
         />
       )}
     </div>

@@ -302,20 +302,33 @@ export class Agent {
   }): ToolExecutor {
     return {
       has: (toolName) => this.toolRegistry.has(toolName),
-      execute: async (toolName, _toolUseId, input) => {
+      execute: async (toolName, toolUseId, input) => {
         const tool = this.toolRegistry.get(toolName)
         if (!tool) {
           throw new Error(`Unknown tool: ${toolName}`)
         }
 
+        const runningToolHandle = this.toolContext.runningToolRegistry?.register({
+          toolUseId,
+          toolName,
+          abortable: toolName === 'bash',
+        })
         const toolContext: ToolContext = {
           ...this.toolContext,
           currentRequestId: executionState.currentRequestId,
           currentTraceSpanId: executionState.currentTraceSpanId,
+          currentToolUseId: toolUseId,
           tracer: this.toolContext.tracer,
         }
 
-        return await tool.run(toolContext, input)
+        const result = await tool.run(toolContext, input)
+        runningToolHandle?.markFinished({
+          finishedAt: now(),
+          cause: 'completed',
+          success: result.success,
+          outputSummary: result.outputSummary,
+        })
+        return result
       },
     }
   }

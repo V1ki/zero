@@ -14,6 +14,7 @@ import {
 } from './timeline'
 
 interface Props {
+  sessionId?: string
   items: TimelineItem[]
   llmRequests?: MemoryRetrievalRequestLike[]
   selectedToolId: string | null
@@ -31,6 +32,7 @@ interface Props {
 }
 
 export function TimelineView({
+  sessionId,
   items,
   llmRequests = [],
   selectedToolId,
@@ -74,6 +76,7 @@ export function TimelineView({
           case 'tool-call':
             return (
               <ToolCallBlock
+                sessionId={sessionId}
                 key={item.id}
                 id={item.id}
                 name={item.name}
@@ -81,6 +84,7 @@ export function TimelineView({
                 result={item.result}
                 summary={item.summary}
                 isError={item.isError}
+                status={item.status}
                 durationMs={item.durationMs}
                 createdAt={item.createdAt}
                 selected={selectedToolId === item.id}

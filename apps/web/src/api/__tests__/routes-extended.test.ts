@@ -3,6 +3,7 @@ import { cpSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Message } from '@zero-os/shared'
 import { getSessionLogRelativeDir } from '@zero-os/shared'
+import { SessionRunningToolRegistry } from '../../../../../packages/core/src/session/running-tool-registry'
 import { createTestProjectRoot } from '../../../../../packages/core/src/session/__tests__/test-helpers'
 import { startZeroOS } from '../../../../server/src/main'
 import type { ZeroOS } from '../../../../server/src/main'
@@ -182,6 +183,89 @@ describe('API Routes Extended', () => {
 
   test('POST /api/sessions/:id/archive returns 404 for missing', async () => {
     const res = await app.request('/api/sessions/nonexistent/archive', {
+      method: 'POST',
+    })
+    expect(res.status).toBe(404)
+  })
+
+  test('POST /api/sessions/:id/tool-calls/:toolUseId/abort is idempotent for live bash runs', async () => {
+    const session = zero.sessionManager.create('web')
+    ;(session as unknown as { messages: Message[] }).messages.push({
+      id: 'abort_tool_assistant_1',
+      sessionId: session.data.id,
+      role: 'assistant',
+      messageType: 'message',
+      content: [{ type: 'tool_use', id: 'call_abort_live_1', name: 'bash', input: { command: 'sleep 5' } }],
+      createdAt: new Date().toISOString(),
+    })
+
+    const runningToolRegistry = (
+      session as unknown as { runningToolRegistry: SessionRunningToolRegistry }
+    ).runningToolRegistry
+    runningToolRegistry.register({
+      toolUseId: 'call_abort_live_1',
+      toolName: 'bash',
+      abortable: true,
+    })
+
+    const first = await app.request(
+      `/api/sessions/${session.data.id}/tool-calls/call_abort_live_1/abort`,
+      { method: 'POST' },
+    )
+    expect(first.status).toBe(200)
+    expect(await first.json()).toEqual({ ok: true, status: 'accepted' })
+
+    const second = await app.request(
+      `/api/sessions/${session.data.id}/tool-calls/call_abort_live_1/abort`,
+      { method: 'POST' },
+    )
+    expect(second.status).toBe(200)
+    expect(await second.json()).toEqual({ ok: true, status: 'already_requested' })
+  })
+
+  test('POST /api/sessions/:id/tool-calls/:toolUseId/abort returns already_finished for completed bash calls', async () => {
+    const session = zero.sessionManager.create('web')
+    ;(session as unknown as { messages: Message[] }).messages.push({
+      id: 'abort_tool_assistant_2',
+      sessionId: session.data.id,
+      role: 'assistant',
+      messageType: 'message',
+      content: [{ type: 'tool_use', id: 'call_abort_done_1', name: 'bash', input: { command: 'pwd' } }],
+      createdAt: new Date().toISOString(),
+    })
+
+    const res = await app.request(
+      `/api/sessions/${session.data.id}/tool-calls/call_abort_done_1/abort`,
+      { method: 'POST' },
+    )
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true, status: 'already_finished' })
+  })
+
+  test('POST /api/sessions/:id/tool-calls/:toolUseId/abort rejects non-bash tool ids', async () => {
+    const session = zero.sessionManager.create('web')
+    ;(session as unknown as { messages: Message[] }).messages.push({
+      id: 'abort_tool_assistant_3',
+      sessionId: session.data.id,
+      role: 'assistant',
+      messageType: 'message',
+      content: [{ type: 'tool_use', id: 'call_abort_read_1', name: 'read', input: { path: '/tmp/demo' } }],
+      createdAt: new Date().toISOString(),
+    })
+
+    const res = await app.request(
+      `/api/sessions/${session.data.id}/tool-calls/call_abort_read_1/abort`,
+      { method: 'POST' },
+    )
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({
+      ok: false,
+      error: 'Tool call is not an abortable bash run',
+    })
+  })
+
+  test('POST /api/sessions/:id/tool-calls/:toolUseId/abort returns 404 for missing sessions', async () => {
+    const res = await app.request('/api/sessions/nonexistent/tool-calls/call_abort_404/abort', {
       method: 'POST',
     })
     expect(res.status).toBe(404)

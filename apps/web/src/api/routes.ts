@@ -618,6 +618,22 @@ export function createRoutes(zero: ZeroOS) {
       }
     })
 
+    .post('/api/sessions/:id/tool-calls/:toolUseId/abort', (c) => {
+      const id = c.req.param('id')
+      const toolUseId = c.req.param('toolUseId')
+      const session = zero.sessionManager.get(id)
+      if (!session) {
+        return c.json({ error: 'Session not found' }, 404)
+      }
+
+      const status = session.abortRunningTool(toolUseId)
+      if (status === 'not_abortable') {
+        return c.json({ ok: false, error: 'Tool call is not an abortable bash run' }, 409)
+      }
+
+      return c.json({ ok: true, status })
+    })
+
     .post('/api/sessions/:id/archive', (c) => {
       const id = c.req.param('id')
       const session = zero.sessionManager.get(id)

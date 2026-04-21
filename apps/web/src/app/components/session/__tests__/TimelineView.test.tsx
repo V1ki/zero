@@ -96,4 +96,39 @@ describe('TimelineView', () => {
     expect(html).toContain('Deployment rollback details')
     expect(html).toContain('data-tool-renderer="memory"')
   })
+
+  test('shows an abort action for a selected running bash call when a session id is available', () => {
+    const items: TimelineItem[] = [
+      {
+        type: 'tool-call',
+        id: 'tool-abort-1',
+        name: 'bash',
+        input: { command: 'sleep 30' },
+        status: 'running',
+        createdAt: '2026-04-19T10:36:00.000Z',
+      },
+    ]
+
+    const html = renderToStaticMarkup(
+      <TimelineView
+        sessionId="sess_abort"
+        items={items}
+        selectedToolId="tool-abort-1"
+        selectedDecisionId={null}
+        selectedTaskClosureId={null}
+        selectedMemoryNudgeId={null}
+        selectedSubAgentId={null}
+        highlightedAssistantMessageId={null}
+        highlightedSubAgentId={null}
+        onSelectTool={() => {}}
+        onSelectDecision={() => {}}
+        onSelectTaskClosure={() => {}}
+        onSelectMemoryNudge={() => {}}
+        onSelectSubAgent={() => {}}
+      />,
+    )
+
+    expect(html).toContain('Abort')
+    expect(html).toContain('running')
+  })
 })

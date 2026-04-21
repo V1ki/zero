@@ -6,6 +6,7 @@ import { EditTool } from '../edit'
 import { ReadTool } from '../read'
 import { ToolRegistry } from '../registry'
 import { WriteTool } from '../write'
+import { SessionRunningToolRegistry } from '../../session/running-tool-registry'
 
 const testDir = join(import.meta.dir, '__fixtures__')
 const ctx = {
@@ -167,6 +168,111 @@ describe('BashTool', () => {
     const tool = new BashTool([{ pattern: 'rm -rf /', description: 'Block root delete' }])
     const result = await tool.run(ctx, { command: 'ls /tmp' })
     expect(result.success).toBe(true)
+  })
+
+  test('preserves partial output and appends an abort footer when aborted', async () => {
+    const tool = new BashTool([])
+    const runningToolRegistry = new SessionRunningToolRegistry()
+    const toolUseId = 'call_bash_abort_1'
+    const handle = runningToolRegistry.register({
+      toolUseId,
+      toolName: 'bash',
+      abortable: true,
+    })
+
+    const runPromise = tool.run(
+      {
+        ...ctx,
+        currentToolUseId: toolUseId,
+        runningToolRegistry,
+      },
+      {
+        command: 'echo start && sleep 5 && echo end',
+        timeout: 10_000,
+      },
+    )
+
+    await Bun.sleep(150)
+    expect(handle.requestAbort('Command aborted by user from Session Detail.')).toBe('accepted')
+
+    const result = await runPromise
+    expect(result.success).toBe(false)
+    expect(result.output).toContain('start')
+    expect(result.output).not.toContain('end')
+    expect(result.output).toContain('[abort]')
+    expect(result.output).toContain('Command aborted by user from Session Detail.')
+    expect(result.outputSummary).toContain('Command aborted:')
+    expect(handle.getState()).toBe('finished')
+    expect(handle.getTerminalMetadata()?.cause).toBe('abort')
+  })
+
+  test('double abort stays idempotent and does not duplicate the footer', async () => {
+    const tool = new BashTool([])
+    const runningToolRegistry = new SessionRunningToolRegistry()
+    const toolUseId = 'call_bash_abort_2'
+    const handle = runningToolRegistry.register({
+      toolUseId,
+      toolName: 'bash',
+      abortable: true,
+    })
+
+    const runPromise = tool.run(
+      {
+        ...ctx,
+        currentToolUseId: toolUseId,
+        runningToolRegistry,
+      },
+      {
+        command: 'echo start && sleep 5 && echo end',
+        timeout: 10_000,
+      },
+    )
+
+    await Bun.sleep(150)
+    expect(handle.requestAbort('Command aborted by user from Session Detail.')).toBe('accepted')
+    expect(handle.requestAbort('Command aborted by user from Session Detail.')).toBe(
+      'already_requested',
+    )
+
+    const result = await runPromise
+    expect(result.output.match(/\[abort\]/g)?.length).toBe(1)
+    expect(handle.requestAbort('Command aborted by user from Session Detail.')).toBe(
+      'already_finished',
+    )
+  })
+
+  test('timeout wins over a later abort request', async () => {
+    const tool = new BashTool([])
+    const runningToolRegistry = new SessionRunningToolRegistry()
+    const toolUseId = 'call_bash_timeout_abort'
+    const handle = runningToolRegistry.register({
+      toolUseId,
+      toolName: 'bash',
+      abortable: true,
+    })
+
+    const runPromise = tool.run(
+      {
+        ...ctx,
+        currentToolUseId: toolUseId,
+        runningToolRegistry,
+      },
+      {
+        command: 'echo start && sleep 1 && echo end',
+        timeout: 40,
+      },
+    )
+
+    await Bun.sleep(80)
+    expect(handle.requestAbort('Command aborted by user from Session Detail.')).toBe(
+      'already_finished',
+    )
+
+    const result = await runPromise
+    expect(result.success).toBe(false)
+    expect(result.output).toContain('start')
+    expect(result.output).not.toContain('[abort]')
+    expect(handle.getTerminalMetadata()?.cause).toBe('timeout')
   })
 })
 

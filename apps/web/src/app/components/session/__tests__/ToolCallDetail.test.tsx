@@ -82,6 +82,52 @@ describe('ToolCallDetail', () => {
     expect(html).not.toContain('did not persist stdout/stderr')
   })
 
+  test('shows an abort action for a running bash call and disables it while abort is pending', () => {
+    const html = renderToStaticMarkup(
+      <ToolCallDetail
+        name="bash"
+        input={{ command: 'sleep 30' }}
+        status="running"
+        abortPending
+        onAbort={() => {}}
+      />,
+    )
+
+    expect(html).toContain('Aborting...')
+    expect(html).toContain('disabled=""')
+  })
+
+  test('renders aborted bash output with the abort footer', () => {
+    const html = renderToStaticMarkup(
+      <ToolCallDetail
+        name="bash"
+        input={{ command: 'sleep 30' }}
+        result={'start\n\n[abort]\nCommand aborted by user from Session Detail.'}
+        summary="Command aborted: sleep 30"
+        isError
+      />,
+    )
+
+    expect(html).toContain('start')
+    expect(html).toContain('[abort]')
+    expect(html).toContain('Command aborted by user from Session Detail.')
+  })
+
+  test('does not show an abort action for completed bash calls', () => {
+    const html = renderToStaticMarkup(
+      <ToolCallDetail
+        name="bash"
+        input={{ command: 'pwd' }}
+        result="/tmp/demo"
+        summary="Executed: pwd"
+        status="success"
+        onAbort={() => {}}
+      />,
+    )
+
+    expect(html).not.toContain('Abort')
+  })
+
   test('renders fetch responses with status and formatted json', () => {
     const html = renderToStaticMarkup(
       <ToolCallDetail
