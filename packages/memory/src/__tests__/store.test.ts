@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { mkdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { MemoryStore } from '../store'
 
@@ -37,6 +37,46 @@ describe('MemoryStore', () => {
     const retrieved = store.get('note', mem.id)
     expect(expectDefined(retrieved).title).toBe('Test Note')
     expect(expectDefined(retrieved).content).toBe('This is a test note.')
+  })
+
+  test('create rejects duplicate explicit id across types', async () => {
+    mkdirSync(testDir, { recursive: true })
+    const store = new MemoryStore(testDir)
+
+    const first = await store.create('note', 'First', 'Original', {
+      id: 'mem_fixed_duplicate',
+    })
+    expect(first.id).toBe('mem_fixed_duplicate')
+
+    await expect(
+      store.create('decision', 'Second', 'Should fail', {
+        id: 'mem_fixed_duplicate',
+      }),
+    ).rejects.toThrow('Memory id already exists')
+  })
+
+  test('save rejects duplicate id across types', async () => {
+    const store = new MemoryStore(testDir)
+    const first = await store.create('note', 'Saved Once', 'Original')
+
+    await expect(
+      store.save({
+        ...first,
+        type: 'decision',
+        title: 'Conflicting copy',
+      }),
+    ).rejects.toThrow('Memory id already exists in another type')
+  })
+
+  test('create releases temporary id lock after success', async () => {
+    const store = new MemoryStore(testDir)
+    const created = await store.create('note', 'Lock Cleanup', 'No stale lock')
+
+    const lockDir = join(testDir, '.id-locks')
+    expect(created.id).toMatch(/^mem_/)
+    if (existsSync(lockDir)) {
+      expect(readdirSync(lockDir)).toHaveLength(0)
+    }
   })
 
   test('list memories by type', async () => {

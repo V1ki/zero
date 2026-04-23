@@ -36,7 +36,7 @@ export class MemoryTool extends BaseTool {
       type: {
         type: 'string',
         enum: ALL_MEMORY_TYPES,
-        description: 'Memory type',
+        description: 'Memory type (required for create/list; optional for update/delete when id is enough)',
       },
       title: { type: 'string', description: 'Memory title (required for create)' },
       content: { type: 'string', description: 'Memory content in Markdown (required for create)' },
@@ -88,20 +88,24 @@ export class MemoryTool extends BaseTool {
       }
 
       case 'update': {
-        if (!type || !id) {
+        if (!id) {
           return {
             success: false,
-            output: 'update requires type and id',
-            outputSummary: 'Missing type or id for update',
+            output: 'update requires id',
+            outputSummary: 'Missing id for update',
           }
         }
-        const updated = await ctx.memoryStore.update(type, id, updates ?? {}, {
+        const resolvedType = this.resolveTypeById(ctx, id, type)
+        if (!resolvedType.success) {
+          return resolvedType.result
+        }
+        const updated = await ctx.memoryStore.update(resolvedType.type, id, updates ?? {}, {
           sessionId: ctx.sessionId,
         })
         if (!updated) {
           return {
             success: false,
-            output: `Memory not found: ${type}/${id}`,
+            output: `Memory not found: ${resolvedType.type}/${id}`,
             outputSummary: 'Memory not found',
           }
         }
@@ -113,17 +117,23 @@ export class MemoryTool extends BaseTool {
       }
 
       case 'delete': {
-        if (!type || !id) {
+        if (!id) {
           return {
             success: false,
-            output: 'delete requires type and id',
-            outputSummary: 'Missing type or id for delete',
+            output: 'delete requires id',
+            outputSummary: 'Missing id for delete',
           }
         }
-        const deleted = await ctx.memoryStore.delete(type, id)
+        const resolvedType = this.resolveTypeById(ctx, id, type)
+        if (!resolvedType.success) {
+          return resolvedType.result
+        }
+        const deleted = await ctx.memoryStore.delete(resolvedType.type, id)
         return {
           success: deleted,
-          output: deleted ? `Memory deleted: ${type}/${id}` : `Memory not found: ${type}/${id}`,
+          output: deleted
+            ? `Memory deleted: ${resolvedType.type}/${id}`
+            : `Memory not found: ${resolvedType.type}/${id}`,
           outputSummary: deleted ? `Deleted ${id}` : 'Memory not found',
         }
       }
@@ -153,6 +163,41 @@ export class MemoryTool extends BaseTool {
           output: `Unknown action: ${action}`,
           outputSummary: `Unknown action: ${action}`,
         }
+    }
+  }
+
+  private resolveTypeById(
+    ctx: ToolContext,
+    id: string,
+    type?: MemoryType,
+  ): { success: true; type: MemoryType } | { success: false; result: ToolResult } {
+    if (type) {
+      return { success: true, type }
+    }
+
+    const matches = ALL_MEMORY_TYPES.filter((candidate) => ctx.memoryStore?.get(candidate, id))
+    if (matches.length === 1) {
+      return { success: true, type: matches[0] }
+    }
+
+    if (matches.length === 0) {
+      return {
+        success: false,
+        result: {
+          success: false,
+          output: `Memory not found: ${id}`,
+          outputSummary: 'Memory not found',
+        },
+      }
+    }
+
+    return {
+      success: false,
+      result: {
+        success: false,
+        output: `Multiple memories found for id "${id}"; provide type explicitly`,
+        outputSummary: 'Ambiguous memory id',
+      },
     }
   }
 }

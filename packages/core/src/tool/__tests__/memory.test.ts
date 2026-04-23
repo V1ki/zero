@@ -104,6 +104,25 @@ describe('MemoryTool', () => {
     expect(result.output).toContain('Memory updated')
   })
 
+  test('updates a memory without type when id is enough', async () => {
+    const createResult = await tool.run(makeCtx(store), {
+      action: 'create',
+      type: 'decision',
+      title: 'Type Optional Update',
+      content: 'Original content',
+    })
+    const idMatch = createResult.output.match(/mem_[\w-]+/)
+    expect(idMatch).not.toBeNull()
+
+    const result = await tool.run(makeCtx(store), {
+      action: 'update',
+      id: expectDefined(idMatch)[0],
+      updates: { content: 'Updated without type' },
+    })
+    expect(result.success).toBe(true)
+    expect(result.output).toContain('Memory updated')
+  })
+
   test('deletes a memory', async () => {
     // Create then delete
     const createResult = await tool.run(makeCtx(store), {
@@ -118,6 +137,24 @@ describe('MemoryTool', () => {
     const result = await tool.run(makeCtx(store), {
       action: 'delete',
       type: 'note',
+      id: expectDefined(idMatch)[0],
+    })
+    expect(result.success).toBe(true)
+    expect(result.output).toContain('Memory deleted')
+  })
+
+  test('deletes a memory without type when id is enough', async () => {
+    const createResult = await tool.run(makeCtx(store), {
+      action: 'create',
+      type: 'incident',
+      title: 'Delete Without Type',
+      content: 'Will be deleted without type',
+    })
+    const idMatch = createResult.output.match(/mem_[\w-]+/)
+    expect(idMatch).not.toBeNull()
+
+    const result = await tool.run(makeCtx(store), {
+      action: 'delete',
       id: expectDefined(idMatch)[0],
     })
     expect(result.success).toBe(true)
@@ -142,12 +179,20 @@ describe('MemoryTool', () => {
     expect(result.output).toContain('requires type, title, and content')
   })
 
-  test('fails update without type or id', async () => {
+  test('fails update without id', async () => {
     const result = await tool.run(makeCtx(store), {
       action: 'update',
     })
     expect(result.success).toBe(false)
-    expect(result.output).toContain('requires type and id')
+    expect(result.output).toContain('requires id')
+  })
+
+  test('fails delete without id', async () => {
+    const result = await tool.run(makeCtx(store), {
+      action: 'delete',
+    })
+    expect(result.success).toBe(false)
+    expect(result.output).toContain('requires id')
   })
 
   test('fails delete with nonexistent id', async () => {

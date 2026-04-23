@@ -47,6 +47,8 @@ export interface MemoryRepository {
  * Memory store — CRUD operations for Markdown + Frontmatter memory files.
  */
 export class MemoryStore implements MemoryRepository {
+  private static readonly CREATE_ID_MAX_ATTEMPTS = 16
+
   constructor(private basePath: string) {}
 
   /**
@@ -58,29 +60,39 @@ export class MemoryStore implements MemoryRepository {
     content: string,
     options?: Partial<Memory>,
   ): Promise<Memory> {
+    const { id: requestedId, ...memoryOptions } = options ?? {}
+    const { id, release } = this.allocateCreateId(requestedId)
     const timestamp = now()
-    const memory: Memory = {
-      id: generatePrefixedId('mem'),
-      type,
-      title,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      status: 'draft',
-      confidence: 0.5,
-      tags: [],
-      related: [],
-      content,
-      ...options,
-    }
+    try {
+      const memory: Memory = {
+        id,
+        type,
+        title,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        status: 'draft',
+        confidence: 0.5,
+        tags: [],
+        related: [],
+        content,
+        ...memoryOptions,
+      }
 
-    await this.save(memory)
-    return memory
+      await this.save(memory)
+      return memory
+    } finally {
+      release()
+    }
   }
 
   /**
    * Save a memory to disk as Markdown + Frontmatter.
    */
   async save(memory: Memory): Promise<void> {
+    if (this.hasConflictingMemoryId(memory.id, memory.type)) {
+      throw new Error(`Memory id already exists in another type: ${memory.id}`)
+    }
+
     const dir = this.typeDir(memory.type)
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true })
@@ -90,6 +102,63 @@ export class MemoryStore implements MemoryRepository {
     const { content, ...frontmatter } = memory
     const fileContent = matter.stringify(content, frontmatter)
     writeFileSync(filePath, fileContent, 'utf-8')
+  }
+
+  private allocateCreateId(requestedId?: string): { id: string; release: () => void } {
+    if (requestedId) {
+      const release = this.tryReserveCreateId(requestedId)
+      if (!release) {
+        throw new Error(`Memory id already exists: ${requestedId}`)
+      }
+      return { id: requestedId, release }
+    }
+
+    for (let attempt = 0; attempt < MemoryStore.CREATE_ID_MAX_ATTEMPTS; attempt++) {
+      const id = generatePrefixedId('mem')
+      const release = this.tryReserveCreateId(id)
+      if (release) {
+        return { id, release }
+      }
+    }
+
+    throw new Error('Unable to allocate unique memory id')
+  }
+
+  private tryReserveCreateId(id: string): (() => void) | undefined {
+    const lockDir = this.idLockDir()
+    mkdirSync(lockDir, { recursive: true })
+    const lockPath = join(lockDir, `${id}.lock`)
+
+    try {
+      writeFileSync(lockPath, '', { flag: 'wx' })
+    } catch {
+      return undefined
+    }
+
+    if (this.hasAnyMemoryId(id)) {
+      unlinkSync(lockPath)
+      return undefined
+    }
+
+    return () => {
+      if (existsSync(lockPath)) {
+        unlinkSync(lockPath)
+      }
+    }
+  }
+
+  private hasAnyMemoryId(id: string): boolean {
+    return ALL_MEMORY_TYPES.some((type) => existsSync(join(this.typeDir(type), `${id}.md`)))
+  }
+
+  private hasConflictingMemoryId(id: string, currentType: MemoryType): boolean {
+    return ALL_MEMORY_TYPES.some(
+      (type) => type !== currentType && existsSync(join(this.typeDir(type), `${id}.md`)),
+    )
+  }
+
+  private idLockDir(): string {
+    return join(this.basePath, '.id-locks')
   }
 
   /**
