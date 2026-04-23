@@ -219,8 +219,8 @@ packages/memory/
 
 - Session 生命周期（创建/消息处理/命令解析/消息排队/drainQueue），详见 [TechStack - Session 生命周期]
 - Agent 执行引擎（tool-use loop），详见 [Architecture - 全局架构]
-- Tool 基类 + 6 个内置工具 (Read/Write/Edit/Bash/Fetch/Task)，详见 [TechStack - Tool 基类]
-- SubAgent 编排器（DAG 执行），详见 [TechStack - SubAgent 编排]
+- Tool 基类 + 文件/网络/记忆/调度/SubAgent 工具集，详见 [TechStack - Tool 基类]
+- SubAgent 异步编排（spawn/wait/send_input/close），详见 [TechStack - SubAgent 编排]
 - System Prompt 组装（XML 标签结构），详见 [ContextEngineering - System Prompt 各区块]
 - 上下文预算管理 + 对话压缩 + 历史工具输出衰减，详见 [ContextEngineering - 对话管理]
 - 消息排队注入，详见 [ContextEngineering - 排队消息注入]

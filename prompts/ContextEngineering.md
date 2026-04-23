@@ -1071,7 +1071,7 @@ Agent 通过 MemoryWrite 工具写入时，结果作为 `tool_result` 返回：
 
 ## SubAgent 上下文
 
-SubAgent 通过 Task 工具启动（[Architecture - 任务编排]），其上下文设计和主 Agent 有本质区别：SubAgent 是**任务导向的一次性执行者**，不需要完整的对话历史和身份记忆。
+SubAgent 通过 `spawn_agent` 工具组启动（[Architecture - 任务编排]），其上下文设计和主 Agent 有本质区别：SubAgent 是**任务导向的一次性执行者**，不需要完整的对话历史和身份记忆。
 
 ### 精简上下文结构
 

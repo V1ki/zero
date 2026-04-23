@@ -35,8 +35,7 @@ It is not just a chat UI. The repository is organized around a runtime that can:
 - `packages/memory` stores Markdown-backed memory, memo state, vector indexes, and retrieval
   logic.
 - `packages/observe` persists logs, metrics, traces, session state, and schedule state.
-- `packages/core` assembles the agent loop, tools, sessions, bootstrap context, and task
-  orchestration.
+- `packages/core` assembles the agent loop, tools, sessions, and bootstrap context.
 - `packages/channel` adapts the runtime to WebSocket, Telegram, and Feishu message flows.
 - `packages/scheduler` runs cron-style jobs and hands trigger execution back to the runtime.
 - `packages/supervisor` watches liveness and provides repair helpers and git-based recovery

@@ -309,7 +309,6 @@ describe('SpawnAgentTool', () => {
       }
     ).buildScopedRegistry([
       'read',
-      'task',
       'spawn_agent',
       'wait_agent',
       'close_agent',
@@ -325,7 +324,6 @@ describe('SpawnAgentTool', () => {
 
   test('defaults exclude blocked tools from the full registry', () => {
     const registry = createToolRegistry()
-    registry.register(new NamedTool('task'))
     registry.register(new NamedTool('spawn_agent'))
     registry.register(new NamedTool('wait_agent'))
     registry.register(new NamedTool('close_agent'))

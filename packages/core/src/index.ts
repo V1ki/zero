@@ -9,7 +9,6 @@ export { WriteTool } from './tool/write'
 export { EditTool } from './tool/edit'
 export { BashTool } from './tool/bash'
 export { FetchTool } from './tool/fetch'
-export { TaskTool } from './tool/task'
 export { MemoryTool } from './tool/memory'
 export { MemorySearchTool } from './tool/memory-search'
 export { MemoryReadTool } from './tool/memory-read'
@@ -56,10 +55,6 @@ export {
   sessionCommand,
 } from './command'
 export type { Command, CommandArgs, CommandContext, CommandResult } from './command'
-
-// Task
-export { TaskOrchestrator } from './task/orchestrator'
-export type { TaskNode, TaskResult } from './task/orchestrator'
 
 // Skill
 export { loadSkills } from './skill/loader'

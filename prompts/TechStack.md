@@ -882,51 +882,45 @@ Agent 的 tool use loop 在每次工具执行完毕后调用 `session.drainQueue
 ### SubAgent 编排
 
 ```typescript
-// packages/core/src/task/orchestrator.ts
+// packages/core/src/tool/constants.ts
+export const SUB_AGENT_BLOCKED_TOOLS = new Set([
+  'spawn_agent',
+  'wait_agent',
+  'close_agent',
+  'send_input',
+])
 
-interface TaskNode {
-  id: string
-  agent: AgentConfig          // SubAgent 配置
-  instruction: string
-  dependsOn: string[]         // 上游任务 ID
-  timeout: number
-}
+// packages/core/src/tool/spawn-agent.ts
+class SpawnAgentTool extends BaseTool {
+  buildScopedRegistry(tools?: string[]): ToolRegistry {
+    const scoped = new ToolRegistry()
+    const source = tools ?? this.baseToolRegistry.list().map((tool) => tool.name)
 
-class TaskOrchestrator {
-  async execute(nodes: TaskNode[]): Promise<Map<string, TaskResult>> {
-    const results = new Map<string, TaskResult>()
-    const pending = new Set(nodes.map(n => n.id))
-
-    while (pending.size > 0) {
-      // 找出所有依赖已满足的节点
-      const ready = nodes.filter(n =>
-        pending.has(n.id) &&
-        n.dependsOn.every(dep => results.has(dep))
-      )
-
-      if (ready.length === 0 && pending.size > 0) {
-        throw new Error('Deadlock detected in task graph')
-      }
-
-      // 并发执行就绪节点
-      const executions = ready.map(node =>
-        this.executeNode(node, results).then(result => {
-          results.set(node.id, result)
-          pending.delete(node.id)
-        })
-      )
-
-      // 任一失败，取消下游
-      const settled = await Promise.allSettled(executions)
-      for (const r of settled) {
-        if (r.status === 'rejected') {
-          // 取消所有以失败节点为上游的节点
-          this.cancelDownstream(nodes, results, pending)
-        }
-      }
+    for (const toolName of source) {
+      if (SUB_AGENT_BLOCKED_TOOLS.has(toolName)) continue
+      const tool = this.baseToolRegistry.get(toolName)
+      if (tool) scoped.register(tool)
     }
 
-    return results
+    return scoped
+  }
+
+  protected async execute(ctx: ToolContext, input: SpawnAgentInput): Promise<ToolResult> {
+    const mode = input.mode ?? 'standard'
+    const scopedRegistry = this.buildScopedRegistry(input.tools)
+    const agent = new Agent(agentConfig, adapter, scopedRegistry, toolContext, agentObs)
+    const agentContext = {
+      systemPrompt: buildSubAgentPrompt(scopedRegistry.getDefinitions(), instruction, rolePrompt),
+      conversationHistory: [],
+      tools: scopedRegistry.getDefinitions(),
+    }
+
+    const spawnResult = ctx.agentControl.spawn(agent, agentContext, instruction, {
+      mode,
+      label,
+    })
+
+    return { success: true, output: JSON.stringify(spawnResult) }
   }
 }
 ```

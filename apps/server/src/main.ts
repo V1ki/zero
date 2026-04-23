@@ -30,7 +30,6 @@ import {
   ScheduleTool,
   SendInputTool,
   SpawnAgentTool,
-  TaskTool,
   ToolRegistry,
   WaitAgentTool,
   WriteTool,
@@ -308,7 +307,6 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
   toolRegistry.register(new MemorySearchTool())
   toolRegistry.register(new MemoryReadTool())
   toolRegistry.register(new MemoryTool())
-  toolRegistry.register(new TaskTool(modelRouter, toolRegistry, metrics))
   toolRegistry.register(new ScheduleTool())
   toolRegistry.register(new CodexTool())
   toolRegistry.register(new SpawnAgentTool(modelRouter, toolRegistry, metrics))

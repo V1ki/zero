@@ -348,7 +348,7 @@ describe('mergeInterleavedQueuedMessages', () => {
   test('merges queued message between tool_use and tool_result', () => {
     const messages = [
       makeUserText('do something'),
-      makeAssistantToolUse('task', 'toolu_abc'),
+      makeAssistantToolUse('bash', 'toolu_abc'),
       makeQueuedUserText('additional constraint from user'),
       makeToolResult('toolu_abc', 'task completed'),
       makeAssistantText('done'),
@@ -379,7 +379,7 @@ describe('mergeInterleavedQueuedMessages', () => {
   test('merges multiple queued messages between tool_use and tool_result', () => {
     const messages = [
       makeUserText('start'),
-      makeAssistantToolUse('task', 'toolu_1'),
+      makeAssistantToolUse('bash', 'toolu_1'),
       makeQueuedUserText('first queued'),
       makeQueuedUserText('second queued'),
       makeToolResult('toolu_1', 'result'),
@@ -412,7 +412,7 @@ describe('mergeInterleavedQueuedMessages', () => {
   test('does not modify original messages array', () => {
     const messages = [
       makeUserText('start'),
-      makeAssistantToolUse('task', 'toolu_1'),
+      makeAssistantToolUse('bash', 'toolu_1'),
       makeQueuedUserText('queued'),
       makeToolResult('toolu_1', 'result'),
     ]
@@ -463,7 +463,7 @@ describe('prepareConversationHistory — queued message merging', () => {
     // Reproduces the exact bug: sess_20260318_1452_fei_adaa
     const messages = [
       makeUserText('fix issues'),
-      makeAssistantToolUse('task', 'toolu_01MGFBSJfmWFTmKqy8Zd1oyJ'),
+      makeAssistantToolUse('bash', 'toolu_01MGFBSJfmWFTmKqy8Zd1oyJ'),
       makeQueuedUserText('表格不要替换成列表'),
       makeToolResult('toolu_01MGFBSJfmWFTmKqy8Zd1oyJ', 'All 4 tasks completed'),
       makeAssistantText('done'),

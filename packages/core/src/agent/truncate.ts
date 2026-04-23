@@ -9,7 +9,6 @@ const TOOL_OUTPUT_LIMITS: Record<string, number> = {
   edit: CONTEXT_PARAMS.toolOutput.edit,
   bash: CONTEXT_PARAMS.toolOutput.bash,
   fetch: CONTEXT_PARAMS.toolOutput.fetch,
-  task: CONTEXT_PARAMS.toolOutput.task,
 }
 
 /**

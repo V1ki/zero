@@ -591,7 +591,7 @@ describe('API Routes (Real)', () => {
     const res = await app.request('/api/tools')
     expect(res.status).toBe(200)
     const data = await res.json()
-    expect(data.tools.length).toBe(15)
+    expect(data.tools.length).toBe(14)
     const names = data.tools.map((t: { name: string }) => t.name)
     expect(names).toContain('read')
     expect(names).toContain('write')
@@ -601,7 +601,6 @@ describe('API Routes (Real)', () => {
     expect(names).toContain('memory')
     expect(names).toContain('memory_search')
     expect(names).toContain('memory_read')
-    expect(names).toContain('task')
     expect(names).toContain('schedule')
     expect(names).toContain('codex')
     expect(names).toContain('spawn_agent')
@@ -611,11 +610,9 @@ describe('API Routes (Real)', () => {
 
     const readTool = data.tools.find((t: { name: string }) => t.name === 'read')
     const codexTool = data.tools.find((t: { name: string }) => t.name === 'codex')
-    const taskTool = data.tools.find((t: { name: string }) => t.name === 'task')
 
     expect(readTool?.kind).toBe('built-in')
     expect(codexTool?.kind).toBe('tool')
-    expect(taskTool?.kind).toBe('tool')
   })
 
   test('GET /api/metrics/cost-by-day returns data array', async () => {

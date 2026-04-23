@@ -424,7 +424,7 @@ export function buildSkillsBlock(skills: SkillDefinition[]): string {
  * SubAgents are task-oriented one-shot executors — no identity, memo, or retrieved memories.
  *
  * @deprecated Prefer buildSystemPrompt({ promptMode: 'minimal' }) for new code.
- * This function remains for task orchestrator compatibility.
+ * This function remains for existing sub-agent tool flows.
  */
 export function buildSubAgentPrompt(
   tools: ToolDefinition[],
