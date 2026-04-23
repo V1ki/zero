@@ -90,6 +90,15 @@ export async function handleChannelMessage(
       deps.channelName,
     )
     activeSessionId = session.data.id
+    const canDeliverToCurrentSession = () =>
+      activeSessionId
+        ? deps.sessionManager.isCurrentSessionForChannel(
+            deps.channelType,
+            deps.channelType === 'web' ? 'default' : chatId,
+            deps.channelType === 'web' ? 'web' : deps.channelName,
+            activeSessionId,
+          )
+        : false
     ensureSessionReady(session, isNew, deps)
 
     typingHandle = await deps.channelAdapter.showTyping(chatId, messageId)
@@ -130,8 +139,9 @@ export async function handleChannelMessage(
       images: msg.images,
       onTextDelta: streaming
         ? (delta, meta) => {
-            if (!delta) return
-            seenDelta = true
+          if (!delta) return
+          if (!canDeliverToCurrentSession()) return
+          seenDelta = true
 
             if (lastTurnId && lastTurnId !== meta.turnId && streamText) {
               const prevText = streamText
@@ -171,6 +181,7 @@ export async function handleChannelMessage(
           }
         : undefined,
       onProgress: (newMsg) => {
+        if (!canDeliverToCurrentSession()) return
         const text = extractAssistantTextFromMessage(newMsg)
         if (!text) return
 
@@ -266,25 +277,33 @@ export async function handleChannelMessage(
     }
 
     if (streaming) {
+      if (!canDeliverToCurrentSession()) {
+        await dismissStreaming(streaming)
+        streaming = null
+      } else {
       const finalText = (streamText || collectAssistantReply(replies)) + imageMarkdownSuffix
-      try {
-        await streaming.complete(finalText)
-      } catch (err) {
-        console.error(`[ZeRo OS] ${deps.channelName} streaming finalization error:`, describeError(err))
-        if (finalText) {
-          await deps.channelAdapter.reply(chatId, finalText, messageId)
+        try {
+          await streaming.complete(finalText)
+        } catch (err) {
+          console.error(
+            `[ZeRo OS] ${deps.channelName} streaming finalization error:`,
+            describeError(err),
+          )
+          if (finalText && canDeliverToCurrentSession()) {
+            await deps.channelAdapter.reply(chatId, finalText, messageId)
+          }
         }
+        streaming = null
       }
-      streaming = null
     } else if (!lastSentMsgId) {
       const replyText = collectAssistantReply(replies) + imageMarkdownSuffix
-      if (replyText) {
+      if (replyText && canDeliverToCurrentSession()) {
         await deps.channelAdapter.reply(chatId, replyText, messageId)
       }
     }
 
     const fallbackImageBlocks = shouldEmbedImageBlocks ? failedImageBlocks : imageBlocks
-    if (fallbackImageBlocks.length > 0 && deps.channelAdapter.sendImage) {
+    if (fallbackImageBlocks.length > 0 && deps.channelAdapter.sendImage && canDeliverToCurrentSession()) {
       for (const img of fallbackImageBlocks) {
         try {
           const imageBuffer = Buffer.from(img.data, 'base64')
@@ -299,7 +318,9 @@ export async function handleChannelMessage(
     }
 
     await typingHandle?.clear().catch(() => {})
-    await deps.channelAdapter.markDone?.(chatId, messageId).catch(() => {})
+    if (canDeliverToCurrentSession()) {
+      await deps.channelAdapter.markDone?.(chatId, messageId).catch(() => {})
+    }
   } catch (err) {
     console.error(`[ZeRo OS] ${deps.channelName} message handler error:`, describeError(err))
 
@@ -307,10 +328,6 @@ export async function handleChannelMessage(
     let sessionWasArchived = false
 
     if (activeSessionId && errorMessage.includes('No tool output found for function call')) {
-      const poisonedSession = deps.sessionManager.get(activeSessionId)
-      if (poisonedSession) {
-        poisonedSession.setStatus('archived')
-      }
       deps.sessionManager.remove(activeSessionId)
       sessionWasArchived = true
       console.warn(
@@ -338,9 +355,20 @@ export async function handleChannelMessage(
 
     try {
       const activeStreaming = streaming
+      const canDeliverToCurrentSession =
+        activeSessionId !== null
+          ? deps.sessionManager.isCurrentSessionForChannel(
+              deps.channelType,
+              deps.channelType === 'web' ? 'default' : chatId,
+              deps.channelType === 'web' ? 'web' : deps.channelName,
+              activeSessionId,
+            )
+          : false
       if (activeStreaming) {
         streaming = null
-        if (!rolledBack && streamText) {
+        if (!canDeliverToCurrentSession) {
+          await dismissStreaming(activeStreaming).catch(() => {})
+        } else if (!rolledBack && streamText) {
           await activeStreaming.complete(streamText).catch(() => {})
           await deps.channelAdapter.reply(chatId, userReply, messageId)
         } else {
@@ -349,9 +377,11 @@ export async function handleChannelMessage(
       }
 
       await typingHandle?.clear().catch(() => {})
-      await deps.channelAdapter.markError?.(chatId, messageId).catch(() => {})
+      if (canDeliverToCurrentSession) {
+        await deps.channelAdapter.markError?.(chatId, messageId).catch(() => {})
+      }
 
-      if (!activeStreaming) {
+      if (!activeStreaming && canDeliverToCurrentSession) {
         await deps.channelAdapter.reply(chatId, userReply, messageId)
       }
     } catch {}
@@ -371,6 +401,9 @@ function ensureSessionReady(session: Session, isNew: boolean, deps: MessageHandl
 }
 
 function normalizeChatId(msg: IncomingMessage): string {
+  if (msg.channelType === 'web') {
+    return 'default'
+  }
   const chatId = msg.metadata?.chatId
   if (typeof chatId === 'string' && chatId.trim()) {
     return chatId
@@ -379,6 +412,15 @@ function normalizeChatId(msg: IncomingMessage): string {
     return String(chatId)
   }
   return msg.senderId
+}
+
+async function dismissStreaming(streaming: StreamAdapter): Promise<void> {
+  const maybeDismiss = streaming as StreamAdapter & { dismiss?: () => Promise<void> }
+  if (maybeDismiss.dismiss) {
+    await maybeDismiss.dismiss()
+    return
+  }
+  await streaming.abort().catch(() => {})
 }
 
 function normalizeMessageId(msg: IncomingMessage): string | number | undefined {

@@ -458,7 +458,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
     sessionDb,
   )
 
-  // 10.5. Restore active sessions from DB
+  // 10.5. Restore current bound sessions from DB
   heartbeat.setReady(false, 'restoring_sessions')
   const restoredCount = sessionManager.restoreFromDB()
   if (restoredCount > 0) {
@@ -606,7 +606,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
     for (const [name, ch] of channels) {
       const definition = channelDefinitions.get(name)
       if (!definition?.receiveNotifications || !ch.isConnected() || ch.type === 'web') continue
-      const chatIds = sessionManager.getActiveChannelIds(definition.type as SessionSource, name)
+      const chatIds = sessionManager.getCurrentChannelIds(definition.type as SessionSource, name)
       const text = `[notification]${notification.title}: ${notification.description}`
       for (const chatId of chatIds) {
         ch.send(chatId, text).catch(() => {})
@@ -636,7 +636,6 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
   const shouldPersistBusEvent = (payload: { topic: string; data: Record<string, unknown> }) => {
     switch (payload.topic) {
       case 'session:create':
-      case 'session:end':
       case 'model:switch':
       case 'notification':
       case 'repair:start':
@@ -645,6 +644,10 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
         return true
       case 'session:update':
         return (
+          payload.data.event === 'binding_set' ||
+          payload.data.event === 'binding_replaced' ||
+          payload.data.event === 'binding_cleared' ||
+          payload.data.event === 'session_backgrounded' ||
           payload.data.event === 'task_closure_decision' ||
           payload.data.event === 'task_closure_failed'
         )
@@ -974,6 +977,16 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
           void (async () => {
             const session = sessionManager.get(entry.sessionId)
             if (!session) return
+            if (
+              !sessionManager.isCurrentSessionForChannel(
+                entry.source,
+                entry.channelId,
+                entry.channelName,
+                entry.sessionId,
+              )
+            ) {
+              return
+            }
 
             const channel = entry.channelName ? channels.get(entry.channelName) : undefined
             if (!channel || !channel.isConnected()) return

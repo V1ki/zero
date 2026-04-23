@@ -40,7 +40,7 @@ export function SessionChannelDetailPage() {
       if (showLoading) setCurrentLoading(true)
 
       return apiFetch<{ sessions: ChannelSessionCandidate[] }>(
-        `/api/sessions/channel/${encodeURIComponent(channel)}/active`,
+        `/api/sessions/channel/${encodeURIComponent(channel)}/current`,
         { signal: controller.signal },
       )
         .then((res) => {
@@ -80,7 +80,7 @@ export function SessionChannelDetailPage() {
     if (showLoading) setSelectorLoading(true)
 
     return apiFetch<{ sessions: ChannelSessionCandidate[] }>(
-      `/api/sessions/source/${encodeURIComponent(source)}/active`,
+      `/api/sessions/source/${encodeURIComponent(source)}/current`,
       { signal: controller.signal },
     )
       .then((res) => {
@@ -140,7 +140,7 @@ export function SessionChannelDetailPage() {
 
   useWebSocket({
     url: `ws://${window.location.host}/ws`,
-    topics: ['session:create', 'session:update', 'session:end'],
+    topics: ['session:create', 'session:update'],
     onEvent: onSessionEvent,
   })
 

@@ -1,11 +1,11 @@
 import { create } from 'zustand'
 
 interface SessionState {
-  activeSessions: { id: string; source: string; model: string; status: string }[]
-  setActiveSessions: (sessions: SessionState['activeSessions']) => void
+  currentSessions: { id: string; source: string; model: string; placement: string }[]
+  setCurrentSessions: (sessions: SessionState['currentSessions']) => void
 }
 
 export const useSessionStore = create<SessionState>((set) => ({
-  activeSessions: [],
-  setActiveSessions: (sessions) => set({ activeSessions: sessions }),
+  currentSessions: [],
+  setCurrentSessions: (sessions) => set({ currentSessions: sessions }),
 }))

@@ -11,7 +11,7 @@ import {
   unlinkSync,
 } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
-import { type SessionStatus, getSessionLogRelativeDir, now } from '@zero-os/shared'
+import { getSessionLogRelativeDir, now } from '@zero-os/shared'
 import type { CompletionResponse, StopReason, ToolResultBlock } from '@zero-os/shared'
 import { type TraceEntry, type TraceKind, collapseTraceEntries } from './trace'
 import {
@@ -193,7 +193,7 @@ export class ObservabilityStore {
     this.basePath = basePath
     this.ensureDir(basePath)
     this.ensureDir(this.getSessionsRoot())
-    this.ensureDir(this.getActiveSessionsRoot())
+    this.ensureDir(this.getCurrentSessionsRoot())
   }
 
   private ensureDir(dir: string): void {
@@ -206,8 +206,8 @@ export class ObservabilityStore {
     return join(this.basePath, 'sessions')
   }
 
-  private getActiveSessionsRoot(): string {
-    return join(this.getSessionsRoot(), '_active')
+  private getCurrentSessionsRoot(): string {
+    return join(this.getSessionsRoot(), '_current')
   }
 
   private appendLine(file: string, data: unknown): void {
@@ -223,7 +223,9 @@ export class ObservabilityStore {
 
     const sessionDirs: string[] = []
     for (const dirent of readdirSync(sessionsDir, { withFileTypes: true })) {
-      if (dirent.name === '_active' || !dirent.isDirectory()) continue
+      if ((dirent.name === '_active' || dirent.name === '_current') || !dirent.isDirectory()) {
+        continue
+      }
 
       const entryPath = join(sessionsDir, dirent.name)
       if (/^\d{4}-\d{2}-\d{2}$/.test(dirent.name)) {
@@ -251,25 +253,29 @@ export class ObservabilityStore {
     } catch {}
   }
 
-  syncSessionActiveState(sessionId: string, status: SessionStatus): void {
-    const linkPath = join(this.getActiveSessionsRoot(), sessionId)
-    if (status !== 'active') {
-      this.removePathIfExists(linkPath)
+  syncSessionCurrentState(sessionId: string, isCurrent: boolean): void {
+    const currentLinkPath = join(this.getCurrentSessionsRoot(), sessionId)
+    const legacyLinkPath = join(this.getSessionsRoot(), '_active', sessionId)
+    if (!isCurrent) {
+      this.removePathIfExists(currentLinkPath)
+      this.removePathIfExists(legacyLinkPath)
       return
     }
 
     const sessionDir = join(this.basePath, getSessionLogRelativeDir(sessionId))
     this.ensureDir(sessionDir)
-    this.ensureDir(this.getActiveSessionsRoot())
+    this.ensureDir(this.getCurrentSessionsRoot())
 
-    const target = relative(this.getActiveSessionsRoot(), sessionDir)
+    const target = relative(this.getCurrentSessionsRoot(), sessionDir)
     try {
-      const currentTarget = readlinkSync(linkPath)
+      const currentTarget = readlinkSync(currentLinkPath)
       if (currentTarget === target) return
-      this.removePathIfExists(linkPath)
+      this.removePathIfExists(currentLinkPath)
     } catch {}
 
-    symlinkSync(target, linkPath, 'dir')
+    this.removePathIfExists(legacyLinkPath)
+
+    symlinkSync(target, currentLinkPath, 'dir')
   }
 
   /**

@@ -21,7 +21,6 @@ import type {
   SecretFilter,
   Session as SessionData,
   SessionSource,
-  SessionStatus,
   ToolDefinition,
   ToolLogger,
 } from '@zero-os/shared'
@@ -143,7 +142,6 @@ export class Session {
       createdAt: now(),
       updatedAt: now(),
       source,
-      status: 'active',
       currentModel: currentModel ? modelRouter.getModelLabel(currentModel) : 'unknown',
       reasoningEffort: undefined,
       modelHistory: [
@@ -181,7 +179,6 @@ export class Session {
 
     // Persist session metadata to DB
     this.deps.sessionDb?.saveSession(this.data)
-    this.deps.observability?.syncSessionActiveState(this.data.id, this.data.status)
   }
 
   /**
@@ -1012,7 +1009,6 @@ export class Session {
       runningToolRegistry: new SessionRunningToolRegistry(),
     })
     session.restoreSnapshotStateFromLogger()
-    session.deps.observability?.syncSessionActiveState(session.data.id, session.data.status)
     return session
   }
 
@@ -1046,31 +1042,30 @@ export class Session {
     this.agentControl.restoreSnapshot(snapshot)
   }
 
+  ensureChannelContext(channelId: string, channelName?: string): void {
+    if (this.data.channelId === channelId && this.data.channelName === channelName) {
+      return
+    }
+
+    this.data.channelId = channelId
+    this.data.channelName = channelName
+    this.data.updatedAt = now()
+    this.persistState()
+
+    if (!this.agent || !this.lastAgentConfig) return
+    if (this.isTurnInProgress()) {
+      this.pendingAgentRefresh = true
+      return
+    }
+    this.reinitializeAgent()
+  }
+
   isTurnInProgress(): boolean {
     return this.mutex.isLocked()
   }
 
   waitForTurnComplete(): Promise<void> {
     return this.mutex.waitForUnlock()
-  }
-
-  getStatus(): SessionStatus {
-    return this.data.status
-  }
-
-  setStatus(status: SessionStatus): void {
-    this.data.status = status
-    this.data.updatedAt = now()
-    // Persist status change
-    this.deps.sessionDb?.updateStatus(this.data.id, status, this.data.updatedAt)
-    this.deps.observability?.syncSessionActiveState(this.data.id, status)
-    // Emit session:end when status transitions to completed
-    if (status === 'completed' || status === 'failed') {
-      this.deps.bus?.emit('session:end', {
-        sessionId: this.data.id,
-        status,
-      })
-    }
   }
 
   private allocateTurnIndex(): number {

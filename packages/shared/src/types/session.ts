@@ -1,8 +1,7 @@
 import type { ReasoningEffort } from './reasoning'
 
 export type SessionSource = 'feishu' | 'telegram' | 'scheduler' | 'web'
-
-export type SessionStatus = 'active' | 'idle' | 'completed' | 'failed' | 'archived'
+export type SessionPlacement = 'current' | 'background'
 
 export interface ModelHistoryEntry {
   model: string
@@ -10,12 +9,19 @@ export interface ModelHistoryEntry {
   to: string | null
 }
 
+export interface ChannelSessionBinding {
+  source: SessionSource
+  channelName?: string
+  channelId: string
+  sessionId: string
+  updatedAt: string
+}
+
 export interface Session {
   id: string
   createdAt: string
   updatedAt: string
   source: SessionSource
-  status: SessionStatus
   currentModel: string
   reasoningEffort?: ReasoningEffort
   modelHistory: ModelHistoryEntry[]

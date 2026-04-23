@@ -5,10 +5,10 @@ interface StatusBarProps {
   model: string
   uptime: string
   heartbeatAge: number
-  activeSessions: number
+  currentSessions: number
 }
 
-export function StatusBar({ status, model, uptime, heartbeatAge, activeSessions }: StatusBarProps) {
+export function StatusBar({ status, model, uptime, heartbeatAge, currentSessions }: StatusBarProps) {
   const statusConfig = {
     running: { label: 'Running', dot: 'bg-emerald-400', text: 'text-emerald-400', bg: '' },
     degraded: {
@@ -58,7 +58,7 @@ export function StatusBar({ status, model, uptime, heartbeatAge, activeSessions 
       </div>
 
       <span className="text-[var(--color-text-disabled)]">
-        {activeSessions} session{activeSessions !== 1 ? 's' : ''} active
+        {currentSessions} session{currentSessions !== 1 ? 's' : ''} current
       </span>
     </div>
   )

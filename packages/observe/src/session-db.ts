@@ -1,5 +1,6 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite'
 import type {
+  ChannelSessionBinding,
   Message,
   ModelHistoryEntry,
   ReasoningEffort,
@@ -7,13 +8,11 @@ import type {
   ScheduleConfig,
   Session as SessionData,
   SessionSource,
-  SessionStatus,
 } from '@zero-os/shared'
 
 export interface SessionRow {
   id: string
   source: SessionSource
-  status: SessionStatus
   currentModel: string
   reasoningEffort?: ReasoningEffort
   modelHistory: ModelHistoryEntry[]
@@ -56,6 +55,14 @@ interface RawChannelModelRow {
   channel_name: string
   channel_id: string
   model: string
+  updated_at: string
+}
+
+interface RawBindingRow {
+  source: string
+  channel_name: string
+  channel_id: string
+  session_id: string
   updated_at: string
 }
 
@@ -119,6 +126,17 @@ export class SessionDB {
       )
     `)
 
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS channel_session_bindings (
+        source TEXT NOT NULL,
+        channel_name TEXT NOT NULL DEFAULT '',
+        channel_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (source, channel_name, channel_id)
+      )
+    `)
+
     // Migration: add system_prompt column
     try {
       this.db.run('ALTER TABLE sessions ADD COLUMN system_prompt TEXT')
@@ -145,6 +163,12 @@ export class SessionDB {
     )
     this.db.run('CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at)')
     this.db.run(
+      'CREATE INDEX IF NOT EXISTS idx_channel_session_bindings_session ON channel_session_bindings(session_id)',
+    )
+    this.db.run(
+      'CREATE INDEX IF NOT EXISTS idx_channel_session_bindings_updated ON channel_session_bindings(updated_at)',
+    )
+    this.db.run(
       'CREATE INDEX IF NOT EXISTS idx_channel_models_updated ON channel_models(updated_at)',
     )
 
@@ -165,6 +189,45 @@ export class SessionDB {
         updated_at TEXT NOT NULL
       )
     `)
+
+    this.backfillLegacyBindings()
+  }
+
+  private backfillLegacyBindings(): void {
+    const existingBindings = this.db
+      .query('SELECT COUNT(*) AS count FROM channel_session_bindings')
+      .get() as { count: number } | null
+    if ((existingBindings?.count ?? 0) > 0) {
+      return
+    }
+
+    // Bootstrap v1 of the binding model from legacy status rows: only recoverable active/idle
+    // sessions participate, duplicates collapse to the newest row, and web is normalized to the
+    // singleton (web, web, default) binding.
+    this.db.run(`
+      WITH ranked AS (
+        SELECT
+          source,
+          CASE WHEN source = 'web' THEN 'web' ELSE COALESCE(channel_name, '') END AS bind_channel_name,
+          COALESCE(channel_id, CASE WHEN source = 'web' THEN 'default' END) AS bind_channel_id,
+          id AS session_id,
+          updated_at,
+          ROW_NUMBER() OVER (
+            PARTITION BY
+              source,
+              CASE WHEN source = 'web' THEN 'web' ELSE COALESCE(channel_name, '') END,
+              COALESCE(channel_id, CASE WHEN source = 'web' THEN 'default' END)
+            ORDER BY updated_at DESC, created_at DESC, id DESC
+          ) AS rn
+        FROM sessions
+        WHERE status IN ('active', 'idle')
+          AND (channel_id IS NOT NULL OR source = 'web')
+      )
+      INSERT INTO channel_session_bindings (source, channel_name, channel_id, session_id, updated_at)
+      SELECT source, bind_channel_name, bind_channel_id, session_id, updated_at
+      FROM ranked
+      WHERE rn = 1 AND bind_channel_id IS NOT NULL
+    `)
   }
 
   /**
@@ -172,13 +235,25 @@ export class SessionDB {
    */
   saveSession(data: SessionData, agentConfigJson?: string, systemPrompt?: string): void {
     this.db.run(
-      `INSERT OR REPLACE INTO sessions
-       (id, source, status, current_model, reasoning_effort, model_history_json, summary, tags_json, channel_name, channel_id, agent_config_json, system_prompt, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO sessions
+       (id, source, current_model, reasoning_effort, model_history_json, summary, tags_json, channel_name, channel_id, agent_config_json, system_prompt, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         source = excluded.source,
+         current_model = excluded.current_model,
+         reasoning_effort = excluded.reasoning_effort,
+         model_history_json = excluded.model_history_json,
+         summary = excluded.summary,
+         tags_json = excluded.tags_json,
+         channel_name = excluded.channel_name,
+         channel_id = excluded.channel_id,
+         agent_config_json = excluded.agent_config_json,
+         system_prompt = excluded.system_prompt,
+         created_at = excluded.created_at,
+         updated_at = excluded.updated_at`,
       [
         data.id,
         data.source,
-        data.status,
         data.currentModel,
         data.reasoningEffort ?? null,
         JSON.stringify(data.modelHistory),
@@ -251,25 +326,63 @@ export class SessionDB {
     }))
   }
 
-  /**
-   * Update session status only.
-   */
-  updateStatus(sessionId: string, status: SessionStatus, updatedAt: string): void {
-    this.db.run('UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?', [
-      status,
-      updatedAt,
-      sessionId,
-    ])
+  saveBinding(
+    source: SessionSource,
+    channelId: string,
+    sessionId: string,
+    channelName?: string,
+    updatedAt = new Date().toISOString(),
+  ): void {
+    this.db.run(
+      `INSERT INTO channel_session_bindings (source, channel_name, channel_id, session_id, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(source, channel_name, channel_id) DO UPDATE SET
+         session_id = excluded.session_id,
+         updated_at = excluded.updated_at`,
+      [source, channelName ?? '', channelId, sessionId, updatedAt],
+    )
   }
 
-  /**
-   * Load all active/idle sessions (for startup recovery).
-   */
-  loadActiveSessions(): SessionRow[] {
+  loadBindings(): ChannelSessionBinding[] {
     const rows = this.db
-      .query(`SELECT * FROM sessions WHERE status IN ('active', 'idle') ORDER BY updated_at DESC`)
-      .all() as RawSessionRow[]
-    return rows.map(toSessionRow)
+      .query(
+        `SELECT source, channel_name, channel_id, session_id, updated_at
+         FROM channel_session_bindings
+         ORDER BY updated_at DESC`,
+      )
+      .all() as RawBindingRow[]
+    return rows.map(toChannelSessionBinding)
+  }
+
+  getBinding(
+    source: SessionSource,
+    channelId: string,
+    channelName?: string,
+  ): ChannelSessionBinding | null {
+    const row = this.db
+      .query(
+        `SELECT source, channel_name, channel_id, session_id, updated_at
+         FROM channel_session_bindings
+         WHERE source = ? AND channel_name = ? AND channel_id = ?`,
+      )
+      .get(source, channelName ?? '', channelId) as RawBindingRow | null
+
+    return row ? toChannelSessionBinding(row) : null
+  }
+
+  deleteBinding(source: SessionSource, channelId: string, channelName?: string): boolean {
+    const result = this.db.run(
+      'DELETE FROM channel_session_bindings WHERE source = ? AND channel_name = ? AND channel_id = ?',
+      [source, channelName ?? '', channelId],
+    )
+    return result.changes > 0
+  }
+
+  deleteBindingsForSession(sessionId: string): number {
+    const result = this.db.run('DELETE FROM channel_session_bindings WHERE session_id = ?', [
+      sessionId,
+    ])
+    return result.changes
   }
 
   /**
@@ -287,17 +400,11 @@ export class SessionDB {
    * Load all sessions with optional filtering.
    */
   loadAllSessions(filter?: {
-    status?: SessionStatus
     limit?: number
     offset?: number
   }): SessionRow[] {
     let sql = 'SELECT * FROM sessions'
     const params: SQLQueryBindings[] = []
-
-    if (filter?.status) {
-      sql += ' WHERE status = ?'
-      params.push(filter.status)
-    }
 
     sql += ' ORDER BY updated_at DESC'
 
@@ -326,36 +433,10 @@ export class SessionDB {
   }
 
   /**
-   * Get channel mappings for active sessions (for startup recovery).
-   */
-  getChannelMappings(): Array<{
-    id: string
-    source: SessionSource
-    channelName?: string
-    channelId: string
-  }> {
-    const rows = this.db
-      .query(
-        `SELECT id, source, channel_name, channel_id FROM sessions WHERE channel_id IS NOT NULL AND status IN ('active', 'idle')`,
-      )
-      .all() as Array<{
-      id: string
-      source: string
-      channel_name: string | null
-      channel_id: string
-    }>
-    return rows.map((r) => ({
-      id: r.id,
-      source: r.source as SessionSource,
-      channelName: r.channel_name ?? undefined,
-      channelId: r.channel_id,
-    }))
-  }
-
-  /**
    * Permanently delete a session and its messages.
    */
   deleteSession(sessionId: string): boolean {
+    this.deleteBindingsForSession(sessionId)
     this.db.run('DELETE FROM session_messages WHERE session_id = ?', [sessionId])
     const result = this.db.run('DELETE FROM sessions WHERE id = ?', [sessionId])
     return result.changes > 0
@@ -431,7 +512,6 @@ function toSessionRow(row: RawSessionRow): SessionRow {
   return {
     id: row.id,
     source: row.source as SessionSource,
-    status: row.status as SessionStatus,
     currentModel: row.current_model,
     reasoningEffort: normalizeReasoningEffort(row.reasoning_effort),
     modelHistory: JSON.parse(row.model_history_json) as ModelHistoryEntry[],
@@ -442,6 +522,16 @@ function toSessionRow(row: RawSessionRow): SessionRow {
     agentConfigJson: row.agent_config_json ?? undefined,
     systemPrompt: row.system_prompt ?? undefined,
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+function toChannelSessionBinding(row: RawBindingRow): ChannelSessionBinding {
+  return {
+    source: row.source as SessionSource,
+    channelName: row.channel_name || undefined,
+    channelId: row.channel_id,
+    sessionId: row.session_id,
     updatedAt: row.updated_at,
   }
 }

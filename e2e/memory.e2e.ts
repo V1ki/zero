@@ -135,7 +135,8 @@ async function mockSessionDetail(page: Page, sessionId: string) {
   const sessionResponse = {
     id: sessionId,
     source: 'web',
-    status: 'completed',
+    isCurrent: false,
+    placement: 'background',
     currentModel: 'openai-codex/gpt-5.4-medium',
     createdAt: '2026-03-24T10:00:00.000Z',
     updatedAt: '2026-03-24T10:01:00.000Z',

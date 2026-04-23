@@ -485,7 +485,6 @@ describe('Session memory retrieval', () => {
       createdAt: '2026-03-26T00:00:00.000Z',
       updatedAt: '2026-03-26T00:00:00.000Z',
       source: 'web',
-      status: 'active',
       currentModel: 'gpt-5.3-codex-medium',
       modelHistory: [
         {

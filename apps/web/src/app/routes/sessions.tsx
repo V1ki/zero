@@ -5,7 +5,6 @@ import { PulseDot } from '../components/shared/PulseDot'
 import { Skeleton } from '../components/shared/Skeleton'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { apiFetch } from '../lib/api'
-import { statusColors } from '../lib/colors'
 import { formatCost, formatModelHistory, formatNumber, formatTimeAgo } from '../lib/format'
 import { useUIStore } from '../stores/ui'
 
@@ -19,7 +18,8 @@ interface SessionInfo {
   id: string
   source: string
   channelName?: string
-  status: string
+  isCurrent: boolean
+  placement: 'current' | 'background'
   currentModel: string
   createdAt: string
   updatedAt: string
@@ -35,15 +35,12 @@ interface SessionInfo {
   totalCost: number
 }
 
-function mapStatusToDot(status: string): 'active' | 'idle' | 'error' | 'warning' {
-  if (status === 'active') return 'active'
-  if (status === 'idle' || status === 'completed' || status === 'archived') return 'idle'
-  if (status === 'failed') return 'error'
-  return 'idle'
+function mapPlacementToDot(placement: SessionInfo['placement']): 'active' | 'idle' | 'error' | 'warning' {
+  return placement === 'current' ? 'active' : 'idle'
 }
 
 function canOpenChannelDetail(session: SessionInfo) {
-  return Boolean(session.channelId && (session.status === 'active' || session.status === 'idle'))
+  return Boolean(session.channelId && session.placement === 'current')
 }
 
 const SOURCE_FILTERS = ['all', 'web', 'feishu', 'telegram', 'scheduler'] as const
@@ -150,7 +147,7 @@ export function SessionsPage() {
 
   useWebSocket({
     url: `ws://${window.location.host}/ws`,
-    topics: ['session:create', 'session:update', 'session:end'],
+    topics: ['session:create', 'session:update'],
     onEvent: onSessionEvent,
   })
 
@@ -161,7 +158,7 @@ export function SessionsPage() {
       <div className="card p-4 mb-4 animate-fade-up">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div className="flex gap-2">
-            {['all', 'active', 'completed', 'archived'].map((f) => (
+            {['all', 'current', 'background'].map((f) => (
               <button
                 key={f}
                 type="button"
@@ -262,7 +259,7 @@ export function SessionsPage() {
                 }`}
               >
                 <div className="flex items-center gap-3">
-                  <PulseDot status={mapStatusToDot(s.status)} />
+                  <PulseDot status={mapPlacementToDot(s.placement)} />
                   <span className="text-[13px] font-mono text-[var(--color-text-primary)]">
                     {s.id}
                   </span>
@@ -284,8 +281,12 @@ export function SessionsPage() {
                       Channel
                     </button>
                   )}
-                  <span className={`text-[11px] ${statusColors[s.status] ?? 'text-slate-400'}`}>
-                    {s.status}
+                  <span
+                    className={`text-[11px] ${
+                      s.placement === 'current' ? 'text-emerald-300' : 'text-slate-400'
+                    }`}
+                  >
+                    {s.placement}
                   </span>
                 </div>
 
@@ -315,7 +316,7 @@ export function SessionsPage() {
                   </span>
                   <span>·</span>
                   <span>{formatTimeAgo(s.createdAt)}</span>
-                  {s.status === 'active' && <span>- ongoing</span>}
+                  {s.isCurrent && <span>- current</span>}
                 </div>
 
                 <div className="ml-7 mt-0.5 text-[11px] text-[var(--color-text-disabled)]">

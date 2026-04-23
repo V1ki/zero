@@ -14,6 +14,18 @@ interface ChatMessage {
   severity?: string
 }
 
+interface SessionContentBlock {
+  type: string
+  text?: string
+  content?: string
+}
+
+interface SessionMessage {
+  id: string
+  role: string
+  content: SessionContentBlock[]
+}
+
 export function shouldRenderAssistantAsPlainText(content: string): boolean {
   if (!content.includes('\n')) return false
 
@@ -26,6 +38,35 @@ function createChatMessage(message: Omit<ChatMessage, 'id'>): ChatMessage {
 
 function isKnownModelName(modelName: string | null | undefined): modelName is string {
   return Boolean(modelName && modelName !== 'unknown')
+}
+
+function extractSessionMessageText(message: SessionMessage): string {
+  return message.content
+    .flatMap((block) => {
+      if (block.type === 'text') {
+        return typeof block.text === 'string' ? [block.text] : []
+      }
+      if (block.type === 'tool_result') {
+        return typeof block.content === 'string' ? [block.content] : []
+      }
+      return []
+    })
+    .join('\n')
+    .trim()
+}
+
+function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
+  return messages
+    .filter((message) => message.role === 'user' || message.role === 'assistant')
+    .map((message) => {
+      const content = extractSessionMessageText(message)
+      if (!content) return null
+      return createChatMessage({
+        role: message.role as 'user' | 'assistant',
+        content,
+      })
+    })
+    .filter((message): message is ChatMessage => Boolean(message))
 }
 
 export function ChatDrawer() {
@@ -63,11 +104,36 @@ export function ChatDrawer() {
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [chatDrawerOpen, toggleChatDrawer])
 
-  // Fetch current model name
+  // Restore current web session and model
   useEffect(() => {
     if (chatDrawerOpen) {
       apiFetch<{ currentModel: string }>('/api/status')
-        .then((res) => updateModelName(res.currentModel))
+        .then(async (statusRes) => {
+          if (isKnownModelName(statusRes.currentModel)) {
+            updateModelName(statusRes.currentModel)
+          }
+
+          const currentRes = await apiFetch<{
+            sessions: Array<{ id: string }>
+          }>('/api/sessions/source/web/current')
+          const current = currentRes.sessions?.[0]
+
+          if (!current?.id) {
+            setSessionId(null)
+            setMessages([])
+            return
+          }
+
+          const detail = await apiFetch<{
+            id: string
+            currentModel: string
+            messages: SessionMessage[]
+          }>(`/api/sessions/${current.id}`)
+
+          setSessionId(detail.id)
+          updateModelName(detail.currentModel)
+          setMessages(toChatMessages(detail.messages))
+        })
         .catch(() => {})
     }
   }, [chatDrawerOpen])
@@ -130,31 +196,28 @@ export function ChatDrawer() {
 
   async function handleCommand(text: string): Promise<boolean> {
     if (text === '/new') {
-      setSessionId(null)
-      let currentModel: string | undefined
-
       try {
-        const result = await apiFetch<{ currentModel: string }>('/api/status')
-        if (isKnownModelName(result.currentModel)) {
-          currentModel = result.currentModel
-          updateModelName(result.currentModel)
-        }
+        const result = await apiPost<{
+          sessionId: string
+          currentModel: string
+        }>('/api/chat/new', {})
+        setSessionId(result.sessionId)
+        updateModelName(result.currentModel)
+        setMessages([
+          createChatMessage({
+            role: 'assistant',
+            content: `New conversation started with model: ${result.currentModel}`,
+          }),
+        ])
       } catch {
-        // Fall back to the locally cached model label for the status message.
+        setMessages((prev) => [
+          ...prev,
+          createChatMessage({
+            role: 'assistant',
+            content: 'Failed to start a new conversation.',
+          }),
+        ])
       }
-
-      if (!currentModel && isKnownModelName(modelNameRef.current)) {
-        currentModel = modelNameRef.current
-      }
-
-      setMessages([
-        createChatMessage({
-          role: 'assistant',
-          content: currentModel
-            ? `New conversation started with model: ${currentModel}`
-            : 'New session started.',
-        }),
-      ])
       return true
     }
 

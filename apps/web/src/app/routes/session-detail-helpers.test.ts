@@ -10,7 +10,8 @@ const candidates: ChannelSessionCandidate[] = [
     source: 'telegram',
     channelName: 'telegram:ops',
     channelId: 'room_2',
-    status: 'active',
+    isCurrent: true,
+    placement: 'current',
     updatedAt: '2026-03-08T00:00:03.000Z',
   },
   {
@@ -18,7 +19,8 @@ const candidates: ChannelSessionCandidate[] = [
     source: 'telegram',
     channelName: 'telegram:hr',
     channelId: 'room_1',
-    status: 'idle',
+    isCurrent: true,
+    placement: 'current',
     updatedAt: '2026-03-08T00:00:02.000Z',
   },
 ]
@@ -53,7 +55,8 @@ describe('resolveChannelSessionCandidate', () => {
         id: 'sess_fei_1',
         source: 'feishu',
         channelId: 'room_shared',
-        status: 'active',
+        isCurrent: true,
+        placement: 'current',
         updatedAt: '2026-03-08T00:00:03.000Z',
       },
       {
@@ -61,7 +64,8 @@ describe('resolveChannelSessionCandidate', () => {
         source: 'feishu',
         channelName: 'web-auto',
         channelId: 'room_shared',
-        status: 'active',
+        isCurrent: true,
+        placement: 'current',
         updatedAt: '2026-03-08T00:00:04.000Z',
       },
     ] satisfies ChannelSessionCandidate[]
@@ -76,7 +80,8 @@ describe('resolveChannelSessionCandidate', () => {
         source: 'web',
         channelName: 'web',
         channelId: 'room_shared',
-        status: 'active',
+        isCurrent: true,
+        placement: 'current',
         updatedAt: '2026-03-08T00:00:03.000Z',
       },
       {
@@ -84,7 +89,8 @@ describe('resolveChannelSessionCandidate', () => {
         source: 'telegram',
         channelName: 'telegram',
         channelId: 'room_shared',
-        status: 'active',
+        isCurrent: true,
+        placement: 'current',
         updatedAt: '2026-03-08T00:00:04.000Z',
       },
     ] satisfies ChannelSessionCandidate[]

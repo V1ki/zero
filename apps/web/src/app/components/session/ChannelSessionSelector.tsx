@@ -50,8 +50,8 @@ export function ChannelSessionSelector({
       >
         {candidates.map((candidate) => (
           <option key={getChannelSessionCandidateKey(candidate)} value={getOptionValue(candidate)}>
-            {candidate.channelName ?? candidate.source} · {candidate.channelId} · {candidate.status}{' '}
-            · {formatTimeAgo(candidate.updatedAt)}
+            {candidate.channelName ?? candidate.source} · {candidate.channelId} ·{' '}
+            {candidate.placement} · {formatTimeAgo(candidate.updatedAt)}
           </option>
         ))}
       </select>

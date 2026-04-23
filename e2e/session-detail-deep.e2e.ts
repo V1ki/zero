@@ -65,7 +65,7 @@ test.describe('Session Detail Deep', () => {
     await expect(page.locator('main')).toContainText('MODEL HISTORY', { timeout: 5_000 })
   })
 
-  test('archive button exists on session detail', async ({ page }) => {
+  test('archive button is removed from session detail', async ({ page }) => {
     test.setTimeout(90_000)
     await createSessionAndGoToList(page)
 
@@ -73,8 +73,8 @@ test.describe('Session Detail Deep', () => {
     await page.locator('main .card.cursor-pointer').first().click()
     await expect(page.locator('main')).toContainText('sess_', { timeout: 10_000 })
 
-    // Archive button should be visible in the metadata bar
-    await expect(page.locator('main button:has-text("Archive")')).toBeVisible({ timeout: 5_000 })
+    await expect(page.locator('main button:has-text("Delete")')).toBeVisible({ timeout: 5_000 })
+    await expect(page.locator('main button:has-text("Archive")')).toHaveCount(0)
   })
 
   test('back navigation returns to sessions list', async ({ page }) => {

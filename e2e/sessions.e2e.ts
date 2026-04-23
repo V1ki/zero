@@ -10,9 +10,8 @@ test.describe('Sessions Page', () => {
     await page.goto('/sessions')
     const filterArea = page.locator('main .flex.gap-2')
     await expect(filterArea.locator('button:has-text("All")')).toBeVisible()
-    await expect(filterArea.locator('button:has-text("Active")')).toBeVisible()
-    await expect(filterArea.locator('button:has-text("Completed")')).toBeVisible()
-    await expect(filterArea.locator('button:has-text("Archived")')).toBeVisible()
+    await expect(filterArea.locator('button:has-text("Current")')).toBeVisible()
+    await expect(filterArea.locator('button:has-text("Background")')).toBeVisible()
   })
 
   test('shows source filter buttons', async ({ page }) => {
@@ -34,7 +33,7 @@ test.describe('Sessions Page', () => {
   test('filter buttons are clickable', async ({ page }) => {
     await page.goto('/sessions')
     const filterArea = page.locator('main .flex.gap-2')
-    await filterArea.locator('button:has-text("Active")').click()
+    await filterArea.locator('button:has-text("Current")').click()
     await expect(page.locator('main h1')).toContainText('Sessions')
   })
 

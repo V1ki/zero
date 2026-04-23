@@ -190,10 +190,11 @@ describe('API Routes (Real)', () => {
       createdAt,
       updatedAt: createdAt,
       source: 'web',
-      status: 'active',
       currentModel: 'openai-codex/gpt-5.4-medium',
       modelHistory: [{ model: 'openai-codex/gpt-5.4-medium', from: createdAt, to: null }],
       tags: [],
+      channelId: 'default',
+      channelName: 'web',
     }
 
     isolatedDb.saveSession(
@@ -201,6 +202,7 @@ describe('API Routes (Real)', () => {
       '{"name":"route-agent","agentInstruction":"route prompt"}',
       renderedSystemPrompt,
     )
+    isolatedDb.saveBinding('web', 'default', sessionId, 'web', createdAt)
     const isolatedManager = new SessionManager(
       zero.modelRouter,
       zero.toolRegistry,

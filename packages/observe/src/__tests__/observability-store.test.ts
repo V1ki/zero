@@ -286,17 +286,17 @@ describe('ObservabilityStore', () => {
     expect(ids).toEqual(new Set(['req_trace_all_001', 'req_trace_all_002']))
   })
 
-  test('syncSessionActiveState maintains _active symlinks for active sessions only', () => {
+  test('syncSessionCurrentState maintains _current symlinks for current sessions only', () => {
     const store = new ObservabilityStore(testDir)
     const sessionId = 'sess_20260312_2130_fei_a1b2'
 
-    store.syncSessionActiveState(sessionId, 'active')
-    const linkPath = join(testDir, 'sessions', '_active', sessionId)
+    store.syncSessionCurrentState(sessionId, true)
+    const linkPath = join(testDir, 'sessions', '_current', sessionId)
 
     expect(existsSync(linkPath)).toBe(true)
     expect(readlinkSync(linkPath)).toBe('../2026-03-12/sess_20260312_2130_fei_a1b2')
 
-    store.syncSessionActiveState(sessionId, 'completed')
+    store.syncSessionCurrentState(sessionId, false)
     expect(existsSync(linkPath)).toBe(false)
   })
 

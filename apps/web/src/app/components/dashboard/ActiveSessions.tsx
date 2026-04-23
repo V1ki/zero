@@ -7,7 +7,8 @@ import { PulseDot } from '../shared/PulseDot'
 interface Session {
   id: string
   source: string
-  status: string
+  isCurrent: boolean
+  placement: 'current' | 'background'
   currentModel: string
   createdAt: string
   summary: string
@@ -28,7 +29,7 @@ export function ActiveSessions() {
 
   useEffect(() => {
     function poll() {
-      apiFetch<{ sessions: Session[] }>('/api/sessions?filter=active')
+      apiFetch<{ sessions: Session[] }>('/api/sessions?filter=current')
         .then((res) => setSessions(res.sessions))
         .catch(() => {})
     }
@@ -67,12 +68,12 @@ export function ActiveSessions() {
   return (
     <div className="card p-5 animate-fade-up" style={{ animationDelay: '160ms' }}>
       <h3 className="text-[14px] font-semibold mb-4 text-[var(--color-text-secondary)]">
-        Active Sessions
+        Current Sessions
       </h3>
 
       {sessions.length === 0 ? (
         <p className="text-[13px] text-[var(--color-text-muted)] py-8 text-center">
-          No active sessions
+          No current sessions
         </p>
       ) : (
         <div className="space-y-3">
@@ -81,7 +82,7 @@ export function ActiveSessions() {
             return (
               <div key={s.id} className="rounded-lg bg-white/[0.02] p-3">
                 <div className="flex items-center gap-2.5 mb-1">
-                  <PulseDot status={s.status === 'active' ? 'active' : 'idle'} size={8} />
+                  <PulseDot status={s.isCurrent ? 'active' : 'idle'} size={8} />
                   <span className="text-[12px] font-mono text-[var(--color-text-primary)]">
                     {s.id.slice(0, 8)}
                   </span>

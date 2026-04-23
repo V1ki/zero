@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
 import type { Message, Session as SessionData } from '@zero-os/shared'
 import { SessionDB } from '../session-db'
 
@@ -16,7 +16,6 @@ function makeSessionData(overrides: Partial<SessionData> = {}): SessionData {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     source: 'web',
-    status: 'active',
     currentModel: 'gpt-5.3-codex-medium',
     modelHistory: [{ model: 'gpt-5.3-codex-medium', from: new Date().toISOString(), to: null }],
     tags: [],
@@ -39,11 +38,63 @@ function makeMessages(count: number): Message[] {
   return msgs
 }
 
-describe('SessionDB', () => {
-  let db: SessionDB
+type UnsafeSessionDb = {
+  db: {
+    run(sql: string, bindings?: unknown[]): unknown
+  }
+  backfillLegacyBindings(): void
+}
 
-  afterAll(() => {
+function insertLegacySession(
+  db: SessionDB,
+  data: {
+    id: string
+    source: string
+    status: string
+    currentModel?: string
+    createdAt: string
+    updatedAt: string
+    channelName?: string
+    channelId?: string
+  },
+): void {
+  const unsafe = db as unknown as UnsafeSessionDb
+  unsafe.db.run(
+    `INSERT INTO sessions (
+      id, source, status, current_model, reasoning_effort, model_history_json, summary, tags_json,
+      channel_name, channel_id, agent_config_json, system_prompt, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      data.id,
+      data.source,
+      data.status,
+      data.currentModel ?? 'gpt-5.3-codex-medium',
+      null,
+      JSON.stringify([
+        {
+          model: data.currentModel ?? 'gpt-5.3-codex-medium',
+          from: data.createdAt,
+          to: null,
+        },
+      ]),
+      null,
+      JSON.stringify([]),
+      data.channelName ?? null,
+      data.channelId ?? null,
+      null,
+      null,
+      data.createdAt,
+      data.updatedAt,
+    ],
+  )
+}
+
+describe('SessionDB', () => {
+  let db: SessionDB | undefined
+
+  afterEach(() => {
     db?.close()
+    db = undefined
   })
 
   test('initializes schema and creates tables', () => {
@@ -52,6 +103,7 @@ describe('SessionDB', () => {
   })
 
   test('saveSession + getSession round-trip', () => {
+    db = SessionDB.createInMemory()
     const data = makeSessionData({
       id: 'sess_roundtrip',
       tags: ['test', 'unit'],
@@ -63,7 +115,6 @@ describe('SessionDB', () => {
     const savedRow = expectDefined(row)
     expect(savedRow.id).toBe('sess_roundtrip')
     expect(savedRow.source).toBe('web')
-    expect(savedRow.status).toBe('active')
     expect(savedRow.currentModel).toBe('gpt-5.3-codex-medium')
     expect(savedRow.tags).toEqual(['test', 'unit'])
     expect(savedRow.reasoningEffort).toBe('high')
@@ -73,6 +124,7 @@ describe('SessionDB', () => {
   })
 
   test('saveSession upserts on duplicate ID', () => {
+    db = SessionDB.createInMemory()
     const data = makeSessionData({ id: 'sess_upsert', summary: 'v1' })
     db.saveSession(data)
     expect(expectDefined(db.getSession('sess_upsert')).summary).toBe('v1')
@@ -84,6 +136,7 @@ describe('SessionDB', () => {
   })
 
   test('saveMessages + loadSessionMessages round-trip', () => {
+    db = SessionDB.createInMemory()
     const msgs = makeMessages(4)
     db.saveMessages('sess_msgs', msgs)
 
@@ -95,6 +148,7 @@ describe('SessionDB', () => {
   })
 
   test('saveMessages with tool_use and tool_result blocks', () => {
+    db = SessionDB.createInMemory()
     const msgs: Message[] = [
       {
         id: 'msg_tool_1',
@@ -129,83 +183,139 @@ describe('SessionDB', () => {
   })
 
   test('loadSessionMessages returns empty for non-existent session', () => {
+    db = SessionDB.createInMemory()
     const msgs = db.loadSessionMessages('sess_nonexistent')
     expect(msgs).toEqual([])
   })
 
-  test('updateStatus changes status and updatedAt', () => {
-    const data = makeSessionData({ id: 'sess_status' })
-    db.saveSession(data)
-    expect(expectDefined(db.getSession('sess_status')).status).toBe('active')
-
-    const newTime = new Date().toISOString()
-    db.updateStatus('sess_status', 'completed', newTime)
-
-    const row = expectDefined(db.getSession('sess_status'))
-    expect(row.status).toBe('completed')
-    expect(row.updatedAt).toBe(newTime)
-  })
-
-  test('loadActiveSessions returns only active/idle', () => {
-    db.saveSession(makeSessionData({ id: 'sess_a1', status: 'active' }))
-    db.saveSession(makeSessionData({ id: 'sess_a2', status: 'idle' }))
-    db.saveSession(makeSessionData({ id: 'sess_a3', status: 'completed' }))
-    db.saveSession(makeSessionData({ id: 'sess_a4', status: 'archived' }))
-
-    const active = db.loadActiveSessions()
-    const activeIds = active.map((r) => r.id)
-    expect(activeIds).toContain('sess_a1')
-    expect(activeIds).toContain('sess_a2')
-    expect(activeIds).not.toContain('sess_a3')
-    expect(activeIds).not.toContain('sess_a4')
-  })
-
-  test('loadAllSessions with status filter', () => {
-    const completed = db.loadAllSessions({ status: 'completed' })
-    expect(completed.every((r) => r.status === 'completed')).toBe(true)
-    expect(completed.length).toBeGreaterThanOrEqual(1)
-  })
-
-  test('loadAllSessions with limit', () => {
-    const limited = db.loadAllSessions({ limit: 2 })
-    expect(limited.length).toBeLessThanOrEqual(2)
-  })
-
-  test('getChannelMappings returns active sessions with channelId', () => {
+  test('saveBinding + getBinding + loadBindings round-trip', () => {
+    db = SessionDB.createInMemory()
     db.saveSession(
       makeSessionData({
-        id: 'sess_ch1',
+        id: 'sess_bind_1',
         source: 'feishu',
         channelName: 'feishu:ops',
         channelId: 'chat_001',
-        status: 'active',
       }),
     )
+
+    db.saveBinding('feishu', 'chat_001', 'sess_bind_1', 'feishu:ops', '2026-04-22T00:00:00.000Z')
+
+    expect(db.getBinding('feishu', 'chat_001', 'feishu:ops')).toEqual({
+      source: 'feishu',
+      channelName: 'feishu:ops',
+      channelId: 'chat_001',
+      sessionId: 'sess_bind_1',
+      updatedAt: '2026-04-22T00:00:00.000Z',
+    })
+
+    expect(db.loadBindings()).toEqual([
+      {
+        source: 'feishu',
+        channelName: 'feishu:ops',
+        channelId: 'chat_001',
+        sessionId: 'sess_bind_1',
+        updatedAt: '2026-04-22T00:00:00.000Z',
+      },
+    ])
+  })
+
+  test('deleteSession removes associated bindings', () => {
+    db = SessionDB.createInMemory()
     db.saveSession(
-      makeSessionData({ id: 'sess_ch2', source: 'telegram', channelId: 'tg_001', status: 'idle' }),
+      makeSessionData({
+        id: 'sess_delete_1',
+        source: 'telegram',
+        channelId: 'tg_001',
+      }),
+    )
+    db.saveBinding('telegram', 'tg_001', 'sess_delete_1', undefined, '2026-04-22T00:01:00.000Z')
+
+    expect(db.deleteSession('sess_delete_1')).toBe(true)
+    expect(db.getSession('sess_delete_1')).toBeNull()
+    expect(db.getBinding('telegram', 'tg_001')).toBeNull()
+  })
+
+  test('loadAllSessions orders by updatedAt and respects limit', () => {
+    db = SessionDB.createInMemory()
+    db.saveSession(
+      makeSessionData({
+        id: 'sess_old',
+        updatedAt: '2026-04-22T00:00:00.000Z',
+      }),
     )
     db.saveSession(
       makeSessionData({
-        id: 'sess_ch3',
-        source: 'feishu',
-        channelId: 'chat_002',
-        status: 'completed',
+        id: 'sess_new',
+        updatedAt: '2026-04-22T00:05:00.000Z',
       }),
     )
 
-    const mappings = db.getChannelMappings()
-    const ids = mappings.map((m) => m.id)
-    expect(ids).toContain('sess_ch1')
-    expect(ids).toContain('sess_ch2')
-    expect(ids).not.toContain('sess_ch3')
+    expect(db.loadAllSessions().map((row) => row.id).slice(0, 2)).toEqual(['sess_new', 'sess_old'])
+    expect(db.loadAllSessions({ limit: 1 }).map((row) => row.id)).toEqual(['sess_new'])
+  })
 
-    const feishuMapping = expectDefined(mappings.find((m) => m.id === 'sess_ch1'))
-    expect(feishuMapping.source).toBe('feishu')
-    expect(feishuMapping.channelName).toBe('feishu:ops')
-    expect(feishuMapping.channelId).toBe('chat_001')
+  test('legacy backfill builds bindings from active and idle rows only', () => {
+    db = SessionDB.createInMemory()
+    const unsafe = db as unknown as UnsafeSessionDb
+
+    insertLegacySession(db, {
+      id: 'sess_old_active',
+      source: 'feishu',
+      status: 'active',
+      channelName: 'feishu:ops',
+      channelId: 'shared_room',
+      createdAt: '2026-04-22T00:00:00.000Z',
+      updatedAt: '2026-04-22T00:00:00.000Z',
+    })
+    insertLegacySession(db, {
+      id: 'sess_new_idle',
+      source: 'feishu',
+      status: 'idle',
+      channelName: 'feishu:ops',
+      channelId: 'shared_room',
+      createdAt: '2026-04-22T00:10:00.000Z',
+      updatedAt: '2026-04-22T00:10:00.000Z',
+    })
+    insertLegacySession(db, {
+      id: 'sess_completed',
+      source: 'feishu',
+      status: 'completed',
+      channelName: 'feishu:ops',
+      channelId: 'shared_room',
+      createdAt: '2026-04-22T00:20:00.000Z',
+      updatedAt: '2026-04-22T00:20:00.000Z',
+    })
+    insertLegacySession(db, {
+      id: 'sess_web_legacy',
+      source: 'web',
+      status: 'active',
+      createdAt: '2026-04-22T00:30:00.000Z',
+      updatedAt: '2026-04-22T00:30:00.000Z',
+    })
+
+    unsafe.backfillLegacyBindings()
+
+    expect(db.loadBindings()).toEqual([
+      {
+        source: 'web',
+        channelName: 'web',
+        channelId: 'default',
+        sessionId: 'sess_web_legacy',
+        updatedAt: '2026-04-22T00:30:00.000Z',
+      },
+      {
+        source: 'feishu',
+        channelName: 'feishu:ops',
+        channelId: 'shared_room',
+        sessionId: 'sess_new_idle',
+        updatedAt: '2026-04-22T00:10:00.000Z',
+      },
+    ])
   })
 
   test('getSession returns null for non-existent ID', () => {
+    db = SessionDB.createInMemory()
     expect(db.getSession('sess_nonexistent')).toBeNull()
   })
 })

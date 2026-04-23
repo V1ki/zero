@@ -3,7 +3,8 @@ export interface ChannelSessionCandidate {
   source: string
   channelName?: string
   channelId: string
-  status: string
+  isCurrent: boolean
+  placement: 'current'
   updatedAt: string
   summary?: string
 }

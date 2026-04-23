@@ -4,7 +4,6 @@ import {
   type MemoryStatus,
   type MemoryType,
   type ModelPricing,
-  type SessionStatus,
   toErrorMessage,
 } from '@zero-os/shared'
 import { readYaml, writeYaml } from '@zero-os/shared/utils'
@@ -159,6 +158,14 @@ export function createRoutes(zero: ZeroOS) {
     return zero.sessionManager.getFromDB(id)
   }
 
+  function getCurrentSessionIds() {
+    return new Set(zero.sessionManager.listCurrentBindings().map((binding) => binding.sessionId))
+  }
+
+  function getCurrentWebSession() {
+    return zero.sessionManager.getCurrentSessionForChannel('web', 'default', 'web')
+  }
+
   function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
   }
@@ -214,20 +221,21 @@ export function createRoutes(zero: ZeroOS) {
 
     // System status
     .get('/api/status', (c) => {
-      const activeSessions = zero.sessionManager.listActive()
+      const currentSessions = zero.sessionManager.listCurrent()
       const heartbeat = zero.heartbeat.getLastHeartbeat()
       const heartbeatAge = heartbeat
         ? Math.max(0, Math.floor((Date.now() - new Date(heartbeat.timestamp).getTime()) / 1000))
         : 0
       const status = heartbeat && heartbeat.health.status !== 'healthy' ? 'degraded' : 'running'
+      const currentWebSession = getCurrentWebSession()
 
       return c.json({
         status,
         uptime: process.uptime(),
-        currentModel: zero.sessionManager.getPreferredModel('web'),
+        currentModel: currentWebSession?.data.currentModel ?? zero.sessionManager.getPreferredModel('web'),
         version: '0.1.0',
         heartbeatAge,
-        activeSessions: activeSessions.length,
+        currentSessions: currentSessions.length,
       })
     })
 
@@ -284,17 +292,22 @@ export function createRoutes(zero: ZeroOS) {
 
     // Sessions
     .get('/api/sessions', (c) => {
-      const filter = c.req.query('filter') ?? 'all'
+      const rawFilter = c.req.query('filter') ?? 'all'
+      // Keep accepting the old status-shaped filter values while callers finish migrating to the
+      // new current/background vocabulary.
+      const filter =
+        rawFilter === 'active'
+          ? 'current'
+          : rawFilter === 'completed' || rawFilter === 'archived'
+            ? 'background'
+            : rawFilter
       const q = c.req.query('q')?.toLowerCase() ?? ''
+      const currentIds = getCurrentSessionIds()
 
-      // In-memory sessions (active runtime)
-      let sessions =
-        filter === 'active' ? zero.sessionManager.listActive() : zero.sessionManager.listAll()
+      let sessions = filter === 'current' ? zero.sessionManager.listCurrent() : zero.sessionManager.listAll()
 
-      if (filter === 'completed') {
-        sessions = sessions.filter((s) => s.getStatus() === 'completed')
-      } else if (filter === 'archived') {
-        sessions = sessions.filter((s) => s.getStatus() === 'archived')
+      if (filter === 'background') {
+        sessions = sessions.filter((session) => !currentIds.has(session.data.id))
       }
 
       const sessionIds = sessions.map((s) => s.data.id)
@@ -312,12 +325,14 @@ export function createRoutes(zero: ZeroOS) {
           (m) => m.role === 'assistant' && m.content.some((b) => b.type === 'text'),
         ).length
         const stats = statsBatch.get(s.data.id)
+        const isCurrent = currentIds.has(s.data.id)
 
         return {
           id: s.data.id,
           source: s.data.source,
           channelName: s.data.channelName,
-          status: s.getStatus(),
+          isCurrent,
+          placement: isCurrent ? 'current' : 'background',
           currentModel: s.data.currentModel,
           createdAt: s.data.createdAt,
           updatedAt: s.data.updatedAt,
@@ -334,26 +349,24 @@ export function createRoutes(zero: ZeroOS) {
         }
       })
 
-      // Merge DB-only sessions for non-active filters
-      if (filter !== 'active') {
+      if (filter !== 'current') {
         const inMemoryIds = new Set(sessionIds)
-        const dbFilter =
-          filter === 'completed' || filter === 'archived'
-            ? { status: filter as SessionStatus }
-            : undefined
-        const dbRows = zero.sessionManager.listAllFromDB(dbFilter)
+        const dbRows = zero.sessionManager.listAllFromDB()
         const dbOnlyIds = dbRows.filter((r) => !inMemoryIds.has(r.id)).map((r) => r.id)
         const dbStatsBatch =
           dbOnlyIds.length > 0 ? zero.metrics.sessionStatsBatch(dbOnlyIds) : new Map()
 
         for (const row of dbRows) {
           if (inMemoryIds.has(row.id)) continue
+          const isCurrent = currentIds.has(row.id)
+          if (filter === 'background' && isCurrent) continue
           const stats = dbStatsBatch.get(row.id)
           result.push({
             id: row.id,
             source: row.source,
             channelName: row.channelName,
-            status: row.status,
+            isCurrent,
+            placement: isCurrent ? 'current' : 'background',
             currentModel: row.currentModel,
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
@@ -371,7 +384,7 @@ export function createRoutes(zero: ZeroOS) {
         }
       }
 
-      const filtered = q
+      const filtered = (q
         ? result.filter(
             (s) =>
               (s.id as string).toLowerCase().includes(q) ||
@@ -382,46 +395,57 @@ export function createRoutes(zero: ZeroOS) {
               ((s.channelId as string)?.toLowerCase().includes(q) ?? false),
           )
         : result
+      ).sort((left, right) => (right.updatedAt as string).localeCompare(left.updatedAt as string))
 
       return c.json({ sessions: filtered })
     })
 
-    .get('/api/sessions/channel/:channel/active', (c) => {
+    .get('/api/sessions/channel/:channel/current', (c) => {
       const channel = c.req.param('channel')
 
       const sessions = zero.sessionManager
-        .listActive()
-        .filter((session) => session.data.channelId === channel)
-        .sort((left, right) => right.data.updatedAt.localeCompare(left.data.updatedAt))
-        .map((session) => ({
-          id: session.data.id,
-          source: session.data.source,
-          channelName: session.data.channelName,
-          channelId: session.data.channelId ?? channel,
-          status: session.getStatus(),
-          updatedAt: session.data.updatedAt,
-          summary: session.data.summary,
-        }))
+        .listCurrentBindings()
+        .filter((binding) => binding.channelId === channel)
+        .map((binding) => {
+          const session = zero.sessionManager.get(binding.sessionId)
+          const row = session ? null : zero.sessionManager.getFromDB(binding.sessionId)
+          return {
+            id: binding.sessionId,
+            source: binding.source,
+            channelName: binding.channelName,
+            channelId: binding.channelId,
+            isCurrent: true,
+            placement: 'current' as const,
+            updatedAt: session?.data.updatedAt ?? row?.updatedAt ?? binding.updatedAt,
+            summary: session?.data.summary ?? row?.summary,
+          }
+        })
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
 
       return c.json({ sessions })
     })
 
-    .get('/api/sessions/source/:source/active', (c) => {
+    .get('/api/sessions/source/:source/current', (c) => {
       const source = c.req.param('source')
 
       const sessions = zero.sessionManager
-        .listActive()
-        .filter((session) => session.data.source === source && session.data.channelId)
-        .sort((left, right) => right.data.updatedAt.localeCompare(left.data.updatedAt))
-        .map((session) => ({
-          id: session.data.id,
-          source: session.data.source,
-          channelName: session.data.channelName,
-          channelId: session.data.channelId as string,
-          status: session.getStatus(),
-          updatedAt: session.data.updatedAt,
-          summary: session.data.summary,
-        }))
+        .listCurrentBindings()
+        .filter((binding) => binding.source === source)
+        .map((binding) => {
+          const session = zero.sessionManager.get(binding.sessionId)
+          const row = session ? null : zero.sessionManager.getFromDB(binding.sessionId)
+          return {
+            id: binding.sessionId,
+            source: binding.source,
+            channelName: binding.channelName,
+            channelId: binding.channelId,
+            isCurrent: true,
+            placement: 'current' as const,
+            updatedAt: session?.data.updatedAt ?? row?.updatedAt ?? binding.updatedAt,
+            summary: session?.data.summary ?? row?.summary,
+          }
+        })
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
 
       return c.json({ sessions })
     })
@@ -434,12 +458,14 @@ export function createRoutes(zero: ZeroOS) {
         const auxiliaryCost = zero.metrics.sessionAuxiliaryCost(id)
         const purposeBreakdown = zero.metrics.sessionUsageByPurpose(id)
         const cacheEconomics = summarizeSessionCacheEconomics(id)
+        const isCurrent = zero.sessionManager.isCurrentSessionId(id)
         return c.json({
           id: session.data.id,
           source: session.data.source,
           channelName: session.data.channelName,
           channelId: session.data.channelId,
-          status: session.getStatus(),
+          isCurrent,
+          placement: isCurrent ? 'current' : 'background',
           currentModel: session.data.currentModel,
           createdAt: session.data.createdAt,
           updatedAt: session.data.updatedAt,
@@ -477,12 +503,14 @@ export function createRoutes(zero: ZeroOS) {
       const auxiliaryCost = zero.metrics.sessionAuxiliaryCost(id)
       const purposeBreakdown = zero.metrics.sessionUsageByPurpose(id)
       const cacheEconomics = summarizeSessionCacheEconomics(id)
+      const isCurrent = zero.sessionManager.isCurrentSessionId(id)
       return c.json({
         id: row.id,
         source: row.source,
         channelName: row.channelName,
         channelId: row.channelId,
-        status: row.status,
+        isCurrent,
+        placement: isCurrent ? 'current' : 'background',
         currentModel: row.currentModel,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
@@ -634,16 +662,6 @@ export function createRoutes(zero: ZeroOS) {
       return c.json({ ok: true, status })
     })
 
-    .post('/api/sessions/:id/archive', (c) => {
-      const id = c.req.param('id')
-      const session = zero.sessionManager.get(id)
-      if (!session) {
-        return c.json({ error: 'Session not found' }, 404)
-      }
-      zero.sessionManager.finalizeSession(session, 'archived')
-      return c.json({ ok: true })
-    })
-
     .delete('/api/sessions/:id', async (c) => {
       const id = c.req.param('id')
       const deleted = await zero.sessionManager.deleteSession(id, zero.memoryStore, zero.metrics)
@@ -651,6 +669,36 @@ export function createRoutes(zero: ZeroOS) {
         return c.json({ error: 'Session not found' }, 404)
       }
       return c.json({ ok: true })
+    })
+
+    .post('/api/chat/new', async (c) => {
+      const body = await c.req.json<{ model?: string }>().catch(() => ({}) as { model?: string })
+      const { session, previousSessionId } = zero.sessionManager.startNewForChannel(
+        'web',
+        'default',
+        'web',
+      )
+
+      if (!session.isAgentInitialized()) {
+        session.initAgent({
+          name: 'zero-web',
+          agentInstruction:
+            'You are ZeRo OS, an AI agent system running on macOS. Be helpful, concise, and accurate.',
+        })
+      }
+
+      if (body.model) {
+        const result = await session.switchModel(body.model)
+        if (!result.success) {
+          return c.json({ error: result.message }, 400)
+        }
+      }
+
+      return c.json({
+        sessionId: session.data.id,
+        currentModel: session.data.currentModel,
+        previousSessionId,
+      })
     })
 
     // Chat — create session + send message to AI
@@ -661,11 +709,16 @@ export function createRoutes(zero: ZeroOS) {
 
       const body = await c.req.json<{ message: string; sessionId?: string }>()
       const isSessionCommand = parseSessionArgs(body.message) !== null
-
-      let session = body.sessionId ? zero.sessionManager.get(body.sessionId) : undefined
+      const selected = body.sessionId
+        ? zero.sessionManager.switchCurrentSessionForChannel('web', 'default', body.sessionId, 'web')
+        : zero.sessionManager.getOrCreateForChannel('web', 'default', 'web')
+      const session = selected?.session
 
       if (!session) {
-        session = zero.sessionManager.create('web')
+        return c.json({ error: 'Session not found' }, 404)
+      }
+
+      if (!session.isAgentInitialized()) {
         session.initAgent({
           name: 'zero-web',
           agentInstruction:

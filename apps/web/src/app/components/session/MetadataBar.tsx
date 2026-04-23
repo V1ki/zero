@@ -1,6 +1,6 @@
-import { Archive, CaretDown, CaretRight, Clock, Trash } from '@phosphor-icons/react'
+import { CaretDown, CaretRight, Clock, Trash } from '@phosphor-icons/react'
 import { useState } from 'react'
-import { apiDelete, apiPost } from '../../lib/api'
+import { apiDelete } from '../../lib/api'
 import { formatCost, formatModelHistory, formatNumber, formatTimeRange } from '../../lib/format'
 import { useUIStore } from '../../stores/ui'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
@@ -15,7 +15,8 @@ interface Props {
   sessionId: string
   summary?: string
   source: string
-  status?: string
+  isCurrent?: boolean
+  placement?: 'current' | 'background'
   currentModel?: string
   channelName?: string
   channelId?: string
@@ -46,7 +47,6 @@ interface Props {
   timelineCount?: number
   systemEventCount?: number
   subAgentCount?: number
-  onArchived?: () => void
   onDeleted?: () => void
 }
 
@@ -54,7 +54,8 @@ export function MetadataBar({
   sessionId,
   summary,
   source,
-  status,
+  isCurrent,
+  placement,
   currentModel,
   channelName,
   channelId,
@@ -79,10 +80,8 @@ export function MetadataBar({
   timelineCount = 0,
   systemEventCount = 0,
   subAgentCount = 0,
-  onArchived,
   onDeleted,
 }: Props) {
-  const [showArchiveConfirm, setShowArchiveConfirm] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [detailsExpanded, setDetailsExpanded] = useState(false)
   const { addToast } = useUIStore()
@@ -92,13 +91,6 @@ export function MetadataBar({
     .slice(0, 2)
     .map((row) => `${row.purpose}: ${formatCost(row.totalCost)}`)
     .join(' · ')
-
-  async function handleArchive() {
-    await apiPost(`/api/sessions/${sessionId}/archive`, {})
-    addToast('success', 'Session 已归档')
-    setShowArchiveConfirm(false)
-    onArchived?.()
-  }
 
   async function handleDelete() {
     await apiDelete(`/api/sessions/${sessionId}`)
@@ -114,11 +106,16 @@ export function MetadataBar({
         <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
-              {status && (
+              {placement && (
                 <span
-                  className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] ${getStatusBadgeClass(status)}`}
+                  className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] ${getPlacementBadgeClass(placement)}`}
                 >
-                  {status}
+                  {placement}
+                </span>
+              )}
+              {typeof isCurrent === 'boolean' && (
+                <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-secondary)]">
+                  {isCurrent ? 'bound' : 'history'}
                 </span>
               )}
               <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-mono text-[var(--color-text-secondary)]">
@@ -156,22 +153,12 @@ export function MetadataBar({
               type="button"
               onClick={() => setShowDeleteConfirm(true)}
               className="rounded-xl border border-red-400/25 bg-red-400/6 px-3 py-2 text-[11px] text-red-200 transition-colors hover:border-red-400/45 hover:bg-red-400/12"
-            >
-              <span className="inline-flex items-center gap-1.5">
-                <Trash size={14} />
-                Delete
-              </span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowArchiveConfirm(true)}
-              className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-[var(--color-text-secondary)] transition-colors hover:border-white/18 hover:bg-white/8"
-            >
-              <span className="inline-flex items-center gap-1.5">
-                <Archive size={14} />
-                Archive
-              </span>
-            </button>
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  <Trash size={14} />
+                  Delete
+                </span>
+              </button>
           </div>
         </div>
 
@@ -278,16 +265,6 @@ export function MetadataBar({
       </div>
 
       <ConfirmDialog
-        open={showArchiveConfirm}
-        title="归档此 Session？"
-        description="归档后 Session 将从活跃列表中移除，历史数据仍可查看。"
-        confirmText="归档"
-        danger
-        onConfirm={handleArchive}
-        onCancel={() => setShowArchiveConfirm(false)}
-      />
-
-      <ConfirmDialog
         open={showDeleteConfirm}
         title="删除此 Session？"
         description="删除后 Session 及其关联的记忆数据将被永久移除，无法恢复。"
@@ -320,16 +297,12 @@ function MetricPill({
   )
 }
 
-function getStatusBadgeClass(status: string): string {
-  switch (status) {
-    case 'active':
+function getPlacementBadgeClass(placement: 'current' | 'background'): string {
+  switch (placement) {
+    case 'current':
       return 'border-emerald-400/40 bg-emerald-400/12 text-emerald-200'
-    case 'completed':
-      return 'border-cyan-400/40 bg-cyan-400/12 text-cyan-200'
-    case 'archived':
+    case 'background':
       return 'border-slate-400/30 bg-slate-400/10 text-slate-300'
-    case 'failed':
-      return 'border-red-400/40 bg-red-400/12 text-red-200'
     default:
       return 'border-white/10 bg-white/5 text-[var(--color-text-secondary)]'
   }

@@ -115,7 +115,7 @@ export async function runSessionJudge(
     sessionId,
     currentModel,
     summary: session?.data.summary ?? row?.summary,
-    status: session?.getStatus() ?? row?.status,
+    placement: zero.sessionManager.getPlacement(sessionId),
     messages,
     requests,
     closures,
@@ -210,7 +210,7 @@ function buildJudgePayload(
     sessionId: string
     currentModel?: string
     summary?: string
-    status?: string
+    placement?: string
     messages: Message[]
     requests: RequestLogEntry[]
     closures: ReturnType<ZeroOS['observability']['readSessionClosures']>
@@ -263,7 +263,7 @@ function buildJudgePayload(
     session: {
       id: input.sessionId,
       model: input.currentModel,
-      status: input.status,
+      placement: input.placement,
       summary: previewText(filter(input.summary ?? ''), 320),
     },
     contextSignals: {

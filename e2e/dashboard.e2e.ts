@@ -25,9 +25,9 @@ test.describe('Dashboard', () => {
     await expect(page.locator('text=Recent Activity')).toBeVisible()
   })
 
-  test('shows Active Sessions heading', async ({ page }) => {
+  test('shows Current Sessions heading', async ({ page }) => {
     await page.goto('/')
-    await expect(page.getByRole('heading', { name: 'Active Sessions' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Current Sessions' })).toBeVisible()
   })
 
   test('shows channel status with all channel names', async ({ page }) => {

@@ -8,7 +8,7 @@ interface StatusData {
   uptime: number
   currentModel: string
   heartbeatAge: number
-  activeSessions: number
+  currentSessions: number
 }
 
 export function SystemStatus() {
@@ -17,7 +17,7 @@ export function SystemStatus() {
     uptime: 0,
     currentModel: 'loading...',
     heartbeatAge: 0,
-    activeSessions: 0,
+    currentSessions: 0,
   })
 
   useEffect(() => {
@@ -37,7 +37,7 @@ export function SystemStatus() {
       model={data.currentModel}
       uptime={formatUptime(data.uptime)}
       heartbeatAge={data.heartbeatAge}
-      activeSessions={data.activeSessions}
+      currentSessions={data.currentSessions}
     />
   )
 }

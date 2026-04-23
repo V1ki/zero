@@ -93,7 +93,8 @@ interface SessionRequestEntry {
 interface SessionDetail {
   id: string
   source: string
-  status: string
+  isCurrent: boolean
+  placement: 'current' | 'background'
   currentModel: string
   channelName?: string
   channelId?: string
@@ -319,7 +320,7 @@ export function SessionDetailScreen({
 
   useWebSocket({
     url: `ws://${window.location.host}/ws`,
-    topics: ['session:update', 'session:end', 'tool:call', 'tool:result'],
+    topics: ['session:update', 'tool:call', 'tool:result'],
     onEvent,
   })
 
@@ -605,7 +606,8 @@ export function SessionDetailScreen({
         sessionId={session.id}
         summary={session.summary}
         source={session.source}
-        status={session.status}
+        isCurrent={session.isCurrent}
+        placement={session.placement}
         currentModel={session.currentModel}
         channelName={session.channelName}
         channelId={session.channelId}
@@ -630,7 +632,6 @@ export function SessionDetailScreen({
         timelineCount={sessionInsights.timelineCount}
         systemEventCount={sessionInsights.systemEventCount}
         subAgentCount={sessionInsights.subAgentCount}
-        onArchived={goBack}
         onDeleted={goBack}
       />
 

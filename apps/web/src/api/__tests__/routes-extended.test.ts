@@ -69,13 +69,17 @@ describe('API Routes Extended', () => {
     expect(data2.sessionId).toBe(sessionId)
   }, 60_000)
 
-  test('GET /api/sessions?filter=active returns active sessions', async () => {
-    const res = await app.request('/api/sessions?filter=active')
+  test('GET /api/sessions?filter=current returns current sessions', async () => {
+    zero.sessionManager.getOrCreateForChannel('feishu', 'route_filter_room', 'feishu:ops')
+    zero.sessionManager.create('web')
+
+    const res = await app.request('/api/sessions?filter=current')
     expect(res.status).toBe(200)
     const data = await res.json()
     expect(Array.isArray(data.sessions)).toBe(true)
     for (const s of data.sessions) {
-      expect(['active', 'idle']).toContain(s.status)
+      expect(s.isCurrent).toBe(true)
+      expect(s.placement).toBe('current')
     }
   })
 
@@ -88,25 +92,29 @@ describe('API Routes Extended', () => {
     expect(data.sessions[0].source).toBe('web')
   })
 
-  test('POST /api/sessions/:id/archive archives a session', async () => {
-    const session = zero.sessionManager.create('web')
-    const res = await app.request(`/api/sessions/${session.data.id}/archive`, {
+  test('POST /api/chat/new rotates the current web binding', async () => {
+    const session = zero.sessionManager.getOrCreateForChannel('web', 'default', 'web').session
+    const res = await app.request('/api/chat/new', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
     })
     expect(res.status).toBe(200)
     const data = await res.json()
-    expect(data.ok).toBe(true)
+    expect(data.previousSessionId).toBe(session.data.id)
+    expect(data.sessionId).not.toBe(session.data.id)
 
     const getRes = await app.request(`/api/sessions/${session.data.id}`)
     const sessionData = await getRes.json()
-    expect(sessionData.status).toBe('archived')
+    expect(sessionData.isCurrent).toBe(false)
+    expect(sessionData.placement).toBe('background')
   })
 
-  test('POST /api/sessions/:id/archive reuses session finalization flow for meaningful sessions', async () => {
-    const session = zero.sessionManager.create('web')
+  test('POST /api/chat/new backgrounds meaningful web session and evaluates session memory', async () => {
+    const session = zero.sessionManager.getOrCreateForChannel('web', 'default', 'web').session
     session.initAgent({
-      name: 'archive-eval-test',
-      agentInstruction: 'Test archive session evaluation.',
+      name: 'background-eval-test',
+      agentInstruction: 'Test web session background evaluation.',
     })
     ;(session as unknown as { messages: Message[] }).messages.push(
       {
@@ -153,7 +161,7 @@ describe('API Routes Extended', () => {
         content: [
           {
             type: 'text',
-            text: '这次会话已经不只是一个短问题了，我希望 archive 时也能触发总结，让后续接手的人快速知道这次排障做了什么以及最后结论是什么，尤其是根因、修复步骤和验证结果。',
+            text: '这次会话已经不只是一个短问题了，我希望切换到新会话时也能触发总结，让后续接手的人快速知道这次排障做了什么以及最后结论是什么，尤其是根因、修复步骤和验证结果。',
           },
         ],
         createdAt: new Date().toISOString(),
@@ -169,8 +177,10 @@ describe('API Routes Extended', () => {
       evaluationCalled = prompt.includes('session 类型的记忆')
     }
 
-    const res = await app.request(`/api/sessions/${session.data.id}/archive`, {
+    const res = await app.request('/api/chat/new', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
     })
     expect(res.status).toBe(200)
 
@@ -178,12 +188,14 @@ describe('API Routes Extended', () => {
     await Promise.resolve()
 
     expect(evaluationCalled).toBe(true)
-    expect(session.getStatus()).toBe('archived')
+    expect(zero.sessionManager.getPlacement(session.data.id)).toBe('background')
   })
 
-  test('POST /api/sessions/:id/archive returns 404 for missing', async () => {
-    const res = await app.request('/api/sessions/nonexistent/archive', {
+  test('POST /api/chat returns 404 when the requested web session does not exist', async () => {
+    const res = await app.request('/api/chat', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'hello', sessionId: 'sess_missing_route' }),
     })
     expect(res.status).toBe(404)
   })
@@ -1736,7 +1748,7 @@ describe('API Routes Extended', () => {
     ).toBe(true)
   })
 
-  test('GET /api/sessions/channel/:channel/active returns active candidates only', async () => {
+  test('GET /api/sessions/channel/:channel/current returns current candidates only', async () => {
     const feishu = zero.sessionManager.getOrCreateForChannel(
       'feishu',
       'shared-room',
@@ -1754,11 +1766,7 @@ describe('API Routes Extended', () => {
     ).session
     feishuHr.data.updatedAt = '2026-03-08T00:00:01.000Z'
 
-    const web = zero.sessionManager.getOrCreateForChannel('web', 'shared-room').session
-    web.setStatus('completed')
-    web.data.updatedAt = '2026-03-08T00:00:04.000Z'
-
-    const res = await app.request('/api/sessions/channel/shared-room/active')
+    const res = await app.request('/api/sessions/channel/shared-room/current')
     expect(res.status).toBe(200)
     const data = await res.json()
 
@@ -1768,23 +1776,20 @@ describe('API Routes Extended', () => {
           `${session.source}:${session.channelName ?? 'none'}`,
       ),
     ).toEqual(['telegram:none', 'feishu:feishu:ops', 'feishu:feishu:hr'])
-    expect(
-      data.sessions.every((session: { status: string }) =>
-        ['active', 'idle'].includes(session.status),
-      ),
-    ).toBe(true)
+    expect(data.sessions.every((session: { placement: string }) => session.placement === 'current')).toBe(
+      true,
+    )
   })
 
-  test('GET /api/sessions/channel/:channel/active returns empty array for missing channel', async () => {
-    const res = await app.request('/api/sessions/channel/no-such-channel/active')
+  test('GET /api/sessions/channel/:channel/current returns empty array for missing channel', async () => {
+    const res = await app.request('/api/sessions/channel/no-such-channel/current')
     expect(res.status).toBe(200)
     const data = await res.json()
     expect(data.sessions).toEqual([])
   })
 
-  test('GET /api/sessions/source/:source/active returns source-scoped active channels', async () => {
+  test('GET /api/sessions/source/:source/current returns source-scoped current channels', async () => {
     const newest = zero.sessionManager.getOrCreateForChannel('scheduler', 'sched_room_2').session
-    newest.setStatus('idle')
     newest.data.updatedAt = '2026-03-09T00:00:03.000Z'
 
     const older = zero.sessionManager.getOrCreateForChannel('scheduler', 'sched_room_1').session
@@ -1793,14 +1798,7 @@ describe('API Routes Extended', () => {
     const otherSource = zero.sessionManager.getOrCreateForChannel('telegram', 'chat_tg_1').session
     otherSource.data.updatedAt = '2026-03-09T00:00:04.000Z'
 
-    const completed = zero.sessionManager.getOrCreateForChannel(
-      'scheduler',
-      'sched_room_done',
-    ).session
-    completed.setStatus('completed')
-    completed.data.updatedAt = '2026-03-09T00:00:05.000Z'
-
-    const res = await app.request('/api/sessions/source/scheduler/active')
+    const res = await app.request('/api/sessions/source/scheduler/current')
     expect(res.status).toBe(200)
     const data = await res.json()
 
@@ -1812,9 +1810,7 @@ describe('API Routes Extended', () => {
       data.sessions.every((session: { source: string }) => session.source === 'scheduler'),
     ).toBe(true)
     expect(
-      data.sessions.every((session: { status: string }) =>
-        ['active', 'idle'].includes(session.status),
-      ),
+      data.sessions.every((session: { placement: string }) => session.placement === 'current'),
     ).toBe(true)
   })
 

@@ -51,7 +51,7 @@ test.describe('WebSocket and Real-time UI', () => {
     // Uptime indicator (real-time element)
     await expect(page.locator('text=Uptime')).toBeVisible({ timeout: 10_000 })
 
-    // Active Sessions heading
-    await expect(page.getByRole('heading', { name: 'Active Sessions' })).toBeVisible()
+    // Current Sessions heading
+    await expect(page.getByRole('heading', { name: 'Current Sessions' })).toBeVisible()
   })
 })

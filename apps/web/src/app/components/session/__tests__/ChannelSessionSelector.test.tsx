@@ -12,7 +12,8 @@ describe('ChannelSessionSelector', () => {
             source: 'feishu',
             channelName: 'feishu',
             channelId: 'oc_room_1',
-            status: 'active',
+            isCurrent: true,
+            placement: 'current',
             updatedAt: '2026-03-08T00:00:00.000Z',
           },
           {
@@ -20,7 +21,8 @@ describe('ChannelSessionSelector', () => {
             source: 'feishu',
             channelName: 'feishu',
             channelId: 'oc_room_2',
-            status: 'idle',
+            isCurrent: true,
+            placement: 'current',
             updatedAt: '2026-03-08T00:10:00.000Z',
           },
         ]}
@@ -29,7 +31,8 @@ describe('ChannelSessionSelector', () => {
           source: 'feishu',
           channelName: 'feishu',
           channelId: 'oc_room_1',
-          status: 'active',
+          isCurrent: true,
+          placement: 'current',
           updatedAt: '2026-03-08T00:00:00.000Z',
         }}
         activeSource="feishu"
@@ -42,6 +45,6 @@ describe('ChannelSessionSelector', () => {
     expect(html).toContain('Channel')
     expect(html).toContain('Channel ID')
     expect(html).toContain('oc_room_1')
-    expect(html).toContain('feishu · oc_room_2 · idle')
+    expect(html).toContain('feishu · oc_room_2 · current')
   })
 })

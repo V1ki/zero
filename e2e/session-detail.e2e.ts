@@ -42,10 +42,10 @@ test.describe('Session Detail Page', () => {
     test.setTimeout(90_000)
     await createSessionAndNavigate(page)
 
-    // Metadata bar shows model and Archive button
+    // Metadata bar shows model and Delete button
     const main = page.locator('main')
     await expect(main).toContainText(/claude|gpt/i)
-    await expect(main).toContainText('Archive')
+    await expect(main).toContainText('Delete')
   })
 
   test('shows timeline-first two-column layout with compact header', async ({ page }) => {
@@ -91,11 +91,12 @@ test.describe('Session Detail Page', () => {
     await expect(page.locator('main')).toContainText('Trace')
   })
 
-  test('shows archive button', async ({ page }) => {
+  test('does not show archive button and keeps delete action', async ({ page }) => {
     test.setTimeout(90_000)
     await createSessionAndNavigate(page)
 
-    await expect(page.locator('main button:has-text("Archive")')).toBeVisible({ timeout: 5_000 })
+    await expect(page.locator('main button:has-text("Delete")')).toBeVisible({ timeout: 5_000 })
+    await expect(page.locator('main button:has-text("Archive")')).toHaveCount(0)
   })
 
   test('back button returns to sessions list', async ({ page }) => {
