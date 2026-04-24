@@ -35,8 +35,12 @@ export abstract class BaseTool {
   ): Promise<void> {
     // Filter secrets from output
     if (ctx.secretFilter) {
-      result.output = ctx.secretFilter.filter(result.output)
-      result.outputSummary = ctx.secretFilter.filter(result.outputSummary)
+      const secretFilter = ctx.secretFilter
+      result.output = secretFilter.filter(result.output)
+      result.outputSummary = secretFilter.filter(result.outputSummary)
+      result.contentItems = result.contentItems?.map((item) =>
+        item.type === 'text' ? { ...item, text: secretFilter.filter(item.text) } : item,
+      )
     }
 
     ctx.logger.info('tool_call_complete', {

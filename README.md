@@ -60,8 +60,8 @@ It is not just a chat UI. The repository is organized around a runtime that can:
 3. `SessionManager` finds or creates the bound session.
 4. The agent builds prompt context from config, bootstrap files, session history, and memory.
 5. `ModelRouter` selects the configured model/provider.
-6. The tool loop can read/write files, execute fused shell commands, fetch URLs, recall
-   memory, and create schedules.
+6. The tool loop can read/write files, read local images, execute fused shell commands,
+   fetch URLs, recall memory, and create schedules.
 7. Logs, traces, metrics, and session state are written through the observability layer.
 8. The final response is sent back through the originating channel.
 

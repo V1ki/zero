@@ -177,7 +177,9 @@ describe('buildTimeline', () => {
         id: 'msg_tool_assistant_running',
         role: 'assistant',
         messageType: 'message',
-        content: [{ type: 'tool_use', id: 'call_running_1', name: 'bash', input: { command: 'sleep 30' } }],
+        content: [
+          { type: 'tool_use', id: 'call_running_1', name: 'bash', input: { command: 'sleep 30' } },
+        ],
         createdAt: '2026-03-08T00:00:01.000Z',
       },
     ]
@@ -208,6 +210,49 @@ describe('buildTimeline', () => {
     }
   })
 
+  test('preserves structured image content items on read_image tool calls', () => {
+    const messages: Message[] = [
+      {
+        id: 'msg_tool_assistant',
+        role: 'assistant',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_image',
+            name: 'read_image',
+            input: { path: '/tmp/screenshot.png' },
+          },
+        ],
+        createdAt: '2026-03-08T00:00:01.000Z',
+      },
+      {
+        id: 'msg_tool_result',
+        role: 'user',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: 'call_image',
+            content: 'Read image /tmp/screenshot.png (image/png, 3 bytes)',
+            outputSummary: 'Read image /tmp/screenshot.png (image/png, 3 bytes)',
+            contentItems: [{ type: 'image', mediaType: 'image/png', data: 'aW1n' }],
+          },
+        ],
+        createdAt: '2026-03-08T00:00:01.100Z',
+      },
+    ]
+
+    const items = buildTimeline(messages)
+    const imageItem = items.find((item) => item.type === 'tool-call' && item.id === 'call_image')
+
+    expect(imageItem).toMatchObject({
+      type: 'tool-call',
+      name: 'read_image',
+      contentItems: [{ type: 'image', mediaType: 'image/png', data: 'aW1n' }],
+    })
+  })
+
   test('prefers richer llm request tool results over generic success markers', () => {
     const messages: Message[] = [
       {
@@ -226,17 +271,23 @@ describe('buildTimeline', () => {
       },
     ]
 
-    const items = buildTimeline(messages, [], [], [], [
-      {
-        toolResults: [
-          {
-            toolUseId: 'call_1',
-            content: '/Users/demo/project\n',
-            outputSummary: 'Executed: pwd',
-          },
-        ],
-      },
-    ])
+    const items = buildTimeline(
+      messages,
+      [],
+      [],
+      [],
+      [
+        {
+          toolResults: [
+            {
+              toolUseId: 'call_1',
+              content: '/Users/demo/project\n',
+              outputSummary: 'Executed: pwd',
+            },
+          ],
+        },
+      ],
+    )
 
     const toolCall = items.find((item) => item.type === 'tool-call')
     expect(toolCall).toBeDefined()
@@ -252,7 +303,9 @@ describe('buildTimeline', () => {
         id: 'msg_tool_assistant',
         role: 'assistant',
         messageType: 'message',
-        content: [{ type: 'tool_use', id: 'call_write', name: 'write', input: { path: '/tmp/demo.ts' } }],
+        content: [
+          { type: 'tool_use', id: 'call_write', name: 'write', input: { path: '/tmp/demo.ts' } },
+        ],
         createdAt: '2026-03-08T00:00:01.000Z',
       },
       {
@@ -500,9 +553,7 @@ describe('buildTimeline', () => {
     ]
 
     const items = buildTimeline([], traces)
-    const memoryNudge = items.find(
-      (item) => item.type === 'memory-nudge',
-    )
+    const memoryNudge = items.find((item) => item.type === 'memory-nudge')
 
     expect(memoryNudge).toBeDefined()
     if (memoryNudge?.type === 'memory-nudge') {

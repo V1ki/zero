@@ -26,6 +26,7 @@ import {
   MemoryReadTool,
   MemorySearchTool,
   MemoryTool,
+  ReadImageTool,
   ReadTool,
   ScheduleTool,
   SendInputTool,
@@ -300,6 +301,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
   const fuseRules = loadFuseList(join(ZERO_DIR, 'fuse_list.yaml'))
   const toolRegistry = new ToolRegistry()
   toolRegistry.register(new ReadTool())
+  toolRegistry.register(new ReadImageTool())
   toolRegistry.register(new WriteTool())
   toolRegistry.register(new EditTool())
   toolRegistry.register(new BashTool(fuseRules))

@@ -5,6 +5,7 @@ export { FuseListChecker, FuseError, checkFuseList } from './config/fuse-list'
 // Tools
 export { BaseTool } from './tool/base'
 export { ReadTool } from './tool/read'
+export { ReadImageTool } from './tool/read-image'
 export { WriteTool } from './tool/write'
 export { EditTool } from './tool/edit'
 export { BashTool } from './tool/bash'

@@ -31,19 +31,19 @@ describe('roles', () => {
       name: 'Explorer',
       agentInstruction:
         'You are an Explorer SubAgent for ZeRo OS. Research, investigate, and report findings. Be thorough and concise.',
-      defaultTools: ['read', 'bash', 'fetch'],
+      defaultTools: ['read', 'read_image', 'bash', 'fetch'],
     })
     expect(roles.coder).toEqual({
       name: 'Coder',
       agentInstruction:
         'You are a Coder SubAgent for ZeRo OS. Write, modify, and test code. Make minimal, correct changes. For multi-file refactors or complex code changes, prefer using the codex tool to delegate the work.',
-      defaultTools: ['read', 'write', 'edit', 'bash', 'codex'],
+      defaultTools: ['read', 'read_image', 'write', 'edit', 'bash', 'codex'],
     })
     expect(roles.reviewer).toEqual({
       name: 'Reviewer',
       agentInstruction:
         'You are a Reviewer SubAgent for ZeRo OS. Review code, identify bugs, and suggest improvements. Do not modify files.',
-      defaultTools: ['read', 'bash'],
+      defaultTools: ['read', 'read_image', 'bash'],
     })
   })
 
@@ -158,6 +158,6 @@ default_tools: invalid
     expect(roles.reviewer?.agentInstruction).toBe(
       'You are a Reviewer SubAgent for ZeRo OS. Review code, identify bugs, and suggest improvements. Do not modify files.',
     )
-    expect(roles.reviewer?.defaultTools).toEqual(['read', 'bash'])
+    expect(roles.reviewer?.defaultTools).toEqual(['read', 'read_image', 'bash'])
   })
 })

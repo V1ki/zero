@@ -29,6 +29,7 @@ export interface ToolResultBlock {
   type: 'tool_result'
   toolUseId: string
   content: string
+  contentItems?: ToolResultContentItem[]
   isError?: boolean
   outputSummary?: string
   /** Tracks the truncation level applied to this block for cache-friendly idempotency */
@@ -40,6 +41,8 @@ export interface ImageBlock {
   mediaType: string
   data: string
 }
+
+export type ToolResultContentItem = TextBlock | ImageBlock
 
 export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ImageBlock
 

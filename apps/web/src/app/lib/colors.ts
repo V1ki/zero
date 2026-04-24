@@ -44,6 +44,7 @@ export const statusDotColors: Record<string, string> = {
 export const toolColors: Record<string, string> = {
   bash: 'text-cyan-400',
   read: 'text-slate-400',
+  read_image: 'text-slate-400',
   edit: 'text-slate-400',
   write: 'text-emerald-400',
   browser: 'text-amber-400',
@@ -52,6 +53,7 @@ export const toolColors: Record<string, string> = {
 export const toolBgColors: Record<string, string> = {
   bash: 'bg-cyan-400',
   read: 'bg-slate-400',
+  read_image: 'bg-slate-400',
   edit: 'bg-slate-400',
   write: 'bg-emerald-400',
   browser: 'bg-amber-400',

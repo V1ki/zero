@@ -1,5 +1,6 @@
 import type { ScheduleConfig, SecretFilter } from './config'
 import type { Memory, MemorySearchOptions, MemoryType, ScoredMemoryMatch } from './memory'
+import type { ToolResultContentItem } from './message'
 
 /**
  * Minimal interface for structured logging from tools.
@@ -281,6 +282,7 @@ export interface ToolResult {
   success: boolean
   output: string
   outputSummary: string
+  contentItems?: ToolResultContentItem[]
   artifacts?: string[]
 }
 

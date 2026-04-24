@@ -22,10 +22,7 @@ export function mergeInterleavedQueuedMessages(messages: Message[]): Message[] {
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i]
-    if (
-      msg.role !== 'assistant' ||
-      !msg.content.some((b) => b.type === 'tool_use')
-    ) {
+    if (msg.role !== 'assistant' || !msg.content.some((b) => b.type === 'tool_use')) {
       continue
     }
 
@@ -59,7 +56,8 @@ export function mergeInterleavedQueuedMessages(messages: Message[]): Message[] {
 
     if (mergeInto.has(i)) {
       const extraContent: ContentBlock[] = []
-      for (const qi of mergeInto.get(i)!) {
+      const queuedIndices = mergeInto.get(i) ?? []
+      for (const qi of queuedIndices) {
         extraContent.push(...messages[qi].content)
       }
       result.push({ ...messages[i], content: [...messages[i].content, ...extraContent] })
@@ -146,6 +144,7 @@ export function prepareConversationHistory(messages: Message[]): Message[] {
       if (age <= CONTEXT_PARAMS.history.summaryRetainTurns) {
         const summarized = summarizeToolResult(block)
         block.content = summarized.content
+        block.contentItems = undefined
         block.truncationLevel = 'summary'
         return block
       }
@@ -153,6 +152,7 @@ export function prepareConversationHistory(messages: Message[]): Message[] {
       // Needs status-only truncation
       const statusOnly = statusOnlyToolResult(block)
       block.content = statusOnly.content
+      block.contentItems = undefined
       block.truncationLevel = 'status'
       return block
     })
@@ -173,15 +173,20 @@ function summarizeToolResult(block: ToolResultBlock): ToolResultBlock {
   const summary =
     block.outputSummary ?? block.content.slice(0, CONTEXT_PARAMS.history.summaryMaxChars)
   const truncated = summary.length < block.content.length ? `${summary}...` : summary
-  return { ...block, content: truncated, truncationLevel: 'summary' }
+  return { ...block, content: truncated, contentItems: undefined, truncationLevel: 'summary' }
 }
 
 function statusOnlyToolResult(block: ToolResultBlock): ToolResultBlock {
   if (block.isError) {
     const errorSnippet = block.content.slice(0, 100)
-    return { ...block, content: `\u2717 failed: ${errorSnippet}`, truncationLevel: 'status' }
+    return {
+      ...block,
+      content: `\u2717 failed: ${errorSnippet}`,
+      contentItems: undefined,
+      truncationLevel: 'status',
+    }
   }
-  return { ...block, content: '\u2713 success', truncationLevel: 'status' }
+  return { ...block, content: '\u2713 success', contentItems: undefined, truncationLevel: 'status' }
 }
 
 /**

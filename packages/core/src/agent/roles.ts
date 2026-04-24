@@ -17,19 +17,19 @@ const BUILTIN_ROLES: Record<string, RoleDefinition> = {
     name: 'Explorer',
     agentInstruction:
       'You are an Explorer SubAgent for ZeRo OS. Research, investigate, and report findings. Be thorough and concise.',
-    defaultTools: ['read', 'bash', 'fetch'],
+    defaultTools: ['read', 'read_image', 'bash', 'fetch'],
   },
   coder: {
     name: 'Coder',
     agentInstruction:
       'You are a Coder SubAgent for ZeRo OS. Write, modify, and test code. Make minimal, correct changes. For multi-file refactors or complex code changes, prefer using the codex tool to delegate the work.',
-    defaultTools: ['read', 'write', 'edit', 'bash', 'codex'],
+    defaultTools: ['read', 'read_image', 'write', 'edit', 'bash', 'codex'],
   },
   reviewer: {
     name: 'Reviewer',
     agentInstruction:
       'You are a Reviewer SubAgent for ZeRo OS. Review code, identify bugs, and suggest improvements. Do not modify files.',
-    defaultTools: ['read', 'bash'],
+    defaultTools: ['read', 'read_image', 'bash'],
   },
 }
 
@@ -108,7 +108,8 @@ function normalizeRoleDefinition(
   const name = readString(raw, 'name') ?? baseRole?.name ?? humanizeRoleId(roleId)
   const agentInstruction =
     readString(raw, 'agentInstruction', 'agent_instruction') ?? baseRole?.agentInstruction
-  const defaultTools = readStringArray(raw, 'defaultTools', 'default_tools') ?? baseRole?.defaultTools
+  const defaultTools =
+    readStringArray(raw, 'defaultTools', 'default_tools') ?? baseRole?.defaultTools
   const model = readString(raw, 'model') ?? baseRole?.model
   const promptMode =
     readPromptMode(raw, 'promptMode', 'prompt_mode') ?? baseRole?.promptMode ?? 'minimal'
@@ -126,10 +127,7 @@ function normalizeRoleDefinition(
   }
 }
 
-function readPromptMode(
-  raw: Record<string, unknown>,
-  ...keys: string[]
-): PromptMode | undefined {
+function readPromptMode(raw: Record<string, unknown>, ...keys: string[]): PromptMode | undefined {
   for (const key of keys) {
     const value = raw[key]
     if (value === 'full' || value === 'minimal' || value === 'none') {

@@ -205,6 +205,8 @@ inbox：仅用于暂时无法准确分类但确有保留价值的内容。
 export function buildToolRulesBlock(tools: ToolDefinition[]): string {
   const toolRuleMap: Record<string, string> = {
     read: 'Read：优先使用 Read 查看文件内容，不要用 Bash cat。',
+    read_image:
+      'Read Image：用于读取本地 PNG/JPEG/WebP 图片并交给模型分析。远程图片需要先下载到本地文件，再调用 read_image。',
     write:
       'Write：写入文件前先确认路径正确。临时文件和下载内容写入工作目录，修改源代码使用项目根目录的绝对路径。',
     edit: 'Edit：修改文件前先 Read 确认当前内容，避免基于过期认知做编辑。',

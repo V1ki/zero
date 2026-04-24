@@ -2,11 +2,25 @@ import type {
   CompletionRequest,
   CompletionResponse,
   ContentBlock,
+  ImageBlock,
   StreamEvent,
   TokenUsage,
+  ToolResultBlock,
 } from '@zero-os/shared'
 import OpenAI from 'openai'
 import type { AdapterConfig, ProviderAdapter } from './base'
+
+function isImageBlock(block: ContentBlock): block is ImageBlock {
+  return block.type === 'image'
+}
+
+function isToolResultBlock(block: ContentBlock): block is ToolResultBlock {
+  return block.type === 'tool_result'
+}
+
+function toolResultImages(block: ToolResultBlock): ImageBlock[] {
+  return (block.contentItems ?? []).filter((item): item is ImageBlock => item.type === 'image')
+}
 
 /**
  * OpenAI Chat Completions API adapter.
@@ -156,15 +170,30 @@ export class OpenAIChatAdapter implements ProviderAdapter {
           .filter((b) => b.type === 'text')
           .map((b) => (b as { text: string }).text)
           .join('\n')
-        const imageParts = msg.content.filter((b) => b.type === 'image')
+        const imageParts = msg.content.filter(isImageBlock)
+        const toolResults = msg.content.filter(isToolResultBlock)
 
-        if (textParts || imageParts.length > 0) {
-          if (imageParts.length > 0) {
+        for (const result of toolResults) {
+          if (!pairedCallIds.has(result.toolUseId)) continue
+          messages.push({
+            role: 'tool',
+            tool_call_id: result.toolUseId,
+            content: this.normalizeToolOutput(result.content, result.outputSummary),
+          })
+        }
+
+        const toolImageParts = toolResults
+          .filter((result) => pairedCallIds.has(result.toolUseId))
+          .flatMap(toolResultImages)
+        const allImageParts = [...imageParts, ...toolImageParts]
+
+        if (textParts || allImageParts.length > 0) {
+          if (allImageParts.length > 0) {
             // Multimodal: text + images
             const parts: OpenAI.ChatCompletionContentPart[] = []
             if (textParts) parts.push({ type: 'text', text: textParts })
-            for (const img of imageParts) {
-              const { mediaType, data } = img as { mediaType: string; data: string }
+            for (const img of allImageParts) {
+              const { mediaType, data } = img
               parts.push({
                 type: 'image_url',
                 image_url: { url: `data:${mediaType};base64,${data}` },
@@ -200,23 +229,6 @@ export class OpenAIChatAdapter implements ProviderAdapter {
             content: textParts.map((b) => (b as { text: string }).text).join('\n'),
           })
         }
-      }
-
-      // Handle tool results
-      const toolResults = msg.content.filter((b) => b.type === 'tool_result')
-      for (const tr of toolResults) {
-        const result = tr as {
-          toolUseId: string
-          content: string
-          isError?: boolean
-          outputSummary?: string
-        }
-        if (!pairedCallIds.has(result.toolUseId)) continue
-        messages.push({
-          role: 'tool',
-          tool_call_id: result.toolUseId,
-          content: this.normalizeToolOutput(result.content, result.outputSummary),
-        })
       }
     }
 

@@ -129,7 +129,9 @@ function createOpenAIResponsesAdapter(providerName?: string): OpenAIResponsesAda
   return new OpenAIResponsesAdapter({
     providerName,
     baseUrl:
-      providerName === 'chatgpt' ? 'https://chatgpt.com/backend-api/codex' : 'https://api.openai.test',
+      providerName === 'chatgpt'
+        ? 'https://chatgpt.com/backend-api/codex'
+        : 'https://api.openai.test',
     auth:
       providerName === 'chatgpt'
         ? { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' }
@@ -287,7 +289,9 @@ describe('Cross-provider dangling tool state and tool_result normalization', () 
     const toolId = `toolu_${generateId()}`
     const messages = [
       makeTextMessage('user', 'Run the task'),
-      makeMessage('assistant', [{ type: 'tool_use', id: toolId, name: 'bash', input: { cmd: 'exit 1' } }]),
+      makeMessage('assistant', [
+        { type: 'tool_use', id: toolId, name: 'bash', input: { cmd: 'exit 1' } },
+      ]),
       makeMessage('user', [
         {
           type: 'tool_result',
@@ -318,7 +322,9 @@ describe('Cross-provider dangling tool state and tool_result normalization', () 
     const toolId = `call_${generateId()}`
     const messages = [
       makeTextMessage('user', 'Run the task'),
-      makeMessage('assistant', [{ type: 'tool_use', id: toolId, name: 'bash', input: { cmd: 'exit 1' } }]),
+      makeMessage('assistant', [
+        { type: 'tool_use', id: toolId, name: 'bash', input: { cmd: 'exit 1' } },
+      ]),
       makeMessage('user', [
         {
           type: 'tool_result',
@@ -359,9 +365,15 @@ describe('Cross-provider multimodal preservation', () => {
       ]),
     ]
 
-    const anthropic = getAnthropicHarness(createAnthropicAdapter()).convertMessages(makeRequest(messages))
-    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(makeRequest(messages))
-    const responses = getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(makeRequest(messages))
+    const anthropic = getAnthropicHarness(createAnthropicAdapter()).convertMessages(
+      makeRequest(messages),
+    )
+    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(
+      makeRequest(messages),
+    )
+    const responses = getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(
+      makeRequest(messages),
+    )
 
     expect(anthropic[0]).toEqual({
       role: 'user',
@@ -1068,7 +1080,9 @@ describe('Cross-provider multimodal and tool mixed scenarios', () => {
   test('user message with text, image, and tool_result is handled across all adapters', () => {
     const toolId = `call_${generateId()}`
     const messages = [
-      makeMessage('assistant', [{ type: 'tool_use', id: toolId, name: 'vision_tool', input: { id: 1 } }]),
+      makeMessage('assistant', [
+        { type: 'tool_use', id: toolId, name: 'vision_tool', input: { id: 1 } },
+      ]),
       makeMessage('user', [
         { type: 'text', text: 'Use the screenshot and prior tool output.' },
         { type: 'image', mediaType: 'image/png', data: 'aW1hZ2Ux' },
@@ -1080,9 +1094,15 @@ describe('Cross-provider multimodal and tool mixed scenarios', () => {
       ]),
     ]
 
-    const anthropic = getAnthropicHarness(createAnthropicAdapter()).convertMessages(makeRequest(messages))
-    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(makeRequest(messages))
-    const responses = getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(makeRequest(messages))
+    const anthropic = getAnthropicHarness(createAnthropicAdapter()).convertMessages(
+      makeRequest(messages),
+    )
+    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(
+      makeRequest(messages),
+    )
+    const responses = getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(
+      makeRequest(messages),
+    )
 
     expect(anthropic[1]).toEqual({
       role: 'user',
@@ -1117,6 +1137,11 @@ describe('Cross-provider multimodal and tool mixed scenarios', () => {
         ],
       },
       {
+        role: 'tool',
+        tool_call_id: toolId,
+        content: 'Tool saw a button',
+      },
+      {
         role: 'user',
         content: [
           { type: 'text', text: 'Use the screenshot and prior tool output.' },
@@ -1125,11 +1150,6 @@ describe('Cross-provider multimodal and tool mixed scenarios', () => {
             image_url: { url: 'data:image/png;base64,aW1hZ2Ux' },
           },
         ],
-      },
-      {
-        role: 'tool',
-        tool_call_id: toolId,
-        content: 'Tool saw a button',
       },
     ])
     expect(responses).toEqual([
@@ -1159,6 +1179,107 @@ describe('Cross-provider multimodal and tool mixed scenarios', () => {
     ])
   })
 
+  test('structured images attached to tool_result are visible across providers', () => {
+    const toolId = `call_${generateId()}`
+    const messages = [
+      makeMessage('assistant', [
+        { type: 'tool_use', id: toolId, name: 'read_image', input: { path: '/tmp/example.png' } },
+      ]),
+      makeMessage('user', [
+        {
+          type: 'tool_result',
+          toolUseId: toolId,
+          content: 'Read image /tmp/example.png (image/png, 3 bytes)',
+          outputSummary: 'Read image /tmp/example.png (image/png, 3 bytes)',
+          contentItems: [{ type: 'image', mediaType: 'image/png', data: 'aW1n' }],
+        },
+      ]),
+    ]
+
+    const anthropic = getAnthropicHarness(createAnthropicAdapter()).convertMessages(
+      makeRequest(messages),
+    )
+    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(
+      makeRequest(messages),
+    )
+    const responses = getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(
+      makeRequest(messages),
+    )
+
+    expect(anthropic[1]).toEqual({
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: toolId,
+          content: [
+            { type: 'text', text: 'Read image /tmp/example.png (image/png, 3 bytes)' },
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: 'image/png',
+                data: 'aW1n',
+              },
+            },
+          ],
+          is_error: undefined,
+        },
+      ],
+    })
+    expect(chat).toEqual([
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          {
+            id: toolId,
+            type: 'function',
+            function: { name: 'read_image', arguments: '{"path":"/tmp/example.png"}' },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        tool_call_id: toolId,
+        content: 'Read image /tmp/example.png (image/png, 3 bytes)',
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'image_url',
+            image_url: { url: 'data:image/png;base64,aW1n' },
+          },
+        ],
+      },
+    ])
+    expect(responses).toEqual([
+      {
+        type: 'function_call',
+        id: `fc_${toolId}`,
+        call_id: toolId,
+        name: 'read_image',
+        arguments: '{"path":"/tmp/example.png"}',
+      },
+      {
+        type: 'function_call_output',
+        call_id: toolId,
+        output: 'Read image /tmp/example.png (image/png, 3 bytes)',
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_image',
+            detail: 'auto',
+            image_url: 'data:image/png;base64,aW1n',
+          },
+        ],
+      },
+    ])
+  })
+
   test('image input plus tool_use and tool_result in the same dialogue round stays convertible across providers', () => {
     const toolId = `call_${generateId()}`
     const messages = [
@@ -1179,9 +1300,15 @@ describe('Cross-provider multimodal and tool mixed scenarios', () => {
       ]),
     ]
 
-    const anthropic = getAnthropicHarness(createAnthropicAdapter()).convertMessages(makeRequest(messages))
-    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(makeRequest(messages))
-    const responses = getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(makeRequest(messages))
+    const anthropic = getAnthropicHarness(createAnthropicAdapter()).convertMessages(
+      makeRequest(messages),
+    )
+    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(
+      makeRequest(messages),
+    )
+    const responses = getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(
+      makeRequest(messages),
+    )
 
     expect(anthropic).toEqual([
       {
@@ -1286,13 +1413,27 @@ describe('Cross-provider multimodal and tool mixed scenarios', () => {
       ]),
     ]
 
-    const anthropic = getAnthropicHarness(createAnthropicAdapter()).convertMessages(makeRequest(messages))
-    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(makeRequest(messages))
-    const responses = getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(makeRequest(messages))
+    const anthropic = getAnthropicHarness(createAnthropicAdapter()).convertMessages(
+      makeRequest(messages),
+    )
+    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(
+      makeRequest(messages),
+    )
+    const responses = getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(
+      makeRequest(messages),
+    )
 
-    expect((anthropic[0].content as Array<Record<string, unknown>>).filter((b) => b.type === 'image')).toHaveLength(2)
-    expect((chat[0].content as Array<Record<string, unknown>>).filter((b) => b.type === 'image_url')).toHaveLength(2)
-    expect((responses[0].content as Array<Record<string, unknown>>).filter((b) => b.type === 'input_image')).toHaveLength(2)
+    expect(
+      (anthropic[0].content as Array<Record<string, unknown>>).filter((b) => b.type === 'image'),
+    ).toHaveLength(2)
+    expect(
+      (chat[0].content as Array<Record<string, unknown>>).filter((b) => b.type === 'image_url'),
+    ).toHaveLength(2)
+    expect(
+      (responses[0].content as Array<Record<string, unknown>>).filter(
+        (b) => b.type === 'input_image',
+      ),
+    ).toHaveLength(2)
   })
 })
 
@@ -1310,8 +1451,12 @@ describe('Cross-provider half-completed turn resilience', () => {
       ]),
     ]
 
-    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(makeRequest(messages))
-    const responses = getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(makeRequest(messages))
+    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(
+      makeRequest(messages),
+    )
+    const responses = getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(
+      makeRequest(messages),
+    )
 
     expect(chat).toEqual([
       { role: 'user', content: 'Start' },
@@ -1332,13 +1477,15 @@ describe('Cross-provider half-completed turn resilience', () => {
         { type: 'tool_use', id: pairedId, name: 'read_file', input: { path: 'AGENTS.md' } },
         { type: 'tool_use', id: danglingId, name: 'list_dir', input: { path: '.' } },
       ]),
-      makeMessage('user', [
-        { type: 'tool_result', toolUseId: pairedId, content: 'paired result' },
-      ]),
+      makeMessage('user', [{ type: 'tool_result', toolUseId: pairedId, content: 'paired result' }]),
     ]
 
-    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(makeRequest(messages))
-    const responses = getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(makeRequest(messages))
+    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(
+      makeRequest(messages),
+    )
+    const responses = getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(
+      makeRequest(messages),
+    )
 
     expect(chat).toEqual([
       { role: 'user', content: 'Start' },
@@ -1392,17 +1539,21 @@ describe('Cross-provider half-completed turn resilience', () => {
   test('all adapters tolerate assistant messages with empty content', () => {
     const messages = [makeTextMessage('user', 'Start'), makeMessage('assistant', [])]
 
-    expect(getAnthropicHarness(createAnthropicAdapter()).convertMessages(makeRequest(messages))).toEqual([
+    expect(
+      getAnthropicHarness(createAnthropicAdapter()).convertMessages(makeRequest(messages)),
+    ).toEqual([
       { role: 'user', content: [{ type: 'text', text: 'Start' }] },
       { role: 'assistant', content: [] },
     ])
-    expect(getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(makeRequest(messages))).toEqual([
+    expect(
+      getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(makeRequest(messages)),
+    ).toEqual([
       { role: 'user', content: 'Start' },
       { role: 'assistant', content: '' },
     ])
-    expect(getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(makeRequest(messages))).toEqual([
-      { role: 'user', content: 'Start' },
-    ])
+    expect(
+      getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(makeRequest(messages)),
+    ).toEqual([{ role: 'user', content: 'Start' }])
   })
 })
 
@@ -1490,8 +1641,12 @@ describe('Cross-provider fallback and history continuity', () => {
       makeTextMessage('assistant', 'Here is the result.'),
     ]
 
-    const anthropic = getAnthropicHarness(createAnthropicAdapter()).convertMessages(makeRequest(messages))
-    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(makeRequest(messages))
+    const anthropic = getAnthropicHarness(createAnthropicAdapter()).convertMessages(
+      makeRequest(messages),
+    )
+    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(
+      makeRequest(messages),
+    )
 
     expect(anthropic).toHaveLength(4)
     expect(chat).toEqual([

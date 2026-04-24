@@ -2,8 +2,10 @@ import type {
   CompletionRequest,
   CompletionResponse,
   ContentBlock,
+  ImageBlock,
   StreamEvent,
   TokenUsage,
+  ToolResultBlock,
 } from '@zero-os/shared'
 import OpenAI from 'openai'
 import { getChatGptAuthorizationScheme, parseChatGptOAuthSession } from '../auth/chatgpt'
@@ -27,6 +29,18 @@ type ResponseUsageLike = Partial<OpenAI.Responses.ResponseUsage> & {
   output_tokens_details?: {
     reasoning_tokens?: number
   }
+}
+
+function isImageBlock(block: ContentBlock): block is ImageBlock {
+  return block.type === 'image'
+}
+
+function isToolResultBlock(block: ContentBlock): block is ToolResultBlock {
+  return block.type === 'tool_result'
+}
+
+function toolResultImages(block: ToolResultBlock): ImageBlock[] {
+  return (block.contentItems ?? []).filter((item): item is ImageBlock => item.type === 'image')
 }
 
 interface ChatGptSseEvent {
@@ -373,17 +387,11 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
           .filter((b) => b.type === 'text')
           .map((b) => (b as { text: string }).text)
           .join('\n')
-        const imageParts = msg.content.filter((b) => b.type === 'image')
+        const imageParts = msg.content.filter(isImageBlock)
 
-        const toolResults = msg.content.filter((b) => b.type === 'tool_result')
+        const toolResults = msg.content.filter(isToolResultBlock)
         if (toolResults.length > 0) {
-          for (const tr of toolResults) {
-            const result = tr as {
-              toolUseId: string
-              content: string
-              isError?: boolean
-              outputSummary?: string
-            }
+          for (const result of toolResults) {
             if (!pairedCallIds.has(result.toolUseId)) continue
             const { callId: outputCallId } = splitToolCallId(result.toolUseId)
             input.push({
@@ -394,12 +402,17 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
           }
         }
 
-        if (textParts || imageParts.length > 0) {
-          if (imageParts.length > 0) {
+        const toolImageParts = toolResults
+          .filter((result) => pairedCallIds.has(result.toolUseId))
+          .flatMap(toolResultImages)
+        const allImageParts = [...imageParts, ...toolImageParts]
+
+        if (textParts || allImageParts.length > 0) {
+          if (allImageParts.length > 0) {
             const parts: OpenAI.Responses.ResponseInputContent[] = []
             if (textParts) parts.push({ type: 'input_text', text: textParts })
-            for (const img of imageParts) {
-              const { mediaType, data } = img as { mediaType: string; data: string }
+            for (const img of allImageParts) {
+              const { mediaType, data } = img
               parts.push({
                 type: 'input_image',
                 detail: 'auto',
@@ -454,7 +467,7 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
       text: { verbosity: 'medium' },
       include: ['reasoning.encrypted_content'],
       prompt_cache_key: this.computePromptCacheKey(req),
-      service_tier: 'priority'
+      service_tier: 'priority',
     }
   }
 
@@ -706,10 +719,7 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
     return parseChatGptOAuthSession(this.oauthTokenProvider?.() ?? this.oauthToken)
   }
 
-  private isChatGptSessionExpiring(
-    session: ChatGptOAuthSession,
-    minValidityMs: number,
-  ): boolean {
+  private isChatGptSessionExpiring(session: ChatGptOAuthSession, minValidityMs: number): boolean {
     return Date.now() >= session.expiresAt - minValidityMs
   }
 
@@ -864,7 +874,8 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
   }
 
   private parseUsage(usage?: ResponseUsageLike | null): TokenUsage {
-    const cacheWrite = usage?.input_tokens_details?.cached_tokens_details?.cache_creation_input_tokens
+    const cacheWrite =
+      usage?.input_tokens_details?.cached_tokens_details?.cache_creation_input_tokens
     const cacheRead = usage?.input_tokens_details?.cached_tokens
     const totalInput = usage?.input_tokens ?? 0
 

@@ -67,13 +67,15 @@ ${context?.toolSummary || 'none'}
 ${userMessage}
 </user_message>
 
-${appliedQueuedIntentText
-  ? `
+${
+  appliedQueuedIntentText
+    ? `
 <applied_queued_messages>
 以下是本轮中用户追加发来的消息（已纳入执行）：
 ${appliedQueuedIntentText}
 </applied_queued_messages>`
-  : ''}
+    : ''
+}
 
 <assistant_text>
 ${assistantText}
@@ -143,6 +145,7 @@ export function extractToolDetail(
       return `${getTrimmedString(input.description) ?? sanitizeBashSummary(result?.outputSummary) ?? 'command'} ${status}`
     }
     case 'read':
+    case 'read_image':
     case 'write':
     case 'edit': {
       return `${extractFileName(input) ?? 'unknown file'} ${status}`
@@ -167,6 +170,7 @@ export function formatToolGroup(toolName: string, details: string[]): string {
     case 'bash':
       return `bash 执行 ${details.slice(0, 4).join(', ')}`
     case 'read':
+    case 'read_image':
     case 'write':
     case 'edit': {
       if (details.length === 1) return `${normalizedName} ${details[0]}`

@@ -99,12 +99,16 @@ describe('prepareConversationHistory', () => {
     ]
 
     const result = prepareConversationHistory(messages)
-    const toolResult = expectDefined(result[2].content.find((block) => block.type === 'tool_result'))
+    const toolResult = expectDefined(
+      result[2].content.find((block) => block.type === 'tool_result'),
+    )
     expect(toolResult.truncationLevel).toBe('full')
   })
 
   test('excludes notification messages from prompt history', () => {
-    const notification = makeNotificationUserText('<memory_inject layer="layer1">hint</memory_inject>')
+    const notification = makeNotificationUserText(
+      '<memory_inject layer="layer1">hint</memory_inject>',
+    )
     const result = prepareConversationHistory([
       makeUserText('first question'),
       notification,
@@ -186,6 +190,20 @@ describe('prepareConversationHistory', () => {
     const oldBlock = expectDefined(oldToolResult.content.find((b) => b.type === 'tool_result'))
     expect(oldBlock.content).toBe('\u2713 success')
     expect(oldBlock.truncationLevel).toBe('status')
+  })
+
+  test('drops structured tool result content items when old turns are reduced', () => {
+    const messages = buildConversation(12)
+    const oldestToolResult = expectDefined(
+      messages[2].content.find((block) => block.type === 'tool_result'),
+    )
+    oldestToolResult.contentItems = [{ type: 'image', mediaType: 'image/png', data: 'aW1n' }]
+
+    const result = prepareConversationHistory(messages)
+    const reducedBlock = expectDefined(result[2].content.find((b) => b.type === 'tool_result'))
+
+    expect(reducedBlock.truncationLevel).toBe('status')
+    expect(reducedBlock.contentItems).toBeUndefined()
   })
 
   test('handles error tool results with failed prefix', () => {
@@ -473,10 +491,7 @@ describe('prepareConversationHistory — queued message merging', () => {
 
     // The queued message should NOT appear as standalone
     for (let i = 0; i < result.length; i++) {
-      if (
-        result[i].role === 'assistant' &&
-        result[i].content.some((b) => b.type === 'tool_use')
-      ) {
+      if (result[i].role === 'assistant' && result[i].content.some((b) => b.type === 'tool_use')) {
         // Next message must contain tool_result
         const next = result[i + 1]
         expect(next).toBeDefined()
@@ -522,5 +537,16 @@ describe('estimateConversationTokens', () => {
     const longTokens = estimateConversationTokens(longResult)
 
     expect(longTokens).toBeGreaterThan(shortTokens)
+  })
+
+  test('counts structured images attached to tool_result blocks', () => {
+    const withoutImage = [makeToolResult('t1', 'ok')]
+    const withImage = [makeToolResult('t1', 'ok')]
+    const block = expectDefined(withImage[0].content.find((b) => b.type === 'tool_result'))
+    block.contentItems = [{ type: 'image', mediaType: 'image/png', data: 'aW1n' }]
+
+    expect(estimateConversationTokens(withImage)).toBeGreaterThan(
+      estimateConversationTokens(withoutImage),
+    )
   })
 })

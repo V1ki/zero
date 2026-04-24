@@ -3,8 +3,10 @@ import type {
   CompletionRequest,
   CompletionResponse,
   ContentBlock,
+  ImageBlock,
   StreamEvent,
   TokenUsage,
+  ToolResultBlock,
 } from '@zero-os/shared'
 import { parseClaudeOAuthSession, type ClaudeOAuthSession } from '../auth/claude'
 import type {
@@ -20,6 +22,10 @@ const CLAUDE_MISSING_CREDENTIALS_MESSAGE =
   'Claude OAuth credentials not found. Please run `bun zero provider login anthropic`.'
 const CLAUDE_REAUTH_MESSAGE =
   'Claude OAuth session can no longer be refreshed. Please re-authenticate with `bun zero provider login anthropic`.'
+
+function toolResultImages(block: ToolResultBlock): ImageBlock[] {
+  return (block.contentItems ?? []).filter((item): item is ImageBlock => item.type === 'image')
+}
 
 /**
  * Anthropic Messages API adapter.
@@ -77,10 +83,13 @@ export class AnthropicAdapter implements ProviderAdapter {
 
   async *stream(req: CompletionRequest): AsyncIterable<StreamEvent> {
     const stream = await this.withOauthRetry((client, session) =>
-      client.messages.create({
-        ...this.buildRequest(req),
-        stream: true,
-      }, this.buildRequestOptions(req, session)),
+      client.messages.create(
+        {
+          ...this.buildRequest(req),
+          stream: true,
+        },
+        this.buildRequestOptions(req, session),
+      ),
     )
 
     let streamModel: string | undefined
@@ -246,7 +255,7 @@ export class AnthropicAdapter implements ProviderAdapter {
             parts.push({
               type: 'tool_result',
               tool_use_id: this.sanitizeToolId(block.toolUseId),
-              content: block.content,
+              content: this.buildToolResultContent(block),
               is_error: block.isError,
             })
           }
@@ -317,6 +326,30 @@ export class AnthropicAdapter implements ProviderAdapter {
       }
     }
     return paired
+  }
+
+  private buildToolResultContent(
+    block: ToolResultBlock,
+  ): Anthropic.ToolResultBlockParam['content'] {
+    const images = toolResultImages(block)
+    if (images.length === 0) return block.content
+
+    const content: Anthropic.ToolResultBlockParam['content'] = []
+    const text = block.content.trim().length > 0 ? block.content : block.outputSummary
+    if (text && text.trim().length > 0) {
+      content.push({ type: 'text', text })
+    }
+    for (const image of images) {
+      content.push({
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: image.mediaType as Anthropic.Base64ImageSource['media_type'],
+          data: image.data,
+        },
+      })
+    }
+    return content
   }
 
   private convertTools(tools: CompletionRequest['tools']): Anthropic.Tool[] | undefined {

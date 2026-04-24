@@ -145,6 +145,24 @@ describe('ToolCallDetail', () => {
     expect(html).toContain('&quot;items&quot;: [')
   })
 
+  test('renders read_image structured content as an image preview', () => {
+    const html = renderToStaticMarkup(
+      <ToolCallDetail
+        name="read_image"
+        input={{ path: '/tmp/screenshot.png' }}
+        result="Read image /tmp/screenshot.png (image/png, 3 bytes)"
+        contentItems={[{ type: 'image', mediaType: 'image/png', data: 'aW1n' }]}
+        isError={false}
+      />,
+    )
+
+    expect(html).toContain('data-tool-renderer="read_image"')
+    expect(html).toContain('/tmp/screenshot.png')
+    expect(html).toContain('Image Read Summary')
+    expect(html).toContain('src="data:image/png;base64,aW1n"')
+    expect(html).toContain('alt="/tmp/screenshot.png"')
+  })
+
   test('renders dedicated memory tool details for writes and searches', () => {
     const memoryHtml = renderToStaticMarkup(
       <ToolCallDetail
@@ -180,6 +198,7 @@ describe('ToolCallDetail', () => {
   test('summarizes tool inputs using tool-specific metadata', () => {
     expect(summarizeToolInput('bash', { command: 'echo hello' })).toBe('echo hello')
     expect(summarizeToolInput('read', { path: '/tmp/demo.txt' })).toBe('/tmp/demo.txt')
+    expect(summarizeToolInput('read_image', { path: '/tmp/demo.png' })).toBe('/tmp/demo.png')
     expect(summarizeToolInput('fetch', { method: 'POST', url: 'https://example.com' })).toBe(
       'POST https://example.com',
     )

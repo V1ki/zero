@@ -11,6 +11,7 @@ import {
 import * as React from 'react'
 import { formatTime } from '../../lib/format'
 import { ToolCallDetail, summarizeToolInput } from './ToolCallDetail'
+import type { ToolResultContentItem } from './ToolCallDetail'
 import type { TraceSpan } from './timeline'
 
 export interface SubAgentChildToolCall {
@@ -19,6 +20,7 @@ export interface SubAgentChildToolCall {
   input: Record<string, unknown>
   result?: string
   summary?: string
+  contentItems?: ToolResultContentItem[]
   isError?: boolean
   durationMs?: number
 }
@@ -121,9 +123,7 @@ export function SubAgentBlock({
   return (
     <div
       data-sub-agent-id={agentId}
-      className={`overflow-hidden rounded-[22px] border-l-2 border ${
-        statusBorderColor[status]
-      } ${
+      className={`overflow-hidden rounded-[22px] border-l-2 border ${statusBorderColor[status]} ${
         selected
           ? 'border-white/12 bg-[linear-gradient(135deg,rgba(10,45,44,0.92),rgba(10,16,22,0.86))] ring-1 ring-teal-400/25'
           : 'border-white/[0.06] bg-[linear-gradient(135deg,rgba(16,24,28,0.94),rgba(11,15,21,0.84))] hover:border-white/12 hover:bg-white/[0.04]'
@@ -271,7 +271,10 @@ function SubAgentTimelineEventRow({
   onSelectChildTool?: (toolId: string) => void
 }) {
   const hasInlineDetails =
-    event.kind === 'tool' || Boolean(event.preview) || hasRecordContent(event.span?.metadata) || hasRecordContent(event.span?.data)
+    event.kind === 'tool' ||
+    Boolean(event.preview) ||
+    hasRecordContent(event.span?.metadata) ||
+    hasRecordContent(event.span?.data)
   const [expanded, setExpanded] = React.useState(false)
   const isToolSelected = event.kind === 'tool' && selectedToolId === event.toolCall.id
   const tone = getTimelineEventTone(event)
@@ -280,7 +283,9 @@ function SubAgentTimelineEventRow({
 
   const content = (
     <div className="flex min-w-0 items-start gap-2">
-      <span className={`mt-0.5 rounded-full px-2 py-0.5 text-[9px] font-mono uppercase tracking-[0.14em] ${tone.badgeClass}`}>
+      <span
+        className={`mt-0.5 rounded-full px-2 py-0.5 text-[9px] font-mono uppercase tracking-[0.14em] ${tone.badgeClass}`}
+      >
         {getTimelineEventBadge(event)}
       </span>
       <div className="min-w-0 flex-1">
@@ -372,6 +377,7 @@ function SubAgentTimelineEventRow({
           input={event.toolCall.input}
           result={event.toolCall.result}
           summary={event.toolCall.summary}
+          contentItems={event.toolCall.contentItems}
           isError={event.toolCall.isError}
           durationMs={event.toolCall.durationMs}
           nested
@@ -386,7 +392,10 @@ function SubAgentTimelineEventRow({
 function TraceEventDetail({
   event,
 }: {
-  event: Extract<SubAgentInternalTimelineEvent, { kind: 'turn' | 'llm-request' | 'reason' | 'generic' }>
+  event: Extract<
+    SubAgentInternalTimelineEvent,
+    { kind: 'turn' | 'llm-request' | 'reason' | 'generic' }
+  >
 }) {
   return (
     <div className="space-y-2 border-t border-white/[0.06] px-3 py-2.5">
@@ -537,7 +546,12 @@ function buildSubAgentInternalTimeline(
   walk(traceSpan, 0)
 
   return collected
-    .sort((left, right) => compareSpansByTime(left.span, right.span) || left.depth - right.depth || left.index - right.index)
+    .sort(
+      (left, right) =>
+        compareSpansByTime(left.span, right.span) ||
+        left.depth - right.depth ||
+        left.index - right.index,
+    )
     .map(({ span, depth, index }) => toInternalTimelineEvent(span, depth, index, toolById))
 }
 
@@ -620,9 +634,7 @@ function resolveToolCall(
   }
 }
 
-function getInternalTimelineKind(
-  span: TraceSpan,
-): SubAgentInternalTimelineEvent['kind'] {
+function getInternalTimelineKind(span: TraceSpan): SubAgentInternalTimelineEvent['kind'] {
   if (span.name.startsWith('tool:')) return 'tool'
   if (span.name === 'llm_request') return 'llm-request'
   if (span.name.startsWith('turn:')) return 'turn'
@@ -630,18 +642,12 @@ function getInternalTimelineKind(
   return 'generic'
 }
 
-function getInternalTimelineLabel(
-  span: TraceSpan,
-  kind: SubAgentInternalTimelineEvent['kind'],
-) {
+function getInternalTimelineLabel(span: TraceSpan, kind: SubAgentInternalTimelineEvent['kind']) {
   if (kind === 'tool') return span.name
   return span.name
 }
 
-function getInternalTimelinePreview(
-  span: TraceSpan,
-  kind: SubAgentInternalTimelineEvent['kind'],
-) {
+function getInternalTimelinePreview(span: TraceSpan, kind: SubAgentInternalTimelineEvent['kind']) {
   const data = span.data ?? {}
   const metadata = span.metadata ?? {}
 
@@ -695,10 +701,7 @@ function getInternalTimelinePreview(
   )
 }
 
-function getInternalTimelineChips(
-  span: TraceSpan,
-  kind: SubAgentInternalTimelineEvent['kind'],
-) {
+function getInternalTimelineChips(span: TraceSpan, kind: SubAgentInternalTimelineEvent['kind']) {
   const data = span.data ?? {}
   const metadata = span.metadata ?? {}
 
@@ -892,10 +895,7 @@ function pickMeaningfulText(...values: Array<string | undefined>) {
   return undefined
 }
 
-function collectPrimitiveChips(
-  record: Record<string, unknown>,
-  preferredKeys: string[],
-) {
+function collectPrimitiveChips(record: Record<string, unknown>, preferredKeys: string[]) {
   const chips: string[] = []
 
   for (const key of preferredKeys) {

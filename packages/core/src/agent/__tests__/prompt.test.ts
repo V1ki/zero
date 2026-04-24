@@ -133,6 +133,7 @@ describe('buildToolRulesBlock', () => {
   test('generates rules only for available tools', () => {
     const tools = [
       makeTool('Read'),
+      makeTool('read_image'),
       makeTool('Bash'),
       makeTool('memory_search'),
       makeTool('memory_read'),
@@ -143,6 +144,7 @@ describe('buildToolRulesBlock', () => {
     expect(result).toContain('<tool_rules>')
     expect(result).toContain('</tool_rules>')
     expect(result).toContain('Read：优先使用 Read 查看文件内容')
+    expect(result).toContain('Read Image：用于读取本地 PNG/JPEG/WebP 图片')
     expect(result).toContain('Bash：命令在工作目录中执行')
     expect(result).toContain('Memory Search：回答过往工作、决策、偏好前')
     expect(result).toContain('支持语义搜索')

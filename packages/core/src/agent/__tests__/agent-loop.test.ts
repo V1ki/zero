@@ -174,6 +174,49 @@ describe('AgentLoop', () => {
     expect(messages.at(-1)?.content).toEqual([{ type: 'text', text: 'finished' }])
   })
 
+  test('preserves structured tool result content items in the loop history', async () => {
+    const loop = createLoop(
+      [
+        {
+          id: 'resp_tool',
+          content: [{ type: 'tool_use', id: 'call_image', name: 'noop', input: {} }],
+          stopReason: 'tool_use',
+          usage: { input: 3, output: 1 },
+          model: 'fake-model',
+        },
+        {
+          id: 'resp_final',
+          content: [{ type: 'text', text: 'finished' }],
+          stopReason: 'end_turn',
+          usage: { input: 4, output: 2 },
+          model: 'fake-model',
+        },
+      ],
+      {
+        has: (toolName) => toolName === 'noop',
+        execute: async () => ({
+          success: true,
+          output: 'Read image /tmp/example.png (image/png, 3 bytes)',
+          outputSummary: 'Read image /tmp/example.png (image/png, 3 bytes)',
+          contentItems: [{ type: 'image', mediaType: 'image/png', data: 'aW1n' }],
+        }),
+      },
+    )
+
+    const messages = await loop.run('run image tool', [])
+    const toolResultMessage = messages.find((message) =>
+      message.content.some((block) => block.type === 'tool_result'),
+    )
+
+    expect(toolResultMessage?.content).toEqual([
+      expect.objectContaining({
+        type: 'tool_result',
+        toolUseId: 'call_image',
+        contentItems: [{ type: 'image', mediaType: 'image/png', data: 'aW1n' }],
+      }),
+    ])
+  })
+
   test('stops when maxIterations is reached', async () => {
     const loop = createLoop(
       [

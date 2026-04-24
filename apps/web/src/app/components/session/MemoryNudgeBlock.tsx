@@ -44,7 +44,10 @@ export function MemoryNudgeBlock({
   onSelect,
   onSelectChildTool,
 }: MemoryNudgeBlockProps) {
-  const primaryWrite = React.useMemo(() => findPrimaryMemoryWrite(relatedToolCalls), [relatedToolCalls])
+  const primaryWrite = React.useMemo(
+    () => findPrimaryMemoryWrite(relatedToolCalls),
+    [relatedToolCalls],
+  )
   const preview = getPreviewText(prompt, primaryWrite, memoryWritten)
   const handleSelect = () => onSelect?.(id)
 
@@ -57,7 +60,12 @@ export function MemoryNudgeBlock({
           : 'border-cyan-400/14 bg-[linear-gradient(135deg,rgba(7,36,43,0.9),rgba(10,16,22,0.82))] hover:border-cyan-300/20 hover:bg-[linear-gradient(135deg,rgba(8,40,48,0.94),rgba(10,16,22,0.86))]'
       }`}
     >
-      <button type="button" onClick={handleSelect} aria-expanded={selected} className="w-full text-left">
+      <button
+        type="button"
+        onClick={handleSelect}
+        aria-expanded={selected}
+        className="w-full text-left"
+      >
         <div className="flex items-center gap-2 px-4 py-3">
           <ArrowsClockwise size={14} weight="bold" className="text-cyan-300" />
           <span className="text-[11px] font-mono font-semibold uppercase tracking-[0.16em] text-cyan-300">
@@ -76,9 +84,7 @@ export function MemoryNudgeBlock({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 px-4 pb-3">
-          {iteration !== undefined ? (
-            <InlineChip>{`iteration ${iteration}`}</InlineChip>
-          ) : null}
+          {iteration !== undefined ? <InlineChip>{`iteration ${iteration}`}</InlineChip> : null}
           <InlineChip>{`${relatedToolCalls.length} memory step${relatedToolCalls.length === 1 ? '' : 's'}`}</InlineChip>
           {durationMs !== undefined ? (
             <InlineChip>
@@ -122,10 +128,12 @@ export function MemoryNudgeBlock({
               <p className="mt-2 text-[12px] font-medium text-[var(--color-text-primary)]">
                 {typeof primaryWrite.input.title === 'string'
                   ? primaryWrite.input.title
-                  : primaryWrite.summary ?? 'Recorded a memory write during this checkpoint.'}
+                  : (primaryWrite.summary ?? 'Recorded a memory write during this checkpoint.')}
               </p>
               {primaryWrite.summary ? (
-                <p className="mt-1 text-[11px] text-[var(--color-text-secondary)]">{primaryWrite.summary}</p>
+                <p className="mt-1 text-[11px] text-[var(--color-text-secondary)]">
+                  {primaryWrite.summary}
+                </p>
               ) : null}
             </div>
           ) : null}
@@ -183,7 +191,9 @@ function MemoryToolRow({
         className="w-full px-3 py-2 text-left"
       >
         <div className="flex min-w-0 items-start gap-2">
-          <span className={`mt-0.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-mono uppercase tracking-[0.14em] ${tone.badgeClass}`}>
+          <span
+            className={`mt-0.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-mono uppercase tracking-[0.14em] ${tone.badgeClass}`}
+          >
             <Icon size={10} weight="bold" />
             {toolCall.name}
           </span>
@@ -214,7 +224,11 @@ function MemoryToolRow({
             ) : null}
           </div>
           <span className="pt-0.5 text-[var(--color-text-disabled)]">
-            {selected ? <CaretDown size={10} className={tone.caretClass} /> : <CaretRight size={10} />}
+            {selected ? (
+              <CaretDown size={10} className={tone.caretClass} />
+            ) : (
+              <CaretRight size={10} />
+            )}
           </span>
         </div>
       </button>
@@ -225,6 +239,7 @@ function MemoryToolRow({
           input={toolCall.input}
           result={toolCall.result}
           summary={toolCall.summary}
+          contentItems={toolCall.contentItems}
           isError={toolCall.isError}
           durationMs={toolCall.durationMs}
           nested

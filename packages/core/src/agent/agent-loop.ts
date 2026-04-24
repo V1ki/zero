@@ -110,10 +110,7 @@ export interface AgentLoopHooks {
   onEmptyResponse?(
     retryCount: number,
     ctx: LoopIterationContext,
-  ):
-    | boolean
-    | 'break'
-    | { action: 'continue'; continuationMessage: Message }
+  ): boolean | 'break' | { action: 'continue'; continuationMessage: Message }
 }
 
 export class AgentLoop {
@@ -430,6 +427,9 @@ export class AgentLoop {
       type: 'tool_result',
       toolUseId,
       content: result.output,
+      ...(result.contentItems && result.contentItems.length > 0
+        ? { contentItems: result.contentItems }
+        : {}),
       isError: !result.success,
       outputSummary: result.outputSummary,
     }

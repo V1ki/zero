@@ -111,6 +111,7 @@ interface TimelineToolResult {
   content?: string
   isError?: boolean
   outputSummary?: string
+  contentItems?: ToolResultContentItem[]
 }
 
 interface TimelineRequestLike {
@@ -140,9 +141,14 @@ export interface SubAgentChildToolCall {
   input: Record<string, unknown>
   result?: string
   summary?: string
+  contentItems?: ToolResultContentItem[]
   isError?: boolean
   durationMs?: number
 }
+
+export type ToolResultContentItem =
+  | { type: 'text'; text: string }
+  | { type: 'image'; mediaType: string; data: string }
 
 export interface MemoryNudgeTimelineItem {
   type: 'memory-nudge'
@@ -188,6 +194,7 @@ export type TimelineItem =
       input: Record<string, unknown>
       result?: string
       summary?: string
+      contentItems?: ToolResultContentItem[]
       isError?: boolean
       status?: TraceSpan['status']
       durationMs?: number
@@ -215,10 +222,7 @@ export function buildTimeline(
   const spawnToolCallIds = new Set<string>()
   const memoryNudgeSpans = collectMemoryNudgeSpans(traces)
   const usedMemoryNudgeSpanIds = new Set<string>()
-  const nestedMemoryNudgeToolUseIds = buildMemoryNudgeToolUseIdSet(
-    memoryNudgeSpans,
-    traces,
-  )
+  const nestedMemoryNudgeToolUseIds = buildMemoryNudgeToolUseIdSet(memoryNudgeSpans, traces)
 
   for (const msg of messages) {
     if (msg.messageType === 'control') {
@@ -396,6 +400,7 @@ export function buildTimeline(
               input: toolInput,
               result: result?.content,
               summary: result?.summary,
+              contentItems: result?.contentItems,
               isError: result?.isError,
               status:
                 toolStatuses.get(toolId) ??
@@ -459,7 +464,7 @@ function buildMemoryNudgeTimelineItemFromMessage(
   memoryNudgeSpans: TraceSpan[],
   usedMemoryNudgeSpanIds: Set<string>,
   traces: TraceSpan[],
-  toolResults: Map<string, { content?: string; summary?: string; isError?: boolean }>,
+  toolResults: Map<string, TimelineToolResultData>,
   toolDurations: Map<string, number>,
 ): MemoryNudgeTimelineItem {
   const text = message.content
@@ -467,7 +472,11 @@ function buildMemoryNudgeTimelineItemFromMessage(
     .map((block) => block.text as string)
     .join('\n')
     .trim()
-  const matchedSpan = findMatchingMemoryNudgeSpan(message.createdAt, memoryNudgeSpans, usedMemoryNudgeSpanIds)
+  const matchedSpan = findMatchingMemoryNudgeSpan(
+    message.createdAt,
+    memoryNudgeSpans,
+    usedMemoryNudgeSpanIds,
+  )
 
   if (matchedSpan) {
     usedMemoryNudgeSpanIds.add(matchedSpan.id)
@@ -492,7 +501,7 @@ function buildTraceMemoryNudgeItems(
   memoryNudgeSpans: TraceSpan[],
   usedMemoryNudgeSpanIds: Set<string>,
   traces: TraceSpan[],
-  toolResults: Map<string, { content?: string; summary?: string; isError?: boolean }>,
+  toolResults: Map<string, TimelineToolResultData>,
   toolDurations: Map<string, number>,
 ): MemoryNudgeTimelineItem[] {
   return memoryNudgeSpans
@@ -506,7 +515,7 @@ function buildTraceMemoryNudgeItems(
 function mapMemoryNudgeTraceSpan(
   span: TraceSpan,
   traces: TraceSpan[],
-  toolResults: Map<string, { content?: string; summary?: string; isError?: boolean }>,
+  toolResults: Map<string, TimelineToolResultData>,
   toolDurations: Map<string, number>,
 ): MemoryNudgeTimelineItem {
   const metadata = span.metadata ?? {}
@@ -539,10 +548,7 @@ function extractMemoryNudgePrompt(span: TraceSpan | null | undefined): string | 
   const metadata = span.metadata ?? {}
   const nudge = asRecord(span.data?.memoryNudge)
   return (
-    asString(nudge?.prompt) ??
-    asString(span.data?.prompt) ??
-    asString(metadata.prompt) ??
-    undefined
+    asString(nudge?.prompt) ?? asString(span.data?.prompt) ?? asString(metadata.prompt) ?? undefined
   )
 }
 
@@ -605,7 +611,7 @@ function buildMemoryNudgeToolUseIdSet(
 function extractMemoryNudgeRelatedToolCalls(
   memoryNudgeSpan: TraceSpan,
   traces: TraceSpan[],
-  toolResults: Map<string, { content?: string; summary?: string; isError?: boolean }>,
+  toolResults: Map<string, TimelineToolResultData>,
   toolDurations: Map<string, number>,
 ): SubAgentChildToolCall[] {
   const relatedToolCalls: SubAgentChildToolCall[] = []
@@ -629,6 +635,7 @@ function extractMemoryNudgeRelatedToolCalls(
         normalizeToolText(
           asString(metadata.outputSummary) ?? asString(toolSpan.data?.outputSummary),
         ),
+      contentItems: toolResult?.contentItems,
       isError: toolResult?.isError === true || toolSpan.status === 'error',
       durationMs: toolDurations.get(toolUseId) ?? toolSpan.durationMs,
     })
@@ -652,7 +659,9 @@ function findMemoryToolSpansForNudge(memoryNudgeSpan: TraceSpan, traces: TraceSp
 
 function isMemoryToolSpan(span: TraceSpan): boolean {
   if (!span.name.startsWith('tool:')) return false
-  const toolName = (asString(span.metadata?.toolName) ?? span.name.replace(/^tool:/, '')).toLowerCase()
+  const toolName = (
+    asString(span.metadata?.toolName) ?? span.name.replace(/^tool:/, '')
+  ).toLowerCase()
   return toolName === 'memory' || toolName === 'memory_search' || toolName === 'memory_read'
 }
 
@@ -909,8 +918,8 @@ function buildToolResultMap(
   messages: Message[],
   traces: TraceSpan[],
   llmRequests: TimelineRequestLike[],
-): Map<string, { content?: string; summary?: string; isError?: boolean }> {
-  const toolResults = new Map<string, { content?: string; summary?: string; isError?: boolean }>()
+): Map<string, TimelineToolResultData> {
+  const toolResults = new Map<string, TimelineToolResultData>()
   const toolNames = buildToolNameMap(messages, traces)
 
   for (const msg of messages) {
@@ -921,6 +930,7 @@ function buildToolResultMap(
       mergeToolResult(toolResults, toolUseId, toolNames.get(toolUseId) ?? 'generic', {
         content: asString(block.content),
         summary: asString(block.outputSummary),
+        contentItems: normalizeToolResultContentItems(block.contentItems),
         isError: block.isError === true,
       })
     }
@@ -931,6 +941,7 @@ function buildToolResultMap(
       mergeToolResult(toolResults, result.toolUseId, toolNames.get(result.toolUseId) ?? 'generic', {
         content: result.content,
         summary: result.outputSummary,
+        contentItems: result.contentItems,
         isError: result.isError === true,
       })
     }
@@ -985,10 +996,10 @@ function buildToolNameMap(messages: Message[], traces: TraceSpan[]): Map<string,
 }
 
 function mergeToolResult(
-  target: Map<string, { content?: string; summary?: string; isError?: boolean }>,
+  target: Map<string, TimelineToolResultData>,
   toolUseId: string,
   toolName: string,
-  incoming: { content?: string; summary?: string; isError?: boolean },
+  incoming: TimelineToolResultData,
 ) {
   const current = target.get(toolUseId)
 
@@ -1000,8 +1011,41 @@ function mergeToolResult(
       incoming.summary ?? incoming.content,
       'summary',
     ),
+    contentItems:
+      incoming.contentItems && incoming.contentItems.length > 0
+        ? incoming.contentItems
+        : current?.contentItems,
     isError: current?.isError === true || incoming.isError === true,
   })
+}
+
+interface TimelineToolResultData {
+  content?: string
+  summary?: string
+  contentItems?: ToolResultContentItem[]
+  isError?: boolean
+}
+
+function normalizeToolResultContentItems(value: unknown): ToolResultContentItem[] | undefined {
+  if (!Array.isArray(value)) return undefined
+
+  const items = value.flatMap((item): ToolResultContentItem[] => {
+    if (!item || typeof item !== 'object') return []
+    const record = item as Record<string, unknown>
+    if (record.type === 'text' && typeof record.text === 'string') {
+      return [{ type: 'text', text: record.text }]
+    }
+    if (
+      record.type === 'image' &&
+      typeof record.mediaType === 'string' &&
+      typeof record.data === 'string'
+    ) {
+      return [{ type: 'image', mediaType: record.mediaType, data: record.data }]
+    }
+    return []
+  })
+
+  return items.length > 0 ? items : undefined
 }
 
 function pickPreferredToolText(
@@ -1305,8 +1349,12 @@ function findLabelFromTraceSpan(traces: TraceSpan[], toolUseId: string): string 
 function findWaitAgentResult(
   messages: Message[],
   agentId: string,
-  toolResults: Map<string, { content?: string; summary?: string; isError?: boolean }>,
-): { status: 'waiting' | 'completed' | 'errored' | 'closed'; output?: string; durationMs?: number } | null {
+  toolResults: Map<string, TimelineToolResultData>,
+): {
+  status: 'waiting' | 'completed' | 'errored' | 'closed'
+  output?: string
+  durationMs?: number
+} | null {
   for (const msg of messages) {
     if (msg.role !== 'assistant') continue
     for (const block of msg.content) {
@@ -1407,7 +1455,9 @@ function findSubAgentSpan(
   return null
 }
 
-function extractSubAgentChildToolCallsFromSpan(agentSpan: TraceSpan | null): SubAgentChildToolCall[] {
+function extractSubAgentChildToolCallsFromSpan(
+  agentSpan: TraceSpan | null,
+): SubAgentChildToolCall[] {
   if (!agentSpan) return []
 
   const childCalls: SubAgentChildToolCall[] = []
@@ -1419,9 +1469,7 @@ function extractSubAgentChildToolCallsFromSpan(agentSpan: TraceSpan | null): Sub
       id: (meta.toolUseId as string) ?? child.id,
       name: child.name.replace('tool:', ''),
       input: (meta.input as Record<string, unknown>) ?? {},
-      result:
-        (meta.result as string) ??
-        undefined,
+      result: (meta.result as string) ?? undefined,
       summary: (meta.outputSummary as string) ?? (data.outputSummary as string) ?? undefined,
       isError: child.status === 'error' ? true : undefined,
       durationMs: child.durationMs,

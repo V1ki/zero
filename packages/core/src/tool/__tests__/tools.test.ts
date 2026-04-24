@@ -4,11 +4,14 @@ import { join } from 'node:path'
 import { BashTool } from '../bash'
 import { EditTool } from '../edit'
 import { ReadTool } from '../read'
+import { ReadImageTool } from '../read-image'
 import { ToolRegistry } from '../registry'
 import { WriteTool } from '../write'
 import { SessionRunningToolRegistry } from '../../session/running-tool-registry'
 
 const testDir = join(import.meta.dir, '__fixtures__')
+const tinyPngBase64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII='
 const ctx = {
   sessionId: 'test_session',
   workDir: process.cwd(),
@@ -52,6 +55,65 @@ describe('ReadTool', () => {
     const result = await tool.run(ctx, { path: '/nonexistent/file.txt' })
     expect(result.success).toBe(false)
     expect(result.output).toContain('File not found')
+  })
+})
+
+describe('ReadImageTool', () => {
+  afterAll(() => {
+    rmSync(testDir, { recursive: true, force: true })
+  })
+
+  test('reads a local PNG as structured image content', async () => {
+    mkdirSync(testDir, { recursive: true })
+    const filePath = join(testDir, 'read-image.png')
+    writeFileSync(filePath, Buffer.from(tinyPngBase64, 'base64'))
+
+    const tool = new ReadImageTool()
+    const result = await tool.run(ctx, { path: filePath })
+
+    expect(result.success).toBe(true)
+    expect(result.output).toContain(filePath)
+    expect(result.output).not.toContain(tinyPngBase64)
+    expect(result.outputSummary).not.toContain(tinyPngBase64)
+    expect(result.contentItems).toEqual([
+      { type: 'image', mediaType: 'image/png', data: tinyPngBase64 },
+    ])
+    expect(result.artifacts).toContain(filePath)
+  })
+
+  test('rejects remote URLs', async () => {
+    const tool = new ReadImageTool()
+    const result = await tool.run(ctx, { path: 'https://example.com/image.png' })
+
+    expect(result.success).toBe(false)
+    expect(result.output).toContain('local filesystem paths')
+  })
+
+  test('rejects unsupported file content', async () => {
+    mkdirSync(testDir, { recursive: true })
+    const filePath = join(testDir, 'not-an-image.txt')
+    writeFileSync(filePath, 'plain text', 'utf-8')
+
+    const tool = new ReadImageTool()
+    const result = await tool.run(ctx, { path: filePath })
+
+    expect(result.success).toBe(false)
+    expect(result.output).toContain('Unsupported')
+  })
+
+  test('rejects oversized images before attaching content', async () => {
+    mkdirSync(testDir, { recursive: true })
+    const filePath = join(testDir, 'oversized.png')
+    const oversizedPng = Buffer.alloc(10 * 1024 * 1024 + 1)
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(oversizedPng)
+    writeFileSync(filePath, oversizedPng)
+
+    const tool = new ReadImageTool()
+    const result = await tool.run(ctx, { path: filePath })
+
+    expect(result.success).toBe(false)
+    expect(result.output).toContain('too large')
+    expect(result.contentItems).toBeUndefined()
   })
 })
 

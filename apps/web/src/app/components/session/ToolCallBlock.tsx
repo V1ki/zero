@@ -16,10 +16,12 @@ import { formatTime } from '../../lib/format'
 import { toolColors } from '../../lib/colors'
 import { useUIStore } from '../../stores/ui'
 import { ToolCallDetail, summarizeToolInput } from './ToolCallDetail'
+import type { ToolResultContentItem } from './ToolCallDetail'
 
 const toolIcons: Record<string, typeof Terminal> = {
   bash: Terminal,
   read: File,
+  read_image: File,
   edit: PencilSimple,
   write: FilePlus,
   browser: Globe,
@@ -32,6 +34,7 @@ interface Props {
   input: Record<string, unknown>
   result?: string
   summary?: string
+  contentItems?: ToolResultContentItem[]
   isError?: boolean
   status?: 'running' | 'success' | 'error'
   durationMs?: number
@@ -47,6 +50,7 @@ export function ToolCallBlock({
   input,
   result,
   summary,
+  contentItems,
   isError,
   status,
   durationMs,
@@ -158,6 +162,7 @@ export function ToolCallBlock({
           input={input}
           result={result}
           summary={summary}
+          contentItems={contentItems}
           isError={isError}
           status={status}
           durationMs={durationMs}

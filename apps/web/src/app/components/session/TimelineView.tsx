@@ -83,6 +83,7 @@ export function TimelineView({
                 input={item.input}
                 result={item.result}
                 summary={item.summary}
+                contentItems={item.contentItems}
                 isError={item.isError}
                 status={item.status}
                 durationMs={item.durationMs}
@@ -149,9 +150,7 @@ export function TimelineView({
                 relatedToolCalls={item.relatedToolCalls}
                 selected={selectedMemoryNudgeId === item.id}
                 selectedChildToolId={selectedToolId}
-                onSelect={(id) =>
-                  onSelectMemoryNudge?.(selectedMemoryNudgeId === id ? null : id)
-                }
+                onSelect={(id) => onSelectMemoryNudge?.(selectedMemoryNudgeId === id ? null : id)}
                 onSelectChildTool={(toolId) =>
                   onSelectTool(selectedToolId === toolId ? null : toolId)
                 }

@@ -37,6 +37,13 @@ export function estimateMessageTokens(contentBlocks: ContentBlock[]): number {
         break
       case 'tool_result':
         total += estimateTokens(block.content)
+        for (const item of block.contentItems ?? []) {
+          if (item.type === 'text') {
+            total += estimateTokens(item.text)
+          } else if (item.type === 'image') {
+            total += 300
+          }
+        }
         break
       case 'image':
         total += 300 // fixed estimate for images

@@ -324,11 +324,12 @@ describe('startZeroOS Integration', () => {
     }
   })
 
-  test('toolRegistry has 14 registered tools', () => {
+  test('toolRegistry has 15 registered tools', () => {
     const tools = zero.toolRegistry.list()
-    expect(tools.length).toBe(14)
+    expect(tools.length).toBe(15)
     const names = tools.map((t) => t.name)
     expect(names).toContain('read')
+    expect(names).toContain('read_image')
     expect(names).toContain('write')
     expect(names).toContain('edit')
     expect(names).toContain('bash')

@@ -4,10 +4,10 @@ import {
   FileArrowDown,
   FileText,
   GlobeHemisphereWest,
+  ImageSquare,
   MagnifyingGlass,
   NotePencil,
   TerminalWindow,
-  WarningCircle,
 } from '@phosphor-icons/react'
 import type { ReactNode } from 'react'
 
@@ -16,6 +16,7 @@ interface ToolCallDetailProps {
   input: Record<string, unknown>
   result?: string
   summary?: string
+  contentItems?: ToolResultContentItem[]
   isError?: boolean
   status?: 'running' | 'success' | 'error'
   durationMs?: number
@@ -30,6 +31,10 @@ type DiffRow =
   | { type: 'added'; text: string }
   | { type: 'omitted'; text: string }
 
+export type ToolResultContentItem =
+  | { type: 'text'; text: string }
+  | { type: 'image'; mediaType: string; data: string }
+
 const stderrMarker = '\n[stderr]\n'
 
 export function ToolCallDetail({
@@ -37,6 +42,7 @@ export function ToolCallDetail({
   input,
   result,
   summary,
+  contentItems,
   isError,
   status,
   durationMs,
@@ -73,6 +79,17 @@ export function ToolCallDetail({
       )
     case 'read':
       return <ReadToolDetail input={input} result={result} isError={isError} nested={nested} />
+    case 'read_image':
+      return (
+        <ReadImageToolDetail
+          input={input}
+          result={result}
+          summary={summary}
+          contentItems={contentItems}
+          isError={isError}
+          nested={nested}
+        />
+      )
     case 'write':
       return (
         <WriteToolDetail
@@ -170,7 +187,12 @@ export function summarizeToolInput(name: string, input: Record<string, unknown>)
     ).slice(0, 120)
   }
 
-  if (toolName === 'edit' || toolName === 'read' || toolName === 'write') {
+  if (
+    toolName === 'edit' ||
+    toolName === 'read' ||
+    toolName === 'read_image' ||
+    toolName === 'write'
+  ) {
     return stringValue(input.path) ?? stringValue(input.file_path) ?? ''
   }
 
@@ -376,6 +398,66 @@ function ReadToolDetail({
 
       <SectionLabel icon={<FileText size={14} />} title="File Snapshot" />
       <CodeViewer lines={lines} startLine={offset + 1} />
+    </DetailShell>
+  )
+}
+
+function ReadImageToolDetail({
+  input,
+  result,
+  summary,
+  contentItems,
+  isError,
+  nested,
+}: Omit<ToolCallDetailProps, 'name' | 'durationMs'>) {
+  const path = stringValue(input.path) ?? '(missing path)'
+  const images = (contentItems ?? []).filter(isImageContentItem)
+  const detailSummary = resolveToolSummary('read_image', result, summary)
+
+  return (
+    <DetailShell dataTool="read_image" nested={nested}>
+      <ToolMetaRow>
+        <MetaChip>{path}</MetaChip>
+        {images.length > 0 ? <MetaChip>{images.length} image</MetaChip> : null}
+        {images.map((image, index) => (
+          <MetaChip key={`${image.mediaType}-${index}`}>{image.mediaType}</MetaChip>
+        ))}
+        <StatusChip isError={isError} />
+      </ToolMetaRow>
+
+      {detailSummary ? (
+        <InfoStrip tone="blue" label="Image Read Summary" text={detailSummary} />
+      ) : null}
+
+      {images.length > 0 ? (
+        <div className="grid gap-2">
+          {images.map((image, index) => (
+            <div
+              key={`${image.mediaType}-${index}-${image.data.length}`}
+              className="overflow-hidden rounded-2xl border border-white/8 bg-[rgba(10,14,20,0.7)]"
+            >
+              <div className="flex items-center justify-between gap-2 border-b border-white/8 px-3 py-2">
+                <SectionLabel icon={<ImageSquare size={14} />} title={`Image ${index + 1}`} />
+                <span className="shrink-0 font-mono text-[10px] text-[var(--color-text-disabled)]">
+                  {image.mediaType}
+                </span>
+              </div>
+              <div className="max-h-[420px] overflow-auto bg-black/20 p-2">
+                <img
+                  src={`data:${image.mediaType};base64,${image.data}`}
+                  alt={path}
+                  className="mx-auto max-h-[400px] max-w-full rounded-xl object-contain"
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <EmptyStateStrip
+          title="No image payload"
+          detail="The tool result did not include structured image content."
+        />
+      )}
     </DetailShell>
   )
 }
@@ -719,10 +801,10 @@ function CodeViewer({
             key={`${startLine + index}-${line}`}
             className="grid grid-cols-[auto_1fr] gap-x-2.5 px-3 py-0.5 font-mono text-[10.5px] leading-[1.15rem]"
           >
-            <span className="select-none text-[var(--color-text-disabled)]">{startLine + index}</span>
-            <span className={`whitespace-pre-wrap break-words ${lineColor}`}>
-              {line || ' '}
+            <span className="select-none text-[var(--color-text-disabled)]">
+              {startLine + index}
             </span>
+            <span className={`whitespace-pre-wrap break-words ${lineColor}`}>{line || ' '}</span>
           </div>
         ))}
       </div>
@@ -762,7 +844,9 @@ function EmptyStateStrip({ title, detail }: { title: string; detail: string }) {
   return (
     <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-2">
       <p className="text-[10.5px] font-medium text-[var(--color-text-secondary)]">{title}</p>
-      <p className="mt-1 text-[10.5px] leading-[1.15rem] text-[var(--color-text-muted)]">{detail}</p>
+      <p className="mt-1 text-[10.5px] leading-[1.15rem] text-[var(--color-text-muted)]">
+        {detail}
+      </p>
     </div>
   )
 }
@@ -938,6 +1022,12 @@ function stringValue(value: unknown) {
 
 function numberValue(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function isImageContentItem(
+  item: ToolResultContentItem,
+): item is Extract<ToolResultContentItem, { type: 'image' }> {
+  return item.type === 'image'
 }
 
 function countLines(value: string) {
