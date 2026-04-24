@@ -249,14 +249,16 @@ describe('SpawnAgentTool', () => {
     const registry = createToolRegistry()
     const tool = new SpawnAgentTool(createStubRouter(new StaticResponseAdapter()), registry)
     let receivedMode: unknown
+    let receivedModel: unknown
     const agentControl = {
       spawn: (
         _agent: unknown,
         _context: unknown,
         _instruction: string,
-        options?: { mode?: string },
+        options?: { mode?: string; model?: string },
       ) => {
         receivedMode = options?.mode
+        receivedModel = options?.model
         return { agentId: 'agent_456', label: 'InteractiveWorker' }
       },
       waitAny: async () => ({ statuses: {}, timedOut: false }),
@@ -288,10 +290,12 @@ describe('SpawnAgentTool', () => {
 
     expect(result.success).toBe(true)
     expect(receivedMode).toBe('interactive')
+    expect(receivedModel).toBe('test-provider/fake-spawn-subagent-model')
     expect(JSON.parse(result.output)).toEqual({
       agent_id: 'agent_456',
       label: 'InteractiveWorker',
       mode: 'interactive',
+      model: 'test-provider/fake-spawn-subagent-model',
     })
   })
 

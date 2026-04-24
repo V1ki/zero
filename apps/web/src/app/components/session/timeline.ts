@@ -168,6 +168,7 @@ export interface SubAgentTimelineItem {
   agentId: string
   label: string
   role?: string
+  model?: string
   instruction: string
   status: 'running' | 'waiting' | 'completed' | 'errored' | 'closed'
   output?: string
@@ -355,6 +356,12 @@ export function buildTimeline(
             const waitInfo = findWaitAgentResult(messages, agentId, toolResults)
             const traceSpan = findSubAgentSpan(traces, agentId, toolId)
             const traceInfo = getSubAgentTraceInfoFromSpan(traceSpan)
+            const model =
+              asString(toolInput.model) ??
+              (result?.content ? tryParseJsonField(result.content, 'model') : null) ??
+              waitInfo?.model ??
+              traceInfo?.model ??
+              findModelFromTraceSpan(traces, toolId, agentId)
             const childToolCalls = extractSubAgentChildToolCallsFromSpan(traceSpan)
 
             handledSubAgentIds.add(agentId)
@@ -376,6 +383,7 @@ export function buildTimeline(
               agentId,
               label,
               role,
+              model: model ?? undefined,
               instruction,
               status: resolvedStatus,
               output: resolvedOutput,
@@ -1346,6 +1354,48 @@ function findLabelFromTraceSpan(traces: TraceSpan[], toolUseId: string): string 
   return null
 }
 
+function findModelFromTraceSpan(
+  traces: TraceSpan[],
+  toolUseId: string,
+  agentId?: string,
+): string | null {
+  const allSpans = flattenTraceSpans(traces)
+
+  for (const span of allSpans) {
+    const meta = span.metadata ?? {}
+    const data = span.data ?? {}
+    if (span.name === 'tool:spawn_agent' && meta.toolUseId === toolUseId) {
+      const model = asString(meta.spawnedAgentModel) ?? asString(data.spawnedAgentModel)
+      if (model) return model
+
+      for (const child of span.children ?? []) {
+        if (child.name === 'sub_agent' || child.name.startsWith('sub_agent:')) {
+          const childModel = findModelInSpanTree(child)
+          if (childModel) return childModel
+        }
+      }
+    }
+  }
+
+  if (agentId) {
+    for (const span of allSpans) {
+      const metadata = span.metadata ?? {}
+      const data = span.data ?? {}
+      const isSubAgent =
+        span.name === 'sub_agent' ||
+        span.name.startsWith('sub_agent:') ||
+        metadata.kind === 'sub_agent' ||
+        data.kind === 'sub_agent'
+      if (isSubAgent && (metadata.agentId === agentId || data.agentId === agentId)) {
+        const model = findModelInSpanTree(span)
+        if (model) return model
+      }
+    }
+  }
+
+  return null
+}
+
 function findWaitAgentResult(
   messages: Message[],
   agentId: string,
@@ -1354,6 +1404,7 @@ function findWaitAgentResult(
   status: 'waiting' | 'completed' | 'errored' | 'closed'
   output?: string
   durationMs?: number
+  model?: string
 } | null {
   for (const msg of messages) {
     if (msg.role !== 'assistant') continue
@@ -1374,6 +1425,7 @@ function findWaitAgentResult(
         name === 'close_agent' ? 'closed' : 'completed'
       let output: string | undefined
       let durationMs: number | undefined
+      let model: string | undefined
 
       try {
         const parsed = JSON.parse(result.content)
@@ -1396,13 +1448,14 @@ function findWaitAgentResult(
                 : undefined
           if (typeof agentRecord?.durationMs === 'number') durationMs = agentRecord.durationMs
           if (typeof agentRecord?.elapsedMs === 'number') durationMs = agentRecord.elapsedMs
+          model = asString(agentRecord?.model) ?? asString(record?.model)
         }
       } catch {
         output = result.content
       }
 
       if (result.isError) status = 'errored'
-      return { status, output, durationMs }
+      return { status, output, durationMs, model }
     }
   }
   return null
@@ -1486,6 +1539,7 @@ function getSubAgentTraceInfoFromSpan(agentSpan: TraceSpan | null): {
   durationMs?: number
   status?: 'completed' | 'errored' | 'running' | 'closed'
   output?: string
+  model?: string
 } | null {
   if (!agentSpan) return null
 
@@ -1501,7 +1555,23 @@ function getSubAgentTraceInfoFromSpan(agentSpan: TraceSpan | null): {
     durationMs: (data.durationMs as number) ?? agentSpan.durationMs ?? undefined,
     status,
     output: (data.output as string) ?? (data.outputSummary as string) ?? undefined,
+    model: findModelInSpanTree(agentSpan) ?? undefined,
   }
+}
+
+function findModelInSpanTree(span: TraceSpan): string | null {
+  const directModel =
+    asString(span.metadata?.model) ??
+    asString(span.data?.model) ??
+    asString(asRecord(span.data?.request)?.model)
+  if (directModel) return directModel
+
+  for (const child of span.children ?? []) {
+    const childModel = findModelInSpanTree(child)
+    if (childModel) return childModel
+  }
+
+  return null
 }
 
 function isHandledSubAgentTool(

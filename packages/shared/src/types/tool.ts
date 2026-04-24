@@ -97,6 +97,7 @@ export interface AgentControlHandle {
       mode?: 'standard' | 'interactive'
       label?: string
       role?: string
+      model?: string
       depth?: number
       traceSpanId?: string
       tracer?: ToolTracer

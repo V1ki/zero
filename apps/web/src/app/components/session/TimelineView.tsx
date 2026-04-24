@@ -9,9 +9,7 @@ import { TaskClosureBlock } from './TaskClosureBlock'
 import { ToolCallBlock } from './ToolCallBlock'
 import { UserMessageBlock } from './UserMessageBlock'
 import type { MemoryRetrievalRequestLike } from './memory-retrieval'
-import {
-  type TimelineItem,
-} from './timeline'
+import type { TimelineItem } from './timeline'
 
 interface Props {
   sessionId?: string
@@ -162,7 +160,8 @@ export function TimelineView({
                 key={`sub-agent-${item.agentId}`}
                 agentId={item.agentId}
                 label={item.label}
-                role={item.role}
+                agentRole={item.role}
+                model={item.model}
                 instruction={item.instruction}
                 status={item.status}
                 output={item.output}

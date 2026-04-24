@@ -8,7 +8,8 @@ describe('SubAgentBlock', () => {
       <SubAgentBlock
         agentId="agent_worker_1"
         label="Worker 1"
-        role="explorer"
+        agentRole="explorer"
+        model="anthropic/claude-opus-4-6"
         instruction="Trace the missing task closure signal and verify where the classifier branch is emitted."
         status="completed"
         output="Found the classifier branch in the trace tree and confirmed the missing emission path."
@@ -122,6 +123,7 @@ describe('SubAgentBlock', () => {
     expect(html).toContain('sub-agent')
     expect(html).toContain('Worker 1')
     expect(html).toContain('explorer')
+    expect(html).toContain('anthropic/claude-opus-4-6')
     expect(html).toContain('Mission')
     expect(html).toContain('Activity')
     expect(html).toContain('Internal Timeline (5)')
@@ -135,5 +137,28 @@ describe('SubAgentBlock', () => {
     expect(html).toContain(
       'Found the classifier branch in the trace tree and confirmed the missing emission path.',
     )
+  })
+
+  test('renders long JSON output as a compact preview', () => {
+    const html = renderToStaticMarkup(
+      <SubAgentBlock
+        agentId="agent_json_1"
+        label="think-test1-complex-json"
+        model="deepseek/deepseek-v4-pro"
+        instruction="Return only JSON."
+        status="completed"
+        output={JSON.stringify({
+          endpoints: [
+            { method: 'POST', path: '/api/v1/agents' },
+            { method: 'GET', path: '/api/v1/agents' },
+            { method: 'DELETE', path: '/api/v1/agents/{id}' },
+          ],
+        })}
+      />,
+    )
+
+    expect(html).toContain('deepseek/deepseek-v4-pro')
+    expect(html).toContain('JSON output: endpoints[3]')
+    expect(html).not.toContain('/api/v1/agents/{id}')
   })
 })

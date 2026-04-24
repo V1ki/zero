@@ -136,6 +136,9 @@ export class SpawnAgentTool extends BaseTool {
         ? this.modelRouter.resolveModel(ctx.currentModel)
         : this.modelRouter.getCurrentModel()
     const adapter = resolvedModel?.adapter ?? this.modelRouter.getAdapter()
+    const resolvedModelLabel = resolvedModel
+      ? this.modelRouter.getModelLabel(resolvedModel)
+      : ctx.currentModel
     const scopedRegistry = this.buildScopedRegistry(tools ?? roleDefinition?.defaultTools)
     const toolDefinitions = scopedRegistry.getDefinitions()
 
@@ -160,8 +163,12 @@ export class SpawnAgentTool extends BaseTool {
         agentName: agentLabel,
         data: {
           role: requestedRoleId,
+          model: resolvedModelLabel,
           instruction: safeInstructionSummary,
           spawnedByRequestId: ctx.currentRequestId,
+        },
+        metadata: {
+          model: resolvedModelLabel,
         },
       },
     )
@@ -170,9 +177,7 @@ export class SpawnAgentTool extends BaseTool {
       ...ctx,
       sessionId: ctx.sessionId,
       currentRequestId: undefined,
-      currentModel: resolvedModel
-        ? this.modelRouter.getModelLabel(resolvedModel)
-        : ctx.currentModel,
+      currentModel: resolvedModelLabel,
       currentTraceSpanId: subAgentSpan?.id ?? ctx.currentTraceSpanId,
       spawnedByRequestId: ctx.currentRequestId,
       workDir: subWorkDir,
@@ -192,7 +197,7 @@ export class SpawnAgentTool extends BaseTool {
       tracer: ctx.tracer,
       secretFilter: ctx.secretFilter,
       providerName: resolvedModel?.providerName,
-      modelLabel: resolvedModel ? this.modelRouter.getModelLabel(resolvedModel) : ctx.currentModel,
+      modelLabel: resolvedModelLabel,
       pricing: resolvedModel?.modelConfig.pricing,
     }
 
@@ -222,6 +227,7 @@ export class SpawnAgentTool extends BaseTool {
       mode,
       label: agentLabel,
       role: roleDefinition ? requestedRoleId : undefined,
+      model: resolvedModelLabel,
       depth: 1,
       traceSpanId: subAgentSpan?.id,
       tracer: ctx.tracer,
@@ -254,11 +260,13 @@ export class SpawnAgentTool extends BaseTool {
         data: {
           spawnedAgentId: spawnResult.agentId,
           spawnedAgentLabel: spawnResult.label,
+          spawnedAgentModel: resolvedModelLabel,
           spawnedAgentSpanId: subAgentSpan?.id,
         },
         metadata: {
           spawnedAgentId: spawnResult.agentId,
           spawnedAgentLabel: spawnResult.label,
+          spawnedAgentModel: resolvedModelLabel,
           spawnedAgentSpanId: subAgentSpan?.id,
         },
       })
@@ -271,6 +279,7 @@ export class SpawnAgentTool extends BaseTool {
           agent_id: spawnResult.agentId,
           label: spawnResult.label,
           mode: mode ?? 'standard',
+          model: resolvedModelLabel,
         },
         null,
         2,

@@ -1225,6 +1225,7 @@ describe('sub-agent timeline items', () => {
             input: {
               label: 'count-ts-files',
               role: 'explorer',
+              model: 'deepseek/deepseek-v4-pro',
               instruction: 'Count all TypeScript files',
             },
           },
@@ -1281,6 +1282,7 @@ describe('sub-agent timeline items', () => {
       expect(subAgent.agentId).toBe('agent_1')
       expect(subAgent.label).toBe('count-ts-files')
       expect(subAgent.role).toBe('explorer')
+      expect(subAgent.model).toBe('deepseek/deepseek-v4-pro')
       expect(subAgent.instruction).toBe('Count all TypeScript files')
       expect(subAgent.status).toBe('completed')
       expect(subAgent.output).toBe('Found 42 files')
@@ -1487,7 +1489,7 @@ describe('sub-agent timeline items', () => {
             name: 'sub_agent:interactive-agent',
             startTime: '2026-03-08T00:00:00.000Z',
             status: 'running',
-            metadata: { agentId: 'agent_waiting' },
+            metadata: { agentId: 'agent_waiting', model: 'anthropic/claude-opus-4-6' },
             children: [],
           },
         ],
@@ -1500,6 +1502,7 @@ describe('sub-agent timeline items', () => {
     expect(subAgent).toBeDefined()
     if (subAgent?.type === 'sub-agent') {
       expect(subAgent.status).toBe('waiting')
+      expect(subAgent.model).toBe('anthropic/claude-opus-4-6')
     }
   })
 

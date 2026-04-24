@@ -74,6 +74,84 @@ test.describe('Session Detail Decisions', () => {
           ],
           createdAt: '2026-03-24T10:00:02.080Z',
         },
+        {
+          id: 'msg_json_subagent_spawn',
+          role: 'assistant',
+          messageType: 'message',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'call_spawn_json_worker',
+              name: 'spawn_agent',
+              input: {
+                label: 'think-test1-complex-json',
+                model: 'deepseek/deepseek-v4-pro',
+                instruction: 'Return only a large JSON API schema.',
+              },
+            },
+          ],
+          model: 'openai-codex/gpt-5.4-medium',
+          createdAt: '2026-03-24T10:00:03.100Z',
+        },
+        {
+          id: 'msg_json_subagent_spawn_result',
+          role: 'user',
+          messageType: 'message',
+          content: [
+            {
+              type: 'tool_result',
+              toolUseId: 'call_spawn_json_worker',
+              content:
+                '{"agent_id":"agent_json_1","label":"think-test1-complex-json","model":"deepseek/deepseek-v4-pro"}',
+            },
+          ],
+          createdAt: '2026-03-24T10:00:03.120Z',
+        },
+        {
+          id: 'msg_json_subagent_wait',
+          role: 'assistant',
+          messageType: 'message',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'call_wait_json_worker',
+              name: 'wait_agent',
+              input: { ids: ['agent_json_1'], waitAll: true },
+            },
+          ],
+          model: 'openai-codex/gpt-5.4-medium',
+          createdAt: '2026-03-24T10:00:03.200Z',
+        },
+        {
+          id: 'msg_json_subagent_wait_result',
+          role: 'user',
+          messageType: 'message',
+          content: [
+            {
+              type: 'tool_result',
+              toolUseId: 'call_wait_json_worker',
+              content: JSON.stringify({
+                statuses: {
+                  agent_json_1: {
+                    state: 'completed',
+                    label: 'think-test1-complex-json',
+                    model: 'deepseek/deepseek-v4-pro',
+                    elapsedMs: 22345,
+                    output: JSON.stringify({
+                      endpoints: [
+                        { method: 'POST', path: '/api/v1/agents' },
+                        { method: 'GET', path: '/api/v1/agents' },
+                        { method: 'DELETE', path: '/api/v1/agents/{id}' },
+                      ],
+                    }),
+                  },
+                },
+                timedOut: false,
+              }),
+            },
+          ],
+          createdAt: '2026-03-24T10:00:03.240Z',
+        },
       ],
       tags: [],
       summary: 'Deployment diagnosis session',
@@ -235,7 +313,8 @@ test.describe('Session Detail Decisions', () => {
                                 model: 'openai-codex/gpt-5.4-medium',
                               },
                               data: {
-                                responseSummary: 'Read the routes file, then grep for the classifier path.',
+                                responseSummary:
+                                  'Read the routes file, then grep for the classifier path.',
                                 stopReason: 'tool_use',
                                 inputTokens: 420,
                                 outputTokens: 73,
@@ -520,7 +599,10 @@ test.describe('Session Detail Decisions', () => {
 
     await memoryCard.click()
     await expect(memoryCard).toContainText('Injected Context')
-    await memoryCard.getByRole('button', { name: /Expand \(\d+ chars\)/ }).first().click()
+    await memoryCard
+      .getByRole('button', { name: /Expand \(\d+ chars\)/ })
+      .first()
+      .click()
     await expect(memoryCard).toContainText('retry with browser')
     await expect(page.locator('main')).not.toContainText('Runtime Warning')
     await expect(page.locator('main')).toContainText('memory_retrieval')
@@ -574,7 +656,9 @@ test.describe('Session Detail Decisions', () => {
     await mockDecisionSession(page)
     await page.goto(`/sessions/${sessionId}`)
 
-    const memoryNudge = page.locator('[data-memory-nudge-id="memory-nudge-trace-span_memory_nudge"]')
+    const memoryNudge = page.locator(
+      '[data-memory-nudge-id="memory-nudge-trace-span_memory_nudge"]',
+    )
     await expect(memoryNudge).toBeVisible()
     await expect(memoryNudge).toContainText('wrote memory')
 
@@ -622,5 +706,18 @@ test.describe('Session Detail Decisions', () => {
     await expect(page.locator('[data-testid="session-context-panel"]')).not.toContainText(
       'Sub-agent Detail',
     )
+  })
+
+  test('keeps collapsed JSON sub-agent cards compact and shows the model', async ({ page }) => {
+    await mockDecisionSession(page)
+    await page.goto(`/sessions/${sessionId}`)
+
+    const subAgentCard = page.locator('[data-sub-agent-id="agent_json_1"]')
+    await expect(subAgentCard).toBeVisible()
+    await expect(subAgentCard).toContainText('deepseek/deepseek-v4-pro')
+    await expect(subAgentCard).toContainText('JSON output: endpoints[3]')
+
+    const box = await subAgentCard.boundingBox()
+    expect(box?.height).toBeLessThan(180)
   })
 })

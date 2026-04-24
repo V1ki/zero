@@ -9,6 +9,7 @@ export interface AgentSnapshot {
   id: string
   label: string
   role?: string
+  model?: string
   mode?: 'standard' | 'interactive'
   state: AgentState
   instruction: string
@@ -36,6 +37,7 @@ interface AgentEntry {
   sessionId?: string
   label: string
   role?: string
+  model?: string
   mode: 'standard' | 'interactive'
   depth: number
   state: AgentState
@@ -92,6 +94,7 @@ export class AgentControl {
       mode?: 'standard' | 'interactive'
       label?: string
       role?: string
+      model?: string
       depth?: number
       traceSpanId?: string
       tracer?: ToolTracer
@@ -117,6 +120,7 @@ export class AgentControl {
       sessionId: options?.sessionId,
       label,
       role: options?.role?.trim() || undefined,
+      model: options?.model?.trim() || undefined,
       mode: options?.mode ?? 'standard',
       depth: Math.max(1, options?.depth ?? 1),
       state: 'running',
@@ -203,6 +207,7 @@ export class AgentControl {
       id: entry.id,
       label: entry.label,
       role: entry.role,
+      ...(entry.model ? { model: entry.model } : {}),
       mode: entry.mode === 'interactive' ? entry.mode : undefined,
       state: entry.state,
       instruction: entry.originalInstruction,
@@ -220,6 +225,7 @@ export class AgentControl {
           id: snapshot.id,
           label: snapshot.label,
           role: snapshot.role,
+          model: snapshot.model,
           mode: snapshot.mode ?? 'standard',
           depth: 1,
           state: 'failed',
@@ -243,6 +249,7 @@ export class AgentControl {
           id: snapshot.id,
           label: snapshot.label,
           role: snapshot.role,
+          model: snapshot.model,
           mode: snapshot.mode ?? 'interactive',
           depth: 1,
           state: 'failed',
@@ -265,6 +272,7 @@ export class AgentControl {
         id: snapshot.id,
         label: snapshot.label,
         role: snapshot.role,
+        model: snapshot.model,
         mode: snapshot.mode ?? 'standard',
         depth: 1,
         state: snapshot.state,
@@ -442,7 +450,8 @@ export class AgentControl {
       .filter((entry): entry is AgentEntry => !!entry)
 
     const isSatisfied = options?.isSatisfied ?? ((entry: AgentEntry) => this.isTerminal(entry))
-    const waitForEntry = options?.waitForEntry ?? ((entry: AgentEntry) => this.waitForTerminal(entry))
+    const waitForEntry =
+      options?.waitForEntry ?? ((entry: AgentEntry) => this.waitForTerminal(entry))
 
     const alreadySatisfied = waitAll
       ? knownEntries.every((entry) => isSatisfied(entry))
@@ -566,6 +575,7 @@ export class AgentControl {
       elapsedMs: this.getElapsedMs(entry),
     }
     if (entry.role) status.role = entry.role
+    if (entry.model) status.model = entry.model
     if (entry.mode === 'interactive') status.mode = entry.mode
     if (entry.output !== undefined) status.output = entry.output
     if (entry.error) status.error = entry.error
@@ -791,8 +801,6 @@ export class AgentControl {
       return messages[0]?.content ?? ''
     }
 
-    return messages
-      .map((message) => `[${message.timestamp}] ${message.content}`)
-      .join('\n')
+    return messages.map((message) => `[${message.timestamp}] ${message.content}`).join('\n')
   }
 }

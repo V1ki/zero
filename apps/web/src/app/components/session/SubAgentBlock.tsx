@@ -28,7 +28,8 @@ export interface SubAgentChildToolCall {
 export interface SubAgentBlockProps {
   agentId: string
   label: string
-  role?: string
+  agentRole?: string
+  model?: string
   instruction: string
   status: 'running' | 'waiting' | 'completed' | 'errored' | 'closed'
   output?: string
@@ -98,7 +99,8 @@ const statusTextColor: Record<SubAgentBlockProps['status'], string> = {
 export function SubAgentBlock({
   agentId,
   label,
-  role,
+  agentRole,
+  model,
   instruction,
   status,
   output,
@@ -158,9 +160,14 @@ export function SubAgentBlock({
         <div className="px-4 pt-2">
           <div className="flex flex-wrap items-center gap-2">
             <p className="text-[14px] font-semibold text-[var(--color-text-primary)]">{label}</p>
-            {role && (
+            {agentRole && (
               <span className="rounded-full border border-teal-400/20 bg-teal-400/10 px-2 py-0.5 text-[10px] font-mono text-teal-200">
-                {role}
+                {agentRole}
+              </span>
+            )}
+            {model && (
+              <span className="max-w-full truncate rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2 py-0.5 text-[10px] font-mono text-cyan-200">
+                {model}
               </span>
             )}
           </div>
@@ -190,7 +197,9 @@ export function SubAgentBlock({
         </div>
 
         <div className="px-4 pb-3 pt-2">
-          <p className="line-clamp-2 text-[12px] text-[var(--color-text-muted)]">{preview}</p>
+          <p className="line-clamp-2 max-h-10 overflow-hidden break-words text-[12px] text-[var(--color-text-muted)] [overflow-wrap:anywhere]">
+            {preview}
+          </p>
         </div>
       </button>
 
@@ -842,11 +851,42 @@ function getSubAgentPreview({
   status: SubAgentBlockProps['status']
   childToolCalls: SubAgentChildToolCall[]
 }) {
-  if (output) return output.replace(/\s+/g, ' ').trim()
+  if (output) {
+    const jsonSummary = summarizeJsonOutput(output)
+    if (jsonSummary) return jsonSummary
+    return truncateText(output.replace(/\s+/g, ' ').trim(), 280)
+  }
   if (childToolCalls.length > 0) {
     return `Used ${childToolCalls.length} tool call${childToolCalls.length === 1 ? '' : 's'} while ${status}.`
   }
-  return instruction.replace(/\s+/g, ' ').trim()
+  return truncateText(instruction.replace(/\s+/g, ' ').trim(), 280)
+}
+
+function summarizeJsonOutput(value: string): string | null {
+  try {
+    const parsed = JSON.parse(value)
+    if (Array.isArray(parsed)) {
+      return `JSON output: ${parsed.length} item${parsed.length === 1 ? '' : 's'}`
+    }
+    if (parsed && typeof parsed === 'object') {
+      const entries = Object.entries(parsed as Record<string, unknown>)
+      if (entries.length === 0) return 'JSON output: empty object'
+      const summary = entries
+        .slice(0, 3)
+        .map(([key, entryValue]) => {
+          if (Array.isArray(entryValue)) return `${key}[${entryValue.length}]`
+          if (entryValue && typeof entryValue === 'object') {
+            return `${key}{${Object.keys(entryValue).length}}`
+          }
+          return key
+        })
+        .join(', ')
+      return `JSON output: ${summary}`
+    }
+  } catch {
+    return null
+  }
+  return null
 }
 
 function hasRecordContent(value?: Record<string, unknown>) {
