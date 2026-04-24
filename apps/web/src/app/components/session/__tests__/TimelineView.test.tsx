@@ -43,6 +43,66 @@ describe('TimelineView', () => {
     expect(html).not.toContain('did not persist stdout/stderr')
   })
 
+  test('renders token usage chips on user, assistant, and tool items', () => {
+    const items: TimelineItem[] = [
+      {
+        type: 'user-message',
+        text: 'hello',
+        queued: false,
+        createdAt: '2026-04-19T10:32:00.000Z',
+        tokenUsage: { total: 4, source: 'estimate' },
+      },
+      {
+        type: 'agent-text',
+        messageId: 'msg_assistant_tokens',
+        text: 'hi',
+        model: 'test-model',
+        createdAt: '2026-04-19T10:32:01.000Z',
+        tokenUsage: {
+          total: 30,
+          input: 20,
+          output: 10,
+          effectiveInput: 20,
+          cost: 0.01,
+          source: 'request',
+        },
+      },
+      {
+        type: 'tool-call',
+        id: 'tool-token-1',
+        name: 'read',
+        input: { path: '/tmp/demo.txt' },
+        createdAt: '2026-04-19T10:32:02.000Z',
+        tokenUsage: { total: 12, input: 10, output: 2, source: 'request' },
+        resultTokenUsage: { total: 8, source: 'estimate' },
+      },
+    ]
+
+    const html = renderToStaticMarkup(
+      <TimelineView
+        items={items}
+        selectedToolId={null}
+        selectedDecisionId={null}
+        selectedTaskClosureId={null}
+        selectedMemoryNudgeId={null}
+        selectedSubAgentId={null}
+        highlightedAssistantMessageId={null}
+        highlightedSubAgentId={null}
+        onSelectTool={() => {}}
+        onSelectDecision={() => {}}
+        onSelectTaskClosure={() => {}}
+        onSelectMemoryNudge={() => {}}
+        onSelectSubAgent={() => {}}
+      />,
+    )
+
+    expect(html).toContain('Tokens')
+    expect(html).toContain('4 est.')
+    expect(html).toContain('30 total')
+    expect(html).toContain('Request')
+    expect(html).toContain('Result')
+  })
+
   test('renders expandable memory nudge cards with nested memory tool details', () => {
     const items: TimelineItem[] = [
       {

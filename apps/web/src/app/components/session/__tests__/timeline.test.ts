@@ -171,6 +171,90 @@ describe('buildTimeline', () => {
     }
   })
 
+  test('attaches estimated and request token usage to visible timeline items', () => {
+    const messages: Message[] = [
+      {
+        id: 'msg_user_tokens',
+        role: 'user',
+        messageType: 'message',
+        content: [{ type: 'text', text: 'inspect this file' }],
+        createdAt: '2026-04-24T01:00:00.000Z',
+      },
+      {
+        id: 'msg_tool_assistant_tokens',
+        role: 'assistant',
+        messageType: 'message',
+        content: [{ type: 'tool_use', id: 'call_tokens_1', name: 'read', input: { path: 'a.ts' } }],
+        createdAt: '2026-04-24T01:00:01.000Z',
+      },
+      {
+        id: 'msg_tool_result_tokens',
+        role: 'user',
+        messageType: 'message',
+        content: [{ type: 'tool_result', toolUseId: 'call_tokens_1', content: 'file contents' }],
+        createdAt: '2026-04-24T01:00:02.000Z',
+      },
+      {
+        id: 'msg_assistant_tokens',
+        role: 'assistant',
+        messageType: 'message',
+        content: [{ type: 'text', text: 'I inspected it.' }],
+        createdAt: '2026-04-24T01:00:03.000Z',
+      },
+    ]
+
+    const items = buildTimeline(
+      messages,
+      [],
+      [],
+      [],
+      [
+        {
+          id: 'req_tool_tokens',
+          turnIndex: 1,
+          model: 'test-model',
+          provider: 'test-provider',
+          userPrompt: 'inspect this file',
+          response: '',
+          stopReason: 'tool_use',
+          toolUseCount: 1,
+          toolCalls: [{ id: 'call_tokens_1', name: 'read', input: { path: 'a.ts' } }],
+          tokens: { input: 100, output: 12 },
+          cost: 0.01,
+          ts: '2026-04-24T01:00:01.500Z',
+        },
+        {
+          id: 'req_text_tokens',
+          turnIndex: 1,
+          parentId: 'req_tool_tokens',
+          model: 'test-model',
+          provider: 'test-provider',
+          userPrompt: 'inspect this file',
+          response: 'I inspected it.',
+          stopReason: 'end_turn',
+          toolUseCount: 0,
+          tokens: { input: 140, output: 9, cacheRead: 30 },
+          cost: 0.02,
+          ts: '2026-04-24T01:00:03.500Z',
+        },
+      ],
+    )
+
+    const user = items.find((item) => item.type === 'user-message')
+    const toolCall = items.find((item) => item.type === 'tool-call')
+    const assistant = items.find((item) => item.type === 'agent-text')
+
+    expect(user?.tokenUsage?.source).toBe('estimate')
+    if (toolCall?.type === 'tool-call') {
+      expect(toolCall.tokenUsage?.total).toBe(112)
+      expect(toolCall.resultTokenUsage?.total).toBeGreaterThan(0)
+    }
+    if (assistant?.type === 'agent-text') {
+      expect(assistant.tokenUsage?.total).toBe(149)
+      expect(assistant.tokenUsage?.cacheRead).toBe(30)
+    }
+  })
+
   test('marks live tool calls as running from trace status', () => {
     const messages: Message[] = [
       {

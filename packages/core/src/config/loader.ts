@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { readYaml, readYamlOrDefault } from '@zero-os/shared'
-import type { ChannelInstanceConfig, FuseRule, SystemConfig } from '@zero-os/shared'
+import type { ChannelInstanceConfig, FuseRule, ModelPricing, SystemConfig } from '@zero-os/shared'
 import { readString } from '../utils/yaml'
 
 /**
@@ -35,7 +35,7 @@ function normalizeConfig(raw: Record<string, unknown>): SystemConfig {
         thinkingTokens: m.thinking_tokens as number | undefined,
         capabilities: (m.capabilities as string[]) ?? [],
         tags: (m.tags as string[]) ?? [],
-        pricing: m.pricing as SystemConfig['providers'][string]['models'][string]['pricing'],
+        pricing: normalizeModelPricing(m.pricing),
       }
     }
 
@@ -168,6 +168,27 @@ function readNumber(raw: Record<string, unknown>, ...keys: string[]): number | u
     if (typeof value === 'number' && Number.isFinite(value)) return value
   }
   return undefined
+}
+
+function normalizeModelPricing(raw: unknown): ModelPricing | undefined {
+  if (!isRecord(raw)) return undefined
+
+  const input = readNumber(raw, 'input')
+  const output = readNumber(raw, 'output')
+  if (input === undefined || output === undefined) return undefined
+
+  const pricing: ModelPricing = { input, output }
+  const cacheWrite = readNumber(raw, 'cacheWrite', 'cache_write')
+  const cacheRead = readNumber(raw, 'cacheRead', 'cache_read')
+
+  if (cacheWrite !== undefined) pricing.cacheWrite = cacheWrite
+  if (cacheRead !== undefined) pricing.cacheRead = cacheRead
+
+  return pricing
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /**

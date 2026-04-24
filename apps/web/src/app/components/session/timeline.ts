@@ -7,6 +7,14 @@ import {
   flattenTraceSpans,
 } from '@zero-os/observe'
 import {
+  type LlmRequestLike,
+  type TokenUsageSummary,
+  estimateContentTokens,
+  estimateToolResultTokens,
+  estimatedTokenUsage,
+  tokenUsageFromRequest,
+} from './context-tokens'
+import {
   type MemoryInjectionEntry,
   isMemoryHintText,
   isMemoryInjectText,
@@ -117,9 +125,26 @@ interface TimelineToolResult {
 interface TimelineRequestLike {
   id?: string
   turnIndex?: number
+  parentId?: string
   ts?: string
+  model?: string
+  provider?: string
+  userPrompt?: string
+  response?: string
+  stopReason?: string
+  toolUseCount?: number
+  toolCalls?: Array<{ id: string; name: string; input: Record<string, unknown> }>
   memoryInjections?: MemoryInjectionEntry[]
   toolResults?: TimelineToolResult[]
+  tokens?: {
+    input: number
+    output: number
+    cacheWrite?: number
+    cacheRead?: number
+    reasoning?: number
+  }
+  cost?: number
+  durationMs?: number
 }
 
 interface TaskClosureTraceDetails {
@@ -186,8 +211,16 @@ export type TimelineItem =
       queued: boolean
       images?: Array<{ mediaType: string; data: string }>
       createdAt: string
+      tokenUsage?: TokenUsageSummary
     }
-  | { type: 'agent-text'; messageId: string; text: string; model?: string; createdAt: string }
+  | {
+      type: 'agent-text'
+      messageId: string
+      text: string
+      model?: string
+      createdAt: string
+      tokenUsage?: TokenUsageSummary
+    }
   | {
       type: 'tool-call'
       id: string
@@ -200,6 +233,8 @@ export type TimelineItem =
       status?: TraceSpan['status']
       durationMs?: number
       createdAt: string
+      tokenUsage?: TokenUsageSummary
+      resultTokenUsage?: TokenUsageSummary
     }
   | DecisionTimelineItem
   | TaskClosureTimelineItem
@@ -218,6 +253,7 @@ export function buildTimeline(
   const toolResults = buildToolResultMap(messages, traces, llmRequests)
   const toolDurations = extractToolDurations(traces)
   const toolStatuses = extractToolStatuses(traces)
+  const requestMatcher = createRequestTokenMatcher(llmRequests)
   const matchedMemoryInjectionTexts = buildMatchedMemoryInjectionTextSet(decisions, llmRequests)
   const handledSubAgentIds = new Set<string>()
   const spawnToolCallIds = new Set<string>()
@@ -299,6 +335,7 @@ export function buildTimeline(
           queued: false,
           images: imageBlocks.length > 0 ? imageBlocks : undefined,
           createdAt: msg.createdAt,
+          tokenUsage: estimatedTokenUsage(estimateContentTokens(msg.content)),
         })
       }
       continue
@@ -313,6 +350,7 @@ export function buildTimeline(
             text: block.text as string,
             model: msg.model,
             createdAt: msg.createdAt,
+            tokenUsage: requestMatcher.claimAssistantText(block.text as string),
           })
         } else if (block.type === 'tool_use') {
           const toolName = block.name as string
@@ -415,6 +453,10 @@ export function buildTimeline(
                 (result ? (result.isError ? 'error' : 'success') : 'running'),
               durationMs: toolDurations.get(toolId),
               createdAt: msg.createdAt,
+              tokenUsage: requestMatcher.claimToolCall(toolId),
+              resultTokenUsage: estimatedTokenUsage(
+                estimateToolResultTokens(result?.content, result?.contentItems),
+              ),
             })
           }
         }
@@ -434,6 +476,83 @@ export function buildTimeline(
     ),
   )
   return items.sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+}
+
+function createRequestTokenMatcher(llmRequests: TimelineRequestLike[]) {
+  const requests = llmRequests
+    .flatMap((request) => normalizeTimelineRequest(request))
+    .sort((left, right) => left.ts.localeCompare(right.ts))
+  const usedRequestIds = new Set<string>()
+
+  const claim = (
+    predicate: (request: LlmRequestLike) => boolean,
+  ): TokenUsageSummary | undefined => {
+    const request = requests.find(
+      (candidate) => !usedRequestIds.has(candidate.id) && predicate(candidate),
+    )
+    if (!request) return undefined
+    usedRequestIds.add(request.id)
+    return tokenUsageFromRequest(request)
+  }
+
+  return {
+    claimAssistantText(text: string): TokenUsageSummary | undefined {
+      const normalizedText = normalizeRequestText(text)
+      if (!normalizedText) return undefined
+
+      return claim((request) => {
+        const response = normalizeRequestText(request.response)
+        return response === normalizedText || response.includes(normalizedText)
+      })
+    },
+
+    claimToolCall(toolUseId: string): TokenUsageSummary | undefined {
+      return claim((request) => {
+        return request.toolCalls?.some((toolCall) => toolCall.id === toolUseId) === true
+      })
+    },
+  }
+}
+
+function normalizeTimelineRequest(request: TimelineRequestLike): LlmRequestLike[] {
+  if (
+    !request.id ||
+    !request.model ||
+    !request.provider ||
+    request.userPrompt === undefined ||
+    request.response === undefined ||
+    !request.stopReason ||
+    !request.tokens ||
+    request.cost === undefined ||
+    !request.ts
+  ) {
+    return []
+  }
+
+  return [
+    {
+      id: request.id,
+      turnIndex: request.turnIndex,
+      parentId: request.parentId,
+      model: request.model,
+      provider: request.provider,
+      userPrompt: request.userPrompt,
+      response: request.response,
+      stopReason: request.stopReason,
+      toolUseCount: request.toolUseCount ?? request.toolCalls?.length ?? 0,
+      toolCalls: request.toolCalls,
+      toolResults: request.toolResults,
+      memoryInjections: request.memoryInjections,
+      tokens: request.tokens,
+      cost: request.cost,
+      durationMs: request.durationMs,
+      ts: request.ts,
+    },
+  ]
+}
+
+function normalizeRequestText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
 }
 
 function buildControlSystemEvent(message: Message): SystemEventTimelineItem | null {

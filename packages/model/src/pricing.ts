@@ -9,6 +9,15 @@ const CACHE_FILE = 'litellm_pricing.json'
 const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000 // 24 hours
 const FETCH_TIMEOUT_MS = 15_000
 
+const KNOWN_MODEL_PRICING: Record<string, ModelPricing> = {
+  'deepseek-v4-pro': {
+    input: 1.74,
+    output: 3.48,
+    cacheWrite: 1.74,
+    cacheRead: 0.145,
+  },
+}
+
 /** Per-token entry from LiteLLM's JSON */
 interface LiteLLMEntry {
   input_cost_per_token?: number
@@ -85,6 +94,17 @@ export function findEntry(
   }
 
   return null
+}
+
+export function lookupKnownPricing(modelId: string): ModelPricing | null {
+  const bareModelId = stripProviderPrefix(modelId)
+  const pricing = KNOWN_MODEL_PRICING[modelId] ?? KNOWN_MODEL_PRICING[bareModelId]
+  return pricing ? { ...pricing } : null
+}
+
+function stripProviderPrefix(modelId: string): string {
+  const slashIdx = modelId.indexOf('/')
+  return slashIdx > 0 ? modelId.slice(slashIdx + 1) : modelId
 }
 
 /**

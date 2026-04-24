@@ -12,11 +12,13 @@ import {
 } from '@phosphor-icons/react'
 import { useEffect, useState } from 'react'
 import { apiPost } from '../../lib/api'
-import { formatTime } from '../../lib/format'
 import { toolColors } from '../../lib/colors'
+import { formatTime } from '../../lib/format'
 import { useUIStore } from '../../stores/ui'
+import { TokenUsagePill } from './TokenUsagePill'
 import { ToolCallDetail, summarizeToolInput } from './ToolCallDetail'
 import type { ToolResultContentItem } from './ToolCallDetail'
+import type { TokenUsageSummary } from './context-tokens'
 
 const toolIcons: Record<string, typeof Terminal> = {
   bash: Terminal,
@@ -39,6 +41,8 @@ interface Props {
   status?: 'running' | 'success' | 'error'
   durationMs?: number
   createdAt?: string
+  tokenUsage?: TokenUsageSummary
+  resultTokenUsage?: TokenUsageSummary
   selected?: boolean
   onSelect?: (id: string) => void
 }
@@ -55,6 +59,8 @@ export function ToolCallBlock({
   status,
   durationMs,
   createdAt,
+  tokenUsage,
+  resultTokenUsage,
   selected,
   onSelect,
 }: Props) {
@@ -147,11 +153,19 @@ export function ToolCallBlock({
           </span>
         </div>
 
-        {inputPreview && (
-          <div className="px-4 pb-3">
-            <p className="text-[12px] font-mono text-[var(--color-text-muted)] truncate">
-              {inputPreview}
-            </p>
+        {(inputPreview || tokenUsage || resultTokenUsage) && (
+          <div className="space-y-2 px-4 pb-3">
+            {inputPreview && (
+              <p className="text-[12px] font-mono text-[var(--color-text-muted)] truncate">
+                {inputPreview}
+              </p>
+            )}
+            {(tokenUsage || resultTokenUsage) && (
+              <div className="flex flex-wrap gap-1.5">
+                <TokenUsagePill usage={tokenUsage} label="Request" tone="accent" />
+                <TokenUsagePill usage={resultTokenUsage} label="Result" />
+              </div>
+            )}
           </div>
         )}
       </button>

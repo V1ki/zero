@@ -5,10 +5,12 @@ import { useWebSocket } from '../../hooks/useWebSocket'
 import { apiFetch, isAbortError } from '../../lib/api'
 import { useUIStore } from '../../stores/ui'
 import { Skeleton, SkeletonText } from '../shared/Skeleton'
+import { ContextLoadPanel } from './ContextLoadPanel'
 import { ContextPanel } from './ContextPanel'
 import { MetadataBar } from './MetadataBar'
-import { buildSessionDetailInsights } from './session-detail-insights'
 import { TimelineView } from './TimelineView'
+import { buildContextTokenSummary } from './context-tokens'
+import { buildSessionDetailInsights } from './session-detail-insights'
 import {
   type DecisionTimelineItem,
   type SessionDecisionEvent,
@@ -47,6 +49,12 @@ interface ToolResultEntry {
   outputSummary?: string
 }
 
+interface ToolCallEntry {
+  id: string
+  name: string
+  input: Record<string, unknown>
+}
+
 interface QueuedInjectionMessageEntry {
   timestamp: string
   content: string
@@ -76,6 +84,7 @@ interface SessionRequestEntry {
   response: string
   stopReason: string
   toolUseCount: number
+  toolCalls?: ToolCallEntry[]
   toolResults?: ToolResultEntry[]
   queuedInjection?: QueuedInjectionEntry
   memoryInjections?: MemoryInjectionEntry[]
@@ -84,6 +93,7 @@ interface SessionRequestEntry {
     output: number
     cacheWrite?: number
     cacheRead?: number
+    reasoning?: number
   }
   cost: number
   durationMs?: number
@@ -417,6 +427,27 @@ export function SessionDetailScreen({
     [timelineItems, traces, llmRequests],
   )
 
+  const contextTokenSummary = useMemo(
+    () =>
+      session
+        ? buildContextTokenSummary({
+            messages: session.messages,
+            systemPrompt: session.systemPrompt,
+            llmRequests,
+            totalTokens: session.totalTokens,
+            inputTokens: session.inputTokens,
+            outputTokens: session.outputTokens,
+            cacheWriteTokens: session.cacheWriteTokens,
+            cacheReadTokens: session.cacheReadTokens,
+            reasoningTokens: session.reasoningTokens,
+            effectiveInputTokens: session.effectiveInputTokens,
+            totalCost: session.totalCost,
+            requestCount: session.requestCount,
+          })
+        : null,
+    [session, llmRequests],
+  )
+
   const handleSelectTool = useCallback((toolId: string | null) => {
     setSelectedToolId(toolId)
   }, [])
@@ -634,6 +665,8 @@ export function SessionDetailScreen({
         subAgentCount={sessionInsights.subAgentCount}
         onDeleted={goBack}
       />
+
+      {contextTokenSummary && <ContextLoadPanel summary={contextTokenSummary} />}
 
       <div
         data-testid="session-detail-layout"

@@ -58,6 +58,7 @@ export function TimelineView({
                 queued={item.queued}
                 images={item.images}
                 createdAt={item.createdAt}
+                tokenUsage={item.tokenUsage}
               />
             )
           case 'agent-text':
@@ -69,6 +70,7 @@ export function TimelineView({
                 model={item.model}
                 createdAt={item.createdAt}
                 highlighted={highlightedAssistantMessageId === item.messageId}
+                tokenUsage={item.tokenUsage}
               />
             )
           case 'tool-call':
@@ -86,6 +88,8 @@ export function TimelineView({
                 status={item.status}
                 durationMs={item.durationMs}
                 createdAt={item.createdAt}
+                tokenUsage={item.tokenUsage}
+                resultTokenUsage={item.resultTokenUsage}
                 selected={selectedToolId === item.id}
                 onSelect={(id) => onSelectTool(selectedToolId === id ? null : id)}
               />

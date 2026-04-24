@@ -1,5 +1,7 @@
 import { Robot } from '@phosphor-icons/react'
 import { formatTime } from '../../lib/format'
+import { TokenUsagePill } from './TokenUsagePill'
+import type { TokenUsageSummary } from './context-tokens'
 
 interface Props {
   messageId?: string
@@ -7,6 +9,7 @@ interface Props {
   model?: string
   createdAt?: string
   highlighted?: boolean
+  tokenUsage?: TokenUsageSummary
 }
 
 export function AgentMessageBlock({
@@ -15,6 +18,7 @@ export function AgentMessageBlock({
   model,
   createdAt,
   highlighted = false,
+  tokenUsage,
 }: Props) {
   return (
     <div
@@ -44,6 +48,7 @@ export function AgentMessageBlock({
                 {formatTime(createdAt)}
               </span>
             )}
+            <TokenUsagePill usage={tokenUsage} tone="accent" />
           </div>
           <p className="text-[13px] leading-6 text-slate-100 whitespace-pre-wrap">{text}</p>
         </div>

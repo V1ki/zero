@@ -1,14 +1,17 @@
 import { User } from '@phosphor-icons/react'
 import { formatTime } from '../../lib/format'
+import { TokenUsagePill } from './TokenUsagePill'
+import type { TokenUsageSummary } from './context-tokens'
 
 interface Props {
   text: string
   queued?: boolean
   images?: Array<{ mediaType: string; data: string }>
   createdAt: string
+  tokenUsage?: TokenUsageSummary
 }
 
-export function UserMessageBlock({ text, queued = false, images, createdAt }: Props) {
+export function UserMessageBlock({ text, queued = false, images, createdAt, tokenUsage }: Props) {
   const hasImages = Boolean(images && images.length > 0)
   const displayText = hasImages ? stripImagePlaceholders(text) : text
   const showText = displayText.trim().length > 0
@@ -30,6 +33,7 @@ export function UserMessageBlock({ text, queued = false, images, createdAt }: Pr
               </span>
             )}
             <span className="text-[10px] font-mono text-cyan-100/55">{formatTime(createdAt)}</span>
+            <TokenUsagePill usage={tokenUsage} />
           </div>
           {showText && (
             <p className="text-[13px] leading-6 text-[var(--color-text-primary)] whitespace-pre-wrap">

@@ -56,4 +56,15 @@ describe('computeCost', () => {
     const pricing: ModelPricing = { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 }
     expect(computeCost(usage, pricing)).toBe(0)
   })
+
+  test('computes DeepSeek v4 pro cache-hit, cache-miss, and output costs', () => {
+    const usage: TokenUsage = {
+      input: 1_000_000,
+      output: 1_000_000,
+      cacheWrite: 1_000_000,
+      cacheRead: 1_000_000,
+    }
+    const pricing: ModelPricing = { input: 1.74, output: 3.48, cacheWrite: 1.74, cacheRead: 0.145 }
+    expect(computeCost(usage, pricing)).toBeCloseTo(7.105, 10)
+  })
 })

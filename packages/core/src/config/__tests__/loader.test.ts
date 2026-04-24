@@ -75,6 +75,11 @@ providers:
         max_context: 200000
         max_output: 16384
         thinking_tokens: 2048
+        pricing:
+          input: 1.74
+          output: 3.48
+          cache_read: 0.145
+          cache_write: 1.74
         capabilities: []
         tags: []
 default_model: test/claude
@@ -93,6 +98,12 @@ default_model: test/claude
     expect(model.maxContext).toBe(200000)
     expect(model.maxOutput).toBe(16384)
     expect(model.thinkingTokens).toBe(2048)
+    expect(model.pricing).toEqual({
+      input: 1.74,
+      output: 3.48,
+      cacheRead: 0.145,
+      cacheWrite: 1.74,
+    })
   })
 
   test('missing optional fields get defaults', () => {

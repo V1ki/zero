@@ -188,5 +188,11 @@ describe('ModelRegistry', () => {
     expect(resolved?.adapter.apiType).toBe('anthropic-deepseek')
     expect(resolved?.modelConfig.maxContext).toBe(1000000)
     expect(resolved?.modelConfig.maxOutput).toBe(384000)
+    expect(resolved?.modelConfig.pricing).toEqual({
+      input: 1.74,
+      output: 3.48,
+      cacheWrite: 1.74,
+      cacheRead: 0.145,
+    })
   })
 })
