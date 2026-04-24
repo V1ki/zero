@@ -7,8 +7,8 @@ import type { ProviderAdapter } from '@zero-os/model'
 import { encryptSecrets } from '@zero-os/secrets'
 import type { Session as SessionData } from '@zero-os/shared'
 import { readYaml } from '@zero-os/shared/utils'
-import { SessionDB } from '../../../../../packages/observe/src/session-db'
 import { createTestProjectRoot } from '../../../../../packages/core/src/session/__tests__/test-helpers'
+import { SessionDB } from '../../../../../packages/observe/src/session-db'
 import { getChatgptOAuthTokenRef } from '../../../../server/src/chatgpt-provider'
 import { getClaudeOAuthSessionRef } from '../../../../server/src/claude-provider'
 import { startZeroOS } from '../../../../server/src/main'
@@ -658,6 +658,45 @@ describe('API Routes (Real)', () => {
           Math.abs(row.netSavings - 0.0017375) < 1e-12,
       ),
     ).toBe(true)
+  })
+
+  test('GET /api/metrics/cost-detail returns daily model token and cost rows', async () => {
+    const createdAt = new Date().toISOString()
+    recordAgentLoopUsage(zero, {
+      id: 'req_daily_model_spend_001',
+      sessionId: 'sess_daily_model_spend_001',
+      model: 'test-provider/daily-spend-model',
+      provider: 'test-provider',
+      inputTokens: 1234,
+      outputTokens: 567,
+      cacheWriteTokens: 89,
+      cacheReadTokens: 101,
+      cost: 0.4321,
+      durationMs: 120,
+      createdAt,
+    })
+
+    const res = await app.request('/api/metrics/cost-detail?range=7d')
+    expect(res.status).toBe(200)
+    const data = await res.json()
+    const row = data.data.find(
+      (entry: { date: string; provider: string; model: string }) =>
+        entry.date === createdAt.slice(0, 10) &&
+        entry.provider === 'test-provider' &&
+        entry.model === 'test-provider/daily-spend-model',
+    )
+
+    expect(row).toEqual(
+      expect.objectContaining({
+        requestCount: 1,
+        input: 1234,
+        output: 567,
+        cacheWrite: 89,
+        cacheRead: 101,
+        effectiveInput: 1424,
+        cost: 0.4321,
+      }),
+    )
   })
 
   test('GET /api/sessions/:id returns cache summary fields', async () => {

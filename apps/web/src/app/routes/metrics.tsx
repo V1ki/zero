@@ -3,7 +3,6 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
-  Cell,
   Legend,
   Line,
   LineChart,
@@ -36,22 +35,7 @@ interface CostDetail {
   output: number
   cacheWrite: number
   cacheRead: number
-  effectiveInput: number
-  hitRate: number
-  cacheReadCost: number
-  cacheWriteCost: number
-  grossAvoidedInputCost: number
-  netSavings: number
-  cost: number
-}
-interface CacheByModel {
-  provider: string
-  model: string
-  requestCount: number
-  input: number
-  output: number
-  cacheWrite: number
-  cacheRead: number
+  reasoningTokens: number
   effectiveInput: number
   hitRate: number
   cacheReadCost: number
@@ -145,24 +129,26 @@ interface LogEntry {
 
 const MODEL_COLORS = [
   '#22d3ee',
-  '#06b6d4',
-  '#0891b2',
-  '#0e7490',
-  '#155e75',
-  '#164e63',
-  '#083344',
-  '#67e8f9',
+  '#38bdf8',
+  '#34d399',
+  '#fbbf24',
+  '#f472b6',
+  '#a78bfa',
+  '#fb7185',
+  '#94a3b8',
 ]
-const CHART_GRID = 'rgba(255, 255, 255, 0.05)'
-const CHART_TEXT = 'rgba(255, 255, 255, 0.4)'
+const CHART_GRID = 'rgba(148, 163, 184, 0.14)'
+const CHART_TEXT = '#93a4b8'
 const TOOLTIP_STYLE = {
   contentStyle: {
-    background: '#1a1a2e',
-    border: '1px solid rgba(255,255,255,0.1)',
+    background: '#121a24',
+    border: '1px solid rgba(148, 163, 184, 0.22)',
     borderRadius: 8,
     fontSize: 12,
+    color: '#e6edf3',
   },
-  labelStyle: { color: 'rgba(255,255,255,0.6)' },
+  labelStyle: { color: '#cbd5e1' },
+  itemStyle: { color: '#e6edf3' },
 }
 
 const TABS: { key: Tab; label: string }[] = [
@@ -183,11 +169,15 @@ const RANGES: TimeRange[] = ['7d', '30d', '90d', 'custom']
 function ChartCard({
   title,
   delay = 0,
+  className = '',
   children,
-}: { title: string; delay?: number; children: React.ReactNode }) {
+}: { title: string; delay?: number; className?: string; children: React.ReactNode }) {
   return (
-    <div className="card p-5 animate-fade-up" style={{ animationDelay: `${delay}ms` }}>
-      <h3 className="text-[14px] font-semibold mb-3 text-[var(--color-text-secondary)]">{title}</h3>
+    <div
+      className={`animate-fade-up rounded-lg border border-[#253244] bg-[#111820]/95 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] ${className}`}
+      style={{ animationDelay: `${delay}ms` }}
+    >
+      <h3 className="mb-3 text-[14px] font-semibold text-[#d7e0ea]">{title}</h3>
       {children}
     </div>
   )
@@ -195,7 +185,7 @@ function ChartCard({
 
 function ChartEmpty({ loading, message = 'No data' }: { loading: boolean; message?: string }) {
   return (
-    <div className="h-full flex items-center justify-center text-[var(--color-text-muted)] text-[13px]">
+    <div className="flex h-full items-center justify-center text-[13px] text-[#93a4b8]">
       {loading ? 'Loading...' : message}
     </div>
   )
@@ -204,12 +194,17 @@ function ChartEmpty({ loading, message = 'No data' }: { loading: boolean; messag
 function StatCard({
   label,
   value,
+  detail,
   delay = 0,
-}: { label: string; value: string | number; delay?: number }) {
+}: { label: string; value: string | number; detail?: string; delay?: number }) {
   return (
-    <div className="card p-4 animate-fade-up" style={{ animationDelay: `${delay}ms` }}>
-      <p className="text-[11px] text-[var(--color-text-muted)] mb-1">{label}</p>
-      <p className="text-[28px] font-bold tracking-tight">{value}</p>
+    <div
+      className="animate-fade-up rounded-lg border border-[#253244] bg-[#111820]/95 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
+      style={{ animationDelay: `${delay}ms` }}
+    >
+      <p className="mb-1 text-[11px] font-medium text-[#93a4b8]">{label}</p>
+      <p className="text-[26px] font-bold tracking-tight text-[#f8fafc]">{value}</p>
+      {detail && <p className="mt-1 text-[11px] text-[#7f8ea3]">{detail}</p>}
     </div>
   )
 }
@@ -227,6 +222,18 @@ function signedCostFormatter(v: number): string {
   if (v > 0) return `+$${abs}`
   if (v < 0) return `-$${abs}`
   return `$${abs}`
+}
+
+function formatCurrency(v: number): string {
+  return `$${formatCost(v)}`
+}
+
+function formatExactNumber(v: number): string {
+  return Math.round(v).toLocaleString()
+}
+
+function totalTokensForDetail(row: CostDetail): number {
+  return row.input + row.output + row.cacheWrite + row.cacheRead + row.reasoningTokens
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +272,6 @@ function pivotBy<T extends object>(
 function CostTab({ range }: { range: TimeRange }) {
   const [loading, setLoading] = useState(true)
   const [costByDayModel, setCostByDayModel] = useState<CostByDayModel[]>([])
-  const [cacheByModel, setCacheByModel] = useState<CacheByModel[]>([])
   const [costDetail, setCostDetail] = useState<CostDetail[]>([])
   const [cacheHitRate, setCacheHitRate] = useState<CacheHitRate[]>([])
 
@@ -273,13 +279,11 @@ function CostTab({ range }: { range: TimeRange }) {
     setLoading(true)
     Promise.all([
       apiFetch<{ data: CostByDayModel[] }>(`/api/metrics/cost-by-day-model?range=${r}`),
-      apiFetch<{ data: CacheByModel[] }>(`/api/metrics/cache-by-model?range=${r}`),
       apiFetch<{ data: CostDetail[] }>(`/api/metrics/cost-detail?range=${r}`),
       apiFetch<{ data: CacheHitRate[] }>(`/api/metrics/cache-hit-rate?range=${r}`),
     ])
-      .then(([dayModelRes, cacheByModelRes, detailRes, cacheRes]) => {
+      .then(([dayModelRes, detailRes, cacheRes]) => {
         setCostByDayModel(dayModelRes.data)
-        setCacheByModel(cacheByModelRes.data)
         setCostDetail(detailRes.data)
         setCacheHitRate(cacheRes.data)
       })
@@ -299,67 +303,132 @@ function CostTab({ range }: { range: TimeRange }) {
     'cost',
   )
 
-  // Token usage: group cost-detail by date for stacked input/output bars
-  const tokenUsageMap = new Map<string, { period: string; input: number; output: number }>()
+  const tokenUsageMap = new Map<
+    string,
+    { period: string; input: number; output: number; cache: number; reasoning: number }
+  >()
   for (const d of costDetail) {
     const existing = tokenUsageMap.get(d.date)
     if (existing) {
       existing.input += d.input
       existing.output += d.output
+      existing.cache += d.cacheRead + d.cacheWrite
+      existing.reasoning += d.reasoningTokens
     } else {
-      tokenUsageMap.set(d.date, { period: d.date, input: d.input, output: d.output })
+      tokenUsageMap.set(d.date, {
+        period: d.date,
+        input: d.input,
+        output: d.output,
+        cache: d.cacheRead + d.cacheWrite,
+        reasoning: d.reasoningTokens,
+      })
     }
   }
-  const tokenUsageData = Array.from(tokenUsageMap.values())
+  const tokenUsageData = Array.from(tokenUsageMap.values()).sort((left, right) =>
+    left.period.localeCompare(right.period),
+  )
 
-  const cacheSummary = cacheByModel.reduce(
+  const costSummary = costDetail.reduce(
     (acc, row) => {
+      acc.cost += row.cost
+      acc.requests += row.requestCount
+      acc.input += row.input
+      acc.output += row.output
       acc.cacheRead += row.cacheRead
       acc.cacheWrite += row.cacheWrite
       acc.effectiveInput += row.effectiveInput
       acc.netSavings += row.netSavings
+      acc.totalTokens += totalTokensForDetail(row)
       return acc
     },
-    { cacheRead: 0, cacheWrite: 0, effectiveInput: 0, netSavings: 0 },
+    {
+      cost: 0,
+      requests: 0,
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      effectiveInput: 0,
+      totalTokens: 0,
+      netSavings: 0,
+    },
   )
+  const dayCount = new Set(costDetail.map((row) => row.date)).size
+  const modelCount = new Set(costDetail.map((row) => `${row.provider}:${row.model}`)).size
   const cacheSummaryHitRate =
-    cacheSummary.effectiveInput > 0 ? cacheSummary.cacheRead / cacheSummary.effectiveInput : 0
-  const cacheSavingsData = [...cacheByModel]
-    .sort((left, right) => right.netSavings - left.netSavings)
+    costSummary.effectiveInput > 0 ? costSummary.cacheRead / costSummary.effectiveInput : 0
+
+  const dailyRows = costDetail.map((row) => ({
+    ...row,
+    totalTokens: totalTokensForDetail(row),
+  }))
+
+  const modelSpendMap = new Map<string, CostDetail & { totalTokens: number }>()
+  for (const row of costDetail) {
+    const key = `${row.provider}:${row.model}`
+    const existing = modelSpendMap.get(key)
+    if (existing) {
+      existing.requestCount += row.requestCount
+      existing.input += row.input
+      existing.output += row.output
+      existing.cacheWrite += row.cacheWrite
+      existing.cacheRead += row.cacheRead
+      existing.reasoningTokens += row.reasoningTokens
+      existing.effectiveInput += row.effectiveInput
+      existing.cacheReadCost += row.cacheReadCost
+      existing.cacheWriteCost += row.cacheWriteCost
+      existing.grossAvoidedInputCost += row.grossAvoidedInputCost
+      existing.netSavings += row.netSavings
+      existing.cost += row.cost
+      existing.totalTokens += totalTokensForDetail(row)
+    } else {
+      modelSpendMap.set(key, { ...row, totalTokens: totalTokensForDetail(row) })
+    }
+  }
+  const modelSpendRows = Array.from(modelSpendMap.values())
+    .sort((left, right) => right.cost - left.cost)
     .slice(0, 8)
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      <div className="lg:col-span-2 grid grid-cols-1 md:grid-cols-5 gap-4">
+    <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-5 xl:col-span-12">
         <StatCard
-          label="Cache Read"
-          value={loading ? '...' : formatNumber(cacheSummary.cacheRead)}
+          label="Total Cost"
+          value={loading ? '...' : formatCurrency(costSummary.cost)}
+          detail={`${formatExactNumber(costSummary.requests)} requests`}
           delay={0}
         />
         <StatCard
-          label="Cache Write"
-          value={loading ? '...' : formatNumber(cacheSummary.cacheWrite)}
+          label="Total Tokens"
+          value={loading ? '...' : formatNumber(costSummary.totalTokens)}
+          detail={`${formatExactNumber(costSummary.totalTokens)} exact`}
           delay={40}
         />
         <StatCard
-          label="Effective Input"
-          value={loading ? '...' : formatNumber(cacheSummary.effectiveInput)}
+          label="Models"
+          value={loading ? '...' : modelCount}
+          detail={`${dayCount} active days`}
           delay={80}
         />
         <StatCard
-          label="Hit Rate"
-          value={loading ? '...' : pctFormatter(cacheSummaryHitRate)}
+          label="Input / Output"
+          value={
+            loading
+              ? '...'
+              : `${formatNumber(costSummary.input)} / ${formatNumber(costSummary.output)}`
+          }
+          detail="non-cache token usage"
           delay={120}
         />
         <StatCard
-          label="Net Savings"
-          value={loading ? '...' : signedCostFormatter(cacheSummary.netSavings)}
+          label="Cache Hit Rate"
+          value={loading ? '...' : pctFormatter(cacheSummaryHitRate)}
+          detail={signedCostFormatter(costSummary.netSavings)}
           delay={160}
         />
       </div>
 
-      {/* 1. Cost Trend — stacked BarChart by model */}
-      <ChartCard title="Cost Trend" delay={0}>
+      <ChartCard title="Cost Trend" delay={0} className="xl:col-span-7">
         <div className="h-[240px]">
           {loading || costTrendData.length === 0 ? (
             <ChartEmpty loading={loading} />
@@ -372,11 +441,8 @@ function CostTab({ range }: { range: TimeRange }) {
                   tick={{ fontSize: 10, fill: CHART_TEXT }}
                   tickFormatter={(v: number) => `$${formatCost(v)}`}
                 />
-                <Tooltip
-                  {...TOOLTIP_STYLE}
-                  formatter={(value: number) => `$${formatCost(value)}`}
-                />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Tooltip {...TOOLTIP_STYLE} formatter={(value: number) => formatCurrency(value)} />
+                <Legend wrapperStyle={{ color: CHART_TEXT, fontSize: 11 }} />
                 {costModels.map((model, i) => (
                   <Bar
                     key={model}
@@ -392,8 +458,7 @@ function CostTab({ range }: { range: TimeRange }) {
         </div>
       </ChartCard>
 
-      {/* 2. Token Usage — stacked BarChart input/output */}
-      <ChartCard title="Token Usage" delay={60}>
+      <ChartCard title="Daily Tokens" delay={60} className="xl:col-span-5">
         <div className="h-[240px]">
           {loading || tokenUsageData.length === 0 ? (
             <ChartEmpty loading={loading} />
@@ -406,8 +471,11 @@ function CostTab({ range }: { range: TimeRange }) {
                   tick={{ fontSize: 10, fill: CHART_TEXT }}
                   tickFormatter={(v: number) => formatNumber(v)}
                 />
-                <Tooltip {...TOOLTIP_STYLE} formatter={(value: number) => formatNumber(value)} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Tooltip
+                  {...TOOLTIP_STYLE}
+                  formatter={(value: number) => formatExactNumber(value)}
+                />
+                <Legend wrapperStyle={{ color: CHART_TEXT, fontSize: 11 }} />
                 <Bar
                   dataKey="input"
                   name="Input"
@@ -420,6 +488,20 @@ function CostTab({ range }: { range: TimeRange }) {
                   name="Output"
                   stackId="tokens"
                   fill="#0891b2"
+                  radius={[0, 0, 0, 0]}
+                />
+                <Bar
+                  dataKey="cache"
+                  name="Cache"
+                  stackId="tokens"
+                  fill="#34d399"
+                  radius={[0, 0, 0, 0]}
+                />
+                <Bar
+                  dataKey="reasoning"
+                  name="Reasoning"
+                  stackId="tokens"
+                  fill="#fbbf24"
                   radius={[4, 4, 0, 0]}
                 />
               </BarChart>
@@ -428,47 +510,130 @@ function CostTab({ range }: { range: TimeRange }) {
         </div>
       </ChartCard>
 
-      {/* 3. Cache Savings by Model */}
-      <ChartCard title="Cache Savings by Model" delay={120}>
-        <div className="h-[240px]">
-          {loading || cacheSavingsData.length === 0 ? (
-            <ChartEmpty loading={loading} message="No cache savings data" />
+      <div className="xl:col-span-12">
+        <ChartCard title="Daily Model Spend" delay={120}>
+          {loading ? (
+            <div className="py-6 text-center text-[13px] text-[#93a4b8]">Loading...</div>
+          ) : dailyRows.length === 0 ? (
+            <div className="py-6 text-center text-[13px] text-[#93a4b8]">No daily model spend</div>
           ) : (
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={cacheSavingsData} layout="vertical" margin={{ left: 24 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} />
-                <XAxis
-                  type="number"
-                  tick={{ fontSize: 10, fill: CHART_TEXT }}
-                  tickFormatter={(v: number) => signedCostFormatter(v)}
-                />
-                <YAxis
-                  type="category"
-                  dataKey="model"
-                  width={120}
-                  tick={{ fontSize: 10, fill: CHART_TEXT }}
-                />
-                <Tooltip
-                  {...TOOLTIP_STYLE}
-                  formatter={(value: number) => signedCostFormatter(value)}
-                />
-                <Bar dataKey="netSavings" radius={[0, 4, 4, 0]}>
-                  {cacheSavingsData.map((row, index) => (
-                    <Cell
-                      key={`${row.provider}-${row.model}`}
-                      fill={MODEL_COLORS[index % MODEL_COLORS.length]}
-                    />
+            <div className="overflow-x-auto" style={{ maxHeight: 420 }}>
+              <table className="w-full min-w-[1040px] text-[12px]">
+                <thead className="sticky top-0 z-10 bg-[#111820]">
+                  <tr className="border-b border-[#253244] text-left text-[10px] font-semibold tracking-wide text-[#7f8ea3]">
+                    <th className="pb-2 pr-4">Date</th>
+                    <th className="pb-2 pr-4">Provider</th>
+                    <th className="pb-2 pr-4">Model</th>
+                    <th className="pb-2 pr-4 text-right">Requests</th>
+                    <th className="pb-2 pr-4 text-right">Input Tokens</th>
+                    <th className="pb-2 pr-4 text-right">Output Tokens</th>
+                    <th className="pb-2 pr-4 text-right">Cache Read</th>
+                    <th className="pb-2 pr-4 text-right">Cache Write</th>
+                    <th className="pb-2 pr-4 text-right">Total Tokens</th>
+                    <th className="pb-2 text-right">Cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dailyRows.map((row) => (
+                    <tr
+                      key={`${row.date}-${row.provider}-${row.model}`}
+                      className="border-b border-[#1f2a3a] transition-colors last:border-0 hover:bg-white/[0.04]"
+                    >
+                      <td className="py-2 pr-4 font-mono text-[#b8c7d9]">{row.date}</td>
+                      <td className="py-2 pr-4 text-[#93a4b8]">{row.provider}</td>
+                      <td className="max-w-[260px] truncate py-2 pr-4 font-mono text-[#67e8f9]">
+                        {row.model}
+                      </td>
+                      <td className="py-2 pr-4 text-right font-mono text-[#d7e0ea]">
+                        {formatExactNumber(row.requestCount)}
+                      </td>
+                      <td className="py-2 pr-4 text-right font-mono text-[#d7e0ea]">
+                        {formatExactNumber(row.input)}
+                      </td>
+                      <td className="py-2 pr-4 text-right font-mono text-[#d7e0ea]">
+                        {formatExactNumber(row.output)}
+                      </td>
+                      <td className="py-2 pr-4 text-right font-mono text-[#9fb0c4]">
+                        {formatExactNumber(row.cacheRead)}
+                      </td>
+                      <td className="py-2 pr-4 text-right font-mono text-[#9fb0c4]">
+                        {formatExactNumber(row.cacheWrite)}
+                      </td>
+                      <td className="py-2 pr-4 text-right font-mono font-semibold text-[#f8fafc]">
+                        {formatExactNumber(row.totalTokens)}
+                      </td>
+                      <td className="py-2 text-right font-mono font-semibold text-[#f8fafc]">
+                        {formatCurrency(row.cost)}
+                      </td>
+                    </tr>
                   ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+                </tbody>
+              </table>
+            </div>
           )}
-        </div>
-      </ChartCard>
+        </ChartCard>
+      </div>
 
-      {/* 4. Cache Hit Rate — LineChart */}
-      <ChartCard title="Cache Hit Rate" delay={180}>
-        <div className="h-[240px]">
+      <div className="xl:col-span-7">
+        <ChartCard title="Model Spend Summary" delay={180}>
+          {loading ? (
+            <div className="py-6 text-center text-[13px] text-[#93a4b8]">Loading...</div>
+          ) : modelSpendRows.length === 0 ? (
+            <div className="py-6 text-center text-[13px] text-[#93a4b8]">No model spend</div>
+          ) : (
+            <div className="overflow-x-auto" style={{ maxHeight: 320 }}>
+              <table className="w-full min-w-[760px] text-[12px]">
+                <thead>
+                  <tr className="border-b border-[#253244] text-left text-[10px] font-semibold tracking-wide text-[#7f8ea3]">
+                    <th className="pb-2 pr-4">Provider</th>
+                    <th className="pb-2 pr-4">Model</th>
+                    <th className="pb-2 pr-4 text-right">Requests</th>
+                    <th className="pb-2 pr-4 text-right">Input</th>
+                    <th className="pb-2 pr-4 text-right">Output</th>
+                    <th className="pb-2 pr-4 text-right">Total Tokens</th>
+                    <th className="pb-2 pr-4 text-right">Net Savings</th>
+                    <th className="pb-2 text-right">Cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {modelSpendRows.map((row) => (
+                    <tr
+                      key={`${row.provider}-${row.model}`}
+                      className="border-b border-[#1f2a3a] transition-colors last:border-0 hover:bg-white/[0.04]"
+                    >
+                      <td className="py-2 pr-4 text-[#93a4b8]">{row.provider}</td>
+                      <td className="max-w-[230px] truncate py-2 pr-4 font-mono text-[#67e8f9]">
+                        {row.model}
+                      </td>
+                      <td className="py-2 pr-4 text-right font-mono text-[#d7e0ea]">
+                        {formatExactNumber(row.requestCount)}
+                      </td>
+                      <td className="py-2 pr-4 text-right font-mono text-[#d7e0ea]">
+                        {formatExactNumber(row.input)}
+                      </td>
+                      <td className="py-2 pr-4 text-right font-mono text-[#d7e0ea]">
+                        {formatExactNumber(row.output)}
+                      </td>
+                      <td className="py-2 pr-4 text-right font-mono font-semibold text-[#f8fafc]">
+                        {formatExactNumber(row.totalTokens)}
+                      </td>
+                      <td className="py-2 pr-4 text-right font-mono text-[#9fb0c4]">
+                        {signedCostFormatter(row.netSavings)}
+                      </td>
+                      <td className="py-2 text-right font-mono font-semibold text-[#f8fafc]">
+                        {formatCurrency(row.cost)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </ChartCard>
+      </div>
+
+      <ChartCard title="Cache Efficiency" delay={220} className="xl:col-span-5">
+        <div className="h-[190px]">
           {loading || cacheHitRate.length === 0 ? (
             <ChartEmpty loading={loading} />
           ) : (
@@ -493,147 +658,31 @@ function CostTab({ range }: { range: TimeRange }) {
             </ResponsiveContainer>
           )}
         </div>
+        <div className="mt-4 grid grid-cols-2 gap-3 text-[12px]">
+          <div>
+            <p className="text-[10px] font-semibold tracking-wide text-[#7f8ea3]">CACHE READ</p>
+            <p className="mt-1 font-mono text-[#d7e0ea]">
+              {formatExactNumber(costSummary.cacheRead)}
+            </p>
+          </div>
+          <div>
+            <p className="text-[10px] font-semibold tracking-wide text-[#7f8ea3]">CACHE WRITE</p>
+            <p className="mt-1 font-mono text-[#d7e0ea]">
+              {formatExactNumber(costSummary.cacheWrite)}
+            </p>
+          </div>
+          <div>
+            <p className="text-[10px] font-semibold tracking-wide text-[#7f8ea3]">HIT RATE</p>
+            <p className="mt-1 font-mono text-[#d7e0ea]">{pctFormatter(cacheSummaryHitRate)}</p>
+          </div>
+          <div>
+            <p className="text-[10px] font-semibold tracking-wide text-[#7f8ea3]">NET SAVINGS</p>
+            <p className="mt-1 font-mono text-[#d7e0ea]">
+              {signedCostFormatter(costSummary.netSavings)}
+            </p>
+          </div>
+        </div>
       </ChartCard>
-
-      {/* 5. Cache By Provider / Model */}
-      <div className="lg:col-span-2">
-        <ChartCard title="Cache By Provider / Model" delay={220}>
-          {loading ? (
-            <div className="text-center text-[13px] text-[var(--color-text-muted)] py-6">
-              Loading...
-            </div>
-          ) : cacheByModel.length === 0 ? (
-            <div className="text-center text-[13px] text-[var(--color-text-muted)] py-6">
-              No cache data
-            </div>
-          ) : (
-            <div className="overflow-x-auto" style={{ maxHeight: 280 }}>
-              <table className="w-full text-[12px] font-mono">
-                <thead>
-                  <tr className="text-left text-[10px] text-[var(--color-text-disabled)] tracking-wide border-b border-[var(--color-border)]">
-                    <th className="pb-2 pr-4">Provider</th>
-                    <th className="pb-2 pr-4">Model</th>
-                    <th className="pb-2 pr-4 text-right">Requests</th>
-                    <th className="pb-2 pr-4 text-right">Cache Read</th>
-                    <th className="pb-2 pr-4 text-right">Cache Write</th>
-                    <th className="pb-2 pr-4 text-right">Eff Input</th>
-                    <th className="pb-2 pr-4 text-right">Hit Rate</th>
-                    <th className="pb-2 text-right">Net Savings</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {cacheByModel.map((row) => (
-                    <tr
-                      key={`${row.provider}-${row.model}`}
-                      className="border-b border-[var(--color-border)] last:border-0 hover:bg-white/[0.03] transition-colors"
-                    >
-                      <td className="py-1.5 pr-4 text-[var(--color-text-muted)]">{row.provider}</td>
-                      <td className="py-1.5 pr-4 text-[var(--color-accent)]">{row.model}</td>
-                      <td className="py-1.5 pr-4 text-right text-[var(--color-text-secondary)]">
-                        {formatNumber(row.requestCount)}
-                      </td>
-                      <td className="py-1.5 pr-4 text-right text-[var(--color-text-secondary)]">
-                        {formatNumber(row.cacheRead)}
-                      </td>
-                      <td className="py-1.5 pr-4 text-right text-[var(--color-text-secondary)]">
-                        {formatNumber(row.cacheWrite)}
-                      </td>
-                      <td className="py-1.5 pr-4 text-right text-[var(--color-text-secondary)]">
-                        {formatNumber(row.effectiveInput)}
-                      </td>
-                      <td className="py-1.5 pr-4 text-right text-[var(--color-text-muted)]">
-                        {pctFormatter(row.hitRate)}
-                      </td>
-                      <td className="py-1.5 text-right">{signedCostFormatter(row.netSavings)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </ChartCard>
-      </div>
-
-      {/* 6. Detail Records — HTML table */}
-      <div className="lg:col-span-2">
-        <ChartCard title="Detail Records" delay={260}>
-          {loading ? (
-            <div className="text-center text-[13px] text-[var(--color-text-muted)] py-6">
-              Loading...
-            </div>
-          ) : costDetail.length === 0 ? (
-            <div className="text-center text-[13px] text-[var(--color-text-muted)] py-6">
-              No detail records
-            </div>
-          ) : (
-            <div className="overflow-x-auto" style={{ maxHeight: 320 }}>
-              <table className="w-full text-[12px] font-mono">
-                <thead>
-                  <tr className="text-left text-[10px] text-[var(--color-text-disabled)] tracking-wide border-b border-[var(--color-border)]">
-                    <th className="pb-2 pr-4">Date</th>
-                    <th className="pb-2 pr-4">Provider</th>
-                    <th className="pb-2 pr-4">Model</th>
-                    <th className="pb-2 pr-4 text-right">Requests</th>
-                    <th className="pb-2 pr-4 text-right">Input Tokens</th>
-                    <th className="pb-2 pr-4 text-right">Output Tokens</th>
-                    <th className="pb-2 pr-4 text-right">Cache Write</th>
-                    <th className="pb-2 pr-4 text-right">Cache Read</th>
-                    <th className="pb-2 pr-4 text-right">Eff Input</th>
-                    <th className="pb-2 pr-4 text-right">Hit Rate</th>
-                    <th className="pb-2 pr-4 text-right">Read Cost</th>
-                    <th className="pb-2 pr-4 text-right">Write Cost</th>
-                    <th className="pb-2 pr-4 text-right">Avoided</th>
-                    <th className="pb-2 pr-4 text-right">Net</th>
-                    <th className="pb-2 text-right">Cost</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {costDetail.map((d) => (
-                    <tr
-                      key={`${d.date}-${d.provider}-${d.model}-${d.input}-${d.output}-${d.cacheRead}-${d.cost}`}
-                      className="border-b border-[var(--color-border)] last:border-0 hover:bg-white/[0.03] transition-colors"
-                    >
-                      <td className="py-1.5 pr-4 text-[var(--color-text-muted)]">{d.date}</td>
-                      <td className="py-1.5 pr-4 text-[var(--color-text-muted)]">{d.provider}</td>
-                      <td className="py-1.5 pr-4 text-[var(--color-accent)]">{d.model}</td>
-                      <td className="py-1.5 pr-4 text-right text-[var(--color-text-secondary)]">
-                        {formatNumber(d.requestCount)}
-                      </td>
-                      <td className="py-1.5 pr-4 text-right text-[var(--color-text-secondary)]">
-                        {formatNumber(d.input)}
-                      </td>
-                      <td className="py-1.5 pr-4 text-right text-[var(--color-text-secondary)]">
-                        {formatNumber(d.output)}
-                      </td>
-                      <td className="py-1.5 pr-4 text-right text-[var(--color-text-muted)]">
-                        {formatNumber(d.cacheWrite)}
-                      </td>
-                      <td className="py-1.5 pr-4 text-right text-[var(--color-text-muted)]">
-                        {formatNumber(d.cacheRead)}
-                      </td>
-                      <td className="py-1.5 pr-4 text-right text-[var(--color-text-muted)]">
-                        {formatNumber(d.effectiveInput)}
-                      </td>
-                      <td className="py-1.5 pr-4 text-right text-[var(--color-text-muted)]">
-                        {pctFormatter(d.hitRate)}
-                      </td>
-                      <td className="py-1.5 pr-4 text-right">${formatCost(d.cacheReadCost)}</td>
-                      <td className="py-1.5 pr-4 text-right">${formatCost(d.cacheWriteCost)}</td>
-                      <td className="py-1.5 pr-4 text-right">
-                        ${formatCost(d.grossAvoidedInputCost)}
-                      </td>
-                      <td className="py-1.5 pr-4 text-right">
-                        {signedCostFormatter(d.netSavings)}
-                      </td>
-                      <td className="py-1.5 text-right">${formatCost(d.cost)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </ChartCard>
-      </div>
     </div>
   )
 }
@@ -664,11 +713,7 @@ function PurposeTab({ range }: { range: TimeRange }) {
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3 lg:col-span-2">
-        <StatCard
-          label="Tracked Purposes"
-          value={loading ? '...' : usage.length}
-          delay={0}
-        />
+        <StatCard label="Tracked Purposes" value={loading ? '...' : usage.length} delay={0} />
         <StatCard
           label="Purpose Cost"
           value={loading ? '...' : `$${formatCost(totalCost)}`}
@@ -730,7 +775,10 @@ function PurposeTab({ range }: { range: TimeRange }) {
               </thead>
               <tbody>
                 {usage.map((row) => (
-                  <tr key={row.purpose} className="border-b border-[var(--color-border)] last:border-0">
+                  <tr
+                    key={row.purpose}
+                    className="border-b border-[var(--color-border)] last:border-0"
+                  >
                     <td className="py-2 pr-4 font-mono uppercase text-[var(--color-text-secondary)]">
                       {row.purpose}
                     </td>
@@ -768,7 +816,8 @@ function AttributionTab({ range }: { range: TimeRange }) {
   const [breakdown, setBreakdown] = useState<SessionUsageByPurpose[]>([])
 
   const selectedChannel =
-    channels.find((row) => `${row.source}::${row.channelName}` === selectedChannelKey) ?? channels[0]
+    channels.find((row) => `${row.source}::${row.channelName}` === selectedChannelKey) ??
+    channels[0]
 
   const fetchOverview = useCallback((r: TimeRange) => {
     setLoading(true)
@@ -857,13 +906,19 @@ function AttributionTab({ range }: { range: TimeRange }) {
                   return (
                     <tr
                       key={key}
-                      className={`cursor-pointer border-b border-[var(--color-border)] last:border-0 ${
+                      className={`border-b border-[var(--color-border)] last:border-0 ${
                         active ? 'bg-white/[0.04]' : ''
                       }`}
-                      onClick={() => setSelectedChannelKey(key)}
                     >
                       <td className="py-2 pr-4 font-mono text-[var(--color-text-secondary)]">
-                        {row.channelName}
+                        <button
+                          type="button"
+                          onClick={() => setSelectedChannelKey(key)}
+                          aria-pressed={active}
+                          className="text-left font-mono text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-accent)]"
+                        >
+                          {row.channelName}
+                        </button>
                       </td>
                       <td className="py-2 pr-4 text-[var(--color-text-muted)]">{row.source}</td>
                       <td className="py-2 pr-4 text-right text-[var(--color-text-muted)]">
@@ -897,7 +952,10 @@ function AttributionTab({ range }: { range: TimeRange }) {
                   tick={{ fontSize: 10, fill: CHART_TEXT }}
                   tickFormatter={(value: number) => `$${formatCost(value)}`}
                 />
-                <Tooltip {...TOOLTIP_STYLE} formatter={(value: number) => `$${formatCost(value)}`} />
+                <Tooltip
+                  {...TOOLTIP_STYLE}
+                  formatter={(value: number) => `$${formatCost(value)}`}
+                />
                 <Bar dataKey="totalCost" fill="#14b8a6" radius={[4, 4, 0, 0]} name="Cost" />
               </BarChart>
             </ResponsiveContainer>
@@ -921,7 +979,10 @@ function AttributionTab({ range }: { range: TimeRange }) {
                   tick={{ fontSize: 10, fill: CHART_TEXT }}
                   tickFormatter={(value: number) => `$${formatCost(value)}`}
                 />
-                <Tooltip {...TOOLTIP_STYLE} formatter={(value: number) => `$${formatCost(value)}`} />
+                <Tooltip
+                  {...TOOLTIP_STYLE}
+                  formatter={(value: number) => `$${formatCost(value)}`}
+                />
                 <Line
                   type="monotone"
                   dataKey="totalCost"
@@ -957,7 +1018,10 @@ function AttributionTab({ range }: { range: TimeRange }) {
                   width={110}
                   tick={{ fontSize: 10, fill: CHART_TEXT }}
                 />
-                <Tooltip {...TOOLTIP_STYLE} formatter={(value: number) => `$${formatCost(value)}`} />
+                <Tooltip
+                  {...TOOLTIP_STYLE}
+                  formatter={(value: number) => `$${formatCost(value)}`}
+                />
                 <Bar dataKey="totalCost" fill="#38bdf8" radius={[0, 4, 4, 0]} />
               </BarChart>
             </ResponsiveContainer>
@@ -1020,11 +1084,7 @@ function EvaluationTab({ range }: { range: TimeRange }) {
           value={loading ? '...' : latestAverage.toFixed(2)}
           delay={40}
         />
-        <StatCard
-          label="Frequent Findings"
-          value={loading ? '...' : findings.length}
-          delay={80}
-        />
+        <StatCard label="Frequent Findings" value={loading ? '...' : findings.length} delay={80} />
       </div>
 
       <ChartCard title="Average Score Trend" delay={0}>
@@ -1485,75 +1545,77 @@ export function MetricsPage() {
   const effectiveRange = range === 'custom' ? 'custom' : range
 
   return (
-    <div className="p-6 max-w-[1400px] mx-auto">
-      <h1 className="text-[20px] font-bold tracking-tight mb-4">Metrics</h1>
+    <div className="min-h-screen bg-[#0a0f14] text-[#e6edf3]">
+      <div className="mx-auto max-w-[1440px] p-6">
+        <h1 className="mb-4 text-[20px] font-bold tracking-tight text-[#f8fafc]">Metrics</h1>
 
-      {/* Tab bar + time range selector */}
-      <div className="flex items-center justify-between mb-4">
-        {/* Tabs */}
-        <div className="flex gap-1.5">
-          {TABS.map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              onClick={() => setActiveTab(tab.key)}
-              className={`px-4 py-1.5 rounded-md text-[13px] transition-colors ${
-                activeTab === tab.key
-                  ? 'bg-[var(--color-accent-glow)] text-[var(--color-accent)]'
-                  : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
+        {/* Tab bar + time range selector */}
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          {/* Tabs */}
+          <div className="flex flex-wrap gap-1.5">
+            {TABS.map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setActiveTab(tab.key)}
+                className={`rounded-md px-4 py-1.5 text-[13px] transition-colors ${
+                  activeTab === tab.key
+                    ? 'bg-cyan-400/10 text-cyan-200'
+                    : 'text-[#93a4b8] hover:text-[#d7e0ea]'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Time range */}
+          <div className="flex gap-1">
+            {RANGES.map((r) => (
+              <button
+                key={r}
+                type="button"
+                onClick={() => setRange(r)}
+                className={`rounded-md px-3 py-1 text-[12px] transition-colors ${
+                  range === r
+                    ? 'bg-cyan-400/10 text-cyan-200'
+                    : 'text-[#93a4b8] hover:text-[#d7e0ea]'
+                }`}
+              >
+                {r === 'custom' ? 'Custom' : r}
+              </button>
+            ))}
+          </div>
         </div>
 
-        {/* Time range */}
-        <div className="flex gap-1">
-          {RANGES.map((r) => (
-            <button
-              key={r}
-              type="button"
-              onClick={() => setRange(r)}
-              className={`px-3 py-1 rounded-md text-[12px] transition-colors ${
-                range === r
-                  ? 'bg-[var(--color-accent-glow)] text-[var(--color-accent)]'
-                  : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]'
-              }`}
-            >
-              {r === 'custom' ? 'Custom' : r}
-            </button>
-          ))}
-        </div>
+        {/* Custom time range picker */}
+        {range === 'custom' && (
+          <div className="animate-fade-up mb-4 flex items-center gap-3 rounded-lg border border-[#253244] bg-[#111820]/95 p-3">
+            <span className="text-[12px] text-[#93a4b8]">From</span>
+            <input
+              type="date"
+              className="input-field text-[12px]"
+              value={customStart}
+              onChange={(e) => setCustomStart(e.target.value)}
+            />
+            <span className="text-[12px] text-[#93a4b8]">To</span>
+            <input
+              type="date"
+              className="input-field text-[12px]"
+              value={customEnd}
+              onChange={(e) => setCustomEnd(e.target.value)}
+            />
+          </div>
+        )}
+
+        {/* Tab content */}
+        {activeTab === 'cost' && <CostTab range={effectiveRange} />}
+        {activeTab === 'purpose' && <PurposeTab range={effectiveRange} />}
+        {activeTab === 'attribution' && <AttributionTab range={effectiveRange} />}
+        {activeTab === 'evaluations' && <EvaluationTab range={effectiveRange} />}
+        {activeTab === 'events' && <EventsTab range={effectiveRange} />}
+        {activeTab === 'health' && <HealthTab range={effectiveRange} />}
       </div>
-
-      {/* Custom time range picker */}
-      {range === 'custom' && (
-        <div className="card p-3 mb-4 flex items-center gap-3 animate-fade-up">
-          <span className="text-[12px] text-[var(--color-text-muted)]">From</span>
-          <input
-            type="date"
-            className="input-field text-[12px]"
-            value={customStart}
-            onChange={(e) => setCustomStart(e.target.value)}
-          />
-          <span className="text-[12px] text-[var(--color-text-muted)]">To</span>
-          <input
-            type="date"
-            className="input-field text-[12px]"
-            value={customEnd}
-            onChange={(e) => setCustomEnd(e.target.value)}
-          />
-        </div>
-      )}
-
-      {/* Tab content */}
-      {activeTab === 'cost' && <CostTab range={effectiveRange} />}
-      {activeTab === 'purpose' && <PurposeTab range={effectiveRange} />}
-      {activeTab === 'attribution' && <AttributionTab range={effectiveRange} />}
-      {activeTab === 'evaluations' && <EvaluationTab range={effectiveRange} />}
-      {activeTab === 'events' && <EventsTab range={effectiveRange} />}
-      {activeTab === 'health' && <HealthTab range={effectiveRange} />}
     </div>
   )
 }

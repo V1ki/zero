@@ -12,4 +12,14 @@ describe('MetricsPage', () => {
     expect(html).toContain('Evaluations')
     expect(html).toContain('Health')
   })
+
+  test('renders cost page daily model spend sections', () => {
+    const html = renderToStaticMarkup(<MetricsPage />)
+
+    expect(html).toContain('Total Cost')
+    expect(html).toContain('Total Tokens')
+    expect(html).toContain('Daily Model Spend')
+    expect(html).toContain('Model Spend Summary')
+    expect(html).toContain('Cache Efficiency')
+  })
 })
