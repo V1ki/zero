@@ -48,6 +48,9 @@ export function estimateMessageTokens(contentBlocks: ContentBlock[]): number {
       case 'image':
         total += 300 // fixed estimate for images
         break
+      case 'thinking':
+        total += estimateTokens(block.thinking)
+        break
     }
   }
   return total

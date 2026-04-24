@@ -243,9 +243,7 @@ export class Agent {
           getMeta: () => ({
             sessionId: this.toolContext.sessionId,
             purpose: requestPurposeRef.current,
-            ...(this.obs.parentSessionId
-              ? { parentSessionId: this.obs.parentSessionId }
-              : {}),
+            ...(this.obs.parentSessionId ? { parentSessionId: this.obs.parentSessionId } : {}),
           }),
         },
         this.createHooks({
@@ -367,8 +365,7 @@ export class Agent {
     const baseUsagePurpose = this.obs.usagePurpose ?? 'agent_loop'
 
     const syncRequestPurpose = () => {
-      options.requestPurposeRef.current =
-        memoryNudgeCount > 0 ? 'memory_nudge' : baseUsagePurpose
+      options.requestPurposeRef.current = memoryNudgeCount > 0 ? 'memory_nudge' : baseUsagePurpose
     }
 
     const appendAppliedQueuedIntent = (queued: QueuedMessage[]) => {
@@ -1435,6 +1432,9 @@ export class Agent {
     return content.map((block) => {
       if (block.type === 'text') {
         return { ...block, text: filter.filter(block.text) }
+      }
+      if (block.type === 'thinking') {
+        return { ...block, thinking: filter.filter(block.thinking) }
       }
       return block
     })

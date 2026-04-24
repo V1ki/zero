@@ -10,11 +10,13 @@ import { EMPTY_RESPONSE_RETRY_PROMPT } from '../../constants'
 import { AgentLoop, type ToolExecutor } from '../agent-loop'
 
 class ScriptedAdapter implements ProviderAdapter {
-  readonly apiType = 'fake-agent-loop'
   private cursor = 0
   requests: CompletionRequest[] = []
 
-  constructor(private readonly responses: CompletionResponse[]) {}
+  constructor(
+    private readonly responses: CompletionResponse[],
+    readonly apiType = 'fake-agent-loop',
+  ) {}
 
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
     this.requests.push(request)
@@ -172,6 +174,81 @@ describe('AgentLoop', () => {
       messages.some((message) => message.content.some((block) => block.type === 'tool_result')),
     ).toBe(true)
     expect(messages.at(-1)?.content).toEqual([{ type: 'text', text: 'finished' }])
+  })
+
+  test('preserves DeepSeek thinking content for the next tool-call request', async () => {
+    const adapter = new ScriptedAdapter(
+      [
+        {
+          id: 'resp_tool',
+          content: [{ type: 'tool_use', id: 'call_1', name: 'noop', input: {} }],
+          stopReason: 'tool_use',
+          usage: { input: 3, output: 1 },
+          model: 'deepseek-v4-pro',
+          reasoningContent: 'Need to call the noop tool.',
+        },
+        {
+          id: 'resp_final',
+          content: [{ type: 'text', text: 'finished' }],
+          stopReason: 'end_turn',
+          usage: { input: 4, output: 2 },
+          model: 'deepseek-v4-pro',
+        },
+      ],
+      'anthropic-deepseek',
+    )
+    const loop = new AgentLoop(
+      {
+        adapter,
+        sessionId: 'sess-agent-loop',
+        toolExecutor: {
+          has: (toolName) => toolName === 'noop',
+          execute: async () => ({
+            success: true,
+            output: 'tool output',
+            outputSummary: 'tool output',
+          }),
+        },
+        system: 'test system',
+        tools: [
+          {
+            name: 'noop',
+            description: 'Noop tool',
+            parameters: { type: 'object', properties: {} },
+          },
+        ],
+        stream: false,
+        reasoningEffort: 'high',
+        logger,
+      },
+      {
+        onEndTurn: () => ({ action: 'break' }),
+      },
+    )
+
+    const messages = await loop.run('run tool', [])
+    const assistantWithTool = messages.find((message) =>
+      message.content.some((block) => block.type === 'tool_use'),
+    )
+    const secondRequestAssistant = adapter.requests[1].messages.find((message) =>
+      message.content.some((block) => block.type === 'tool_use'),
+    )
+
+    expect(adapter.requests[0].reasoningEffort).toBe('high')
+    expect(assistantWithTool?.content[0]).toEqual({
+      type: 'thinking',
+      thinking: 'Need to call the noop tool.',
+    })
+    expect(secondRequestAssistant?.content[0]).toEqual({
+      type: 'thinking',
+      thinking: 'Need to call the noop tool.',
+    })
+    expect(secondRequestAssistant?.content[1]).toEqual({
+      type: 'tool_use',
+      id: 'call_1',
+      name: 'noop',
+      input: {},
+    })
   })
 
   test('preserves structured tool result content items in the loop history', async () => {

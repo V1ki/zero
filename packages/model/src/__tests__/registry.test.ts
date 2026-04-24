@@ -146,10 +146,47 @@ describe('ModelRegistry', () => {
     })
 
     const resolved = registry.resolve('anthropic/claude-sonnet-4-6')
-    const adapter = resolved?.adapter as {
-      oauthTokenRefresher?: unknown
-    } | undefined
+    const adapter = resolved?.adapter as
+      | {
+          oauthTokenRefresher?: unknown
+        }
+      | undefined
 
     expect(adapter?.oauthTokenRefresher).toBe(refresher)
+  })
+
+  test('creates AnthropicDeepSeekAdapter for anthropic-deepseek providers', () => {
+    const deepseekConfig: SystemConfig = {
+      providers: {
+        deepseek: {
+          apiType: 'anthropic-deepseek',
+          baseUrl: 'https://api.deepseek.com/anthropic',
+          auth: { type: 'api_key', apiKeyRef: 'deepseek_api_key' },
+          models: {
+            'deepseek-v4-pro': {
+              modelId: 'deepseek-v4-pro',
+              maxContext: 1000000,
+              maxOutput: 384000,
+              capabilities: ['tools', 'reasoning'],
+              tags: ['deepseek'],
+            },
+          },
+        },
+      },
+      defaultModel: 'deepseek/deepseek-v4-pro',
+      fallbackChain: ['deepseek/deepseek-v4-pro'],
+      schedules: [],
+      fuseList: [],
+    }
+    const registry = new ModelRegistry(
+      deepseekConfig,
+      new Map([['deepseek_api_key', 'sk-test-placeholder']]),
+    )
+
+    const resolved = registry.resolve('deepseek/deepseek-v4-pro')
+
+    expect(resolved?.adapter.apiType).toBe('anthropic-deepseek')
+    expect(resolved?.modelConfig.maxContext).toBe(1000000)
+    expect(resolved?.modelConfig.maxOutput).toBe(384000)
   })
 })

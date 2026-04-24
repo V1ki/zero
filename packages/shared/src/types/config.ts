@@ -1,6 +1,10 @@
 import type { SessionSource } from './session'
 
-export type ApiType = 'anthropic_messages' | 'openai_chat_completions' | 'openai_responses'
+export type ApiType =
+  | 'anthropic_messages'
+  | 'anthropic-deepseek'
+  | 'openai_chat_completions'
+  | 'openai_responses'
 
 export type AuthType = 'api_key' | 'oauth2'
 

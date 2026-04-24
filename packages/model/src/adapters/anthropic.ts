@@ -8,7 +8,7 @@ import type {
   TokenUsage,
   ToolResultBlock,
 } from '@zero-os/shared'
-import { parseClaudeOAuthSession, type ClaudeOAuthSession } from '../auth/claude'
+import { type ClaudeOAuthSession, parseClaudeOAuthSession } from '../auth/claude'
 import type {
   AdapterConfig,
   OAuthTokenProvider,
@@ -32,7 +32,7 @@ function toolResultImages(block: ToolResultBlock): ImageBlock[] {
  * Supports Claude model family.
  */
 export class AnthropicAdapter implements ProviderAdapter {
-  readonly apiType = 'anthropic_messages'
+  readonly apiType: string = 'anthropic_messages'
   private static readonly REQUEST_CACHE_CONTROL = { type: 'ephemeral' } as const
   private static readonly TOOL_ID_RE = /^[a-zA-Z0-9_-]+$/
   private static readonly CLAUDE_CODE_SYSTEM_PROMPT =
@@ -175,8 +175,9 @@ export class AnthropicAdapter implements ProviderAdapter {
   }
 
   private buildRequest(req: CompletionRequest): Anthropic.MessageCreateParamsNonStreaming {
-    const thinking = this.buildThinkingConfig()
     const session = this.readClaudeSession()
+    const thinking = this.buildThinkingConfig(req)
+    const outputConfig = this.buildOutputConfig(req, session)
     const request: Anthropic.MessageCreateParamsNonStreaming = {
       model: req.model ?? this.modelId,
       cache_control: AnthropicAdapter.REQUEST_CACHE_CONTROL,
@@ -184,11 +185,11 @@ export class AnthropicAdapter implements ProviderAdapter {
       messages: this.convertMessages(req),
       tools: req.tools ? this.convertTools(req.tools) : undefined,
       ...(thinking ? { thinking } : {}),
+      ...(outputConfig ? { output_config: outputConfig } : {}),
       max_tokens: req.maxTokens ?? 4096,
     }
 
     if (this.isOAuthClient) {
-      request.output_config = { effort: AnthropicAdapter.CLAUDE_CODE_OUTPUT_EFFORT }
       if (req.meta?.sessionId) {
         const userIdentity: Record<string, string> = {
           session_id: req.meta.sessionId,
@@ -269,6 +270,8 @@ export class AnthropicAdapter implements ProviderAdapter {
         for (const block of msg.content) {
           if (block.type === 'text') {
             parts.push({ type: 'text', text: block.text })
+          } else if (block.type === 'thinking') {
+            parts.push(this.convertThinkingBlock(block))
           } else if (block.type === 'tool_use') {
             if (!pairedCallIds.has(block.id)) continue
             parts.push({
@@ -310,8 +313,12 @@ export class AnthropicAdapter implements ProviderAdapter {
     const toolResultIds = new Set<string>()
 
     for (const msg of req.messages) {
+      const assistantHasThinking =
+        msg.role === 'assistant' &&
+        msg.content.some((block) => block.type === 'thinking' && block.thinking.trim().length > 0)
       for (const block of msg.content) {
         if (block.type === 'tool_use') {
+          if (this.shouldRequireThinkingForToolUse() && !assistantHasThinking) continue
           toolUseIds.add(block.id)
         } else if (block.type === 'tool_result') {
           toolResultIds.add(block.toolUseId)
@@ -367,6 +374,12 @@ export class AnthropicAdapter implements ProviderAdapter {
     for (const block of content) {
       if (block.type === 'text') {
         blocks.push({ type: 'text', text: block.text })
+      } else if (block.type === 'thinking' && this.shouldIncludeThinkingBlocksInContent()) {
+        blocks.push({
+          type: 'thinking',
+          thinking: block.thinking,
+          signature: block.signature,
+        })
       } else if (block.type === 'tool_use') {
         blocks.push({
           type: 'tool_use',
@@ -380,6 +393,17 @@ export class AnthropicAdapter implements ProviderAdapter {
     return blocks
   }
 
+  private convertThinkingBlock(
+    block: Extract<ContentBlock, { type: 'thinking' }>,
+  ): Anthropic.ThinkingBlockParam {
+    const payload = {
+      type: 'thinking',
+      thinking: block.thinking,
+      ...(block.signature ? { signature: block.signature } : {}),
+    }
+    return payload as Anthropic.ThinkingBlockParam
+  }
+
   private extractReasoningContent(content: Anthropic.ContentBlock[]): string | undefined {
     const thinkingParts = content
       .filter((block): block is Anthropic.ThinkingBlock => block.type === 'thinking')
@@ -390,10 +414,28 @@ export class AnthropicAdapter implements ProviderAdapter {
     return thinkingParts.join('\n')
   }
 
-  private buildThinkingConfig(): { type: 'adaptive' } | undefined {
+  protected shouldIncludeThinkingBlocksInContent(): boolean {
+    return false
+  }
+
+  protected shouldRequireThinkingForToolUse(): boolean {
+    return false
+  }
+
+  protected buildThinkingConfig(
+    _req: CompletionRequest,
+  ): Anthropic.ThinkingConfigParam | undefined {
     return {
       type: 'adaptive',
     }
+  }
+
+  protected buildOutputConfig(
+    _req: CompletionRequest,
+    _session?: ClaudeOAuthSession | null,
+  ): Anthropic.OutputConfig | undefined {
+    if (!this.isOAuthClient) return undefined
+    return { effort: AnthropicAdapter.CLAUDE_CODE_OUTPUT_EFFORT }
   }
 
   private mapStopReason(reason: string | null): CompletionResponse['stopReason'] {
@@ -430,7 +472,7 @@ export class AnthropicAdapter implements ProviderAdapter {
 
   private buildRequestOptions(
     req: CompletionRequest,
-    session?: ClaudeOAuthSession,
+    _session?: ClaudeOAuthSession,
   ): Anthropic.RequestOptions | undefined {
     if (!this.isOAuthClient || !req.meta?.sessionId) {
       return undefined

@@ -1,9 +1,10 @@
 import type { ApiType, ModelConfig, ProviderConfig, SystemConfig } from '@zero-os/shared'
 import { AnthropicAdapter } from './adapters/anthropic'
+import { AnthropicDeepSeekAdapter } from './adapters/anthropic-deepseek'
 import type { AdapterConfig, OAuthTokenRefresher, ProviderAdapter } from './adapters/base'
-import { TrackedAdapter, type UsageRecorder } from './adapters/tracked'
 import { OpenAIChatAdapter } from './adapters/openai-chat'
 import { OpenAIResponsesAdapter } from './adapters/openai-resp'
+import { TrackedAdapter, type UsageRecorder } from './adapters/tracked'
 import { LiteLLMPricing } from './pricing'
 
 export interface ResolvedModel {
@@ -181,7 +182,7 @@ export class ModelRegistry {
     return { ...model, pricing: fallback }
   }
 
-  private resolveOauthToken(providerName: string, rawValue: string | undefined) {
+  private resolveOauthToken(_providerName: string, rawValue: string | undefined) {
     return rawValue
   }
 
@@ -191,6 +192,8 @@ export class ModelRegistry {
         return new OpenAIChatAdapter(config)
       case 'anthropic_messages':
         return new AnthropicAdapter(config)
+      case 'anthropic-deepseek':
+        return new AnthropicDeepSeekAdapter(config)
       case 'openai_responses':
         return new OpenAIResponsesAdapter(config)
       default:

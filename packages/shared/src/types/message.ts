@@ -11,7 +11,7 @@ export type ControlKind =
   | 'empty_retry'
   | 'queued_injection'
 
-export type ContentBlockType = 'text' | 'tool_use' | 'tool_result' | 'image'
+export type ContentBlockType = 'text' | 'tool_use' | 'tool_result' | 'image' | 'thinking'
 
 export interface TextBlock {
   type: 'text'
@@ -42,9 +42,15 @@ export interface ImageBlock {
   data: string
 }
 
+export interface ThinkingBlock {
+  type: 'thinking'
+  thinking: string
+  signature?: string
+}
+
 export type ToolResultContentItem = TextBlock | ImageBlock
 
-export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ImageBlock
+export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ImageBlock | ThinkingBlock
 
 export interface Message {
   id: string

@@ -291,16 +291,33 @@ export class AgentLoop {
 
   private buildAssistantMessage(response: CompletionResponse, ctx: LoopIterationContext): Message {
     const content = this.hooks.filterAssistantContent?.(response.content, ctx) ?? response.content
+    const finalContent = this.withDeepSeekThinkingContent(content, response.reasoningContent)
 
     return {
       id: generateId(),
       sessionId: this.config.sessionId,
       role: 'assistant',
       messageType: 'message',
-      content,
+      content: finalContent,
       model: response.model,
       createdAt: now(),
     }
+  }
+
+  private withDeepSeekThinkingContent(
+    content: ContentBlock[],
+    reasoningContent: string | undefined,
+  ): ContentBlock[] {
+    const trimmed = reasoningContent?.trim()
+    if (
+      this.config.adapter.apiType !== 'anthropic-deepseek' ||
+      !trimmed ||
+      content.some((block) => block.type === 'thinking')
+    ) {
+      return content
+    }
+
+    return [{ type: 'thinking', thinking: trimmed }, ...content]
   }
 
   private buildToolResultMessage(content: ContentBlock[]): Message {
@@ -742,7 +759,10 @@ export class AgentLoop {
   }
 
   private shouldSkipStreamFallback(_streamErr: unknown): boolean {
-    if (this.config.adapter.apiType === 'anthropic_messages') {
+    if (
+      this.config.adapter.apiType === 'anthropic_messages' ||
+      this.config.adapter.apiType === 'anthropic-deepseek'
+    ) {
       return true
     }
 
