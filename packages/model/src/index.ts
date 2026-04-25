@@ -28,4 +28,4 @@ export {
 export type { ClaudeOAuthAccount, ClaudeOAuthSession } from './auth/claude'
 export { createApiKeyAuth } from './auth/api-key'
 export { computeCost } from './cost'
-export { LiteLLMPricing, lookupKnownPricing } from './pricing'
+export { LiteLLMPricing } from './pricing'

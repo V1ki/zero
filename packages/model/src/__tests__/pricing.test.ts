@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import type { ModelPricing } from '@zero-os/shared'
 import type { ModelConfig } from '@zero-os/shared'
-import { LiteLLMPricing, convertPricing, findEntry, lookupKnownPricing } from '../pricing'
+import { LiteLLMPricing, convertPricing, findEntry } from '../pricing'
 
 describe('convertPricing', () => {
   test('converts per-token to per-million-token', () => {
@@ -78,42 +78,6 @@ describe('findEntry', () => {
 
   test('returns null for unknown model', () => {
     expect(findEntry(data, 'nonexistent-model')).toBeNull()
-  })
-})
-
-describe('lookupKnownPricing', () => {
-  test('returns DeepSeek v4 pro official pricing', () => {
-    expect(lookupKnownPricing('deepseek-v4-pro')).toEqual({
-      input: 1.74,
-      output: 3.48,
-      cacheWrite: 1.74,
-      cacheRead: 0.145,
-    })
-  })
-
-  test('matches provider-qualified model ids', () => {
-    expect(lookupKnownPricing('deepseek/deepseek-v4-pro')).toEqual({
-      input: 1.74,
-      output: 3.48,
-      cacheWrite: 1.74,
-      cacheRead: 0.145,
-    })
-  })
-
-  test('returns a copy of known pricing', () => {
-    const pricing = lookupKnownPricing('deepseek-v4-pro')
-    expect(pricing).not.toBeNull()
-    if (!pricing) {
-      throw new Error('expected known pricing')
-    }
-
-    pricing.input = 0
-
-    expect(lookupKnownPricing('deepseek-v4-pro')?.input).toBe(1.74)
-  })
-
-  test('returns null for models without known pricing', () => {
-    expect(lookupKnownPricing('unknown-model')).toBeNull()
   })
 })
 

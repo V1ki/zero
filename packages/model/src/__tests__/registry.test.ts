@@ -169,6 +169,12 @@ describe('ModelRegistry', () => {
               maxOutput: 384000,
               capabilities: ['tools', 'reasoning'],
               tags: ['deepseek'],
+              pricing: {
+                input: 1.74,
+                output: 3.48,
+                cacheWrite: 1.74,
+                cacheRead: 0.145,
+              },
             },
           },
         },

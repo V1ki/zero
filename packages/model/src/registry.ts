@@ -5,7 +5,7 @@ import type { AdapterConfig, OAuthTokenRefresher, ProviderAdapter } from './adap
 import { OpenAIChatAdapter } from './adapters/openai-chat'
 import { OpenAIResponsesAdapter } from './adapters/openai-resp'
 import { TrackedAdapter, type UsageRecorder } from './adapters/tracked'
-import { LiteLLMPricing, lookupKnownPricing } from './pricing'
+import { LiteLLMPricing } from './pricing'
 
 export interface ResolvedModel {
   providerName: string
@@ -177,8 +177,7 @@ export class ModelRegistry {
    */
   private enrichPricing(model: ModelConfig): ModelConfig {
     if (model.pricing) return model
-    const fallback =
-      lookupKnownPricing(model.modelId) ?? LiteLLMPricing.getInstance()?.lookup(model.modelId)
+    const fallback = LiteLLMPricing.getInstance()?.lookup(model.modelId)
     if (!fallback) return model
     return { ...model, pricing: fallback }
   }
