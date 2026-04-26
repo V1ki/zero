@@ -7,6 +7,7 @@ const DEEPSEEK_DEFAULT_EFFORT = 'high' as const
 function normalizeEffort(
   effort: CompletionRequest['reasoningEffort'],
 ): NonNullable<Anthropic.OutputConfig['effort']> {
+  if (effort === 'xhigh') return 'max'
   return effort ?? DEEPSEEK_DEFAULT_EFFORT
 }
 

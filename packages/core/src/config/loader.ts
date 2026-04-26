@@ -1,6 +1,11 @@
 import { existsSync } from 'node:fs'
-import { readYaml, readYamlOrDefault } from '@zero-os/shared'
-import type { ChannelInstanceConfig, FuseRule, ModelPricing, SystemConfig } from '@zero-os/shared'
+import { normalizeReasoningEffort, readYaml, readYamlOrDefault } from '@zero-os/shared'
+import type {
+  ChannelInstanceConfig,
+  FuseRule,
+  ModelPricing,
+  SystemConfig,
+} from '@zero-os/shared'
 import { readString } from '../utils/yaml'
 
 /**
@@ -32,6 +37,7 @@ function normalizeConfig(raw: Record<string, unknown>): SystemConfig {
         modelId: (m.model_id as string) ?? mName,
         maxContext: (m.max_context as number) ?? 128000,
         maxOutput: (m.max_output as number) ?? 8192,
+        reasoningEffort: normalizeReasoningEffort(m.reasoning_effort as string | undefined),
         thinkingTokens: m.thinking_tokens as number | undefined,
         capabilities: (m.capabilities as string[]) ?? [],
         tags: (m.tags as string[]) ?? [],

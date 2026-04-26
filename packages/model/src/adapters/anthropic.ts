@@ -431,11 +431,15 @@ export class AnthropicAdapter implements ProviderAdapter {
   }
 
   protected buildOutputConfig(
-    _req: CompletionRequest,
+    req: CompletionRequest,
     _session?: ClaudeOAuthSession | null,
   ): Anthropic.OutputConfig | undefined {
     if (!this.isOAuthClient) return undefined
-    return { effort: AnthropicAdapter.CLAUDE_CODE_OUTPUT_EFFORT }
+    const effort =
+      req.reasoningEffort === 'xhigh'
+        ? 'max'
+        : (req.reasoningEffort ?? AnthropicAdapter.CLAUDE_CODE_OUTPUT_EFFORT)
+    return { effort }
   }
 
   private mapStopReason(reason: string | null): CompletionResponse['stopReason'] {

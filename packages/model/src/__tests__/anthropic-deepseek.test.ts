@@ -143,6 +143,44 @@ describe('AnthropicDeepSeekAdapter', () => {
     expect(calls[0].output_config).toEqual({ effort: 'medium' })
   })
 
+  test('/think xhigh is normalized to DeepSeek max output_config effort', async () => {
+    const adapter = createAdapter()
+    const calls: Array<Record<string, unknown>> = []
+    ;(
+      adapter as unknown as {
+        client: {
+          messages: {
+            create: (params: Record<string, unknown>) => Promise<unknown>
+          }
+        }
+      }
+    ).client = {
+      messages: {
+        create: async (params) => {
+          calls.push(params)
+          return {
+            id: 'msg_deepseek_test',
+            content: [{ type: 'text', text: 'ok' }],
+            stop_reason: 'end_turn',
+            usage: { input_tokens: 1, output_tokens: 1 },
+            model: 'deepseek-v4-pro',
+          }
+        },
+      },
+    }
+
+    const req: CompletionRequest = {
+      messages: [makeUserMessage('hello')],
+      stream: false,
+      model: 'deepseek-v4-pro',
+      reasoningEffort: 'xhigh',
+    }
+
+    await adapter.complete(req)
+
+    expect(calls[0].output_config).toEqual({ effort: 'max' })
+  })
+
   test('round-trips thinking blocks in assistant history for tool-call continuation', async () => {
     const adapter = createAdapter()
     const calls: Array<Record<string, unknown>> = []

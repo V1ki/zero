@@ -357,7 +357,7 @@ describe('builtin commands', () => {
     })
   })
 
-  test('/think high updates the whole session setting', async () => {
+  test('/think max is accepted as an xhigh alias', async () => {
     const calls: Array<ReasoningEffort | undefined> = []
     const mockSession: MockSession = {
       data: {
@@ -383,14 +383,51 @@ describe('builtin commands', () => {
     } as unknown as SessionManager
 
     const result = await thinkCommand.execute(
-      { effort: 'high' },
+      { effort: 'max' },
       createContext(sessionManager, 'telegram'),
     )
 
-    expect(calls).toEqual(['high'])
+    expect(calls).toEqual(['xhigh'])
     expect(result).toEqual({
       handled: true,
-      reply: 'Thinking effort set to high for this session.',
+      reply: 'Thinking effort set to xhigh for this session.',
+    })
+  })
+
+  test('/think xhigh updates the whole session setting', async () => {
+    const calls: Array<ReasoningEffort | undefined> = []
+    const mockSession: MockSession = {
+      data: {
+        id: 'sess_think_xhigh',
+        currentModel: 'chatgpt/gpt-5.4',
+        createdAt: '2026-03-27T14:30:05',
+        updatedAt: '2026-03-27T14:30:05',
+      },
+      switchModel: async () => ({ success: true, message: 'ok' }),
+      initAgent: () => {},
+      setChannelCapabilities: () => {},
+      listModels: () => [],
+      getMessages: () => [],
+      getReasoningEffort: () => undefined,
+      setReasoningEffort: (effort) => {
+        calls.push(effort)
+        return { changed: true, message: `Thinking effort set to ${effort} for this session.` }
+      },
+    }
+
+    const sessionManager = {
+      getOrCreateForChannel: () => ({ session: mockSession, isNew: false }),
+    } as unknown as SessionManager
+
+    const result = await thinkCommand.execute(
+      { effort: 'xhigh' },
+      createContext(sessionManager, 'telegram'),
+    )
+
+    expect(calls).toEqual(['xhigh'])
+    expect(result).toEqual({
+      handled: true,
+      reply: 'Thinking effort set to xhigh for this session.',
     })
   })
 
@@ -462,7 +499,7 @@ describe('builtin commands', () => {
 
     expect(result).toEqual({
       handled: true,
-      reply: 'Usage: /think [low|medium|high|off]',
+      reply: 'Usage: /think [low|medium|high|xhigh|off]',
     })
   })
 

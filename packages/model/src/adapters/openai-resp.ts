@@ -786,7 +786,12 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
     req: CompletionRequest,
   ): OpenAI.Responses.ResponseCreateParams['reasoning'] {
     return req.reasoningEffort
-      ? { summary: 'auto', effort: req.reasoningEffort }
+      ? {
+          summary: 'auto',
+          effort: req.reasoningEffort as NonNullable<
+            NonNullable<OpenAI.Responses.ResponseCreateParams['reasoning']>['effort']
+          >,
+        }
       : { summary: 'auto' }
   }
 

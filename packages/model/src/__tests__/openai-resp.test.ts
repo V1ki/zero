@@ -417,10 +417,10 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
     const body = getResponsesHarness(chatgptAdapter).buildChatGptBody({
       messages: [],
       stream: true,
-      reasoningEffort: 'high',
+      reasoningEffort: 'xhigh',
     })
 
-    expect(body.reasoning).toEqual({ summary: 'auto', effort: 'high' })
+    expect(body.reasoning).toEqual({ summary: 'auto', effort: 'xhigh' })
   })
 
   test('buildChatGptBody omits unsupported max_output_tokens', () => {

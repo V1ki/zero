@@ -651,7 +651,7 @@ export class Session {
       tools,
       maxContext: currentModel?.modelConfig.maxContext,
       maxOutput: currentModel?.modelConfig.maxOutput,
-      reasoningEffort: this.data.reasoningEffort,
+      reasoningEffort: this.data.reasoningEffort ?? currentModel?.modelConfig.reasoningEffort,
     }
 
     // Push messages to session in real-time so getMessages() reflects in-progress state
@@ -749,7 +749,7 @@ export class Session {
     const memories = await retrieveMemoriesWithDecision({
       adapter: resolved.adapter,
       sessionId: this.data.id,
-      reasoningEffort: this.data.reasoningEffort,
+      reasoningEffort: this.data.reasoningEffort ?? resolved.modelConfig.reasoningEffort,
       memoryRetriever: this.deps.memoryRetriever,
       identitySummary: this.deps.identityMemory ?? '',
       userMessage,

@@ -9,6 +9,7 @@ import type {
   Session as SessionData,
   SessionSource,
 } from '@zero-os/shared'
+import { normalizeReasoningEffort } from '@zero-os/shared'
 
 export interface SessionRow {
   id: string
@@ -646,8 +647,4 @@ function toChannelSessionBinding(row: RawBindingRow): ChannelSessionBinding {
     sessionId: row.session_id,
     updatedAt: row.updated_at,
   }
-}
-
-function normalizeReasoningEffort(value: string | null): ReasoningEffort | undefined {
-  return value === 'low' || value === 'medium' || value === 'high' ? value : undefined
 }

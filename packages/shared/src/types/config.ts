@@ -1,3 +1,4 @@
+import type { ReasoningEffort } from './reasoning'
 import type { SessionSource } from './session'
 
 export type ApiType =
@@ -39,6 +40,7 @@ export interface ModelConfig {
   modelId: string
   maxContext: number
   maxOutput: number
+  reasoningEffort?: ReasoningEffort
   thinkingTokens?: number
   capabilities: string[]
   tags: string[]

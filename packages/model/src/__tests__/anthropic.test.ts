@@ -787,6 +787,58 @@ describe('Anthropic Adapter (Pure Logic)', () => {
     }
   })
 
+  test('oauth requests map xhigh reasoning effort to Claude max output_config effort', async () => {
+    const originalFetch = globalThis.fetch
+    const seenBodies: Array<Record<string, unknown>> = []
+    globalThis.fetch = (async (_input, init) => {
+      const request = new Request(_input, init)
+      seenBodies.push((await request.clone().json()) as Record<string, unknown>)
+      return new Response(
+        JSON.stringify({
+          id: 'msg_effort_001',
+          content: [{ type: 'text', text: 'ok' }],
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 9, output_tokens: 4 },
+          model: 'claude-sonnet-4-6',
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      )
+    }) as typeof fetch
+
+    try {
+      const oauthAdapter = new AnthropicAdapter({
+        baseUrl: 'https://api.anthropic.test',
+        auth: { type: 'oauth2', oauthTokenRef: 'CLAUDE_CODE_OAUTH_TOKEN' },
+        modelConfig: {
+          modelId: 'claude-sonnet-4-6',
+          maxContext: 200000,
+          maxOutput: 8192,
+          capabilities: ['tools', 'vision'],
+          tags: ['balanced'],
+        },
+        oauthToken: makeClaudeOAuthSessionJson('claude-token', Date.now() + 30 * 60_000),
+      })
+
+      await oauthAdapter.complete({
+        messages: [makeMessage('user', 'think hard')],
+        meta: { sessionId: 'sess-effort', purpose: 'chat' },
+        stream: false,
+        reasoningEffort: 'xhigh',
+      })
+
+      expect(seenBodies).toEqual([
+        expect.objectContaining({
+          output_config: { effort: 'max' },
+        }),
+      ])
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   test('oauth requests retry once after a 401 with refreshed credentials', async () => {
     const originalFetch = globalThis.fetch
     let currentSession = makeClaudeOAuthSessionJson(

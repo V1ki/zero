@@ -533,12 +533,12 @@ describe('OpenAI Chat Completions Adapter (Pure Logic)', () => {
     await mockAdapter.complete({
       messages: [makeMessage('user', 'hello')],
       stream: false,
-      reasoningEffort: 'high',
+      reasoningEffort: 'xhigh',
     })
 
     expect(createCalls).toHaveLength(1)
     expect(createCalls[0]).toMatchObject({
-      reasoning_effort: 'high',
+      reasoning_effort: 'xhigh',
     })
   })
 })

@@ -29,7 +29,7 @@ export function buildTelegramDefaultCommands(): TelegramBotCommand[] {
     },
     {
       command: 'think',
-      description: 'Show or set thinking effort (/think [high])',
+      description: 'Show or set thinking effort (/think [xhigh])',
     },
     {
       command: 'session',
