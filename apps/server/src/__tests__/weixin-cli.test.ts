@@ -1,6 +1,10 @@
 import { spawnSync } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
-import { renderQrForTerminal } from '../weixin-cli'
+import { readYaml } from '@zero-os/shared'
+import { renderQrForTerminal, upsertWeixinChannelConfig } from '../weixin-cli'
 
 describe('weixin CLI usage', () => {
   test('prints usage and exits before QR login when no subcommand is provided', () => {
@@ -20,5 +24,48 @@ describe('weixin CLI usage', () => {
 
     expect(rendered).toContain('▄▄▄▄')
     expect(rendered.split('\n').length).toBeGreaterThan(5)
+  })
+
+  test('upserts Weixin channel config after login', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zero-weixin-cli-'))
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(
+      configPath,
+      `providers: {}
+channels:
+  - type: telegram
+    name: alerts
+    botTokenRef: telegram_token
+`,
+    )
+
+    try {
+      upsertWeixinChannelConfig(configPath, {
+        name: 'personal-bot',
+        accountIdRef: 'weixin_personal-bot_account_id',
+        tokenRef: 'weixin_personal-bot_token',
+        baseUrlRef: 'weixin_personal-bot_base_url',
+      })
+      upsertWeixinChannelConfig(configPath, {
+        name: 'personal-bot',
+        accountIdRef: 'weixin_personal-bot_account_id',
+        tokenRef: 'weixin_personal-bot_token',
+        baseUrlRef: 'weixin_personal-bot_base_url',
+      })
+
+      const raw = readYaml<{ channels: Array<Record<string, unknown>> }>(configPath)
+      expect(raw.channels).toHaveLength(2)
+      expect(raw.channels[1]).toEqual({
+        type: 'weixin',
+        name: 'personal-bot',
+        accountIdRef: 'weixin_personal-bot_account_id',
+        tokenRef: 'weixin_personal-bot_token',
+        baseUrlRef: 'weixin_personal-bot_base_url',
+        dmPolicy: 'open',
+        groupPolicy: 'open',
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

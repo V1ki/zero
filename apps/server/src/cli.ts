@@ -24,6 +24,7 @@ import { weixinCli } from './weixin-cli'
 
 const ZERO_DIR = join(process.cwd(), '.zero')
 const SECRETS_PATH = join(ZERO_DIR, 'secrets.enc')
+const CONFIG_PATH = join(ZERO_DIR, 'config.yaml')
 const RESTART_GRACE_PERIOD_S = 15
 
 const command = process.argv[2]
@@ -47,6 +48,7 @@ switch (command) {
     break
   case 'weixin':
     await weixinCli(process.argv.slice(3), {
+      configPath: CONFIG_PATH,
       secretsPath: SECRETS_PATH,
     })
     break

@@ -1,6 +1,8 @@
 import { createRequire } from 'node:module'
+import { existsSync } from 'node:fs'
 import { runQrLogin } from '@zero-os/channel'
 import { Vault, getMasterKey } from '@zero-os/secrets'
+import { readYaml, writeYaml } from '@zero-os/shared'
 
 const require = createRequire(import.meta.url)
 const qrcodeTerminal = require('qrcode-terminal') as {
@@ -17,7 +19,7 @@ const qrcodeTerminal = require('qrcode-terminal') as {
  */
 export async function weixinCli(
   args: string[],
-  context: { secretsPath: string },
+  context: { configPath: string; secretsPath: string },
 ): Promise<void> {
   const sub = args[0]
   if (sub !== 'login') {
@@ -65,25 +67,24 @@ export async function weixinCli(
     return
   }
   const vault = new Vault(masterKey, context.secretsPath)
-  vault.set(`weixin_${name}_account_id`, credentials.accountId)
-  vault.set(`weixin_${name}_token`, credentials.token)
-  if (credentials.baseUrl) vault.set(`weixin_${name}_base_url`, credentials.baseUrl)
+  const secretRefs = buildWeixinSecretRefs(name)
+  vault.set(secretRefs.accountIdRef, credentials.accountId)
+  vault.set(secretRefs.tokenRef, credentials.token)
+  if (credentials.baseUrl) vault.set(secretRefs.baseUrlRef, credentials.baseUrl)
   vault.save()
 
   console.log(`[ZeRo OS] Stored in vault:`)
-  console.log(`  weixin_${name}_account_id`)
-  console.log(`  weixin_${name}_token`)
-  if (credentials.baseUrl) console.log(`  weixin_${name}_base_url`)
-  console.log('')
-  console.log('Add the following to .zero/config.yaml under channels:')
-  console.log('')
-  console.log(`  - type: weixin`)
-  console.log(`    name: ${name}`)
-  console.log(`    accountIdRef: weixin_${name}_account_id`)
-  console.log(`    tokenRef: weixin_${name}_token`)
-  if (credentials.baseUrl) console.log(`    baseUrlRef: weixin_${name}_base_url`)
-  console.log(`    dmPolicy: open`)
-  console.log(`    groupPolicy: disabled`)
+  console.log(`  ${secretRefs.accountIdRef}`)
+  console.log(`  ${secretRefs.tokenRef}`)
+  if (credentials.baseUrl) console.log(`  ${secretRefs.baseUrlRef}`)
+
+  upsertWeixinChannelConfig(context.configPath, {
+    name,
+    accountIdRef: secretRefs.accountIdRef,
+    tokenRef: secretRefs.tokenRef,
+    baseUrlRef: credentials.baseUrl ? secretRefs.baseUrlRef : undefined,
+  })
+  console.log(`[ZeRo OS] Updated .zero/config.yaml channel "${name}"`)
   console.log('')
   console.log('Then run `bun zero restart` to activate.')
 }
@@ -102,4 +103,57 @@ export function renderQrForTerminal(payload: string): string {
     rendered = qr
   })
   return rendered.trimEnd()
+}
+
+interface WeixinConfigEntry {
+  name: string
+  accountIdRef: string
+  tokenRef: string
+  baseUrlRef?: string
+}
+
+function buildWeixinSecretRefs(name: string): Required<WeixinConfigEntry> {
+  return {
+    name,
+    accountIdRef: `weixin_${name}_account_id`,
+    tokenRef: `weixin_${name}_token`,
+    baseUrlRef: `weixin_${name}_base_url`,
+  }
+}
+
+export function upsertWeixinChannelConfig(configPath: string, entry: WeixinConfigEntry): void {
+  if (!existsSync(configPath)) {
+    throw new Error(`Config file not found: ${configPath}`)
+  }
+
+  const raw = readYaml<Record<string, unknown>>(configPath) ?? {}
+  const channels = Array.isArray(raw.channels)
+    ? (raw.channels as Array<Record<string, unknown>>)
+    : []
+  const nextChannel = {
+    type: 'weixin',
+    name: entry.name,
+    accountIdRef: entry.accountIdRef,
+    tokenRef: entry.tokenRef,
+    ...(entry.baseUrlRef ? { baseUrlRef: entry.baseUrlRef } : {}),
+    dmPolicy: 'open',
+    groupPolicy: 'open',
+  }
+  const existingIndex = channels.findIndex(
+    (channel) => channel.type === 'weixin' && channel.name === entry.name,
+  )
+
+  if (existingIndex >= 0) {
+    channels[existingIndex] = {
+      ...channels[existingIndex],
+      ...nextChannel,
+    }
+  } else {
+    channels.push(nextChannel)
+  }
+
+  writeYaml(configPath, {
+    ...raw,
+    channels,
+  })
 }
