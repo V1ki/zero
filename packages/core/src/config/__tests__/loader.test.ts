@@ -139,12 +139,24 @@ channels:
   - name: telegram:alerts
     type: telegram
     bot_token_ref: telegram_alerts_bot_token
+  - name: weixin:personal
+    type: weixin
+    account_id_ref: weixin_personal_account_id
+    token_ref: weixin_personal_token
+    base_url_ref: weixin_personal_base_url
+    cdn_base_url_ref: weixin_personal_cdn_base_url
+    dm_policy: allowlist
+    group_policy: disabled
+    allow_from:
+      - wxid_friend
+    group_allow_from:
+      - room@chatroom
 `,
     )
 
     const config = loadConfig(configPath)
 
-    expect(config.channels).toHaveLength(2)
+    expect(config.channels).toHaveLength(3)
     expect(config.channels?.[0]).toEqual({
       name: 'feishu:ops',
       type: 'feishu',
@@ -161,6 +173,20 @@ channels:
       enabled: true,
       receiveNotifications: false,
       botTokenRef: 'telegram_alerts_bot_token',
+    })
+    expect(config.channels?.[2]).toEqual({
+      name: 'weixin:personal',
+      type: 'weixin',
+      enabled: true,
+      receiveNotifications: false,
+      accountIdRef: 'weixin_personal_account_id',
+      tokenRef: 'weixin_personal_token',
+      baseUrlRef: 'weixin_personal_base_url',
+      cdnBaseUrlRef: 'weixin_personal_cdn_base_url',
+      dmPolicy: 'allowlist',
+      groupPolicy: 'disabled',
+      allowFrom: ['wxid_friend'],
+      groupAllowFrom: ['room@chatroom'],
     })
   })
 

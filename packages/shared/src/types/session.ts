@@ -1,6 +1,6 @@
 import type { ReasoningEffort } from './reasoning'
 
-export type SessionSource = 'feishu' | 'telegram' | 'scheduler' | 'web'
+export type SessionSource = 'feishu' | 'telegram' | 'scheduler' | 'web' | 'weixin'
 
 export type SessionStatus = 'active' | 'idle' | 'completed' | 'failed' | 'archived'
 
