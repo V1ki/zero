@@ -90,22 +90,21 @@ function makeAbortError(): Error {
   return error
 }
 
+function safeId(value: unknown): string {
+  const id = String(value ?? '').trim()
+  if (!id) return 'unknown'
+  if (id.length <= 12) return id
+  return `${id.slice(0, 6)}...${id.slice(-4)}`
+}
+
 export function guessChatType(
   message: ILinkIncomingMessage,
-  accountId: string,
+  _accountId: string,
 ): { chatType: ChatType; chatId: string } {
-  const roomId = String(message.group_id ?? message.room_id ?? message.chat_room_id ?? '').trim()
-  const toUserId = String(message.to_user_id ?? '').trim()
-  const isGroup =
-    Boolean(roomId) ||
-    (!!toUserId && !!accountId && toUserId !== accountId && message.msg_type === 1)
-  if (isGroup) {
-    return {
-      chatType: 'group',
-      chatId: roomId || toUserId || String(message.from_user_id ?? ''),
-    }
-  }
-  return { chatType: 'dm', chatId: String(message.from_user_id ?? '') }
+  // @tencent-weixin/openclaw-weixin declares only direct chats and routes
+  // inbound messages by from_user_id. Some getUpdates payloads include
+  // to_user_id/session_id-like fields, but they are not reliable group targets.
+  return { chatType: 'dm', chatId: String(message.from_user_id ?? '').trim() }
 }
 
 function extractText(items: IncomingMediaItem[]): string {
@@ -246,10 +245,20 @@ export class WeixinChannel implements Channel {
     this.running = true
     this.connected = true
     this.pollAbort = new AbortController()
-    await notifyStart(
-      { baseUrl: this.baseUrl, token: this.token },
-      { fetchImpl: this.baseFetchImpl },
-    ).catch(() => {})
+    try {
+      const response = await notifyStart(
+        { baseUrl: this.baseUrl, token: this.token },
+        this.apiOpts(),
+      )
+      if (response.ret !== undefined && response.ret !== 0) {
+        console.warn(
+          `[WeixinChannel] notifyStart returned ret=${response.ret} channel=${this.name}`,
+        )
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      console.warn(`[WeixinChannel] notifyStart failed channel=${this.name}: ${reason}`)
+    }
     this.pollTask = this.pollLoop()
   }
 
@@ -266,11 +275,21 @@ export class WeixinChannel implements Channel {
         // expected on abort
       }
     }
+    try {
+      const response = await notifyStop(
+        { baseUrl: this.baseUrl, token: this.token },
+        this.apiOpts(),
+      )
+      if (response.ret !== undefined && response.ret !== 0) {
+        console.warn(
+          `[WeixinChannel] notifyStop returned ret=${response.ret} channel=${this.name}`,
+        )
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      console.warn(`[WeixinChannel] notifyStop failed channel=${this.name}: ${reason}`)
+    }
     this.connected = false
-    await notifyStop(
-      { baseUrl: this.baseUrl, token: this.token },
-      { fetchImpl: this.baseFetchImpl },
-    ).catch(() => {})
   }
 
   isConnected(): boolean {
@@ -362,7 +381,13 @@ export class WeixinChannel implements Channel {
           syncBuf = newBuf
           saveSyncBuf(this.homeDir, this.accountId, syncBuf)
         }
-        for (const msg of response.msgs ?? []) {
+        const messages = response.msgs ?? []
+        if (messages.length > 0) {
+          console.log(
+            `[WeixinChannel] poll returned channel=${this.name} messages=${messages.length}`,
+          )
+        }
+        for (const msg of messages) {
           void this.processMessageSafe(msg)
         }
       } catch {
@@ -379,26 +404,62 @@ export class WeixinChannel implements Channel {
   private async processMessageSafe(message: ILinkIncomingMessage): Promise<void> {
     try {
       await this.processMessage(message)
-    } catch {
-      // handler errors are intentionally swallowed here; upper layer logs
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      console.error(
+        `[WeixinChannel] inbound message failed channel=${this.name} sender=${safeId(message.from_user_id)}: ${reason}`,
+      )
     }
   }
 
   private async processMessage(message: ILinkIncomingMessage): Promise<void> {
     const senderId = String(message.from_user_id ?? '').trim()
-    if (!senderId) return
-    if (senderId === this.accountId) return
+    if (!senderId) {
+      console.log(`[WeixinChannel] ignored inbound channel=${this.name} reason=missingSender`)
+      return
+    }
+    if (senderId === this.accountId) {
+      console.log(
+        `[WeixinChannel] ignored inbound channel=${this.name} sender=${safeId(senderId)} reason=selfMessage`,
+      )
+      return
+    }
 
     const messageId = String(message.message_id ?? '').trim()
-    if (messageId && this.dedup.isDuplicate(messageId)) return
+    if (messageId && this.dedup.isDuplicate(messageId)) {
+      console.log(
+        `[WeixinChannel] ignored inbound channel=${this.name} sender=${safeId(senderId)} message=${safeId(messageId)} reason=duplicate`,
+      )
+      return
+    }
 
     const { chatType, chatId } = guessChatType(message, this.accountId)
     if (chatType === 'group') {
-      if (this.groupPolicy === 'disabled') return
-      if (this.groupPolicy === 'allowlist' && !this.groupAllowFrom.has(chatId)) return
+      if (this.groupPolicy === 'disabled') {
+        console.log(
+          `[WeixinChannel] ignored group message channel=${this.name} chat=${safeId(chatId)} reason=groupPolicyDisabled`,
+        )
+        return
+      }
+      if (this.groupPolicy === 'allowlist' && !this.groupAllowFrom.has(chatId)) {
+        console.log(
+          `[WeixinChannel] ignored group message channel=${this.name} chat=${safeId(chatId)} reason=groupNotAllowed`,
+        )
+        return
+      }
     } else {
-      if (this.dmPolicy === 'disabled') return
-      if (this.dmPolicy === 'allowlist' && !this.allowFrom.has(senderId)) return
+      if (this.dmPolicy === 'disabled') {
+        console.log(
+          `[WeixinChannel] ignored dm message channel=${this.name} sender=${safeId(senderId)} reason=dmPolicyDisabled`,
+        )
+        return
+      }
+      if (this.dmPolicy === 'allowlist' && !this.allowFrom.has(senderId)) {
+        console.log(
+          `[WeixinChannel] ignored dm message channel=${this.name} sender=${safeId(senderId)} reason=dmNotAllowed`,
+        )
+        return
+      }
     }
 
     const contextToken = String(message.context_token ?? '').trim()
@@ -406,6 +467,9 @@ export class WeixinChannel implements Channel {
     void this.maybeFetchTypingTicket(chatId, contextToken || undefined)
 
     const items = message.item_list ?? []
+    console.log(
+      `[WeixinChannel] received ${chatType} message channel=${this.name} chat=${safeId(chatId)} sender=${safeId(senderId)} message=${safeId(messageId)} items=${items.length}`,
+    )
     const text = extractText(items)
     const images: ImageAttachment[] = []
     const files: FileAttachment[] = []
@@ -416,18 +480,29 @@ export class WeixinChannel implements Channel {
       if (refItem) await this.collectMedia(refItem, images, files)
     }
 
-    if (!text && images.length === 0 && files.length === 0) return
+    if (!text && images.length === 0 && files.length === 0) {
+      const itemTypes = items.map((item) => item.type).join(',')
+      console.log(
+        `[WeixinChannel] ignored inbound channel=${this.name} chat=${safeId(chatId)} sender=${safeId(senderId)} message=${safeId(messageId)} reason=emptyContent itemTypes=${itemTypes || 'none'}`,
+      )
+      return
+    }
 
     const outbound: ZeroIncomingMessage = {
       channelType: this.type,
       senderId,
       content: text,
-      timestamp: new Date().toISOString(),
+      timestamp:
+        typeof message.create_time_ms === 'number'
+          ? new Date(message.create_time_ms).toISOString()
+          : new Date().toISOString(),
       metadata: {
         chatType,
         chatId,
         messageId: messageId || undefined,
         accountId: this.accountId,
+        sessionId: message.session_id,
+        seq: message.seq,
       },
       images,
       files,

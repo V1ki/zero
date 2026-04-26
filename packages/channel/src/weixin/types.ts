@@ -38,9 +38,14 @@ export interface IncomingMediaItem {
 }
 
 export interface IncomingMessage {
+  seq?: number
   message_id?: string
   from_user_id?: string
   to_user_id?: string
+  create_time_ms?: number
+  session_id?: string
+  message_type?: number
+  message_state?: number
   group_id?: string
   room_id?: string
   chat_room_id?: string

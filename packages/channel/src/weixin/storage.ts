@@ -36,11 +36,9 @@ export function saveSyncBuf(homeDir: string, accountId: string, syncBuf: string)
 }
 
 /**
- * Disk-backed context_token cache keyed by (accountId, chatId).
- *
- * Uses chatId (the effective chat identifier: sender_id for DM or room_id for
- * group) rather than sender_id, which fixes a bug in Hermes where group
- * replies would miss the stored token.
+ * Disk-backed context_token cache keyed by (accountId, peerId).
+ * OpenClaw's Weixin channel is direct-message only, so peerId is the inbound
+ * from_user_id and is echoed as to_user_id for replies.
  */
 export class ContextTokenStore {
   private readonly cache = new Map<string, string>()

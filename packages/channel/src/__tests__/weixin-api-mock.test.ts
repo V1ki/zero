@@ -61,7 +61,7 @@ describe('sendTextMessage', () => {
       msg: { context_token?: string; item_list: unknown[] }
       base_info: { channel_version: string }
     }
-    expect(body.base_info.channel_version).toBe('2.2.0')
+    expect(body.base_info.channel_version).toBe('2.1.10')
     expect(body.msg.context_token).toBe('ctx')
     expect(Array.isArray(body.msg.item_list)).toBe(true)
   })
@@ -106,7 +106,7 @@ describe('notifyStart / notifyStop', () => {
       '/ilink/bot/msg/notifystart',
       '/ilink/bot/msg/notifystop',
     ])
-    expect(calls.every((call) => call.body.base_info?.channel_version === '2.2.0')).toBe(true)
+    expect(calls.every((call) => call.body.base_info?.channel_version === '2.1.10')).toBe(true)
   })
 })
 

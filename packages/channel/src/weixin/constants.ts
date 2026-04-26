@@ -1,12 +1,12 @@
 /**
  * iLink Bot API constants shared across the Weixin channel.
- * Mirrored from Hermes Agent's weixin.py (commit d8a52109).
+ * Mirrored from @tencent-weixin/openclaw-weixin 2.1.10.
  */
 
 export const ILINK_BASE_URL = 'https://ilinkai.weixin.qq.com'
 export const WEIXIN_CDN_BASE_URL = 'https://novac2c.cdn.weixin.qq.com/c2c'
 export const ILINK_APP_ID = 'bot'
-export const WEIXIN_PROTOCOL_VERSION = '2.2.0'
+export const WEIXIN_PROTOCOL_VERSION = '2.1.10'
 export const CHANNEL_VERSION = WEIXIN_PROTOCOL_VERSION
 
 export function buildClientVersion(version: string): number {
@@ -28,7 +28,7 @@ export const MAX_CONSECUTIVE_FAILURES = 3
 export const RETRY_DELAY_MS = 2_000
 export const BACKOFF_DELAY_MS = 30_000
 export const SESSION_EXPIRED_ERRCODE = -14
-export const SESSION_EXPIRED_PAUSE_MS = 600_000
+export const SESSION_EXPIRED_PAUSE_MS = 3_600_000
 export const MESSAGE_DEDUP_TTL_MS = 300_000
 export const MAX_MESSAGE_LENGTH = 4_000
 

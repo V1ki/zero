@@ -190,7 +190,7 @@ bun zero secret delete openai_codex_api_key
   `weixin_<name>_account_id` / `weixin_<name>_token` / `weixin_<name>_base_url`
 - `.zero/weixin/accounts/` 仅用于 sync cursor / context tokens 等运行态状态，
   CLI 登录不会在该目录写入 token
-- 登录完成后提示用户把对应条目加入 `.zero/config.yaml` 的 `channels` 数组
+- 登录完成后会自动把对应条目 upsert 到 `.zero/config.yaml` 的 `channels` 数组
 
 使用场景：
 
@@ -213,11 +213,13 @@ channels:
     tokenRef: weixin_personal-bot_token
     baseUrlRef: weixin_personal-bot_base_url
     dmPolicy: open
-    groupPolicy: disabled
+    groupPolicy: open
 ```
 
 > ⚠️ Weixin 通道走腾讯 iLink Bot API。协议本身由腾讯官方为 OpenClaw 等 AI agent
 > 开放，但 Zero 的实现不是官方签约客户端，协议变更时可能暂时失效。
+> 当前实现按 `@tencent-weixin/openclaw-weixin` 的 direct-only 通道语义路由：
+> 入站消息使用 `from_user_id` 作为会话 peer，`groupPolicy` 先保留为配置字段。
 
 ## macOS LaunchAgent
 

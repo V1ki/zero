@@ -42,15 +42,15 @@ describe('guessChatType', () => {
     })
   })
 
-  test('group when room_id is present', () => {
+  test('follows OpenClaw direct-only routing even when room_id is present', () => {
     expect(
       guessChatType({ from_user_id: 'u1', to_user_id: 'me', room_id: 'r1@chatroom' }, 'me'),
-    ).toEqual({ chatType: 'group', chatId: 'r1@chatroom' })
+    ).toEqual({ chatType: 'dm', chatId: 'u1' })
   })
 
-  test('group when group_id is present', () => {
+  test('follows OpenClaw direct-only routing even when group_id is present', () => {
     expect(guessChatType({ from_user_id: 'u1', to_user_id: 'me', group_id: 'g1' }, 'me')).toEqual(
-      { chatType: 'group', chatId: 'g1' },
+      { chatType: 'dm', chatId: 'u1' },
     )
   })
 })
@@ -75,7 +75,7 @@ describe('WeixinChannel.send', () => {
       base_info: { channel_version: string }
       msg: { item_list: Array<{ text_item?: { text?: string } }> }
     }
-    expect(body.base_info.channel_version).toBe('2.2.0')
+    expect(body.base_info.channel_version).toBe('2.1.10')
     expect(body.msg.item_list[0].text_item?.text).toBe('hello')
   })
 
@@ -101,7 +101,7 @@ describe('WeixinChannel.send', () => {
     expect(attempts).toBe(3)
   })
 
-  test('respects chat policy (groups disabled by default)', async () => {
+  test('routes incoming payloads as direct messages like OpenClaw', async () => {
     const received: ZeroIncoming[] = []
     const { fetchImpl } = makeFetch(
       () => new Response(JSON.stringify({ ret: 0 }), { status: 200 }),
@@ -121,7 +121,13 @@ describe('WeixinChannel.send', () => {
       room_id: 'room@chatroom',
       item_list: [{ type: 1, text_item: { text: 'hi' } }],
     })
-    expect(received.length).toBe(0)
+    expect(received.length).toBe(1)
+    expect(received[0].senderId).toBe('user')
+    expect(received[0].content).toBe('hi')
+    expect(received[0].metadata).toMatchObject({
+      chatType: 'dm',
+      chatId: 'user',
+    })
   })
 
   test('DM messages flow through handler and store context token by chatId', async () => {
@@ -144,11 +150,16 @@ describe('WeixinChannel.send', () => {
       from_user_id: 'peer',
       to_user_id: 'me',
       context_token: 'ctx1',
+      create_time_ms: 1_765_183_200_000,
+      session_id: 'sess1',
+      seq: 7,
       message_id: 'm1',
       item_list: [{ type: 1, text_item: { text: 'hello' } }],
     })
     expect(received.length).toBe(1)
     expect(received[0].senderId).toBe('peer')
+    expect(received[0].timestamp).toBe('2025-12-08T08:40:00.000Z')
+    expect(received[0].metadata).toMatchObject({ sessionId: 'sess1', seq: 7 })
     expect(internal.tokenStore.get('me', 'peer')).toBe('ctx1')
     await internal.processMessage({
       from_user_id: 'peer',
@@ -183,6 +194,35 @@ describe('WeixinChannel lifecycle', () => {
     await ch.stop()
 
     expect(ch.isConnected()).toBe(false)
+  })
+
+  test('start/stop matches OpenClaw by notifying lifecycle endpoints', async () => {
+    let markFetchStarted: (() => void) | undefined
+    const fetchStarted = new Promise<void>((resolve) => {
+      markFetchStarted = resolve
+    })
+    const calls: string[] = []
+    const fetchImplWithHangingPoll: FetchImpl = async (url) => {
+      const rawUrl = String(url)
+      calls.push(rawUrl)
+      if (rawUrl.includes('getupdates')) {
+        markFetchStarted?.()
+        return await new Promise<Response>(() => {})
+      }
+      return new Response(JSON.stringify({ ret: 0 }), { status: 200 })
+    }
+    const ch = new WeixinChannel(
+      { accountId: 'a', token: 't', homeDir: tempDir },
+      { fetchImpl: fetchImplWithHangingPoll, sleep: async () => {} },
+    )
+
+    await ch.start()
+    await fetchStarted
+    await ch.stop()
+
+    expect(calls.some((url) => url.includes('notifystart'))).toBe(true)
+    expect(calls.some((url) => url.includes('notifystop'))).toBe(true)
+    expect(calls.some((url) => url.includes('getupdates'))).toBe(true)
   })
 
   test('session expired pauses outbound sends', async () => {
