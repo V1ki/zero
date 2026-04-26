@@ -20,6 +20,7 @@ bun zero <command>
 - 运行控制：`start`、`restart`、`status`
 - 日志查看：`logs`
 - Secret 管理：`secret set`、`secret list`、`secret delete`
+- 微信接入：`weixin login`
 - macOS 守护进程：`launchctl install`、`launchctl status`、`launchctl uninstall`
 
 ## 运行控制
@@ -175,6 +176,48 @@ bun zero secret list
 ```bash
 bun zero secret delete openai_codex_api_key
 ```
+
+## Weixin 接入
+
+### `bun zero weixin login`
+
+用途：通过 iLink Bot API 扫码登录一个微信个人号，并把凭据写入 vault。
+
+真实行为：
+
+- 在终端打印二维码的 URL 与原始 `qrcode=` 值；用户自行扫码确认
+- 登录成功后把 `account_id` / `token` / `base_url` 分别写到 vault 的
+  `weixin_<name>_account_id` / `weixin_<name>_token` / `weixin_<name>_base_url`
+- `.zero/weixin/accounts/` 仅用于 sync cursor / context tokens 等运行态状态，
+  CLI 登录不会在该目录写入 token
+- 登录完成后提示用户把对应条目加入 `.zero/config.yaml` 的 `channels` 数组
+
+使用场景：
+
+- 首次接入一个新的微信号
+- 现有凭据失效后重新登录
+
+示例：
+
+```bash
+bun zero weixin login --name personal-bot
+```
+
+配置示例（`.zero/config.yaml`）：
+
+```yaml
+channels:
+  - type: weixin
+    name: personal-bot
+    accountIdRef: weixin_personal-bot_account_id
+    tokenRef: weixin_personal-bot_token
+    baseUrlRef: weixin_personal-bot_base_url
+    dmPolicy: open
+    groupPolicy: disabled
+```
+
+> ⚠️ Weixin 通道走腾讯 iLink Bot API。协议本身由腾讯官方为 OpenClaw 等 AI agent
+> 开放，但 Zero 的实现不是官方签约客户端，协议变更时可能暂时失效。
 
 ## macOS LaunchAgent
 

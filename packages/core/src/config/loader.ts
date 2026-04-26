@@ -139,6 +139,24 @@ function normalizeChannelConfig(raw: Record<string, unknown>): ChannelInstanceCo
     }
   }
 
+  if (type === 'weixin') {
+    const accountIdRef = readString(raw, 'accountIdRef', 'account_id_ref')
+    const tokenRef = readString(raw, 'tokenRef', 'token_ref')
+    if (!accountIdRef || !tokenRef) return null
+    return {
+      ...base,
+      type,
+      accountIdRef,
+      tokenRef,
+      baseUrlRef: readString(raw, 'baseUrlRef', 'base_url_ref'),
+      cdnBaseUrlRef: readString(raw, 'cdnBaseUrlRef', 'cdn_base_url_ref'),
+      dmPolicy: readPolicy(raw, 'dmPolicy', 'dm_policy'),
+      groupPolicy: readPolicy(raw, 'groupPolicy', 'group_policy'),
+      allowFrom: readStringArray(raw, 'allowFrom', 'allow_from'),
+      groupAllowFrom: readStringArray(raw, 'groupAllowFrom', 'group_allow_from'),
+    }
+  }
+
   if (type === 'web') {
     return {
       ...base,
@@ -165,6 +183,25 @@ function readBoolean(raw: Record<string, unknown>, ...keys: string[]): boolean |
     const value = raw[key]
     if (typeof value === 'boolean') return value
   }
+  return undefined
+}
+
+function readStringArray(raw: Record<string, unknown>, ...keys: string[]): string[] | undefined {
+  for (const key of keys) {
+    const value = raw[key]
+    if (Array.isArray(value)) {
+      return value.filter((item): item is string => typeof item === 'string')
+    }
+  }
+  return undefined
+}
+
+function readPolicy(
+  raw: Record<string, unknown>,
+  ...keys: string[]
+): 'open' | 'allowlist' | 'disabled' | undefined {
+  const value = readString(raw, ...keys)
+  if (value === 'open' || value === 'allowlist' || value === 'disabled') return value
   return undefined
 }
 

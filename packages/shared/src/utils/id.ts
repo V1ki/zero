@@ -5,6 +5,7 @@ export const SESSION_SOURCE_ABBREVIATIONS = {
   feishu: 'fei',
   telegram: 'tel',
   scheduler: 'sch',
+  weixin: 'wxi',
 } as const
 
 export type SessionSourceAbbreviation =

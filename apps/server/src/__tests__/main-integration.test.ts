@@ -22,6 +22,7 @@ function writeConfig(
   options?: {
     embeddingBaseUrl?: string
     includeClosureModel?: boolean
+    includeUnconfiguredWeixin?: boolean
     taskClosureModel?: string
   },
 ) {
@@ -72,6 +73,17 @@ ${
 schedules: []
 fuse_list: []
 ${
+  options?.includeUnconfiguredWeixin
+    ? `channels:
+  - type: weixin
+    name: weixin:test
+    accountIdRef: missing_weixin_account_id
+    tokenRef: missing_weixin_token
+    dmPolicy: open
+    groupPolicy: disabled
+`
+    : ''
+}${
   options?.embeddingBaseUrl
     ? `embedding:
   base_url: ${options.embeddingBaseUrl}
@@ -244,6 +256,36 @@ describe('startZeroOS Integration', () => {
     expect(observed.externalChannelsRegistered).toBe(false)
 
     await hookedZero.shutdown()
+  })
+
+  test('registers an unconfigured Weixin channel without starting it', async () => {
+    const weixinProject = createTestProjectRoot('zero-weixin-unconfigured-')
+    const dataDir = weixinProject.zeroDir
+    process.env.ZERO_MASTER_KEY_BASE64 = TEST_MASTER_KEY.toString('base64')
+    writeConfig(dataDir, { includeUnconfiguredWeixin: true })
+    encryptSecrets(
+      {
+        openai_codex_api_key: 'sk-test-placeholder',
+      },
+      TEST_MASTER_KEY,
+      join(dataDir, 'secrets.enc'),
+    )
+
+    let weixinZero: ZeroOS | undefined
+    try {
+      weixinZero = await startZeroOS({
+        dataDir,
+        projectRoot: weixinProject.projectRoot,
+        skipProcessExit: true,
+      })
+      const channel = weixinZero.channels.get('weixin:test')
+      expect(channel?.type).toBe('weixin')
+      expect(channel?.isConnected()).toBe(false)
+      expect(weixinZero.channelDefinitions.get('weixin:test')?.configured).toBe(false)
+    } finally {
+      await weixinZero?.shutdown()
+      weixinProject.cleanup()
+    }
   })
 
   test('returns all required components', () => {

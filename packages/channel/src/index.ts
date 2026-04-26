@@ -23,3 +23,19 @@ export type {
   TelegramGetChatMenuButtonOptions,
 } from './telegram/index'
 export * from './richtext/index'
+export {
+  WeixinChannel,
+  guessChatType,
+  ContextTokenStore,
+  normalizeMarkdownForWeixin,
+  splitForWeixinDelivery,
+} from './weixin/index'
+export type {
+  WeixinChannelConfig,
+  WeixinChannelRuntimeOptions,
+  ILinkCredentials,
+  ChatType as WeixinChatType,
+  Policy as WeixinPolicy,
+} from './weixin/index'
+export { runQrLogin } from './weixin/index'
+export type { QrLoginOptions, QrLoginResult } from './weixin/index'

@@ -85,7 +85,7 @@ export interface FuseRule {
 
 export interface BaseChannelInstanceConfig {
   name: string
-  type: 'feishu' | 'telegram' | 'web'
+  type: 'feishu' | 'telegram' | 'web' | 'weixin'
   enabled?: boolean
   receiveNotifications?: boolean
 }
@@ -107,10 +107,23 @@ export interface WebChannelInstanceConfig extends BaseChannelInstanceConfig {
   type: 'web'
 }
 
+export interface WeixinChannelInstanceConfig extends BaseChannelInstanceConfig {
+  type: 'weixin'
+  accountIdRef: string
+  tokenRef: string
+  baseUrlRef?: string
+  cdnBaseUrlRef?: string
+  dmPolicy?: 'open' | 'allowlist' | 'disabled'
+  groupPolicy?: 'open' | 'allowlist' | 'disabled'
+  allowFrom?: string[]
+  groupAllowFrom?: string[]
+}
+
 export type ChannelInstanceConfig =
   | FeishuChannelInstanceConfig
   | TelegramChannelInstanceConfig
   | WebChannelInstanceConfig
+  | WeixinChannelInstanceConfig
 
 export interface EmbeddingModelConfig {
   baseUrl: string

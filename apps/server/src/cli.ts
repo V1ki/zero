@@ -20,6 +20,7 @@ import {
 } from './provider-oauth'
 import { writeRestartTrigger } from './restart-trigger'
 import { rebuildWebBundle } from './web-build'
+import { weixinCli } from './weixin-cli'
 
 const ZERO_DIR = join(process.cwd(), '.zero')
 const SECRETS_PATH = join(ZERO_DIR, 'secrets.enc')
@@ -43,6 +44,11 @@ switch (command) {
     break
   case 'logs':
     await logs()
+    break
+  case 'weixin':
+    await weixinCli(process.argv.slice(3), {
+      secretsPath: SECRETS_PATH,
+    })
     break
   case 'status':
     await status()
@@ -533,6 +539,7 @@ Commands:
   secret set <k> <v> Store a secret in the vault
   secret list        List all stored secret keys
   secret delete <k>  Delete a secret
+  weixin login       Authenticate a Weixin channel via QR login
   provider login <provider> Authenticate managed OAuth (chatgpt | anthropic)
   status             Show system status
 
@@ -543,6 +550,7 @@ Examples:
   bun zero launchctl install
   bun zero logs all --follow
   bun zero secret set openai_codex_api_key sk-xxx
+  bun zero weixin login
   bun zero provider login chatgpt
   bun zero provider login anthropic
   bun zero status

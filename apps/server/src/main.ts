@@ -8,7 +8,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import type { Channel, FeishuStreamingSession } from '@zero-os/channel'
-import { FeishuChannel, TelegramChannel, WebChannel } from '@zero-os/channel'
+import { FeishuChannel, TelegramChannel, WebChannel, WeixinChannel } from '@zero-os/channel'
 import type { AgentSnapshot, Command } from '@zero-os/core'
 import {
   CONTEXT_PARAMS,
@@ -51,6 +51,7 @@ import { CronScheduler } from '@zero-os/scheduler'
 import { Vault, generateMasterKey, getMasterKey, setMasterKey } from '@zero-os/secrets'
 import { OutputSecretFilter } from '@zero-os/secrets'
 import {
+  type ChannelCapabilities,
   type ChannelInstanceConfig,
   type Notification,
   type ScheduleConfig,
@@ -77,6 +78,7 @@ import {
 } from './restart-trigger'
 import { TelegramAdapter } from './telegram-adapter'
 import { syncTelegramCommandMenu } from './telegram-menu'
+import { WeixinAdapter } from './weixin-adapter'
 import { rebuildWebBundle } from './web-build'
 
 export interface StartOptions {
@@ -102,7 +104,7 @@ export function createFeishuStreamingStarter(
 
 interface ChannelRuntimeDefinition {
   name: string
-  type: 'web' | 'feishu' | 'telegram'
+  type: 'web' | 'feishu' | 'telegram' | 'weixin'
   configured: boolean
   receiveNotifications: boolean
   secretRefs: string[]
@@ -125,7 +127,49 @@ interface TelegramRuntimeDefinition extends ChannelRuntimeDefinition {
   }
 }
 
-type ExternalChannelRuntimeDefinition = FeishuRuntimeDefinition | TelegramRuntimeDefinition
+interface WeixinRuntimeDefinition extends ChannelRuntimeDefinition {
+  type: 'weixin'
+  credentials?: {
+    accountId: string
+    token: string
+    baseUrl?: string
+    cdnBaseUrl?: string
+    dmPolicy?: 'open' | 'allowlist' | 'disabled'
+    groupPolicy?: 'open' | 'allowlist' | 'disabled'
+    allowFrom?: string[]
+    groupAllowFrom?: string[]
+  }
+}
+
+type ExternalChannelRuntimeDefinition =
+  | FeishuRuntimeDefinition
+  | TelegramRuntimeDefinition
+  | WeixinRuntimeDefinition
+
+class UnconfiguredChannel implements Channel {
+  constructor(
+    readonly name: string,
+    readonly type: 'feishu' | 'telegram' | 'weixin',
+  ) {}
+
+  async start(): Promise<void> {}
+
+  async stop(): Promise<void> {}
+
+  async send(): Promise<void> {
+    throw new Error(`Channel "${this.name}" is not configured`)
+  }
+
+  isConnected(): boolean {
+    return false
+  }
+
+  setMessageHandler(): void {}
+
+  getCapabilities(): ChannelCapabilities {
+    return {}
+  }
+}
 
 interface RestartSentinelEntry {
   sessionId: string
@@ -819,7 +863,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
         return { handled: true }
       }
 
-      if (ctx.source === 'feishu' || ctx.source === 'telegram') {
+      if (ctx.source === 'feishu' || ctx.source === 'telegram' || ctx.source === 'weixin') {
         try {
           writeRestartTrigger(ZERO_DIR, {
             source: 'chat',
@@ -888,6 +932,56 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
       }
 
       channels.set(definition.name, feishuChannel)
+      heartbeat.write()
+      continue
+    }
+
+    if (definition.type === 'weixin') {
+      if (!definition.credentials) {
+        channels.set(definition.name, new UnconfiguredChannel(definition.name, 'weixin'))
+        heartbeat.write()
+        continue
+      }
+
+      const agentName = buildAgentName(definition.name)
+      const weixinChannel = new WeixinChannel({
+        name: definition.name,
+        accountId: definition.credentials.accountId,
+        token: definition.credentials.token,
+        baseUrl: definition.credentials.baseUrl,
+        cdnBaseUrl: definition.credentials.cdnBaseUrl,
+        homeDir: ZERO_DIR,
+        dmPolicy: definition.credentials.dmPolicy,
+        groupPolicy: definition.credentials.groupPolicy,
+        allowFrom: definition.credentials.allowFrom,
+        groupAllowFrom: definition.credentials.groupAllowFrom,
+      })
+
+      const channelName = definition.name
+      const weixinAdapter = new WeixinAdapter(weixinChannel)
+      weixinChannel.setMessageHandler(async (msg) => {
+        const metadata = (msg.metadata ?? {}) as { chatId?: string }
+        const routedChatId = metadata.chatId ?? msg.senderId
+        await handleChannelMessage(
+          { ...msg, senderId: routedChatId },
+          {
+            channelType: 'weixin',
+            channelName,
+            agentName,
+            agentInstruction: defaultAgentInstruction,
+            sessionManager,
+            commandRouter,
+            channelAdapter: weixinAdapter,
+            metrics,
+            channelCapabilities: weixinChannel.getCapabilities(),
+            isShuttingDown: () => shuttingDown,
+          },
+        )
+      })
+      await weixinChannel.start()
+      console.log(`[ZeRo OS] Channel started: ${definition.name}`)
+
+      channels.set(definition.name, weixinChannel)
       heartbeat.write()
       continue
     }
@@ -1098,6 +1192,41 @@ function buildExternalChannelDefinitions(
                   verificationToken: channel.verificationTokenRef
                     ? (vault.get(channel.verificationTokenRef) ?? undefined)
                     : undefined,
+                }
+              : undefined,
+        })
+        return definitions
+      }
+
+      if (channel.type === 'weixin') {
+        const accountId = vault.get(channel.accountIdRef)
+        const token = vault.get(channel.tokenRef)
+        const baseUrl = channel.baseUrlRef ? (vault.get(channel.baseUrlRef) ?? undefined) : undefined
+        const cdnBaseUrl = channel.cdnBaseUrlRef
+          ? (vault.get(channel.cdnBaseUrlRef) ?? undefined)
+          : undefined
+        definitions.push({
+          name: channel.name,
+          type: 'weixin' as const,
+          configured: !!(accountId && token),
+          receiveNotifications: channel.receiveNotifications ?? false,
+          secretRefs: [
+            channel.accountIdRef,
+            channel.tokenRef,
+            ...(channel.baseUrlRef ? [channel.baseUrlRef] : []),
+            ...(channel.cdnBaseUrlRef ? [channel.cdnBaseUrlRef] : []),
+          ],
+          credentials:
+            accountId && token
+              ? {
+                  accountId,
+                  token,
+                  baseUrl,
+                  cdnBaseUrl,
+                  dmPolicy: channel.dmPolicy,
+                  groupPolicy: channel.groupPolicy,
+                  allowFrom: channel.allowFrom,
+                  groupAllowFrom: channel.groupAllowFrom,
                 }
               : undefined,
         })
