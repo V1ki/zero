@@ -1,5 +1,15 @@
+import { createRequire } from 'node:module'
 import { runQrLogin } from '@zero-os/channel'
 import { Vault, getMasterKey } from '@zero-os/secrets'
+
+const require = createRequire(import.meta.url)
+const qrcodeTerminal = require('qrcode-terminal') as {
+  generate: (
+    input: string,
+    options: { small?: boolean },
+    callback: (qr: string) => void,
+  ) => void
+}
 
 /**
  * CLI handler for `bun zero weixin <sub>`.
@@ -24,6 +34,7 @@ export async function weixinCli(
     onQrCode: (qr) => {
       console.log('')
       console.log('请用微信扫描以下二维码：')
+      console.log(renderQrForTerminal(qr.imageContent || qr.value))
       if (qr.imageContent) console.log(qr.imageContent)
       console.log(`qrcode=${qr.value}`)
     },
@@ -83,4 +94,12 @@ function parseNamedOption(args: string[], flag: string): string | undefined {
     if (args[i].startsWith(`${flag}=`)) return args[i].slice(flag.length + 1)
   }
   return undefined
+}
+
+export function renderQrForTerminal(payload: string): string {
+  let rendered = ''
+  qrcodeTerminal.generate(payload, { small: true }, (qr: string) => {
+    rendered = qr
+  })
+  return rendered.trimEnd()
 }

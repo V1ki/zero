@@ -7,15 +7,16 @@
     "dev": "bun --watch run src/main.ts"
   },
   "dependencies": {
-    "@zero-os/shared": "workspace:*",
-    "@zero-os/core": "workspace:*",
-    "@zero-os/model": "workspace:*",
-    "@zero-os/memory": "workspace:*",
-    "@zero-os/observe": "workspace:*",
-    "@zero-os/secrets": "workspace:*",
     "@zero-os/channel": "workspace:*",
+    "@zero-os/core": "workspace:*",
+    "@zero-os/memory": "workspace:*",
+    "@zero-os/model": "workspace:*",
+    "@zero-os/observe": "workspace:*",
     "@zero-os/scheduler": "workspace:*",
-    "@zero-os/supervisor": "workspace:*"
+    "@zero-os/secrets": "workspace:*",
+    "@zero-os/shared": "workspace:*",
+    "@zero-os/supervisor": "workspace:*",
+    "qrcode-terminal": "^0.12.0"
   },
   "devDependencies": {
     "bun-types": "latest"
