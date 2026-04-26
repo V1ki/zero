@@ -20,9 +20,7 @@ interface MockSession {
   listModels(): string[]
   getMessages(): Message[]
   getReasoningEffort(): ReasoningEffort | undefined
-  setReasoningEffort(
-    effort?: ReasoningEffort,
-  ): {
+  setReasoningEffort(effort?: ReasoningEffort): {
     changed: boolean
     message: string
   }
@@ -31,6 +29,7 @@ interface MockSession {
 function createContext(
   sessionManager: SessionManager,
   source: SessionSource = 'telegram',
+  overrides: Partial<CommandContext> = {},
 ): CommandContext {
   return {
     source,
@@ -47,6 +46,7 @@ function createContext(
       inlineImages: true,
     },
     reply: async () => {},
+    ...overrides,
   }
 }
 
@@ -74,12 +74,14 @@ describe('builtin commands', () => {
       setReasoningEffort: () => ({ changed: true, message: 'ok' }),
     }
 
-    const startCalls: Array<[SessionSource, string, { channelName?: string }]> = []
+    const startCalls: Array<
+      [SessionSource, string, { channelName?: string; participantId?: string }]
+    > = []
     const sessionManager = {
       startNewForChannel: (
         source: SessionSource,
         chatId: string,
-        options: { channelName?: string },
+        options: { channelName?: string; participantId?: string },
       ) => {
         startCalls.push([source, chatId, options])
         return { session: mockSession, previousSessionId: 'sess_old' }
@@ -89,7 +91,9 @@ describe('builtin commands', () => {
     const ctx = createContext(sessionManager)
     const result = await newSessionCommand.execute({}, ctx)
 
-    expect(startCalls).toEqual([['telegram', 'chat-1', { channelName: 'telegram:ops' }]])
+    expect(startCalls).toEqual([
+      ['telegram', 'chat-1', { channelName: 'telegram:ops', participantId: undefined }],
+    ])
     expect(initCalls).toEqual([
       {
         name: 'zero-agent',
@@ -102,6 +106,45 @@ describe('builtin commands', () => {
       reply:
         'New conversation started with model: openai-codex/gpt-5.3-codex-medium\nPrevious session: sess_old',
     })
+  })
+
+  test('/new preserves participant scope for the current sender', async () => {
+    const mockSession: MockSession = {
+      data: {
+        id: 'sess_new_participant',
+        currentModel: 'openai-codex/gpt-5.3-codex-medium',
+        createdAt: '2026-03-27T14:30:05',
+        updatedAt: '2026-03-27T14:30:05',
+      },
+      switchModel: async () => ({ success: true, message: 'ok' }),
+      initAgent: () => {},
+      setChannelCapabilities: () => {},
+      listModels: () => [],
+      getMessages: () => [],
+      getReasoningEffort: () => undefined,
+      setReasoningEffort: () => ({ changed: true, message: 'ok' }),
+    }
+    const startCalls: Array<
+      [SessionSource, string, { channelName?: string; participantId?: string }]
+    > = []
+    const sessionManager = {
+      startNewForChannel: (
+        source: SessionSource,
+        chatId: string,
+        options: { channelName?: string; participantId?: string },
+      ) => {
+        startCalls.push([source, chatId, options])
+        return { session: mockSession }
+      },
+    } as unknown as SessionManager
+
+    const ctx = createContext(sessionManager, 'feishu', { participantId: 'ou_alice' })
+    const result = await newSessionCommand.execute({}, ctx)
+
+    expect(result.handled).toBe(true)
+    expect(startCalls).toEqual([
+      ['feishu', 'chat-1', { channelName: 'feishu:ops', participantId: 'ou_alice' }],
+    ])
   })
 
   test('/new <model> switches model for the new session', async () => {
@@ -200,6 +243,44 @@ describe('builtin commands', () => {
       reply:
         'Available models:\n- openai-codex/gpt-5.3-codex-medium\n- openai-codex/gpt-5.4-medium',
     })
+  })
+
+  test('/model resolves the session with participant scope', async () => {
+    const mockSession: MockSession = {
+      data: {
+        id: 'sess_model_participant',
+        currentModel: 'openai-codex/gpt-5.3-codex-medium',
+        createdAt: '2026-03-27T14:30:05',
+        updatedAt: '2026-03-27T14:30:05',
+      },
+      switchModel: async () => ({ success: true, message: 'ok' }),
+      initAgent: () => {},
+      setChannelCapabilities: () => {},
+      listModels: () => [],
+      getMessages: () => [],
+      getReasoningEffort: () => undefined,
+      setReasoningEffort: () => ({ changed: true, message: 'ok' }),
+    }
+    const calls: Array<[SessionSource, string, string | undefined, string | undefined]> = []
+    const sessionManager = {
+      getOrCreateForChannel: (
+        source: SessionSource,
+        chatId: string,
+        channelName?: string,
+        participantId?: string,
+      ) => {
+        calls.push([source, chatId, channelName, participantId])
+        return { session: mockSession, isNew: false }
+      },
+    } as unknown as SessionManager
+
+    const result = await modelCommand.execute(
+      {},
+      createContext(sessionManager, 'feishu', { participantId: 'ou_alice' }),
+    )
+
+    expect(result.handled).toBe(true)
+    expect(calls).toEqual([['feishu', 'chat-1', 'feishu:ops', 'ou_alice']])
   })
 
   test('/model <target> switches model', async () => {
@@ -330,7 +411,10 @@ describe('builtin commands', () => {
       getReasoningEffort: () => 'medium',
       setReasoningEffort: (effort) => {
         calls.push(effort)
-        return { changed: true, message: 'Thinking effort reset to provider default for this session.' }
+        return {
+          changed: true,
+          message: 'Thinking effort reset to provider default for this session.',
+        }
       },
     }
 

@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test'
 import type { IncomingMessage } from '@zero-os/channel'
 import { CommandRouter } from '@zero-os/core'
+import type { Message } from '@zero-os/shared'
 import type { ChannelAdapter } from '../channel-adapter'
-import { handleChannelMessage, type MessageHandlerDeps } from '../message-handler'
+import { type MessageHandlerDeps, handleChannelMessage } from '../message-handler'
 
 describe('handleChannelMessage', () => {
   type SessionHandleMessageOptions = {
@@ -22,6 +23,12 @@ describe('handleChannelMessage', () => {
   ) => {
     const sessionManager = {
       getOrCreateForChannel: () => ({ session, isNew: false }),
+      isCurrentSessionForChannel: (
+        _source: unknown,
+        _channelId: unknown,
+        _channelName: unknown,
+        sessionId: string,
+      ) => sessionId === session.data.id,
     } as unknown as MessageHandlerDeps['sessionManager']
 
     const commandRouter = new CommandRouter()
@@ -47,10 +54,7 @@ describe('handleChannelMessage', () => {
       isAgentInitialized: () => true,
       setChannelCapabilities: () => {},
       initAgent: () => {},
-      handleMessage: async (
-        content: string,
-        options?: { images?: IncomingMessage['images'] },
-      ) => {
+      handleMessage: async (content: string, options?: { images?: IncomingMessage['images'] }) => {
         handledContent = content
         handledImages = options?.images
         return []
@@ -59,6 +63,12 @@ describe('handleChannelMessage', () => {
 
     const sessionManager = {
       getOrCreateForChannel: () => ({ session, isNew: false }),
+      isCurrentSessionForChannel: (
+        _source: unknown,
+        _channelId: unknown,
+        _channelName: unknown,
+        sessionId: string,
+      ) => sessionId === session.data.id,
     }
 
     const channelAdapter: ChannelAdapter = {
@@ -112,6 +122,108 @@ describe('handleChannelMessage', () => {
         '[文件: report.pdf] 已下载到: /tmp/report.pdf\n\n📎 文件「report.pdf」已下载到: /tmp/report.pdf (2.0 KB)',
     ).toBe(true)
     expect(handledImages).toEqual([{ mediaType: 'image/png', data: 'abc123' }])
+  })
+
+  test('scopes Feishu sessions by sender while replying to the real chat id', async () => {
+    const managerCalls: Array<{
+      source: string
+      channelId: string
+      channelName?: string
+      participantId?: string
+    }> = []
+    const currentChecks: Array<{
+      channelId: string
+      channelName?: string
+      sessionId: string
+      participantId?: string
+    }> = []
+    const replies: Array<{ chatId: string; text: string; replyTo?: string | number }> = []
+    const session = {
+      data: { id: 'sess_alice' },
+      isAgentInitialized: () => true,
+      setChannelCapabilities: () => {},
+      initAgent: () => {},
+      handleMessage: async (): Promise<Message[]> => [
+        {
+          id: 'msg_assistant',
+          sessionId: 'sess_alice',
+          role: 'assistant',
+          messageType: 'message',
+          content: [{ type: 'text', text: 'hello alice' }],
+          createdAt: new Date('2026-03-23T00:00:00.000Z').toISOString(),
+        },
+      ],
+    }
+
+    const sessionManager = {
+      getOrCreateForChannel: (
+        source: string,
+        channelId: string,
+        channelName?: string,
+        participantId?: string,
+      ) => {
+        managerCalls.push({ source, channelId, channelName, participantId })
+        return { session, isNew: false }
+      },
+      isCurrentSessionForChannel: (
+        _source: string,
+        channelId: string,
+        channelName: string | undefined,
+        sessionId: string,
+        participantId?: string,
+      ) => {
+        currentChecks.push({ channelId, channelName, sessionId, participantId })
+        return sessionId === session.data.id && participantId === 'ou_alice'
+      },
+    }
+
+    const channelAdapter: ChannelAdapter = {
+      reply: async (chatId, text, replyTo) => {
+        replies.push({ chatId, text, replyTo })
+      },
+      showTyping: async () => ({
+        clear: async () => {},
+      }),
+    }
+
+    await handleChannelMessage(
+      {
+        channelType: 'feishu',
+        senderId: 'ou_alice',
+        content: 'hello',
+        timestamp: new Date('2026-03-23T00:00:00.000Z').toISOString(),
+        metadata: {
+          chatId: 'oc_group',
+          messageId: 'msg_1',
+          chatType: 'group',
+        },
+      },
+      {
+        channelType: 'feishu',
+        channelName: 'feishu',
+        agentName: 'ZeRo OS',
+        agentInstruction: 'test instruction',
+        sessionManager: sessionManager as unknown as MessageHandlerDeps['sessionManager'],
+        commandRouter: new CommandRouter() as MessageHandlerDeps['commandRouter'],
+        channelAdapter,
+        isShuttingDown: () => false,
+      },
+    )
+
+    expect(managerCalls).toEqual([
+      {
+        source: 'feishu',
+        channelId: 'oc_group',
+        channelName: 'feishu',
+        participantId: 'ou_alice',
+      },
+    ])
+    expect(currentChecks.every((check) => check.participantId === 'ou_alice')).toBe(true)
+    expect(replies).toContainEqual({
+      chatId: 'oc_group',
+      text: 'hello alice',
+      replyTo: 'msg_1',
+    })
   })
 
   test('passes metrics into the command context', async () => {
@@ -307,10 +419,7 @@ describe('handleChannelMessage', () => {
       isAgentInitialized: () => true,
       setChannelCapabilities: () => {},
       initAgent: () => {},
-      handleMessage: async (
-        _content: string,
-        options?: SessionHandleMessageOptions,
-      ) => {
+      handleMessage: async (_content: string, options?: SessionHandleMessageOptions) => {
         // Simulate streaming text before failure
         options?.onTextDelta?.('report content here', { turnId: 'turn_1' })
         const err = new Error('stream returned empty content')
@@ -365,10 +474,7 @@ describe('handleChannelMessage', () => {
       isAgentInitialized: () => true,
       setChannelCapabilities: () => {},
       initAgent: () => {},
-      handleMessage: async (
-        _content: string,
-        options?: SessionHandleMessageOptions,
-      ) => {
+      handleMessage: async (_content: string, options?: SessionHandleMessageOptions) => {
         options?.onTextDelta?.('partial text', { turnId: 'turn_1' })
         const err = new Error('total failure')
         ;(err as Error & { rolledBack?: boolean }).rolledBack = true

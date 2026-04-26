@@ -25,9 +25,7 @@ function normalizeReasoningEffort(value?: string): ReasoningEffort | undefined |
 }
 
 function formatCurrentReasoningEffort(effort?: ReasoningEffort): string {
-  return effort
-    ? `Current thinking effort: ${effort}`
-    : 'Current thinking effort: provider default'
+  return effort ? `Current thinking effort: ${effort}` : 'Current thinking effort: provider default'
 }
 
 export const thinkCommand: Command = {
@@ -39,6 +37,7 @@ export const thinkCommand: Command = {
       ctx.source,
       ctx.chatId,
       ctx.channelName,
+      ctx.participantId,
     )
 
     const parsedArgs = args as ThinkCommandArgs

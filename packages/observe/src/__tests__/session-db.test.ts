@@ -196,28 +196,65 @@ describe('SessionDB', () => {
         source: 'feishu',
         channelName: 'feishu:ops',
         channelId: 'chat_001',
+        participantId: 'ou_alice',
       }),
     )
 
-    db.saveBinding('feishu', 'chat_001', 'sess_bind_1', 'feishu:ops', '2026-04-22T00:00:00.000Z')
+    db.saveBinding(
+      'feishu',
+      'chat_001',
+      'sess_bind_1',
+      'feishu:ops',
+      '2026-04-22T00:00:00.000Z',
+      'ou_alice',
+    )
 
-    expect(db.getBinding('feishu', 'chat_001', 'feishu:ops')).toEqual({
+    expect(db.getBinding('feishu', 'chat_001', 'feishu:ops', 'ou_alice')).toEqual({
       source: 'feishu',
       channelName: 'feishu:ops',
       channelId: 'chat_001',
+      participantId: 'ou_alice',
       sessionId: 'sess_bind_1',
       updatedAt: '2026-04-22T00:00:00.000Z',
     })
+    expect(db.getSession('sess_bind_1')?.participantId).toBe('ou_alice')
 
     expect(db.loadBindings()).toEqual([
       {
         source: 'feishu',
         channelName: 'feishu:ops',
         channelId: 'chat_001',
+        participantId: 'ou_alice',
         sessionId: 'sess_bind_1',
         updatedAt: '2026-04-22T00:00:00.000Z',
       },
     ])
+  })
+
+  test('saveBinding keeps participants isolated in the same channel', () => {
+    db = SessionDB.createInMemory()
+
+    db.saveBinding(
+      'feishu',
+      'chat_001',
+      'sess_alice',
+      'feishu:ops',
+      '2026-04-22T00:00:00.000Z',
+      'ou_alice',
+    )
+    db.saveBinding(
+      'feishu',
+      'chat_001',
+      'sess_bob',
+      'feishu:ops',
+      '2026-04-22T00:01:00.000Z',
+      'ou_bob',
+    )
+
+    expect(db.getBinding('feishu', 'chat_001', 'feishu:ops', 'ou_alice')?.sessionId).toBe(
+      'sess_alice',
+    )
+    expect(db.getBinding('feishu', 'chat_001', 'feishu:ops', 'ou_bob')?.sessionId).toBe('sess_bob')
   })
 
   test('deleteSession removes associated bindings', () => {
@@ -251,7 +288,12 @@ describe('SessionDB', () => {
       }),
     )
 
-    expect(db.loadAllSessions().map((row) => row.id).slice(0, 2)).toEqual(['sess_new', 'sess_old'])
+    expect(
+      db
+        .loadAllSessions()
+        .map((row) => row.id)
+        .slice(0, 2),
+    ).toEqual(['sess_new', 'sess_old'])
     expect(db.loadAllSessions({ limit: 1 }).map((row) => row.id)).toEqual(['sess_new'])
   })
 

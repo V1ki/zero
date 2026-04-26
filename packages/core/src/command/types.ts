@@ -13,6 +13,10 @@ export interface CommandContext {
   channelName: string
   /** Chat/conversation ID */
   chatId: string
+  /** Participant/user ID used to scope channel sessions inside the conversation */
+  participantId?: string
+  /** Platform chat/conversation ID used for delivery when session scope differs */
+  deliveryChatId?: string
   /** Sender user ID */
   senderId: string
   /** Platform message ID (for reply threading) */

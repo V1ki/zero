@@ -1349,7 +1349,7 @@ Channel 支持**双向交互**：不仅推送通知，用户也可通过 Channel
 
 Session 是多轮对话的载体，也是任务执行的载体。每个 Session 在 Memory 中形成一条记录，包含上下文和总结。
 
-在 IM 场景中，一个聊天窗口对应一个 Session。多个 IM 窗口（飞书私聊、Telegram 对话等）同时活跃时，各自运行独立的 Session，互不干扰。
+在 IM 场景中，Session 绑定到当前 Channel 的会话作用域。飞书会使用 `chat_id + sender_id` 作为作用域，因此同一个群聊里的不同用户会拥有独立 Session，P2P 私聊也按用户维度隔离；真实消息投递仍使用平台原始 `chat_id`。
 
 ### 生命周期
 

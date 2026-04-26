@@ -132,10 +132,7 @@ export function parseSessionArgs(content: string): SessionCommandArgs | null {
   return /^\/session(?:@\S+)?$/i.test(content.trim()) ? {} : null
 }
 
-export function buildSessionInfoReply(
-  session: SessionInfoTarget,
-  metrics?: MetricsDB,
-): string {
+export function buildSessionInfoReply(session: SessionInfoTarget, metrics?: MetricsDB): string {
   const info = buildSessionInfoViewModel(session, metrics)
 
   return [
@@ -192,6 +189,7 @@ export const sessionCommand: Command = {
       ctx.source,
       ctx.chatId,
       ctx.channelName,
+      ctx.participantId,
     )
 
     return {

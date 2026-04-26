@@ -3,8 +3,8 @@ import { join } from 'node:path'
 import { ModelRouter } from '@zero-os/model'
 import { SessionDB } from '@zero-os/observe'
 import type { Message } from '@zero-os/shared'
+import type { AgentControl } from '../../agent/agent-control'
 import { loadConfig } from '../../config/loader'
-import { AgentControl } from '../../agent/agent-control'
 import { ToolRegistry } from '../../tool/registry'
 import { SessionManager } from '../manager'
 
@@ -54,10 +54,7 @@ describe('sub-agent restart recovery', () => {
     const toolRegistry = new ToolRegistry()
 
     const manager = new SessionManager(modelRouter, toolRegistry, { sessionDb }, sessionDb)
-    const session = manager.create('telegram', {
-      channelId: 'chat_restart',
-      channelName: 'telegram',
-    })
+    const session = manager.getOrCreateForChannel('telegram', 'chat_restart', 'telegram').session
     const internal = session as unknown as {
       agentControl: AgentControl
       mutex: { acquire(ownerId: string): Promise<void>; release(ownerId: string): void }
@@ -194,10 +191,11 @@ describe('sub-agent restart recovery', () => {
     const toolRegistry = new ToolRegistry()
 
     const manager = new SessionManager(modelRouter, toolRegistry, { sessionDb }, sessionDb)
-    const session = manager.create('telegram', {
-      channelId: 'chat_restart_waiting',
-      channelName: 'telegram',
-    })
+    const session = manager.getOrCreateForChannel(
+      'telegram',
+      'chat_restart_waiting',
+      'telegram',
+    ).session
     const internal = session as unknown as {
       agentControl: AgentControl
       mutex: { acquire(ownerId: string): Promise<void>; release(ownerId: string): void }

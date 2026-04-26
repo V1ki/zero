@@ -22,6 +22,7 @@ export const modelCommand: Command = {
       ctx.source,
       ctx.chatId,
       ctx.channelName,
+      ctx.participantId,
     )
 
     const parsedArgs = args as ModelCommandArgs

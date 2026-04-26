@@ -60,6 +60,8 @@ export interface ScheduleChannelBinding {
   source: SessionSource
   channelName: string
   channelId: string
+  participantId?: string
+  deliveryChannelId?: string
 }
 
 export interface ScheduleConfig {

@@ -16,8 +16,8 @@ import type {
   ChannelCapabilities,
   CompressionResult,
   Message,
-  RunningToolAbortRequestStatus,
   ReasoningEffort,
+  RunningToolAbortRequestStatus,
   SecretFilter,
   Session as SessionData,
   SessionSource,
@@ -246,6 +246,8 @@ export class Session {
             source: this.data.source,
             channelName: this.data.channelName ?? this.data.source,
             channelId: this.data.channelId,
+            participantId: this.data.participantId,
+            deliveryChannelId: this.data.channelId,
           }
         : undefined,
       schedulerHandle: this.deps.schedulerHandle,
@@ -1042,13 +1044,18 @@ export class Session {
     this.agentControl.restoreSnapshot(snapshot)
   }
 
-  ensureChannelContext(channelId: string, channelName?: string): void {
-    if (this.data.channelId === channelId && this.data.channelName === channelName) {
+  ensureChannelContext(channelId: string, channelName?: string, participantId?: string): void {
+    if (
+      this.data.channelId === channelId &&
+      this.data.channelName === channelName &&
+      this.data.participantId === participantId
+    ) {
       return
     }
 
     this.data.channelId = channelId
     this.data.channelName = channelName
+    this.data.participantId = participantId
     this.data.updatedAt = now()
     this.persistState()
 

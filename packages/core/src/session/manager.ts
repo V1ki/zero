@@ -6,25 +6,27 @@ import {
 import type { ModelRouter } from '@zero-os/model'
 import type { MetricsDB, SessionDB, SessionRow } from '@zero-os/observe'
 import {
-  generateSessionId,
   type ChannelSessionBinding,
   type Message,
   type Session as SessionData,
   type SessionPlacement,
   type SessionSource,
+  generateSessionId,
 } from '@zero-os/shared'
-import type { AgentSnapshot } from '../agent/agent-control'
 import type { AgentConfig } from '../agent/agent'
+import type { AgentSnapshot } from '../agent/agent-control'
 import type { ToolRegistry } from '../tool/registry'
 import { Session, type SessionDeps } from './session'
 
 interface SessionCreateOptions {
   channelId?: string
   channelName?: string
+  participantId?: string
   initialModel?: string
   modelScope?: {
     channelId: string
     channelName?: string
+    participantId?: string
   }
 }
 
@@ -33,6 +35,7 @@ export interface InterruptedSessionRef {
   source: SessionSource
   channelId?: string
   channelName?: string
+  participantId?: string
   subAgents?: AgentSnapshot[]
 }
 
@@ -66,7 +69,12 @@ export class SessionManager {
     const modelScope = options.modelScope ?? this.getDefaultModelScope(source)
     const initialModel =
       options.initialModel ??
-      this.getPreferredModel(source, modelScope?.channelId, modelScope?.channelName)
+      this.getPreferredModel(
+        source,
+        modelScope?.channelId,
+        modelScope?.channelName,
+        modelScope?.participantId,
+      )
     const sessionId = this.allocateSessionId(source)
     const sessionDeps = this.createSessionDeps(source, modelScope)
     const session = new Session(
@@ -79,7 +87,7 @@ export class SessionManager {
     )
 
     if (options.channelId) {
-      session.ensureChannelContext(options.channelId, options.channelName)
+      session.ensureChannelContext(options.channelId, options.channelName, options.participantId)
     } else if (options.channelName) {
       session.data.channelName = options.channelName
     }
@@ -113,12 +121,17 @@ export class SessionManager {
     source: SessionSource,
     channelId: string,
     channelName?: string,
+    participantId?: string,
   ): ChannelSessionBinding | undefined {
-    return this.currentBindings.get(this.getChannelSessionKey(source, channelId, channelName))
+    return this.currentBindings.get(
+      this.getChannelSessionKey(source, channelId, channelName, participantId),
+    )
   }
 
   isCurrentSessionId(sessionId: string): boolean {
-    return Array.from(this.currentBindings.values()).some((binding) => binding.sessionId === sessionId)
+    return Array.from(this.currentBindings.values()).some(
+      (binding) => binding.sessionId === sessionId,
+    )
   }
 
   isCurrentSessionForChannel(
@@ -126,24 +139,38 @@ export class SessionManager {
     channelId: string,
     channelName: string | undefined,
     sessionId: string,
+    participantId?: string,
   ): boolean {
-    return this.getCurrentBinding(source, channelId, channelName)?.sessionId === sessionId
+    return (
+      this.getCurrentBinding(source, channelId, channelName, participantId)?.sessionId === sessionId
+    )
   }
 
   getCurrentSessionForChannel(
     source: SessionSource,
     channelId: string,
     channelName?: string,
+    participantId?: string,
   ): Session | undefined {
-    const binding = this.getCurrentBinding(source, channelId, channelName)
+    const binding = this.getCurrentBinding(source, channelId, channelName, participantId)
     if (!binding) return undefined
     return this.restoreSessionById(binding.sessionId) ?? undefined
   }
 
-  getPreferredModel(source: SessionSource, channelId?: string, channelName?: string): string {
-    const scope = this.getModelScope(source, channelId, channelName)
+  getPreferredModel(
+    source: SessionSource,
+    channelId?: string,
+    channelName?: string,
+    participantId?: string,
+  ): string {
+    const scope = this.getModelScope(source, channelId, channelName, participantId)
     if (scope) {
-      const key = this.getChannelSessionKey(source, scope.channelId, scope.channelName)
+      const key = this.getChannelSessionKey(
+        source,
+        scope.channelId,
+        scope.channelName,
+        scope.participantId,
+      )
       const preferred = this.channelModelPreferences.get(key)
       if (preferred) return preferred
     }
@@ -156,11 +183,12 @@ export class SessionManager {
     channelId: string,
     model: string,
     channelName?: string,
+    participantId?: string,
   ): string {
     const normalized = this.modelRouter.normalizeModelReference(model) ?? model
-    const key = this.getChannelSessionKey(source, channelId, channelName)
+    const key = this.getChannelSessionKey(source, channelId, channelName, participantId)
     this.channelModelPreferences.set(key, normalized)
-    this.sessionDb?.saveChannelModel(source, channelId, normalized, channelName)
+    this.sessionDb?.saveChannelModel(source, channelId, normalized, channelName, participantId)
     return normalized
   }
 
@@ -173,21 +201,27 @@ export class SessionManager {
 
   private createSessionDeps(
     source: SessionSource,
-    modelScope?: { channelId: string; channelName?: string },
+    modelScope?: { channelId: string; channelName?: string; participantId?: string },
   ): SessionDeps {
     if (!modelScope) return this.deps
 
     return {
       ...this.deps,
       persistModelPreference: (model: string) => {
-        this.setPreferredModel(source, modelScope.channelId, model, modelScope.channelName)
+        this.setPreferredModel(
+          source,
+          modelScope.channelId,
+          model,
+          modelScope.channelName,
+          modelScope.participantId,
+        )
       },
     }
   }
 
   private getDefaultModelScope(
     source: SessionSource,
-  ): { channelId: string; channelName?: string } | undefined {
+  ): { channelId: string; channelName?: string; participantId?: string } | undefined {
     if (source === 'web') {
       return { channelId: 'default', channelName: 'web' }
     }
@@ -198,9 +232,10 @@ export class SessionManager {
     source: SessionSource,
     channelId?: string,
     channelName?: string,
-  ): { channelId: string; channelName?: string } | undefined {
+    participantId?: string,
+  ): { channelId: string; channelName?: string; participantId?: string } | undefined {
     if (channelId) {
-      return { channelId, channelName }
+      return { channelId, channelName, participantId }
     }
     return this.getDefaultModelScope(source)
   }
@@ -210,7 +245,12 @@ export class SessionManager {
 
     for (const row of this.sessionDb.loadChannelModels()) {
       const normalized = this.modelRouter.normalizeModelReference(row.model) ?? row.model
-      const key = this.getChannelSessionKey(row.source, row.channelId, row.channelName)
+      const key = this.getChannelSessionKey(
+        row.source,
+        row.channelId,
+        row.channelName,
+        row.participantId,
+      )
       this.channelModelPreferences.set(key, normalized)
     }
   }
@@ -231,8 +271,9 @@ export class SessionManager {
     source: SessionSource,
     channelId: string,
     channelName?: string,
+    participantId?: string,
   ): string {
-    return `${source}:${channelName ?? source}:${channelId}`
+    return `${source}:${channelName ?? source}:${channelId}:${participantId ?? ''}`
   }
 
   private allocateSessionId(source: SessionSource): string {
@@ -265,10 +306,16 @@ export class SessionManager {
       tags: normalizedRow.tags,
       channelName: normalizedRow.channelName,
       channelId: normalizedRow.channelId,
+      participantId: normalizedRow.participantId,
     }
 
     const messages = this.sessionDb?.loadSessionMessages(row.id) ?? []
-    const modelScope = this.getModelScope(data.source, data.channelId, data.channelName)
+    const modelScope = this.getModelScope(
+      data.source,
+      data.channelId,
+      data.channelName,
+      data.participantId,
+    )
     const session = Session.restore(
       data,
       messages,
@@ -308,6 +355,7 @@ export class SessionManager {
       source: SessionSource
       channelId: string
       channelName?: string
+      participantId?: string
       previousSessionId?: string
       replacedBySessionId?: string
     },
@@ -318,27 +366,45 @@ export class SessionManager {
       source: binding.source,
       channelId: binding.channelId,
       channelName: binding.channelName,
+      participantId: binding.participantId,
       previousSessionId: binding.previousSessionId ?? null,
       replacedBySessionId: binding.replacedBySessionId ?? null,
     })
   }
 
   private clearCurrentBinding(binding: ChannelSessionBinding): void {
-    const key = this.getChannelSessionKey(binding.source, binding.channelId, binding.channelName)
+    const key = this.getChannelSessionKey(
+      binding.source,
+      binding.channelId,
+      binding.channelName,
+      binding.participantId,
+    )
     this.currentBindings.delete(key)
-    this.sessionDb?.deleteBinding(binding.source, binding.channelId, binding.channelName)
+    this.sessionDb?.deleteBinding(
+      binding.source,
+      binding.channelId,
+      binding.channelName,
+      binding.participantId,
+    )
     this.deps.observability?.syncSessionCurrentState(binding.sessionId, false)
     this.emitBindingEvent('binding_cleared', {
       sessionId: binding.sessionId,
       source: binding.source,
       channelId: binding.channelId,
       channelName: binding.channelName,
+      participantId: binding.participantId,
     })
   }
 
   private backgroundSession(
     session: Session,
-    binding: { source: SessionSource; channelId: string; channelName?: string; sessionId: string },
+    binding: {
+      source: SessionSource
+      channelId: string
+      channelName?: string
+      participantId?: string
+      sessionId: string
+    },
   ): void {
     // Losing the current binding is the new handoff point: the old session becomes history-only
     // immediately, and any session-memory evaluation happens best-effort after its in-flight turn drains.
@@ -348,6 +414,7 @@ export class SessionManager {
       source: binding.source,
       channelId: binding.channelId,
       channelName: binding.channelName,
+      participantId: binding.participantId,
       replacedBySessionId: binding.sessionId,
     })
 
@@ -390,8 +457,9 @@ export class SessionManager {
     channelId: string,
     session: Session,
     channelName?: string,
+    participantId?: string,
   ): { previousSessionId?: string } {
-    const key = this.getChannelSessionKey(source, channelId, channelName)
+    const key = this.getChannelSessionKey(source, channelId, channelName, participantId)
     const previousBinding = this.currentBindings.get(key)
     const previousSessionId =
       previousBinding && previousBinding.sessionId !== session.data.id
@@ -399,18 +467,26 @@ export class SessionManager {
         : undefined
     const updatedAt = new Date().toISOString()
 
-    session.ensureChannelContext(channelId, channelName)
+    session.ensureChannelContext(channelId, channelName, participantId)
 
     const nextBinding: ChannelSessionBinding = {
       source,
       channelName,
       channelId,
+      participantId,
       sessionId: session.data.id,
       updatedAt,
     }
 
     this.currentBindings.set(key, nextBinding)
-    this.sessionDb?.saveBinding(source, channelId, session.data.id, channelName, updatedAt)
+    this.sessionDb?.saveBinding(
+      source,
+      channelId,
+      session.data.id,
+      channelName,
+      updatedAt,
+      participantId,
+    )
     this.deps.observability?.syncSessionCurrentState(session.data.id, true)
 
     if (previousBinding && previousBinding.sessionId !== session.data.id) {
@@ -421,6 +497,7 @@ export class SessionManager {
         source,
         channelId,
         channelName,
+        participantId,
         previousSessionId: previousBinding.sessionId,
       })
       if (previous) {
@@ -432,6 +509,7 @@ export class SessionManager {
         source,
         channelId,
         channelName,
+        participantId,
       })
     }
 
@@ -442,12 +520,13 @@ export class SessionManager {
     source: SessionSource,
     channelId: string,
     channelName?: string,
+    participantId?: string,
   ): { session: Session; isNew: boolean } {
-    const existingBinding = this.getCurrentBinding(source, channelId, channelName)
+    const existingBinding = this.getCurrentBinding(source, channelId, channelName, participantId)
     if (existingBinding) {
       const restored = this.restoreSessionById(existingBinding.sessionId)
       if (restored) {
-        restored.ensureChannelContext(channelId, channelName)
+        restored.ensureChannelContext(channelId, channelName, participantId)
         return { session: restored, isNew: false }
       }
 
@@ -457,9 +536,10 @@ export class SessionManager {
     const session = this.create(source, {
       channelId,
       channelName,
-      modelScope: { channelId, channelName },
+      participantId,
+      modelScope: { channelId, channelName, participantId },
     })
-    this.setCurrentBinding(source, channelId, session, channelName)
+    this.setCurrentBinding(source, channelId, session, channelName, participantId)
     return { session, isNew: true }
   }
 
@@ -468,6 +548,7 @@ export class SessionManager {
     channelId: string,
     sessionId: string,
     channelName?: string,
+    participantId?: string,
   ): { session: Session; previousSessionId?: string; isRestored: boolean } | null {
     const existing = this.sessions.get(sessionId)
     const session = existing ?? this.restoreSessionById(sessionId)
@@ -475,7 +556,13 @@ export class SessionManager {
       return null
     }
 
-    const { previousSessionId } = this.setCurrentBinding(source, channelId, session, channelName)
+    const { previousSessionId } = this.setCurrentBinding(
+      source,
+      channelId,
+      session,
+      channelName,
+      participantId,
+    )
     return {
       session,
       previousSessionId,
@@ -486,20 +573,35 @@ export class SessionManager {
   startNewForChannel(
     source: SessionSource,
     channelId: string,
-    channelNameOrOptions?: string | { channelName?: string; previousStatus?: string },
+    channelNameOrOptions?:
+      | string
+      | {
+          channelName?: string
+          participantId?: string
+          previousStatus?: string
+        },
     _maybeOptions?: { previousStatus?: string },
   ): { session: Session; previousSessionId?: string } {
     const channelName =
       typeof channelNameOrOptions === 'string'
         ? channelNameOrOptions
         : channelNameOrOptions?.channelName
+    const participantId =
+      typeof channelNameOrOptions === 'string' ? undefined : channelNameOrOptions?.participantId
 
     const session = this.create(source, {
       channelId,
       channelName,
-      modelScope: { channelId, channelName },
+      participantId,
+      modelScope: { channelId, channelName, participantId },
     })
-    const { previousSessionId } = this.setCurrentBinding(source, channelId, session, channelName)
+    const { previousSessionId } = this.setCurrentBinding(
+      source,
+      channelId,
+      session,
+      channelName,
+      participantId,
+    )
     return { session, previousSessionId }
   }
 
@@ -532,13 +634,23 @@ export class SessionManager {
     for (const binding of bindings) {
       const session = this.restoreSessionById(binding.sessionId)
       if (!session) {
-        this.sessionDb.deleteBinding(binding.source, binding.channelId, binding.channelName)
+        this.sessionDb.deleteBinding(
+          binding.source,
+          binding.channelId,
+          binding.channelName,
+          binding.participantId,
+        )
         continue
       }
 
-      session.ensureChannelContext(binding.channelId, binding.channelName)
+      session.ensureChannelContext(binding.channelId, binding.channelName, binding.participantId)
       this.currentBindings.set(
-        this.getChannelSessionKey(binding.source, binding.channelId, binding.channelName),
+        this.getChannelSessionKey(
+          binding.source,
+          binding.channelId,
+          binding.channelName,
+          binding.participantId,
+        ),
         binding,
       )
       this.deps.observability?.syncSessionCurrentState(session.data.id, true)
@@ -578,11 +690,14 @@ export class SessionManager {
           source: session.data.source,
           channelId: session.data.channelId,
           channelName: session.data.channelName,
+          participantId: session.data.participantId,
           ...(subAgents.length > 0 ? { subAgents } : {}),
         }
       })
 
-    console.warn(`[SessionManager] Drain timeout: ${interrupted.length} current turn(s) still active`)
+    console.warn(
+      `[SessionManager] Drain timeout: ${interrupted.length} current turn(s) still active`,
+    )
     return interrupted
   }
 

@@ -37,16 +37,22 @@ export const newSessionCommand: Command = {
       }
     }
 
-    const { session, previousSessionId } = ctx.sessionManager.startNewForChannel(ctx.source, ctx.chatId, {
-      channelName: ctx.channelName,
-    })
+    const { session, previousSessionId } = ctx.sessionManager.startNewForChannel(
+      ctx.source,
+      ctx.chatId,
+      {
+        channelName: ctx.channelName,
+        participantId: ctx.participantId,
+      },
+    )
 
     if (ctx.channelCapabilities) {
       session.setChannelCapabilities(ctx.channelCapabilities)
     }
 
     const parsedArgs = args as NewSessionArgs
-    const modelArg = typeof parsedArgs.modelArg === 'string' ? parsedArgs.modelArg.trim() : undefined
+    const modelArg =
+      typeof parsedArgs.modelArg === 'string' ? parsedArgs.modelArg.trim() : undefined
     const modelResult = modelArg ? await session.switchModel(modelArg) : undefined
 
     session.initAgent({

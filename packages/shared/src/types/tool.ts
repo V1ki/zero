@@ -259,6 +259,8 @@ export interface ToolContext {
     source: string
     channelName: string
     channelId: string
+    participantId?: string
+    deliveryChannelId?: string
   }
   schedulerHandle?: {
     addAndStart(config: ScheduleConfig): void

@@ -81,6 +81,41 @@ describe('ScheduleTool', () => {
     expect(result.output).toContain('feishu:oc_abc123')
   })
 
+  test('create: preserves participant and real delivery channel binding', async () => {
+    let saved: ScheduleConfig | undefined
+    const ctx = createMockContext({
+      channelBinding: {
+        source: 'feishu',
+        channelName: 'feishu',
+        channelId: 'oc_group',
+        participantId: 'ou_alice',
+        deliveryChannelId: 'oc_group',
+      },
+      scheduleStore: {
+        save(config) {
+          saved = config
+        },
+        delete: () => false,
+      },
+    })
+
+    const result = await tool.run(ctx, {
+      action: 'create',
+      name: 'participant-reminder',
+      cron: '0 9 * * *',
+      instruction: 'Check the build',
+    })
+
+    expect(result.success).toBe(true)
+    expect(saved?.channel).toEqual({
+      source: 'feishu',
+      channelName: 'feishu',
+      channelId: 'oc_group',
+      participantId: 'ou_alice',
+      deliveryChannelId: 'oc_group',
+    })
+  })
+
   test('create: auto-generates name if not provided', async () => {
     const ctx = createMockContext()
     const result = await tool.run(ctx, {

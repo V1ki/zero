@@ -20,6 +20,7 @@ export interface SessionRow {
   tags: string[]
   channelName?: string
   channelId?: string
+  participantId?: string
   agentConfigJson?: string
   systemPrompt?: string
   createdAt: string
@@ -37,6 +38,7 @@ interface RawSessionRow {
   tags_json: string
   channel_name: string | null
   channel_id: string | null
+  participant_id: string | null
   agent_config_json: string | null
   system_prompt: string | null
   created_at: string
@@ -54,6 +56,7 @@ interface RawChannelModelRow {
   source: string
   channel_name: string
   channel_id: string
+  participant_id: string
   model: string
   updated_at: string
 }
@@ -62,6 +65,7 @@ interface RawBindingRow {
   source: string
   channel_name: string
   channel_id: string
+  participant_id: string
   session_id: string
   updated_at: string
 }
@@ -100,6 +104,7 @@ export class SessionDB {
         tags_json TEXT NOT NULL DEFAULT '[]',
         channel_name TEXT,
         channel_id TEXT,
+        participant_id TEXT,
         agent_config_json TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -120,9 +125,10 @@ export class SessionDB {
         source TEXT NOT NULL,
         channel_name TEXT NOT NULL DEFAULT '',
         channel_id TEXT NOT NULL,
+        participant_id TEXT NOT NULL DEFAULT '',
         model TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        PRIMARY KEY (source, channel_name, channel_id)
+        PRIMARY KEY (source, channel_name, channel_id, participant_id)
       )
     `)
 
@@ -131,9 +137,10 @@ export class SessionDB {
         source TEXT NOT NULL,
         channel_name TEXT NOT NULL DEFAULT '',
         channel_id TEXT NOT NULL,
+        participant_id TEXT NOT NULL DEFAULT '',
         session_id TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        PRIMARY KEY (source, channel_name, channel_id)
+        PRIMARY KEY (source, channel_name, channel_id, participant_id)
       )
     `)
 
@@ -151,15 +158,23 @@ export class SessionDB {
     }
 
     try {
+      this.db.run('ALTER TABLE sessions ADD COLUMN participant_id TEXT')
+    } catch {
+      // Column already exists
+    }
+
+    try {
       this.db.run('ALTER TABLE sessions ADD COLUMN reasoning_effort TEXT')
     } catch {
       // Column already exists
     }
 
     this.db.run('CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)')
+    this.migrateParticipantScopedTables()
+
     this.db.run('CREATE INDEX IF NOT EXISTS idx_sessions_channel ON sessions(source, channel_id)')
     this.db.run(
-      'CREATE INDEX IF NOT EXISTS idx_sessions_channel_instance ON sessions(source, channel_name, channel_id)',
+      'CREATE INDEX IF NOT EXISTS idx_sessions_channel_instance ON sessions(source, channel_name, channel_id, participant_id)',
     )
     this.db.run('CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at)')
     this.db.run(
@@ -183,6 +198,8 @@ export class SessionDB {
         channel_source TEXT,
         channel_name TEXT,
         channel_id TEXT,
+        channel_participant_id TEXT,
+        delivery_channel_id TEXT,
         one_shot INTEGER NOT NULL DEFAULT 0,
         created_by TEXT NOT NULL DEFAULT 'runtime',
         created_at TEXT NOT NULL,
@@ -190,7 +207,78 @@ export class SessionDB {
       )
     `)
 
+    try {
+      this.db.run('ALTER TABLE schedules ADD COLUMN channel_participant_id TEXT')
+    } catch {
+      // Column already exists
+    }
+
+    try {
+      this.db.run('ALTER TABLE schedules ADD COLUMN delivery_channel_id TEXT')
+    } catch {
+      // Column already exists
+    }
+
     this.backfillLegacyBindings()
+  }
+
+  private migrateParticipantScopedTables(): void {
+    this.ensureParticipantPrimaryKey('channel_models', [
+      'source TEXT NOT NULL',
+      "channel_name TEXT NOT NULL DEFAULT ''",
+      'channel_id TEXT NOT NULL',
+      "participant_id TEXT NOT NULL DEFAULT ''",
+      'model TEXT NOT NULL',
+      'updated_at TEXT NOT NULL',
+      'PRIMARY KEY (source, channel_name, channel_id, participant_id)',
+    ])
+
+    this.ensureParticipantPrimaryKey('channel_session_bindings', [
+      'source TEXT NOT NULL',
+      "channel_name TEXT NOT NULL DEFAULT ''",
+      'channel_id TEXT NOT NULL',
+      "participant_id TEXT NOT NULL DEFAULT ''",
+      'session_id TEXT NOT NULL',
+      'updated_at TEXT NOT NULL',
+      'PRIMARY KEY (source, channel_name, channel_id, participant_id)',
+    ])
+  }
+
+  private ensureParticipantPrimaryKey(
+    table: 'channel_models' | 'channel_session_bindings',
+    columns: string[],
+  ): void {
+    const tableInfo = this.db.query(`PRAGMA table_info(${table})`).all() as Array<{
+      name: string
+      pk: number
+    }>
+    const participantColumn = tableInfo.find((column) => column.name === 'participant_id')
+    if (participantColumn && participantColumn.pk > 0) return
+
+    const tempTable = `${table}_participant_migration`
+    this.db.run(`DROP TABLE IF EXISTS ${tempTable}`)
+    this.db.run(`CREATE TABLE ${tempTable} (${columns.join(', ')})`)
+
+    const participantExpr = participantColumn ? "COALESCE(participant_id, '')" : "''"
+
+    if (table === 'channel_models') {
+      this.db.run(`
+        INSERT OR REPLACE INTO ${tempTable}
+          (source, channel_name, channel_id, participant_id, model, updated_at)
+        SELECT source, channel_name, channel_id, ${participantExpr}, model, updated_at
+        FROM ${table}
+      `)
+    } else {
+      this.db.run(`
+        INSERT OR REPLACE INTO ${tempTable}
+          (source, channel_name, channel_id, participant_id, session_id, updated_at)
+        SELECT source, channel_name, channel_id, ${participantExpr}, session_id, updated_at
+        FROM ${table}
+      `)
+    }
+
+    this.db.run(`DROP TABLE ${table}`)
+    this.db.run(`ALTER TABLE ${tempTable} RENAME TO ${table}`)
   }
 
   private backfillLegacyBindings(): void {
@@ -223,8 +311,8 @@ export class SessionDB {
         WHERE status IN ('active', 'idle')
           AND (channel_id IS NOT NULL OR source = 'web')
       )
-      INSERT INTO channel_session_bindings (source, channel_name, channel_id, session_id, updated_at)
-      SELECT source, bind_channel_name, bind_channel_id, session_id, updated_at
+      INSERT INTO channel_session_bindings (source, channel_name, channel_id, participant_id, session_id, updated_at)
+      SELECT source, bind_channel_name, bind_channel_id, '', session_id, updated_at
       FROM ranked
       WHERE rn = 1 AND bind_channel_id IS NOT NULL
     `)
@@ -236,8 +324,8 @@ export class SessionDB {
   saveSession(data: SessionData, agentConfigJson?: string, systemPrompt?: string): void {
     this.db.run(
       `INSERT INTO sessions
-       (id, source, current_model, reasoning_effort, model_history_json, summary, tags_json, channel_name, channel_id, agent_config_json, system_prompt, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       (id, source, current_model, reasoning_effort, model_history_json, summary, tags_json, channel_name, channel_id, participant_id, agent_config_json, system_prompt, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          source = excluded.source,
          current_model = excluded.current_model,
@@ -247,6 +335,7 @@ export class SessionDB {
          tags_json = excluded.tags_json,
          channel_name = excluded.channel_name,
          channel_id = excluded.channel_id,
+         participant_id = excluded.participant_id,
          agent_config_json = excluded.agent_config_json,
          system_prompt = excluded.system_prompt,
          created_at = excluded.created_at,
@@ -261,6 +350,7 @@ export class SessionDB {
         JSON.stringify(data.tags),
         data.channelName ?? null,
         data.channelId ?? null,
+        data.participantId ?? null,
         agentConfigJson ?? null,
         systemPrompt ?? null,
         data.createdAt,
@@ -285,11 +375,12 @@ export class SessionDB {
     channelId: string,
     model: string,
     channelName?: string,
+    participantId?: string,
   ): void {
     this.db.run(
-      `INSERT OR REPLACE INTO channel_models (source, channel_name, channel_id, model, updated_at)
-       VALUES (?, ?, ?, ?, ?)`,
-      [source, channelName ?? '', channelId, model, new Date().toISOString()],
+      `INSERT OR REPLACE INTO channel_models (source, channel_name, channel_id, participant_id, model, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [source, channelName ?? '', channelId, participantId ?? '', model, new Date().toISOString()],
     )
   }
 
@@ -297,12 +388,13 @@ export class SessionDB {
     source: SessionSource,
     channelId: string,
     channelName?: string,
+    participantId?: string,
   ): string | undefined {
     const row = this.db
       .query(
-        'SELECT model FROM channel_models WHERE source = ? AND channel_name = ? AND channel_id = ?',
+        'SELECT model FROM channel_models WHERE source = ? AND channel_name = ? AND channel_id = ? AND participant_id = ?',
       )
-      .get(source, channelName ?? '', channelId) as { model: string } | null
+      .get(source, channelName ?? '', channelId, participantId ?? '') as { model: string } | null
     return row?.model ?? undefined
   }
 
@@ -310,11 +402,12 @@ export class SessionDB {
     source: SessionSource
     channelName?: string
     channelId: string
+    participantId?: string
     model: string
   }> {
     const rows = this.db
       .query(
-        'SELECT source, channel_name, channel_id, model, updated_at FROM channel_models ORDER BY updated_at DESC',
+        'SELECT source, channel_name, channel_id, participant_id, model, updated_at FROM channel_models ORDER BY updated_at DESC',
       )
       .all() as RawChannelModelRow[]
 
@@ -322,6 +415,7 @@ export class SessionDB {
       source: row.source as SessionSource,
       channelName: row.channel_name || undefined,
       channelId: row.channel_id,
+      participantId: row.participant_id || undefined,
       model: row.model,
     }))
   }
@@ -332,21 +426,22 @@ export class SessionDB {
     sessionId: string,
     channelName?: string,
     updatedAt = new Date().toISOString(),
+    participantId?: string,
   ): void {
     this.db.run(
-      `INSERT INTO channel_session_bindings (source, channel_name, channel_id, session_id, updated_at)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(source, channel_name, channel_id) DO UPDATE SET
+      `INSERT INTO channel_session_bindings (source, channel_name, channel_id, participant_id, session_id, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(source, channel_name, channel_id, participant_id) DO UPDATE SET
          session_id = excluded.session_id,
          updated_at = excluded.updated_at`,
-      [source, channelName ?? '', channelId, sessionId, updatedAt],
+      [source, channelName ?? '', channelId, participantId ?? '', sessionId, updatedAt],
     )
   }
 
   loadBindings(): ChannelSessionBinding[] {
     const rows = this.db
       .query(
-        `SELECT source, channel_name, channel_id, session_id, updated_at
+        `SELECT source, channel_name, channel_id, participant_id, session_id, updated_at
          FROM channel_session_bindings
          ORDER BY updated_at DESC`,
       )
@@ -358,22 +453,28 @@ export class SessionDB {
     source: SessionSource,
     channelId: string,
     channelName?: string,
+    participantId?: string,
   ): ChannelSessionBinding | null {
     const row = this.db
       .query(
-        `SELECT source, channel_name, channel_id, session_id, updated_at
+        `SELECT source, channel_name, channel_id, participant_id, session_id, updated_at
          FROM channel_session_bindings
-         WHERE source = ? AND channel_name = ? AND channel_id = ?`,
+         WHERE source = ? AND channel_name = ? AND channel_id = ? AND participant_id = ?`,
       )
-      .get(source, channelName ?? '', channelId) as RawBindingRow | null
+      .get(source, channelName ?? '', channelId, participantId ?? '') as RawBindingRow | null
 
     return row ? toChannelSessionBinding(row) : null
   }
 
-  deleteBinding(source: SessionSource, channelId: string, channelName?: string): boolean {
+  deleteBinding(
+    source: SessionSource,
+    channelId: string,
+    channelName?: string,
+    participantId?: string,
+  ): boolean {
     const result = this.db.run(
-      'DELETE FROM channel_session_bindings WHERE source = ? AND channel_name = ? AND channel_id = ?',
-      [source, channelName ?? '', channelId],
+      'DELETE FROM channel_session_bindings WHERE source = ? AND channel_name = ? AND channel_id = ? AND participant_id = ?',
+      [source, channelName ?? '', channelId, participantId ?? ''],
     )
     return result.changes > 0
   }
@@ -449,8 +550,9 @@ export class SessionDB {
     this.db.run(
       `INSERT OR REPLACE INTO schedules
        (name, cron, instruction, model, overlap_policy, misfire_policy,
-        channel_source, channel_name, channel_id, one_shot, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        channel_source, channel_name, channel_id, channel_participant_id, delivery_channel_id,
+        one_shot, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         config.name,
         config.cron,
@@ -461,6 +563,8 @@ export class SessionDB {
         config.channel?.source ?? null,
         config.channel?.channelName ?? null,
         config.channel?.channelId ?? null,
+        config.channel?.participantId ?? null,
+        config.channel?.deliveryChannelId ?? null,
         config.oneShot ? 1 : 0,
         config.createdBy ?? 'runtime',
         ts,
@@ -494,9 +598,15 @@ export class SessionDB {
       if (row.one_shot) config.oneShot = true
       if (row.channel_source && row.channel_name && row.channel_id) {
         config.channel = {
-          source: row.channel_source,
-          channelName: row.channel_name,
-          channelId: row.channel_id,
+          source: row.channel_source as SessionSource,
+          channelName: row.channel_name as string,
+          channelId: row.channel_id as string,
+          participantId: row.channel_participant_id
+            ? (row.channel_participant_id as string)
+            : undefined,
+          deliveryChannelId: row.delivery_channel_id
+            ? (row.delivery_channel_id as string)
+            : undefined,
         } as ScheduleChannelBinding
       }
       return config
@@ -519,6 +629,7 @@ function toSessionRow(row: RawSessionRow): SessionRow {
     tags: JSON.parse(row.tags_json) as string[],
     channelName: row.channel_name ?? undefined,
     channelId: row.channel_id ?? undefined,
+    participantId: row.participant_id ?? undefined,
     agentConfigJson: row.agent_config_json ?? undefined,
     systemPrompt: row.system_prompt ?? undefined,
     createdAt: row.created_at,
@@ -531,6 +642,7 @@ function toChannelSessionBinding(row: RawBindingRow): ChannelSessionBinding {
     source: row.source as SessionSource,
     channelName: row.channel_name || undefined,
     channelId: row.channel_id,
+    participantId: row.participant_id || undefined,
     sessionId: row.session_id,
     updatedAt: row.updated_at,
   }

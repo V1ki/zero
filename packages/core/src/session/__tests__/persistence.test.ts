@@ -5,9 +5,9 @@ import { type ObservabilityStore, SessionDB } from '@zero-os/observe'
 import type { Message, Session as SessionData } from '@zero-os/shared'
 import { loadConfig } from '../../config/loader'
 import { ToolRegistry } from '../../tool/registry'
-import { createTestProjectRoot } from './test-helpers'
 import { SessionManager } from '../manager'
 import { Session } from '../session'
+import { createTestProjectRoot } from './test-helpers'
 
 const config = loadConfig(join(process.cwd(), '.zero', 'config.yaml'))
 const secrets = new Map<string, string>([['openai_codex_api_key', 'sk-test-placeholder']])
@@ -29,9 +29,9 @@ function makeSessionData(overrides: Partial<SessionData> = {}): SessionData {
     updatedAt: overrides.updatedAt ?? createdAt,
     source: overrides.source ?? 'web',
     currentModel: overrides.currentModel ?? 'gpt-5.3-codex-medium',
-    modelHistory:
-      overrides.modelHistory ??
-      [{ model: overrides.currentModel ?? 'gpt-5.3-codex-medium', from: createdAt, to: null }],
+    modelHistory: overrides.modelHistory ?? [
+      { model: overrides.currentModel ?? 'gpt-5.3-codex-medium', from: createdAt, to: null },
+    ],
     tags: overrides.tags ?? [],
     summary: overrides.summary,
     channelName: overrides.channelName,
@@ -143,6 +143,7 @@ describe('Session Persistence', () => {
       source: 'feishu',
       channelName: 'feishu:ops',
       channelId: 'chat_feishu_1',
+      participantId: 'ou_alice',
     })
     sessionDb.saveSession(data1, '{"name":"zero-feishu","agentInstruction":"test"}')
     sessionDb.saveMessages('sess_mgr_1', [
@@ -155,7 +156,14 @@ describe('Session Persistence', () => {
         createdAt: new Date().toISOString(),
       },
     ])
-    sessionDb.saveBinding('feishu', 'chat_feishu_1', 'sess_mgr_1', 'feishu:ops', data1.updatedAt)
+    sessionDb.saveBinding(
+      'feishu',
+      'chat_feishu_1',
+      'sess_mgr_1',
+      'feishu:ops',
+      data1.updatedAt,
+      'ou_alice',
+    )
 
     const data2 = makeSessionData({
       id: 'sess_mgr_2',
@@ -189,9 +197,15 @@ describe('Session Persistence', () => {
 
     expect(expectDefined(manager.get('sess_mgr_1')).getMessages()).toHaveLength(1)
 
-    const feishu = manager.getOrCreateForChannel('feishu', 'chat_feishu_1', 'feishu:ops')
+    const feishu = manager.getOrCreateForChannel(
+      'feishu',
+      'chat_feishu_1',
+      'feishu:ops',
+      'ou_alice',
+    )
     expect(feishu.isNew).toBe(false)
     expect(feishu.session.data.id).toBe('sess_mgr_1')
+    expect(feishu.session.data.participantId).toBe('ou_alice')
 
     const web = manager.getOrCreateForChannel('web', 'default', 'web')
     expect(web.isNew).toBe(false)
@@ -394,7 +408,11 @@ describe('Session Persistence', () => {
       { sessionDb, projectRoot: testProject.projectRoot },
       sessionDb,
     )
-    const session = manager.getOrCreateForChannel('telegram', 'chat_drain_timeout', 'telegram').session
+    const session = manager.getOrCreateForChannel(
+      'telegram',
+      'chat_drain_timeout',
+      'telegram',
+    ).session
     const internal = session as unknown as {
       mutex: { acquire(ownerId: string): Promise<void>; release(ownerId: string): void }
     }

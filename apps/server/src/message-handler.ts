@@ -8,13 +8,13 @@ import type {
 } from '@zero-os/core'
 import type { MetricsDB } from '@zero-os/observe'
 import {
-  collectAssistantReply,
-  describeError,
-  extractAssistantText,
   type ChannelCapabilities,
   type ImageBlock,
   type Message,
   type SessionSource,
+  collectAssistantReply,
+  describeError,
+  extractAssistantText,
   toErrorMessage,
 } from '@zero-os/shared'
 import type { ChannelAdapter, StreamAdapter, TypingHandle } from './channel-adapter'
@@ -39,6 +39,7 @@ export async function handleChannelMessage(
   deps: MessageHandlerDeps,
 ): Promise<void> {
   const chatId = normalizeChatId(msg)
+  const participantId = normalizeParticipantId(msg, deps.channelType)
   const messageId = normalizeMessageId(msg)
 
   const reply = (text: string) => deps.channelAdapter.reply(chatId, text, messageId)
@@ -63,6 +64,8 @@ export async function handleChannelMessage(
       source: deps.channelType,
       channelName: deps.channelName,
       chatId,
+      participantId,
+      deliveryChatId: chatId,
       senderId: msg.senderId,
       messageId,
       metadata: msg.metadata,
@@ -88,6 +91,7 @@ export async function handleChannelMessage(
       deps.channelType,
       chatId,
       deps.channelName,
+      participantId,
     )
     activeSessionId = session.data.id
     const canDeliverToCurrentSession = () =>
@@ -97,6 +101,7 @@ export async function handleChannelMessage(
             deps.channelType === 'web' ? 'default' : chatId,
             deps.channelType === 'web' ? 'web' : deps.channelName,
             activeSessionId,
+            deps.channelType === 'web' ? undefined : participantId,
           )
         : false
     ensureSessionReady(session, isNew, deps)
@@ -139,9 +144,9 @@ export async function handleChannelMessage(
       images: msg.images,
       onTextDelta: streaming
         ? (delta, meta) => {
-          if (!delta) return
-          if (!canDeliverToCurrentSession()) return
-          seenDelta = true
+            if (!delta) return
+            if (!canDeliverToCurrentSession()) return
+            seenDelta = true
 
             if (lastTurnId && lastTurnId !== meta.turnId && streamText) {
               const prevText = streamText
@@ -268,8 +273,7 @@ export async function handleChannelMessage(
           .map((result) => result.block)
 
         if (uploadedRefs.length > 0) {
-          imageMarkdownSuffix =
-            '\n\n' + uploadedRefs.map((ref, index) => `![image-${index + 1}](${ref})`).join('\n\n')
+          imageMarkdownSuffix = `\n\n${uploadedRefs.map((ref, index) => `![image-${index + 1}](${ref})`).join('\n\n')}`
         }
       } else {
         failedImageBlocks = imageBlocks
@@ -281,7 +285,7 @@ export async function handleChannelMessage(
         await dismissStreaming(streaming)
         streaming = null
       } else {
-      const finalText = (streamText || collectAssistantReply(replies)) + imageMarkdownSuffix
+        const finalText = (streamText || collectAssistantReply(replies)) + imageMarkdownSuffix
         try {
           await streaming.complete(finalText)
         } catch (err) {
@@ -303,7 +307,11 @@ export async function handleChannelMessage(
     }
 
     const fallbackImageBlocks = shouldEmbedImageBlocks ? failedImageBlocks : imageBlocks
-    if (fallbackImageBlocks.length > 0 && deps.channelAdapter.sendImage && canDeliverToCurrentSession()) {
+    if (
+      fallbackImageBlocks.length > 0 &&
+      deps.channelAdapter.sendImage &&
+      canDeliverToCurrentSession()
+    ) {
       for (const img of fallbackImageBlocks) {
         try {
           const imageBuffer = Buffer.from(img.data, 'base64')
@@ -362,6 +370,7 @@ export async function handleChannelMessage(
               deps.channelType === 'web' ? 'default' : chatId,
               deps.channelType === 'web' ? 'web' : deps.channelName,
               activeSessionId,
+              deps.channelType === 'web' ? undefined : participantId,
             )
           : false
       if (activeStreaming) {
@@ -412,6 +421,17 @@ function normalizeChatId(msg: IncomingMessage): string {
     return String(chatId)
   }
   return msg.senderId
+}
+
+function normalizeParticipantId(msg: IncomingMessage, source: SessionSource): string | undefined {
+  if (source !== 'feishu') return undefined
+  const senderId = msg.senderId.trim()
+  if (senderId && senderId !== 'unknown') return senderId
+
+  console.warn(
+    '[ZeRo OS] Feishu message missing senderId; falling back to chat-level session scope',
+  )
+  return undefined
 }
 
 async function dismissStreaming(streaming: StreamAdapter): Promise<void> {

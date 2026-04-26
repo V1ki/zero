@@ -117,6 +117,8 @@ export class ScheduleTool extends BaseTool {
         source: ctx.channelBinding.source as SessionSource,
         channelName: ctx.channelBinding.channelName,
         channelId: ctx.channelBinding.channelId,
+        participantId: ctx.channelBinding.participantId,
+        deliveryChannelId: ctx.channelBinding.deliveryChannelId ?? ctx.channelBinding.channelId,
       }
     }
 

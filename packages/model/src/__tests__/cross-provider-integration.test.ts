@@ -11,6 +11,7 @@ import { generateId, now } from '@zero-os/shared'
 import { getMasterKey } from '../../../secrets/src/keychain'
 import { Vault } from '../../../secrets/src/vault'
 import { AnthropicAdapter } from '../adapters/anthropic'
+import { AnthropicDeepSeekAdapter } from '../adapters/anthropic-deepseek'
 import type { ProviderAdapter } from '../adapters/base'
 import { OpenAIChatAdapter } from '../adapters/openai-chat'
 import { OpenAIResponsesAdapter } from '../adapters/openai-resp'
@@ -35,6 +36,13 @@ interface OpenAIChatAdapterTestHarness {
 
 interface AnthropicAdapterTestHarness {
   convertMessages(req: CompletionRequest): AnthropicMessageLike[]
+}
+
+interface AnthropicFamilyProvider {
+  providerName: 'anthropic' | 'deepseek'
+  modelLabel: string
+  adapter: AnthropicAdapter
+  expectedToolIdPrefix?: string
 }
 
 const __dirname = import.meta.dir
@@ -74,11 +82,15 @@ try {
 const OPENAI_CODEX_API_KEY = vault?.get('openai_codex_api_key')?.trim()
 const ANTHROPIC_OAUTH_TOKEN = vault?.get('CLAUDE_CODE_OAUTH_TOKEN')?.trim()
 const CHATGPT_OAUTH_TOKEN = vault?.get('chatgpt_oauth_token')?.trim()
+const DEEPSEEK_API_KEY = vault?.get('deepseek_api_key')?.trim()
 
 const HAS_VAULT = Boolean(vault)
 const HAS_OPENAI_CODEX = Boolean(OPENAI_CODEX_API_KEY)
 const HAS_ANTHROPIC = Boolean(ANTHROPIC_OAUTH_TOKEN)
 const HAS_CHATGPT = Boolean(CHATGPT_OAUTH_TOKEN)
+const HAS_DEEPSEEK = Boolean(DEEPSEEK_API_KEY)
+const HAS_ANTHROPIC_FAMILY = HAS_DEEPSEEK || HAS_ANTHROPIC
+const providerHealth = new Map<string, Promise<boolean>>()
 
 function getOpenAIChatHarness(instance: OpenAIChatAdapter): OpenAIChatAdapterTestHarness {
   return instance as unknown as OpenAIChatAdapterTestHarness
@@ -89,7 +101,11 @@ function getAnthropicHarness(instance: AnthropicAdapter): AnthropicAdapterTestHa
 }
 
 function requireSecret(
-  key: 'openai_codex_api_key' | 'CLAUDE_CODE_OAUTH_TOKEN' | 'chatgpt_oauth_token',
+  key:
+    | 'openai_codex_api_key'
+    | 'CLAUDE_CODE_OAUTH_TOKEN'
+    | 'chatgpt_oauth_token'
+    | 'deepseek_api_key',
 ) {
   const value = vault?.get(key)?.trim()
   if (!value) {
@@ -148,6 +164,44 @@ function createAnthropicAdapter(): AnthropicAdapter {
   })
 }
 
+function createDeepSeekAdapter(): AnthropicDeepSeekAdapter {
+  return new AnthropicDeepSeekAdapter({
+    baseUrl: 'https://api.deepseek.com/anthropic',
+    auth: { type: 'api_key', apiKeyRef: 'deepseek_api_key' },
+    modelConfig: {
+      modelId: 'deepseek-v4-pro',
+      maxContext: 1000000,
+      maxOutput: 384000,
+      capabilities: ['tools', 'reasoning'],
+      tags: ['deepseek'],
+    },
+    apiKey: requireSecret('deepseek_api_key'),
+  })
+}
+
+function createAnthropicFamilyCandidates(): AnthropicFamilyProvider[] {
+  const candidates: AnthropicFamilyProvider[] = []
+
+  if (HAS_DEEPSEEK) {
+    candidates.push({
+      providerName: 'deepseek',
+      modelLabel: 'deepseek/deepseek-v4-pro',
+      adapter: createDeepSeekAdapter(),
+    })
+  }
+
+  if (HAS_ANTHROPIC) {
+    candidates.push({
+      providerName: 'anthropic',
+      modelLabel: 'anthropic/claude-sonnet-4-6',
+      adapter: createAnthropicAdapter(),
+      expectedToolIdPrefix: 'toolu_',
+    })
+  }
+
+  return candidates
+}
+
 function createChatGptAdapter(): OpenAIResponsesAdapter {
   return new OpenAIResponsesAdapter({
     providerName: 'chatgpt',
@@ -165,8 +219,27 @@ function createChatGptAdapter(): OpenAIResponsesAdapter {
 }
 
 function createRouterConfig(): SystemConfig {
+  const defaultModel = HAS_DEEPSEEK ? 'deepseek/deepseek-v4-pro' : 'anthropic/claude-sonnet-4-6'
   return {
     providers: {
+      ...(HAS_DEEPSEEK
+        ? {
+            deepseek: {
+              apiType: 'anthropic-deepseek',
+              baseUrl: 'https://api.deepseek.com/anthropic',
+              auth: { type: 'api_key', apiKeyRef: 'deepseek_api_key' },
+              models: {
+                'deepseek-v4-pro': {
+                  modelId: 'deepseek-v4-pro',
+                  maxContext: 1000000,
+                  maxOutput: 384000,
+                  capabilities: ['tools', 'reasoning'],
+                  tags: ['deepseek'],
+                },
+              },
+            },
+          }
+        : {}),
       anthropic: {
         apiType: 'anthropic_messages',
         baseUrl: 'https://api.anthropic.com',
@@ -217,9 +290,9 @@ function createRouterConfig(): SystemConfig {
         },
       },
     },
-    defaultModel: 'anthropic/claude-sonnet-4-6',
+    defaultModel,
     fallbackChain: [
-      'anthropic/claude-sonnet-4-6',
+      defaultModel,
       'openai-codex/gpt-5.3-codex-medium',
       'chatgpt/gpt-5.4',
       'openai-codex/gpt-5.3-codex-medium-backup',
@@ -242,6 +315,10 @@ function createSecretsMap(): Map<string, string> {
 
   if (CHATGPT_OAUTH_TOKEN) {
     secrets.set('chatgpt_oauth_token', CHATGPT_OAUTH_TOKEN)
+  }
+
+  if (DEEPSEEK_API_KEY) {
+    secrets.set('deepseek_api_key', DEEPSEEK_API_KEY)
   }
 
   return secrets
@@ -324,17 +401,50 @@ function expectUsableAssistantTurn(content: ContentBlock[]) {
   expect(content.some((block) => block.type === 'text' || block.type === 'tool_use')).toBe(true)
 }
 
+async function isHealthy(label: string, adapter: ProviderAdapter): Promise<boolean> {
+  const cached = providerHealth.get(label)
+  if (cached) return cached
+
+  const health = adapter.healthCheck().catch(() => false)
+  providerHealth.set(label, health)
+  return health
+}
+
+async function requireHealthy(label: string, adapter: ProviderAdapter): Promise<boolean> {
+  const healthy = await isHealthy(label, adapter)
+  if (!healthy) {
+    console.warn(`Skipping Real API provider ${label}: health check failed.`)
+  }
+  return healthy
+}
+
+async function selectHealthyAnthropicFamilyProvider(): Promise<
+  AnthropicFamilyProvider | undefined
+> {
+  for (const candidate of createAnthropicFamilyCandidates()) {
+    if (await requireHealthy(candidate.modelLabel, candidate.adapter)) {
+      return candidate
+    }
+  }
+
+  return undefined
+}
+
 describe.skipIf(!HAS_VAULT)('Cross-provider Integration (Real API)', () => {
-  test.skipIf(!HAS_ANTHROPIC || !HAS_OPENAI_CODEX)(
-    'Anthropic -> OpenAI Chat handles tool history across providers',
+  test.skipIf(!HAS_ANTHROPIC_FAMILY || !HAS_OPENAI_CODEX)(
+    'Anthropic-family -> OpenAI Chat handles tool history across providers',
     async () => {
-      const anthropic = createAnthropicAdapter()
+      const anthropicFamily = await selectHealthyAnthropicFamilyProvider()
+      if (!anthropicFamily) return
+
       const openai = createOpenAIChatAdapter()
+      if (!(await requireHealthy('openai-codex/gpt-5.3-codex-medium', openai))) return
+
       const initialUserText =
         'What time is it in Asia/Shanghai? Use get_current_time before answering, then keep the answer under 20 words.'
 
       const firstTurn = await runStreamingTurn(
-        anthropic,
+        anthropicFamily.adapter,
         [makeTextMessage('user', initialUserText)],
         INITIAL_SYSTEM_PROMPT,
       )
@@ -343,12 +453,18 @@ describe.skipIf(!HAS_VAULT)('Cross-provider Integration (Real API)', () => {
       const history = buildFollowUpHistory(
         initialUserText,
         firstTurn.content,
-        'anthropic/claude-sonnet-4-6',
+        anthropicFamily.modelLabel,
         'Continue the same conversation in one short sentence.',
       )
 
       if (history.toolUses.length > 0) {
-        expect(history.toolUses.every((toolUse) => toolUse.id.startsWith('toolu_'))).toBe(true)
+        if (anthropicFamily.expectedToolIdPrefix) {
+          expect(
+            history.toolUses.every((toolUse) =>
+              toolUse.id.startsWith(anthropicFamily.expectedToolIdPrefix ?? ''),
+            ),
+          ).toBe(true)
+        }
 
         const converted = getOpenAIChatHarness(openai).convertMessages({
           ...makeStreamingRequest(history.messages, CONTINUATION_SYSTEM_PROMPT),
@@ -378,6 +494,9 @@ describe.skipIf(!HAS_VAULT)('Cross-provider Integration (Real API)', () => {
     async () => {
       const openai = createOpenAIChatAdapter()
       const anthropic = createAnthropicAdapter()
+      if (!(await requireHealthy('openai-codex/gpt-5.3-codex-medium', openai))) return
+      if (!(await requireHealthy('anthropic/claude-sonnet-4-6', anthropic))) return
+
       const initialUserText =
         'Tell me the current time in Asia/Shanghai. Call get_current_time first if the tool is available.'
 
@@ -427,14 +546,20 @@ describe.skipIf(!HAS_VAULT)('Cross-provider Integration (Real API)', () => {
     60000,
   )
 
-  test.skipIf(!HAS_ANTHROPIC || !HAS_OPENAI_CODEX)(
-    'ModelRouter supports Anthropic -> OpenAI Chat -> ChatGPT/OpenAI fallback switching',
+  test.skipIf(!HAS_ANTHROPIC_FAMILY || !HAS_OPENAI_CODEX)(
+    'ModelRouter supports Anthropic-family -> OpenAI Chat -> ChatGPT/OpenAI fallback switching',
     async () => {
+      const anthropicFamily = await selectHealthyAnthropicFamilyProvider()
+      if (!anthropicFamily) return
+
+      const openai = createOpenAIChatAdapter()
+      if (!(await requireHealthy('openai-codex/gpt-5.3-codex-medium', openai))) return
+
       const router = new ModelRouter(createRouterConfig(), createSecretsMap())
       const initResult = router.init()
 
       expect(initResult.success).toBe(true)
-      expect(initResult.model?.providerName).toBe('anthropic')
+      expect(initResult.model?.providerName).toBe(anthropicFamily.providerName)
 
       const initialUserText =
         'Use get_current_time for Asia/Shanghai if available, then answer briefly.'
@@ -448,7 +573,7 @@ describe.skipIf(!HAS_VAULT)('Cross-provider Integration (Real API)', () => {
       let history = buildFollowUpHistory(
         initialUserText,
         firstTurn.content,
-        'anthropic/claude-sonnet-4-6',
+        anthropicFamily.modelLabel,
         'Continue from the previous answer in one sentence.',
       ).messages
 
@@ -475,8 +600,7 @@ describe.skipIf(!HAS_VAULT)('Cross-provider Integration (Real API)', () => {
 
       if (HAS_CHATGPT) {
         const chatgptAdapter = createChatGptAdapter()
-        const chatgptHealthy = await chatgptAdapter.healthCheck().catch(() => false)
-        if (!chatgptHealthy) {
+        if (!(await requireHealthy('chatgpt/gpt-5.4', chatgptAdapter))) {
           thirdTarget = 'openai-codex/gpt-5.3-codex-medium-backup'
           expectedProvider = 'openai-codex'
         }

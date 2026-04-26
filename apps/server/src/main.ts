@@ -45,19 +45,8 @@ import {
   VectorIndex,
 } from '@zero-os/memory'
 import type { MemoryRepository } from '@zero-os/memory'
-import {
-  LiteLLMPricing,
-  ModelRouter,
-  computeCost,
-  type UsageRecorder,
-} from '@zero-os/model'
-import {
-  MetricsDB,
-  ObservabilityStore,
-  SessionDB,
-  Tracer,
-  isUsagePurpose,
-} from '@zero-os/observe'
+import { LiteLLMPricing, ModelRouter, type UsageRecorder, computeCost } from '@zero-os/model'
+import { MetricsDB, ObservabilityStore, SessionDB, Tracer, isUsagePurpose } from '@zero-os/observe'
 import { CronScheduler } from '@zero-os/scheduler'
 import { Vault, generateMasterKey, getMasterKey, setMasterKey } from '@zero-os/secrets'
 import { OutputSecretFilter } from '@zero-os/secrets'
@@ -143,6 +132,7 @@ interface RestartSentinelEntry {
   source: SessionSource
   channelId: string
   channelName?: string
+  participantId?: string
   subAgents?: AgentSnapshot[]
 }
 
@@ -500,6 +490,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
         binding.source as SessionSource,
         binding.channelId,
         binding.channelName,
+        binding.participantId,
       )
       session = result.session
       if (result.isNew) {
@@ -522,10 +513,11 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
     if (binding) {
       const channel = channels.get(binding.channelName)
       const text = collectAssistantReply(replies)
+      const deliveryChannelId = binding.deliveryChannelId ?? binding.channelId
       if (channel?.isConnected() && text) {
-        await channel.send(binding.channelId, text).catch((err) => {
+        await channel.send(deliveryChannelId, text).catch((err) => {
           console.error(
-            `[Scheduler] delivery to ${binding.channelName}:${binding.channelId} failed:`,
+            `[Scheduler] delivery to ${binding.channelName}:${deliveryChannelId} failed:`,
             err,
           )
           addNotification({
@@ -983,6 +975,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
                 entry.channelId,
                 entry.channelName,
                 entry.sessionId,
+                entry.participantId,
               )
             ) {
               return

@@ -1,7 +1,24 @@
 import { describe, expect, test } from 'bun:test'
+import { join } from 'node:path'
 import type { CompletionRequest, Message } from '@zero-os/shared'
 import { generateId, now } from '@zero-os/shared'
+import { getMasterKey } from '../../../secrets/src/keychain'
+import { Vault } from '../../../secrets/src/vault'
 import { AnthropicDeepSeekAdapter } from '../adapters/anthropic-deepseek'
+import { collectStream } from '../stream'
+
+const __dirname = import.meta.dir
+const SECRETS_PATH = join(__dirname, '../../../../.zero/secrets.enc')
+
+let vault: Vault | undefined
+
+try {
+  const masterKey = await getMasterKey()
+  vault = new Vault(masterKey, SECRETS_PATH)
+  vault.load()
+} catch {}
+
+const DEEPSEEK_API_KEY = vault?.get('deepseek_api_key')?.trim()
 
 function createAdapter(): AnthropicDeepSeekAdapter {
   return new AnthropicDeepSeekAdapter({
@@ -15,6 +32,25 @@ function createAdapter(): AnthropicDeepSeekAdapter {
       tags: ['deepseek'],
     },
     apiKey: 'dummy',
+  })
+}
+
+function createRealAdapter(): AnthropicDeepSeekAdapter {
+  if (!DEEPSEEK_API_KEY) {
+    throw new Error('Missing required secret: deepseek_api_key')
+  }
+
+  return new AnthropicDeepSeekAdapter({
+    baseUrl: 'https://api.deepseek.com/anthropic',
+    auth: { type: 'api_key', apiKeyRef: 'deepseek_api_key' },
+    modelConfig: {
+      modelId: 'deepseek-v4-pro',
+      maxContext: 1000000,
+      maxOutput: 384000,
+      capabilities: ['tools', 'reasoning'],
+      tags: ['deepseek'],
+    },
+    apiKey: DEEPSEEK_API_KEY,
   })
 }
 
@@ -251,4 +287,24 @@ describe('AnthropicDeepSeekAdapter', () => {
       requestMessages.some((message) => message.content.some((b) => b.text === 'continue')),
     ).toBe(true)
   })
+})
+
+describe.skipIf(!DEEPSEEK_API_KEY)('AnthropicDeepSeekAdapter (Real API)', () => {
+  test('streams a real DeepSeek response through the Anthropic-compatible adapter', async () => {
+    const adapter = createRealAdapter()
+    const events = await collectStream(
+      adapter.stream({
+        messages: [makeUserMessage('Reply with exactly: deepseek-ok')],
+        stream: true,
+        maxTokens: 64,
+        model: 'deepseek-v4-pro',
+      }),
+    )
+
+    expect(events.content.some((block) => block.type === 'text')).toBe(true)
+    expect(
+      events.content.map((block) => (block.type === 'text' ? block.text : '')).join(''),
+    ).toContain('deepseek-ok')
+    expect(events.usage).toBeDefined()
+  }, 60000)
 })

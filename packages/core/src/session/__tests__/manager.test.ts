@@ -5,8 +5,8 @@ import type { Message, SystemConfig } from '@zero-os/shared'
 import { BashTool } from '../../tool/bash'
 import { ReadTool } from '../../tool/read'
 import { ToolRegistry } from '../../tool/registry'
-import { createTestProjectRoot } from './test-helpers'
 import { SessionManager } from '../manager'
+import { createTestProjectRoot } from './test-helpers'
 
 const API_KEY = 'sk-c6c02cbd0c25473f97f9be0da6070f6d'
 
@@ -156,9 +156,14 @@ describe('SessionManager', () => {
     expect(result.isNew).toBe(true)
     expect(result.session.data.source).toBe('telegram')
     expect(result.session.data.channelId).toBe('channel-1')
-    expect(manager.isCurrentSessionForChannel('telegram', 'channel-1', undefined, result.session.data.id)).toBe(
-      true,
-    )
+    expect(
+      manager.isCurrentSessionForChannel(
+        'telegram',
+        'channel-1',
+        undefined,
+        result.session.data.id,
+      ),
+    ).toBe(true)
   })
 
   test('getOrCreateForChannel: same channel reuses current binding', () => {
@@ -179,9 +184,48 @@ describe('SessionManager', () => {
     expect(ops.session.data.id).not.toBe(hr.session.data.id)
     expect(ops.session.data.channelName).toBe('feishu:ops')
     expect(hr.session.data.channelName).toBe('feishu:hr')
-    expect(manager.listCurrent().map((session) => session.data.id).sort()).toEqual(
-      [ops.session.data.id, hr.session.data.id].sort(),
+    expect(
+      manager
+        .listCurrent()
+        .map((session) => session.data.id)
+        .sort(),
+    ).toEqual([ops.session.data.id, hr.session.data.id].sort())
+  })
+
+  test('getOrCreateForChannel: same Feishu chat stays isolated by participantId', () => {
+    const manager = createManager()
+    const alice = manager.getOrCreateForChannel('feishu', 'shared-room', 'feishu:ops', 'ou_alice')
+    const bob = manager.getOrCreateForChannel('feishu', 'shared-room', 'feishu:ops', 'ou_bob')
+    const aliceAgain = manager.getOrCreateForChannel(
+      'feishu',
+      'shared-room',
+      'feishu:ops',
+      'ou_alice',
     )
+
+    expect(alice.session.data.id).not.toBe(bob.session.data.id)
+    expect(aliceAgain.session.data.id).toBe(alice.session.data.id)
+    expect(alice.session.data.channelId).toBe('shared-room')
+    expect(alice.session.data.participantId).toBe('ou_alice')
+    expect(bob.session.data.participantId).toBe('ou_bob')
+    expect(
+      manager.isCurrentSessionForChannel(
+        'feishu',
+        'shared-room',
+        'feishu:ops',
+        alice.session.data.id,
+        'ou_alice',
+      ),
+    ).toBe(true)
+    expect(
+      manager.isCurrentSessionForChannel(
+        'feishu',
+        'shared-room',
+        'feishu:ops',
+        alice.session.data.id,
+        'ou_bob',
+      ),
+    ).toBe(false)
   })
 
   test('startNewForChannel rotates binding and backgrounds previous session', () => {
@@ -215,6 +259,24 @@ describe('SessionManager', () => {
     expect(manager.getPlacement(second.session.data.id)).toBe('current')
     expect(manager.getCurrentBinding('feishu', 'room-1', 'feishu:hr')?.sessionId).toBe(
       second.session.data.id,
+    )
+  })
+
+  test('startNewForChannel rotates only the targeted participant binding', () => {
+    const manager = createManager()
+    const alice = manager.getOrCreateForChannel('feishu', 'room-1', 'feishu:ops', 'ou_alice')
+    const bob = manager.getOrCreateForChannel('feishu', 'room-1', 'feishu:ops', 'ou_bob')
+
+    const rotated = manager.startNewForChannel('feishu', 'room-1', {
+      channelName: 'feishu:ops',
+      participantId: 'ou_alice',
+    })
+
+    expect(rotated.previousSessionId).toBe(alice.session.data.id)
+    expect(manager.getPlacement(alice.session.data.id)).toBe('background')
+    expect(manager.getPlacement(bob.session.data.id)).toBe('current')
+    expect(manager.getCurrentBinding('feishu', 'room-1', 'feishu:ops', 'ou_bob')?.sessionId).toBe(
+      bob.session.data.id,
     )
   })
 
@@ -301,7 +363,6 @@ describe('SessionManager', () => {
       agentInstruction: 'Test session memory rotation.',
     })
     seedMeaningfulSession(first.session)
-
     ;(
       first.session as unknown as {
         evaluateSessionMemory: () => Promise<void>
@@ -338,7 +399,6 @@ describe('SessionManager', () => {
     const waitGate = createDeferred<void>()
     let waited = false
     let evaluationCalled = false
-
     ;(
       first.session as unknown as {
         isTurnInProgress: () => boolean
@@ -406,6 +466,23 @@ describe('SessionManager', () => {
       'openai-codex/gpt-5.4-medium',
     )
     expect(manager.getPreferredModel('feishu', 'room-2', 'feishu:hr')).toBe(
+      'openai-codex/gpt-5.3-codex-medium',
+    )
+  })
+
+  test('channel model preference stays isolated per participant scope', async () => {
+    const manager = createManager()
+    const alice = manager.getOrCreateForChannel('feishu', 'room-1', 'feishu:ops', 'ou_alice')
+    const bob = manager.getOrCreateForChannel('feishu', 'room-1', 'feishu:ops', 'ou_bob')
+
+    await alice.session.switchModel('gpt-5.4-medium')
+
+    expect(alice.session.data.currentModel).toBe('openai-codex/gpt-5.4-medium')
+    expect(bob.session.data.currentModel).toBe('openai-codex/gpt-5.3-codex-medium')
+    expect(manager.getPreferredModel('feishu', 'room-1', 'feishu:ops', 'ou_alice')).toBe(
+      'openai-codex/gpt-5.4-medium',
+    )
+    expect(manager.getPreferredModel('feishu', 'room-1', 'feishu:ops', 'ou_bob')).toBe(
       'openai-codex/gpt-5.3-codex-medium',
     )
   })

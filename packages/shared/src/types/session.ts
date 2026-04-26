@@ -13,6 +13,7 @@ export interface ChannelSessionBinding {
   source: SessionSource
   channelName?: string
   channelId: string
+  participantId?: string
   sessionId: string
   updatedAt: string
 }
@@ -29,4 +30,5 @@ export interface Session {
   tags: string[]
   channelName?: string
   channelId?: string
+  participantId?: string
 }
