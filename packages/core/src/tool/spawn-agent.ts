@@ -8,6 +8,7 @@ import { Agent, type AgentConfig, type AgentContext, type AgentObservability } f
 import { buildSubAgentPrompt } from '../agent/prompt'
 import { loadRoles, resolveRole } from '../agent/roles'
 import { BaseTool } from './base'
+import { supportsToolForModel } from './capabilities'
 import { SUB_AGENT_BLOCKED_TOOLS } from './constants'
 import { ToolRegistry } from './registry'
 
@@ -84,7 +85,12 @@ export class SpawnAgentTool extends BaseTool {
     super()
 
     const models = this.modelRouter.getRegistry().listModels()
-    const modelLabels = models.map((model) => `${model.providerName}/${model.modelName}`)
+    const modelLabels = models.map((model) => {
+      const label = `${model.providerName}/${model.modelName}`
+      const resolved = this.modelRouter.resolveModel(label)
+      const capabilities = resolved?.modelConfig.capabilities ?? []
+      return capabilities.length > 0 ? `${label} (${capabilities.join(', ')})` : label
+    })
     if (modelLabels.length > 0) {
       this.parameters.properties.model.description = `Optional model override for this sub-agent. Defaults to the current session model. Available: ${modelLabels.join(', ')}`
     }
@@ -139,7 +145,10 @@ export class SpawnAgentTool extends BaseTool {
     const resolvedModelLabel = resolvedModel
       ? this.modelRouter.getModelLabel(resolvedModel)
       : ctx.currentModel
-    const scopedRegistry = this.buildScopedRegistry(tools ?? roleDefinition?.defaultTools)
+    const scopedRegistry = this.buildScopedRegistry(
+      tools ?? roleDefinition?.defaultTools,
+      resolvedModel?.modelConfig,
+    )
     const toolDefinitions = scopedRegistry.getDefinitions()
 
     const subWorkDir = join(
@@ -288,7 +297,10 @@ export class SpawnAgentTool extends BaseTool {
     }
   }
 
-  private buildScopedRegistry(toolNames?: string[]): ToolRegistry {
+  private buildScopedRegistry(
+    toolNames?: string[],
+    modelConfig?: { capabilities: string[] },
+  ): ToolRegistry {
     const scopedRegistry = new ToolRegistry()
     const selectedNames =
       toolNames && toolNames.length > 0
@@ -301,7 +313,7 @@ export class SpawnAgentTool extends BaseTool {
     for (const toolName of selectedNames) {
       if (SUB_AGENT_BLOCKED_TOOLS.has(toolName)) continue
       const tool = this.baseToolRegistry.get(toolName)
-      if (tool) {
+      if (tool && supportsToolForModel(tool, modelConfig)) {
         scopedRegistry.register(tool)
       }
     }

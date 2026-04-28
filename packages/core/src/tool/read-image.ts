@@ -13,6 +13,7 @@ interface ReadImageInput {
 
 export class ReadImageTool extends BaseTool {
   kind = 'built-in' as const
+  requiredModelCapabilities = ['vision'] as const
   name = 'read_image'
   description =
     'Read a local PNG, JPEG, or WebP image from the filesystem and attach it for visual analysis. Only local filesystem paths are supported; download remote images to a local file before using this tool.'

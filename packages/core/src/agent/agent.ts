@@ -85,6 +85,8 @@ export interface AgentContext {
   identityMemory?: string
   /** Dynamic context (<system-reminder>) injected into user message for the API only, not stored. */
   dynamicContext?: string
+  /** Local image files saved for text-only models to delegate to a vision sub-agent. */
+  imageDelegationFiles?: Array<{ path: string; mediaType: string }>
   /** Request-scoped memory injections for observability and UI trace previews. */
   requestMemoryInjections?: RequestMemoryInjectionEntry[]
   /** Session-scoped memory ids already injected in prior layer1/layer2 retrievals. */
@@ -472,8 +474,21 @@ export class Agent {
 
     return {
       buildRequestUserContent: (content) => {
-        if (!options.context.dynamicContext) return content
-        return [{ type: 'text', text: options.context.dynamicContext }, ...content]
+        const prefix: Message['content'] = []
+        if (options.context.dynamicContext) {
+          prefix.push({ type: 'text', text: options.context.dynamicContext })
+        }
+        if (options.context.imageDelegationFiles?.length) {
+          prefix.push({
+            type: 'text',
+            text: buildImageDelegationPrompt(options.context.imageDelegationFiles),
+          })
+        }
+        if (prefix.length === 0) return content
+        const requestContent = options.context.imageDelegationFiles?.length
+          ? content.filter((block) => block.type !== 'image')
+          : content
+        return [...prefix, ...requestContent]
       },
       onNewMessage: (message) => {
         if (memoryNudgeCount === 0) {
@@ -1448,4 +1463,18 @@ function escapeXml(text: string): string {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&apos;')
+}
+
+function buildImageDelegationPrompt(files: Array<{ path: string; mediaType: string }>): string {
+  const fileLines = files.map(
+    (file, index) => `- image ${index + 1}: ${file.path} (${file.mediaType})`,
+  )
+  return [
+    '<image_delegation>',
+    '当前模型不能直接看图。以下用户图片已保存为本地文件，可委托支持 vision 的子 agent 分析：',
+    ...fileLines,
+    '',
+    '需要图片理解时，调用 spawn_agent，指定支持 vision 的模型，并设置 tools=["read_image"]。instruction 必须包含：这些图片的绝对路径、用户原始问题、判断标准、相关上下文，以及“只返回文字分析报告”。随后调用 wait_agent，基于子 agent 的文字报告回复用户。不要声称当前模型直接看到了图片。',
+    '</image_delegation>',
+  ].join('\n')
 }

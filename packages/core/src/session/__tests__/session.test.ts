@@ -3,14 +3,16 @@ import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { ModelRouter } from '@zero-os/model'
 import type { Message, SystemConfig } from '@zero-os/shared'
+import { BaseTool } from '../../tool/base'
 import { BashTool } from '../../tool/bash'
 import { MemoryReadTool } from '../../tool/memory-read'
 import { MemorySearchTool } from '../../tool/memory-search'
 import { ReadTool } from '../../tool/read'
+import { ReadImageTool } from '../../tool/read-image'
 import { ToolRegistry } from '../../tool/registry'
-import { createTestProjectRoot } from './test-helpers'
 import { SessionManager } from '../manager'
 import { Session } from '../session'
+import { createTestProjectRoot } from './test-helpers'
 
 const API_KEY = 'sk-c6c02cbd0c25473f97f9be0da6070f6d'
 const CLAUDE_OAUTH_JSON = JSON.stringify({
@@ -61,6 +63,54 @@ function createRouter() {
   return router
 }
 
+function createTextOnlyRouter() {
+  const textOnlyConfig: SystemConfig = {
+    providers: {
+      deepseek: {
+        apiType: 'anthropic-deepseek',
+        baseUrl: 'https://api.deepseek.com/anthropic',
+        auth: { type: 'api_key', apiKeyRef: 'deepseek_api_key' },
+        models: {
+          'deepseek-v4-pro': {
+            modelId: 'deepseek-v4-pro',
+            maxContext: 1000000,
+            maxOutput: 384000,
+            capabilities: ['tools', 'reasoning'],
+            tags: ['powerful', 'reasoning'],
+          },
+        },
+      },
+      chatgpt: {
+        apiType: 'openai_responses',
+        baseUrl: 'https://chatgpt.com/backend-api/codex',
+        auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_session' },
+        models: {
+          'gpt-5.4': {
+            modelId: 'gpt-5.4',
+            maxContext: 400000,
+            maxOutput: 128000,
+            capabilities: ['tools', 'vision', 'reasoning'],
+            tags: ['powerful', 'vision'],
+          },
+        },
+      },
+    },
+    defaultModel: 'deepseek/deepseek-v4-pro',
+    fallbackChain: ['deepseek/deepseek-v4-pro'],
+    schedules: [],
+    fuseList: [],
+  }
+  const router = new ModelRouter(
+    textOnlyConfig,
+    new Map([
+      ['deepseek_api_key', API_KEY],
+      ['chatgpt_oauth_session', CLAUDE_OAUTH_JSON],
+    ]),
+  )
+  router.init()
+  return router
+}
+
 function createAnthropicRouter() {
   const anthropicConfig: SystemConfig = {
     providers: {
@@ -96,6 +146,19 @@ function createToolRegistry() {
   return registry
 }
 
+class NamedTool extends BaseTool {
+  description = 'test tool'
+  parameters = { type: 'object', properties: {} }
+
+  constructor(public name: string) {
+    super()
+  }
+
+  protected async execute() {
+    return { success: true, output: this.name, outputSummary: this.name }
+  }
+}
+
 describe('Session', () => {
   afterAll(() => {
     rmSync(join(import.meta.dir, '__fixtures__'), { recursive: true, force: true })
@@ -112,6 +175,79 @@ describe('Session', () => {
     expect(session.data.id).toMatch(/^sess_/)
     expect(session.data.source).toBe('web')
     expect(session.data.currentModel).toBe('openai-codex/gpt-5.3-codex-medium')
+  })
+
+  test('filters vision-only tools from text-only models and adds delegation guidance', () => {
+    const router = createTextOnlyRouter()
+    const registry = createToolRegistry()
+    registry.register(new ReadImageTool())
+    registry.register(new NamedTool('spawn_agent'))
+    registry.register(new NamedTool('wait_agent'))
+    const session = new Session('web', router, registry, {
+      projectRoot: testProject.projectRoot,
+    })
+    session.initAgent({ name: 'text-agent', agentInstruction: 'text agent' })
+
+    const context = (
+      session as unknown as {
+        ensureStaticContext(): { tools: Array<{ name: string }>; systemPrompt: string }
+      }
+    ).ensureStaticContext()
+
+    expect(context.tools.map((tool) => tool.name)).toEqual([
+      'read',
+      'bash',
+      'spawn_agent',
+      'wait_agent',
+    ])
+    expect(context.systemPrompt).not.toContain('Read Image：')
+    expect(context.systemPrompt).toContain('Image Analysis Delegation')
+    expect(context.systemPrompt).toContain('tools=["read_image"]')
+  })
+
+  test('saves incoming images as local delegation files for text-only models', async () => {
+    const router = createTextOnlyRouter()
+    const registry = createToolRegistry()
+    registry.register(new ReadImageTool())
+    registry.register(new NamedTool('spawn_agent'))
+    registry.register(new NamedTool('wait_agent'))
+    const session = new Session('web', router, registry, {
+      projectRoot: testProject.projectRoot,
+    })
+    session.initAgent({ name: 'text-agent', agentInstruction: 'text agent' })
+
+    let capturedContext:
+      | { imageDelegationFiles?: Array<{ path: string; mediaType: string }> }
+      | undefined
+    let capturedImages: unknown
+    ;(
+      session as unknown as {
+        agent: {
+          run: (
+            context: { imageDelegationFiles?: Array<{ path: string; mediaType: string }> },
+            userMessage: string,
+            images: unknown,
+          ) => Promise<Message[]>
+        }
+      }
+    ).agent = {
+      run: async (context, _userMessage, images) => {
+        capturedContext = context
+        capturedImages = images
+        return []
+      },
+    }
+
+    await session.handleMessage('分析这张图', {
+      images: [
+        { mediaType: 'image/png', data: Buffer.from('fake image bytes').toString('base64') },
+      ],
+    })
+
+    expect(capturedImages).toBeUndefined()
+    expect(capturedContext?.imageDelegationFiles).toHaveLength(1)
+    expect(capturedContext?.imageDelegationFiles?.[0]).toMatchObject({ mediaType: 'image/png' })
+    expect(existsSync(capturedContext?.imageDelegationFiles?.[0]?.path ?? '')).toBe(true)
   })
 
   test('ensureChannelContext updates session routing metadata', () => {

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import type { MemoryRetriever } from '@zero-os/memory'
@@ -40,6 +40,7 @@ import type { QueuedMessage } from '../agent/queue'
 import { buildSnapshot } from '../agent/snapshot'
 import { loadBootstrapFiles } from '../bootstrap/loader'
 import { loadSkills } from '../skill/loader'
+import { supportsToolForModel, supportsVision } from '../tool/capabilities'
 import type { ToolRegistry } from '../tool/registry'
 import { SessionRunningToolRegistry } from './running-tool-registry'
 
@@ -408,7 +409,7 @@ export class Session {
     workspacePath: string
   } {
     const currentModel = this.activeModel
-    const tools = this.toolRegistry.getDefinitions()
+    const tools = this.getToolDefinitionsForModel(currentModel)
     const toolNames = this.getToolNames(tools)
     const agentName = this.getAgentName()
     const projectRoot = this.deps.projectRoot ?? process.cwd()
@@ -610,6 +611,9 @@ export class Session {
       this.ensureStaticContext()
     this.ensureCurrentContextSnapshot(toolNames)
     const userMessageEntry = this.makeUserMessage(content, now(), options?.images)
+    const imageDelegationFiles = supportsVision(currentModel?.modelConfig)
+      ? undefined
+      : this.saveImagesForDelegation(options?.images, workspacePath)
 
     // === DYNAMIC: Per-message context ===
 
@@ -647,6 +651,7 @@ export class Session {
       dynamicContext: dynamicCtx,
       requestMemoryInjections,
       injectedMemoryIds: this.injectedMemoryIds,
+      imageDelegationFiles,
       conversationHistory,
       tools,
       maxContext: currentModel?.modelConfig.maxContext,
@@ -680,7 +685,7 @@ export class Session {
       newMessages = await agent.run(
         context,
         content,
-        options?.images,
+        imageDelegationFiles?.length ? undefined : options?.images,
         onNewMessage,
         options?.onTextDelta,
         shouldInterrupt,
@@ -913,6 +918,32 @@ export class Session {
     )
   }
 
+  private getToolDefinitionsForModel(model?: ResolvedModel): ToolDefinition[] {
+    return this.toolRegistry
+      .list()
+      .filter((tool) => supportsToolForModel(tool, model?.modelConfig))
+      .map((tool) => tool.toDefinition())
+  }
+
+  private saveImagesForDelegation(
+    images: HandleMessageOptions['images'],
+    workspacePath: string,
+  ): Array<{ path: string; mediaType: string }> | undefined {
+    if (!images?.length) return undefined
+
+    const imageDir = join(workspacePath, 'incoming-images')
+    if (!existsSync(imageDir)) {
+      mkdirSync(imageDir, { recursive: true })
+    }
+
+    return images.map((image, index) => {
+      const extension = extensionForMediaType(image.mediaType)
+      const filePath = join(imageDir, `${now().replace(/[:.]/g, '-')}-${index + 1}.${extension}`)
+      writeFileSync(filePath, Buffer.from(image.data, 'base64'))
+      return { path: filePath, mediaType: image.mediaType }
+    })
+  }
+
   private makeUserMessage(
     text: string,
     createdAt: string,
@@ -1126,5 +1157,19 @@ export class Session {
     }
 
     return undefined
+  }
+}
+
+function extensionForMediaType(mediaType: string): string {
+  switch (mediaType.toLowerCase()) {
+    case 'image/png':
+      return 'png'
+    case 'image/jpeg':
+    case 'image/jpg':
+      return 'jpg'
+    case 'image/webp':
+      return 'webp'
+    default:
+      return 'bin'
   }
 }

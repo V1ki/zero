@@ -46,9 +46,14 @@ class StaticResponseAdapter implements ProviderAdapter {
 class NamedTool extends BaseTool {
   description = 'test tool'
   parameters = { type: 'object', properties: {} }
+  override requiredModelCapabilities: readonly string[]
 
-  constructor(public name: string) {
+  constructor(
+    public name: string,
+    requiredModelCapabilities: readonly string[] = [],
+  ) {
     super()
+    this.requiredModelCapabilities = requiredModelCapabilities
   }
 
   protected async execute(_ctx: ToolContext, _input: unknown): Promise<ToolResult> {
@@ -60,11 +65,14 @@ class NamedTool extends BaseTool {
   }
 }
 
-function createStubRouter(adapter: ProviderAdapter): ModelRouter {
+function createStubRouter(
+  adapter: ProviderAdapter,
+  capabilities: string[] = ['tools', 'vision', 'reasoning'],
+): ModelRouter {
   const resolved = {
     adapter,
     providerName: 'test-provider',
-    modelConfig: {},
+    modelConfig: { capabilities },
   }
   const registry = {
     listModels: () => [
@@ -341,5 +349,47 @@ describe('SpawnAgentTool', () => {
     ).buildScopedRegistry()
 
     expect(scopedRegistry.list().map((entry: BaseTool) => entry.name)).toEqual(['read', 'bash'])
+  })
+
+  test('filters tools whose required model capabilities are missing', () => {
+    const registry = createToolRegistry()
+    registry.register(new NamedTool('read_image', ['vision']))
+
+    const tool = new SpawnAgentTool(
+      createStubRouter(new StaticResponseAdapter(), ['tools', 'reasoning']),
+      registry,
+    )
+    const scopedRegistry = (
+      tool as unknown as {
+        buildScopedRegistry(
+          tools?: string[],
+          modelConfig?: { capabilities: string[] },
+        ): ToolRegistry
+      }
+    ).buildScopedRegistry(['read', 'read_image'], { capabilities: ['tools', 'reasoning'] })
+
+    expect(scopedRegistry.list().map((entry: BaseTool) => entry.name)).toEqual(['read'])
+  })
+
+  test('keeps vision tools for sub-agents whose target model supports vision', () => {
+    const registry = createToolRegistry()
+    registry.register(new NamedTool('read_image', ['vision']))
+
+    const tool = new SpawnAgentTool(createStubRouter(new StaticResponseAdapter()), registry)
+    const scopedRegistry = (
+      tool as unknown as {
+        buildScopedRegistry(
+          tools?: string[],
+          modelConfig?: { capabilities: string[] },
+        ): ToolRegistry
+      }
+    ).buildScopedRegistry(['read', 'read_image'], {
+      capabilities: ['tools', 'vision', 'reasoning'],
+    })
+
+    expect(scopedRegistry.list().map((entry: BaseTool) => entry.name)).toEqual([
+      'read',
+      'read_image',
+    ])
   })
 })

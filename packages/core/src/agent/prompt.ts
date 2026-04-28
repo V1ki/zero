@@ -232,11 +232,20 @@ export function buildToolRulesBlock(tools: ToolDefinition[]): string {
 
   const availableToolNames = tools.map((t) => t.name.toLowerCase())
   const rules = availableToolNames.map((name) => toolRuleMap[name]).filter(Boolean)
+  if (
+    availableToolNames.includes('spawn_agent') &&
+    availableToolNames.includes('wait_agent') &&
+    !availableToolNames.includes('read_image')
+  ) {
+    rules.push(
+      'Image Analysis Delegation：当前模型不能直接看图；当用户要求分析图片且已有本地图片路径时，使用 spawn_agent 指定一个支持 vision 的模型，并设置 tools=["read_image"]，把图片绝对路径、用户问题、判断标准和必要上下文完整传给子 agent；随后用 wait_agent 获取文字报告，再基于报告回复用户。不要声称自己直接看到了图片。',
+    )
+  }
 
   if (rules.length === 0) return '<tool_rules>\n</tool_rules>'
 
   const content = rules.join('\n')
-  return enforceFixedBudget(`<tool_rules>\n${content}\n</tool_rules>`, 800, 'Tool Rules')
+  return enforceFixedBudget(`<tool_rules>\n${content}\n</tool_rules>`, 1800, 'Tool Rules')
 }
 
 export function buildConstraintsBlock(): string {

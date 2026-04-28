@@ -164,6 +164,16 @@ describe('buildToolRulesBlock', () => {
 
     expect(result).toBe('<tool_rules>\n</tool_rules>')
   })
+
+  test('guides text-only models to delegate image analysis through a vision sub-agent', () => {
+    const tools = [makeTool('spawn_agent'), makeTool('wait_agent')]
+    const result = buildToolRulesBlock(tools)
+
+    expect(result).toContain('Image Analysis Delegation')
+    expect(result).toContain('当前模型不能直接看图')
+    expect(result).toContain('tools=["read_image"]')
+    expect(result).toContain('不要声称自己直接看到了图片')
+  })
 })
 
 describe('buildConstraintsBlock', () => {

@@ -6,6 +6,7 @@ import { now, toErrorMessage } from '@zero-os/shared'
  */
 export abstract class BaseTool {
   kind: ToolKind = 'tool'
+  requiredModelCapabilities: readonly string[] = []
   abstract name: string
   abstract description: string
   abstract parameters: Record<string, unknown>
