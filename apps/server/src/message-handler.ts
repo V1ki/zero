@@ -106,18 +106,7 @@ export async function handleChannelMessage(
         : false
     ensureSessionReady(session, isNew, deps)
 
-    typingHandle = await deps.channelAdapter.showTyping(chatId, messageId)
-
-    if (deps.channelAdapter.createStreaming) {
-      try {
-        streaming = await deps.channelAdapter.createStreaming(chatId, messageId)
-      } catch (err) {
-        console.warn(
-          `[ZeRo OS] ${deps.channelName} streaming init failed, falling back to static:`,
-          describeError(err),
-        )
-      }
-    }
+    const shouldQueueWithoutChannelFeedback = isSessionTurnInProgress(session)
 
     let firstReply = true
     let lastSentMsgId: string | null = null
@@ -138,6 +127,40 @@ export async function handleChannelMessage(
         )
         .join('\n')
       messageContent = messageContent ? `${messageContent}\n\n${fileInfo}` : fileInfo
+    }
+
+    if (shouldQueueWithoutChannelFeedback) {
+      const queuedMessageId = messageId
+      await session.handleMessage(messageContent, {
+        images: msg.images,
+        onQueuedMessageApplied:
+          queuedMessageId !== undefined
+            ? () => {
+                if (!canDeliverToCurrentSession()) return
+                const done = deps.channelAdapter.markDone?.(chatId, queuedMessageId)
+                done?.catch((err) =>
+                  console.error(
+                    `[ZeRo OS] ${deps.channelName} queued mark done error:`,
+                    describeError(err),
+                  ),
+                )
+              }
+            : undefined,
+      } satisfies HandleMessageOptions)
+      return
+    }
+
+    typingHandle = await deps.channelAdapter.showTyping(chatId, messageId)
+
+    if (deps.channelAdapter.createStreaming) {
+      try {
+        streaming = await deps.channelAdapter.createStreaming(chatId, messageId)
+      } catch (err) {
+        console.warn(
+          `[ZeRo OS] ${deps.channelName} streaming init failed, falling back to static:`,
+          describeError(err),
+        )
+      }
     }
 
     const replies = await session.handleMessage(messageContent, {
@@ -407,6 +430,11 @@ function ensureSessionReady(session: Session, isNew: boolean, deps: MessageHandl
       agentInstruction: deps.agentInstruction,
     })
   }
+}
+
+function isSessionTurnInProgress(session: Session): boolean {
+  const maybeSession = session as Session & { isTurnInProgress?: () => boolean }
+  return typeof maybeSession.isTurnInProgress === 'function' ? maybeSession.isTurnInProgress() : false
 }
 
 function normalizeChatId(msg: IncomingMessage): string {

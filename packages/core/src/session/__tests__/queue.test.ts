@@ -406,12 +406,19 @@ describe('Session queue handling', () => {
     const turnPromise = session.handleMessage('生成架构图')
     await tool.waitUntilStarted()
 
-    const queuedResult = await session.handleMessage('可以使用 qwen image 这个来生成图片')
+    let appliedCount = 0
+    const queuedResult = await session.handleMessage('可以使用 qwen image 这个来生成图片', {
+      onQueuedMessageApplied: () => {
+        appliedCount += 1
+      },
+    })
     expect(queuedResult).toEqual([])
+    expect(appliedCount).toBe(0)
 
     tool.release()
     const messages = await turnPromise
 
+    expect(appliedCount).toBe(1)
     expect(adapter.queuedRequestSeen).toBe(true)
     expect(adapter.normalRequestHasTools).toEqual([true, true, true, true])
     expect(adapter.sawUnexpectedNoToolsRequest).toBe(false)

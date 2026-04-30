@@ -83,6 +83,8 @@ export interface HandleMessageOptions {
   onTextDelta?: (delta: string, meta: { role: 'assistant'; turnId: string }) => void
   /** Image attachments (base64) to send alongside the text message. */
   images?: Array<{ mediaType: string; data: string }>
+  /** Called after a queued message is injected into a later model request and that request returns. */
+  onQueuedMessageApplied?: () => void
 }
 
 interface ReasoningEffortUpdateResult {
@@ -308,7 +310,12 @@ export class Session {
     // If another message is already processing, queue it instead of blocking
     if (this.mutex.isLocked()) {
       const timestamp = now()
-      this.messageQueue.push({ content, images: options?.images, timestamp })
+      this.messageQueue.push({
+        content,
+        images: options?.images,
+        timestamp,
+        onApplied: options?.onQueuedMessageApplied,
+      })
       this.messages.push(this.makeUserMessage(content, timestamp, options?.images, 'queued'))
       this.data.updatedAt = timestamp
       this.persistState()

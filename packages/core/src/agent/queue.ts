@@ -5,6 +5,7 @@ export interface QueuedMessage {
   content: string
   images?: Array<{ mediaType: string; data: string }>
   timestamp: string
+  onApplied?: () => void
 }
 
 export interface QueuedInjectionTraceMessage {

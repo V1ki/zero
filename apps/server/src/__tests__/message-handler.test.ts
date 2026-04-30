@@ -9,6 +9,7 @@ describe('handleChannelMessage', () => {
   type SessionHandleMessageOptions = {
     images?: IncomingMessage['images']
     onTextDelta?: (delta: string, meta: { turnId: string }) => void
+    onQueuedMessageApplied?: () => void
   }
 
   const createDefaultDeps = (
@@ -54,7 +55,7 @@ describe('handleChannelMessage', () => {
       isAgentInitialized: () => true,
       setChannelCapabilities: () => {},
       initAgent: () => {},
-      handleMessage: async (content: string, options?: { images?: IncomingMessage['images'] }) => {
+      handleMessage: async (content: string, options?: SessionHandleMessageOptions) => {
         handledContent = content
         handledImages = options?.images
         return []
@@ -122,6 +123,81 @@ describe('handleChannelMessage', () => {
         '[文件: report.pdf] 已下载到: /tmp/report.pdf\n\n📎 文件「report.pdf」已下载到: /tmp/report.pdf (2.0 KB)',
     ).toBe(true)
     expect(handledImages).toEqual([{ mediaType: 'image/png', data: 'abc123' }])
+  })
+
+  test('queues in-progress messages without channel feedback', async () => {
+    let handledContent: string | null = null
+    let handledImages: IncomingMessage['images'] | undefined
+    let queuedMessageApplied: (() => void) | undefined
+    const calls: string[] = []
+
+    const session = {
+      data: { id: 'sess_test' },
+      isAgentInitialized: () => true,
+      isTurnInProgress: () => true,
+      setChannelCapabilities: () => {},
+      initAgent: () => {},
+      handleMessage: async (content: string, options?: SessionHandleMessageOptions) => {
+        calls.push('handleMessage')
+        handledContent = content
+        handledImages = options?.images
+        queuedMessageApplied = options?.onQueuedMessageApplied
+        return []
+      },
+    }
+
+    const channelAdapter: ChannelAdapter = {
+      reply: async () => {
+        calls.push('reply')
+      },
+      showTyping: async () => {
+        calls.push('showTyping')
+        return {
+          clear: async () => {
+            calls.push('clearTyping')
+          },
+        }
+      },
+      createStreaming: async () => {
+        calls.push('createStreaming')
+        return {
+          update: async () => {
+            calls.push('streamUpdate')
+          },
+          complete: async () => {
+            calls.push('streamComplete')
+          },
+          abort: async () => {
+            calls.push('streamAbort')
+          },
+        }
+      },
+      markDone: async () => {
+        calls.push('markDone')
+      },
+    }
+
+    await handleChannelMessage(
+      {
+        channelType: 'feishu' as const,
+        senderId: 'user_test',
+        content: 'queued follow-up',
+        timestamp: new Date('2026-03-29T00:00:00.000Z').toISOString(),
+        metadata: {
+          chatId: 'chat_test',
+          messageId: 'msg_test',
+        },
+        images: [{ mediaType: 'image/png', data: 'img-data' }],
+      },
+      createDefaultDeps(session, channelAdapter),
+    )
+
+    expect(handledContent === 'queued follow-up').toBe(true)
+    expect(handledImages).toEqual([{ mediaType: 'image/png', data: 'img-data' }])
+    expect(calls).toEqual(['handleMessage'])
+
+    queuedMessageApplied?.()
+    expect(calls).toEqual(['handleMessage', 'markDone'])
   })
 
   test('scopes Feishu sessions by sender while replying to the real chat id', async () => {

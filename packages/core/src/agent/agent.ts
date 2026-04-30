@@ -359,6 +359,7 @@ export class Agent {
     let pendingParentRequestId: string | undefined
     let currentRequestToolResults: RequestToolResultEntry[] = []
     let pendingQueuedInjection: QueuedInjectionTrace | undefined
+    let pendingQueuedAppliedCallbacks: Array<() => void> = []
     let appliedQueuedIntentText: string | undefined
     let pendingMemoryInjections = cloneMemoryInjections(options.context.requestMemoryInjections)
     let currentRequestSpanId: string | undefined
@@ -378,6 +379,31 @@ export class Agent {
       appliedQueuedIntentText = appliedQueuedIntentText
         ? `${appliedQueuedIntentText}\n${intentText}`
         : intentText
+    }
+
+    const trackQueuedAppliedCallbacks = (queued: QueuedMessage[]) => {
+      for (const message of queued) {
+        if (message.onApplied) {
+          pendingQueuedAppliedCallbacks.push(message.onApplied)
+        }
+      }
+    }
+
+    const notifyQueuedApplied = () => {
+      if (pendingQueuedAppliedCallbacks.length === 0) return
+
+      const callbacks = pendingQueuedAppliedCallbacks
+      pendingQueuedAppliedCallbacks = []
+      for (const callback of callbacks) {
+        try {
+          callback()
+        } catch (error) {
+          this.toolContext.logger.warn('queued_message_applied_callback_failed', {
+            sessionId: this.toolContext.sessionId,
+            error: toErrorMessage(error),
+          })
+        }
+      }
     }
 
     const interruptMemoryNudge = () => {
@@ -437,6 +463,7 @@ export class Agent {
       hadQueuedMessages = true
       appendAppliedQueuedIntent(queued)
       pendingQueuedInjection = buildQueuedInjectionTrace(queued)
+      trackQueuedAppliedCallbacks(queued)
 
       const drainSpan = this.obs.tracer?.startSpan(
         this.toolContext.sessionId,
@@ -543,6 +570,7 @@ export class Agent {
         )
 
         currentRequestToolResults = []
+        notifyQueuedApplied()
         pendingQueuedInjection = undefined
         pendingMemoryInjections = undefined
         pendingParentRequestId = response.stopReason === 'tool_use' ? response.id : undefined
@@ -919,6 +947,7 @@ export class Agent {
             pendingQueuedInjection = injected.trace
             hadQueuedMessages = injected.trace !== undefined
             appendAppliedQueuedIntent(queued)
+            trackQueuedAppliedCallbacks(queued)
             if (hadQueuedMessages) {
               interruptMemoryNudge()
             }
