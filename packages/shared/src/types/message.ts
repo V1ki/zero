@@ -102,6 +102,7 @@ export interface CompletionResponse {
 export type StreamEventType =
   | 'text_delta'
   | 'reasoning_delta'
+  | 'reasoning_signature'
   | 'tool_use_start'
   | 'tool_use_delta'
   | 'tool_use_end'

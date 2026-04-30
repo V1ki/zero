@@ -5,6 +5,7 @@ import {
   estimateConversationTokens,
   mergeInterleavedQueuedMessages,
   prepareConversationHistory,
+  sanitizeConversationHistoryForSignedThinkingToolUse,
 } from '../context'
 
 function makeMessage(role: 'user' | 'assistant', content: ContentBlock[]): Message {
@@ -85,6 +86,74 @@ describe('prepareConversationHistory', () => {
   test('returns empty array for empty input', () => {
     const result = prepareConversationHistory([])
     expect(result).toEqual([])
+  })
+
+  test('drops invalid tool_use turns when thinking is required', () => {
+    const messages = [
+      makeUserText('run tool'),
+      makeMessage('assistant', [
+        { type: 'text', text: 'I will call the tool.' },
+        { type: 'tool_use', id: 'call_missing_thinking', name: 'noop', input: {} },
+      ]),
+      makeToolResult('call_missing_thinking', 'tool output'),
+      makeUserText('continue'),
+    ]
+
+    const result = prepareConversationHistory(messages, { requireThinkingForToolUse: true })
+
+    expect(result).toHaveLength(3)
+    expect(result[1].content).toEqual([{ type: 'text', text: 'I will call the tool.' }])
+    expect(
+      result.some((message) => message.content.some((block) => block.type === 'tool_result')),
+    ).toBe(false)
+    expect(result.at(-1)?.content).toEqual([{ type: 'text', text: 'continue' }])
+  })
+
+  test('keeps non-thinking tool_use turns when thinking is not required', () => {
+    const messages = [
+      makeUserText('run tool'),
+      makeMessage('assistant', [
+        { type: 'text', text: 'I will call the tool.' },
+        { type: 'tool_use', id: 'call_no_thinking', name: 'noop', input: {} },
+      ]),
+      makeToolResult('call_no_thinking', 'tool output'),
+    ]
+
+    const result = prepareConversationHistory(messages)
+
+    expect(result).toHaveLength(3)
+    expect(result[1].content.some((block) => block.type === 'tool_use')).toBe(true)
+    expect(result[2].content.some((block) => block.type === 'tool_result')).toBe(true)
+  })
+
+  test('sanitizeConversationHistoryForSignedThinkingToolUse preserves valid thinking tool turns', () => {
+    const messages = [
+      makeUserText('run tool'),
+      makeMessage('assistant', [
+        { type: 'thinking', thinking: 'Need a tool.', signature: 'sig_1' },
+        { type: 'tool_use', id: 'call_with_thinking', name: 'noop', input: {} },
+      ]),
+      makeToolResult('call_with_thinking', 'tool output'),
+    ]
+
+    expect(sanitizeConversationHistoryForSignedThinkingToolUse(messages)).toBe(messages)
+  })
+
+  test('drops signature-less thinking tool turns when thinking replay requires signatures', () => {
+    const messages = [
+      makeUserText('run tool'),
+      makeMessage('assistant', [
+        { type: 'thinking', thinking: 'Need a tool.' },
+        { type: 'text', text: 'I will call the tool.' },
+        { type: 'tool_use', id: 'call_without_signature', name: 'noop', input: {} },
+      ]),
+      makeToolResult('call_without_signature', 'tool output'),
+    ]
+
+    const result = sanitizeConversationHistoryForSignedThinkingToolUse(messages)
+
+    expect(result).toHaveLength(2)
+    expect(result[1].content).toEqual([{ type: 'text', text: 'I will call the tool.' }])
   })
 
   test('does not treat notification messages as top-level turns', () => {

@@ -41,6 +41,39 @@ class ScriptedAdapter implements ProviderAdapter {
   }
 }
 
+class DeepSeekStreamAdapter implements ProviderAdapter {
+  readonly apiType = 'anthropic-deepseek'
+  completeCalls = 0
+  streamCalls = 0
+  requests: CompletionRequest[] = []
+
+  constructor(
+    private readonly streamScripts: StreamEvent[][],
+    private readonly completeResponse: CompletionResponse | Error = new Error(
+      'complete should not be called for signed DeepSeek streams',
+    ),
+  ) {}
+
+  async complete(request: CompletionRequest): Promise<CompletionResponse> {
+    this.completeCalls++
+    this.requests.push(request)
+    if (this.completeResponse instanceof Error) throw this.completeResponse
+    return this.completeResponse
+  }
+
+  async *stream(request: CompletionRequest): AsyncIterable<StreamEvent> {
+    this.streamCalls++
+    this.requests.push(request)
+    for (const event of this.streamScripts[this.streamCalls - 1] ?? []) {
+      yield event
+    }
+  }
+
+  async healthCheck(): Promise<boolean> {
+    return true
+  }
+}
+
 const logger: ToolLogger = {
   info: () => {},
   warn: () => {},
@@ -77,6 +110,32 @@ function createLoop(
       onEndTurn: () => ({ action: 'break' }),
     },
   )
+}
+
+function createNoopExecutor(onExecute?: () => void): ToolExecutor {
+  return {
+    has: (toolName) => toolName === 'noop',
+    execute: async () => {
+      onExecute?.()
+      return {
+        success: true,
+        output: 'tool output',
+        outputSummary: 'tool output',
+      }
+    },
+  }
+}
+
+function createDeepSeekStreamLoop(
+  adapter: ProviderAdapter,
+  toolExecutor: ToolExecutor = createNoopExecutor(),
+  overrides: Partial<ConstructorParameters<typeof AgentLoop>[0]> = {},
+): AgentLoop {
+  return createLoop([], toolExecutor, {
+    adapter,
+    stream: true,
+    ...overrides,
+  })
 }
 
 describe('AgentLoop', () => {
@@ -181,7 +240,10 @@ describe('AgentLoop', () => {
       [
         {
           id: 'resp_tool',
-          content: [{ type: 'tool_use', id: 'call_1', name: 'noop', input: {} }],
+          content: [
+            { type: 'thinking', thinking: 'Need to call the noop tool.', signature: 'sig_1' },
+            { type: 'tool_use', id: 'call_1', name: 'noop', input: {} },
+          ],
           stopReason: 'tool_use',
           usage: { input: 3, output: 1 },
           model: 'deepseek-v4-pro',
@@ -238,10 +300,12 @@ describe('AgentLoop', () => {
     expect(assistantWithTool?.content[0]).toEqual({
       type: 'thinking',
       thinking: 'Need to call the noop tool.',
+      signature: 'sig_1',
     })
     expect(secondRequestAssistant?.content[0]).toEqual({
       type: 'thinking',
       thinking: 'Need to call the noop tool.',
+      signature: 'sig_1',
     })
     expect(secondRequestAssistant?.content[1]).toEqual({
       type: 'tool_use',
@@ -249,6 +313,187 @@ describe('AgentLoop', () => {
       name: 'noop',
       input: {},
     })
+  })
+
+  test('rejects DeepSeek streaming tool_use responses without signed thinking', async () => {
+    const adapter = new DeepSeekStreamAdapter([
+      [
+        { type: 'text_delta', data: { text: 'I will call the tool.' } },
+        { type: 'tool_use_start', data: { id: 'call_1', name: 'noop' } },
+        { type: 'tool_use_delta', data: { arguments: '{}' } },
+        { type: 'tool_use_end', data: { id: 'call_1' } },
+        {
+          type: 'done',
+          data: {
+            finishReason: 'tool_use',
+            usage: { input: 3, output: 2 },
+            model: 'deepseek-v4-pro',
+          },
+        },
+      ],
+    ])
+    let executed = false
+    const loop = createDeepSeekStreamLoop(
+      adapter,
+      createNoopExecutor(() => {
+        executed = true
+      }),
+    )
+
+    await expect(loop.run('run tool', [])).rejects.toThrow('missing signed thinking content')
+    expect(adapter.completeCalls).toBe(0)
+    expect(executed).toBe(false)
+  })
+
+  test('keeps signed DeepSeek streaming tool_use responses without non-streaming fallback', async () => {
+    const adapter = new DeepSeekStreamAdapter([
+      [
+        { type: 'reasoning_delta', data: { text: 'Need to call the noop tool.' } },
+        { type: 'reasoning_signature', data: { signature: 'sig_stream' } },
+        { type: 'tool_use_start', data: { id: 'call_1', name: 'noop' } },
+        { type: 'tool_use_delta', data: { arguments: '{}' } },
+        { type: 'tool_use_end', data: { id: 'call_1' } },
+        {
+          type: 'done',
+          data: {
+            finishReason: 'tool_use',
+            usage: { input: 3, output: 2 },
+            model: 'deepseek-v4-pro',
+          },
+        },
+      ],
+      [
+        { type: 'text_delta', data: { text: 'finished' } },
+        {
+          type: 'done',
+          data: {
+            finishReason: 'end_turn',
+            usage: { input: 5, output: 1 },
+            model: 'deepseek-v4-pro',
+          },
+        },
+      ],
+    ])
+    const warnings: Array<{ event: string; data?: Record<string, unknown> }> = []
+    const loop = createDeepSeekStreamLoop(adapter, createNoopExecutor(), {
+      logger: {
+        info: () => {},
+        warn: (event, data) => warnings.push({ event, data }),
+        error: () => {},
+      },
+    })
+
+    const messages = await loop.run('run tool', [])
+    const assistantWithTool = messages.find((message) =>
+      message.content.some((block) => block.type === 'tool_use'),
+    )
+
+    expect(adapter.streamCalls).toBe(2)
+    expect(adapter.completeCalls).toBe(0)
+    expect(
+      warnings.some(
+        (warning) => warning.event === 'llm_stream_missing_thinking_fallback_to_complete',
+      ),
+    ).toBe(false)
+    expect(assistantWithTool?.content[0]).toEqual({
+      type: 'thinking',
+      thinking: 'Need to call the noop tool.',
+      signature: 'sig_stream',
+    })
+  })
+
+  test('keeps signed DeepSeek streaming final responses instead of synthesizing unsigned thinking', async () => {
+    const adapter = new DeepSeekStreamAdapter([
+      [
+        { type: 'reasoning_delta', data: { text: 'Ready to answer.' } },
+        { type: 'reasoning_signature', data: { signature: 'sig_final_stream' } },
+        { type: 'text_delta', data: { text: 'finished' } },
+        {
+          type: 'done',
+          data: {
+            finishReason: 'end_turn',
+            usage: { input: 3, output: 2 },
+            model: 'deepseek-v4-pro',
+          },
+        },
+      ],
+    ])
+    const loop = createDeepSeekStreamLoop(
+      adapter,
+      {
+        has: () => false,
+        execute: async () => ({
+          success: true,
+          output: 'tool output',
+          outputSummary: 'tool output',
+        }),
+      },
+      { tools: [] },
+    )
+
+    const messages = await loop.run('answer directly', [])
+    const assistant = messages.find((message) => message.role === 'assistant')
+
+    expect(adapter.completeCalls).toBe(0)
+    expect(assistant?.content).toEqual([
+      { type: 'thinking', thinking: 'Ready to answer.', signature: 'sig_final_stream' },
+      { type: 'text', text: 'finished' },
+    ])
+  })
+
+  test('rejects DeepSeek tool_use responses that still lack thinking after completion', async () => {
+    const adapter = new ScriptedAdapter(
+      [
+        {
+          id: 'resp_tool',
+          content: [{ type: 'tool_use', id: 'call_1', name: 'noop', input: {} }],
+          stopReason: 'tool_use',
+          usage: { input: 3, output: 1 },
+          model: 'deepseek-v4-pro',
+        },
+      ],
+      'anthropic-deepseek',
+    )
+    let executed = false
+    const loop = createLoop(
+      [],
+      createNoopExecutor(() => {
+        executed = true
+      }),
+      { adapter },
+    )
+
+    await expect(loop.run('run tool', [])).rejects.toThrow('missing signed thinking content')
+    expect(executed).toBe(false)
+  })
+
+  test('rejects DeepSeek tool_use responses with unsigned thinking after completion', async () => {
+    const adapter = new ScriptedAdapter(
+      [
+        {
+          id: 'resp_tool',
+          content: [
+            { type: 'thinking', thinking: 'Need to call a tool.' },
+            { type: 'tool_use', id: 'call_1', name: 'noop', input: {} },
+          ],
+          stopReason: 'tool_use',
+          usage: { input: 3, output: 1 },
+          model: 'deepseek-v4-pro',
+        },
+      ],
+      'anthropic-deepseek',
+    )
+    let executed = false
+    const loop = createLoop(
+      [],
+      createNoopExecutor(() => {
+        executed = true
+      }),
+      { adapter },
+    )
+
+    await expect(loop.run('run tool', [])).rejects.toThrow('missing signed thinking content')
+    expect(executed).toBe(false)
   })
 
   test('preserves structured tool result content items in the loop history', async () => {

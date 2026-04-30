@@ -325,6 +325,78 @@ describe('AnthropicDeepSeekAdapter', () => {
       requestMessages.some((message) => message.content.some((b) => b.text === 'continue')),
     ).toBe(true)
   })
+
+  test('drops legacy tool calls that only have unsigned thinking content', async () => {
+    const adapter = createAdapter()
+    const calls: Array<Record<string, unknown>> = []
+    ;(
+      adapter as unknown as {
+        client: {
+          messages: {
+            create: (params: Record<string, unknown>) => Promise<unknown>
+          }
+        }
+      }
+    ).client = {
+      messages: {
+        create: async (params) => {
+          calls.push(params)
+          return {
+            id: 'msg_deepseek_test',
+            content: [{ type: 'text', text: 'ok' }],
+            stop_reason: 'end_turn',
+            usage: { input_tokens: 1, output_tokens: 1 },
+            model: 'deepseek-v4-pro',
+          }
+        },
+      },
+    }
+
+    const toolUseId = 'toolu_unsigned'
+    const messages: Message[] = [
+      makeUserMessage('legacy lookup'),
+      {
+        id: generateId(),
+        sessionId: 'sess_test',
+        role: 'assistant',
+        messageType: 'message',
+        content: [
+          { type: 'thinking', thinking: 'Need a tool result.' },
+          { type: 'tool_use', id: toolUseId, name: 'lookup', input: { query: 'x' } },
+        ],
+        createdAt: now(),
+      },
+      {
+        id: generateId(),
+        sessionId: 'sess_test',
+        role: 'user',
+        messageType: 'message',
+        content: [{ type: 'tool_result', toolUseId, content: 'legacy output' }],
+        createdAt: now(),
+      },
+      makeUserMessage('continue'),
+    ]
+
+    await adapter.complete({
+      messages,
+      stream: false,
+      model: 'deepseek-v4-pro',
+    })
+
+    const requestMessages = calls[0].messages as Array<{
+      role: string
+      content: Array<Record<string, unknown>>
+    }>
+    expect(
+      requestMessages.some((message) => message.content.some((b) => b.type === 'tool_use')),
+    ).toBe(false)
+    expect(
+      requestMessages.some((message) => message.content.some((b) => b.type === 'tool_result')),
+    ).toBe(false)
+    expect(
+      requestMessages.some((message) => message.content.some((b) => b.type === 'thinking')),
+    ).toBe(false)
+  })
 })
 
 describe.skipIf(!DEEPSEEK_API_KEY)('AnthropicDeepSeekAdapter (Real API)', () => {

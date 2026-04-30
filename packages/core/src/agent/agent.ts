@@ -202,7 +202,9 @@ export class Agent {
     getQueuedMessages?: () => QueuedMessage[],
     requestLogMeta?: { turnIndex?: number; userMessageEntry?: Message },
   ): Promise<Message[]> {
-    const history = prepareConversationHistory(context.conversationHistory)
+    const history = prepareConversationHistory(context.conversationHistory, {
+      requireThinkingForToolUse: this.adapter.apiType === 'anthropic-deepseek',
+    })
     const turnIndex = requestLogMeta?.turnIndex ?? 1
     let emittedMessageCount = 0
 
@@ -1449,7 +1451,8 @@ export class Agent {
         return { ...block, text: filter.filter(block.text) }
       }
       if (block.type === 'thinking') {
-        return { ...block, thinking: filter.filter(block.thinking) }
+        const thinking = filter.filter(block.thinking)
+        return thinking === block.thinking ? block : { ...block, thinking, signature: undefined }
       }
       return block
     })

@@ -142,8 +142,7 @@ function makeClaudeOAuthSessionJson(
     refreshToken: overrides.refreshToken ?? 'refresh-token',
     expiresAt,
     tokenType: overrides.tokenType ?? 'Bearer',
-    scopes:
-      overrides.scopes ?? ['user:profile', 'user:inference', 'user:sessions:claude_code'],
+    scopes: overrides.scopes ?? ['user:profile', 'user:inference', 'user:sessions:claude_code'],
     subscriptionType: overrides.subscriptionType ?? 'max',
   })
 }
@@ -331,6 +330,11 @@ describe('Anthropic Adapter (Pure Logic)', () => {
               delta: { type: 'thinking_delta', thinking: 'internal-summary' },
             }
             yield {
+              type: 'content_block_delta',
+              index: 0,
+              delta: { type: 'signature_delta', signature: 'sig_stream' },
+            }
+            yield {
               type: 'content_block_stop',
               index: 0,
             }
@@ -391,6 +395,7 @@ describe('Anthropic Adapter (Pure Logic)', () => {
     expect(events).toEqual([
       { type: 'text_delta', data: { text: 'hello' } },
       { type: 'reasoning_delta', data: { text: 'internal-summary' } },
+      { type: 'reasoning_signature', data: { signature: 'sig_stream' } },
       { type: 'tool_use_start', data: { id: 'toolu_123', name: 'calculator' } },
       { type: 'tool_use_delta', data: { arguments: '{"expr":"1+1"}' } },
       { type: 'tool_use_end', data: { id: 'toolu_123' } },
@@ -727,10 +732,7 @@ describe('Anthropic Adapter (Pure Logic)', () => {
       oauthTokenProvider: () => currentSession,
       oauthTokenRefresher: async () => {
         refreshCalls += 1
-        currentSession = makeClaudeOAuthSessionJson(
-          'claude-fresh-token',
-          Date.now() + 30 * 60_000,
-        )
+        currentSession = makeClaudeOAuthSessionJson('claude-fresh-token', Date.now() + 30 * 60_000)
       },
     })
 

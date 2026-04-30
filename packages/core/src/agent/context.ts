@@ -1,6 +1,75 @@
 import type { ContentBlock, Message, ToolResultBlock } from '@zero-os/shared'
-import { estimateMessageTokens } from '@zero-os/shared'
+import { estimateMessageTokens, hasSignedThinkingBlock } from '@zero-os/shared'
 import { CONTEXT_PARAMS } from './params'
+
+export interface ConversationHistoryOptions {
+  requireThinkingForToolUse?: boolean
+}
+
+export function sanitizeConversationHistoryForSignedThinkingToolUse(
+  messages: Message[],
+): Message[] {
+  const invalidToolUseIds = new Set<string>()
+  const sanitized: Message[] = []
+
+  for (const message of messages) {
+    if (
+      message.role === 'assistant' &&
+      message.content.some((block) => block.type === 'tool_use')
+    ) {
+      const hasThinking = hasSignedThinkingBlock(message.content)
+
+      if (!hasThinking) {
+        const content = message.content.filter((block) => {
+          if (block.type === 'thinking') return false
+          if (block.type !== 'tool_use') return true
+          invalidToolUseIds.add(block.id)
+          return false
+        })
+
+        if (content.length > 0) {
+          sanitized.push({ ...message, content })
+        }
+        continue
+      }
+    }
+
+    if (
+      invalidToolUseIds.size > 0 &&
+      message.role === 'user' &&
+      message.content.some(
+        (block) => block.type === 'tool_result' && invalidToolUseIds.has(block.toolUseId),
+      )
+    ) {
+      const content = message.content.filter(
+        (block) => block.type !== 'tool_result' || !invalidToolUseIds.has(block.toolUseId),
+      )
+      if (content.length > 0) {
+        sanitized.push({ ...message, content })
+      }
+      continue
+    }
+
+    if (
+      message.role === 'assistant' &&
+      message.content.some((block) => block.type === 'thinking') &&
+      !message.content.some((block) => block.type === 'tool_use')
+    ) {
+      const content = message.content.filter((block) => block.type !== 'thinking')
+      if (content.length > 0) {
+        sanitized.push({ ...message, content })
+      }
+      continue
+    }
+
+    sanitized.push(message)
+  }
+
+  return sanitized.length === messages.length &&
+    sanitized.every((message, index) => message === messages[index])
+    ? messages
+    : sanitized
+}
 
 /**
  * Merge queued messages that sit between an assistant tool_use message and
@@ -82,13 +151,19 @@ export function mergeInterleavedQueuedMessages(messages: Message[]): Message[] {
  * 4-8 turns: tool_result content truncated to ~200 chars summary
  * 9+ turns: tool_result replaced with success/failure status only
  */
-export function prepareConversationHistory(messages: Message[]): Message[] {
+export function prepareConversationHistory(
+  messages: Message[],
+  options: ConversationHistoryOptions = {},
+): Message[] {
   if (messages.length === 0) return []
 
   const promptHistory = messages.filter((message) => message.messageType !== 'notification')
 
   // Merge queued messages that break tool_use → tool_result pairing
-  const cleaned = mergeInterleavedQueuedMessages(promptHistory)
+  const paired = mergeInterleavedQueuedMessages(promptHistory)
+  const cleaned = options.requireThinkingForToolUse
+    ? sanitizeConversationHistoryForSignedThinkingToolUse(paired)
+    : paired
 
   // Assign turn indices by scanning from the end
   const turnBoundaries: number[] = []

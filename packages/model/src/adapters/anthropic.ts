@@ -8,6 +8,7 @@ import type {
   TokenUsage,
   ToolResultBlock,
 } from '@zero-os/shared'
+import { hasSignedThinkingBlock, isSignedThinkingBlock } from '@zero-os/shared'
 import { type ClaudeOAuthSession, parseClaudeOAuthSession } from '../auth/claude'
 import type {
   AdapterConfig,
@@ -104,6 +105,8 @@ export class AnthropicAdapter implements ProviderAdapter {
           yield { type: 'text_delta', data: { text: delta.text } }
         } else if (delta.type === 'thinking_delta') {
           yield { type: 'reasoning_delta', data: { text: delta.thinking } }
+        } else if (delta.type === 'signature_delta') {
+          yield { type: 'reasoning_signature', data: { signature: delta.signature } }
         } else if (delta.type === 'input_json_delta') {
           yield { type: 'tool_use_delta', data: { arguments: delta.partial_json } }
         }
@@ -271,6 +274,7 @@ export class AnthropicAdapter implements ProviderAdapter {
           if (block.type === 'text') {
             parts.push({ type: 'text', text: block.text })
           } else if (block.type === 'thinking') {
+            if (this.shouldRequireThinkingForToolUse() && !isSignedThinkingBlock(block)) continue
             parts.push(this.convertThinkingBlock(block))
           } else if (block.type === 'tool_use') {
             if (!pairedCallIds.has(block.id)) continue
@@ -315,7 +319,11 @@ export class AnthropicAdapter implements ProviderAdapter {
     for (const msg of req.messages) {
       const assistantHasThinking =
         msg.role === 'assistant' &&
-        msg.content.some((block) => block.type === 'thinking' && block.thinking.trim().length > 0)
+        (this.shouldRequireThinkingForToolUse()
+          ? hasSignedThinkingBlock(msg.content)
+          : msg.content.some(
+              (block) => block.type === 'thinking' && block.thinking.trim().length > 0,
+            ))
       for (const block of msg.content) {
         if (block.type === 'tool_use') {
           if (this.shouldRequireThinkingForToolUse() && !assistantHasThinking) continue

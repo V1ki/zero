@@ -10,7 +10,13 @@ import type {
   ToolLogger,
   ToolResult,
 } from '@zero-os/shared'
-import { generateId, generatePrefixedId, now, toErrorMessage } from '@zero-os/shared'
+import {
+  generateId,
+  generatePrefixedId,
+  hasSignedThinkingBlock,
+  now,
+  toErrorMessage,
+} from '@zero-os/shared'
 import { EMPTY_RESPONSE_RETRY_PROMPT } from '../constants'
 import { CONTEXT_PARAMS } from './params'
 
@@ -291,33 +297,29 @@ export class AgentLoop {
 
   private buildAssistantMessage(response: CompletionResponse, ctx: LoopIterationContext): Message {
     const content = this.hooks.filterAssistantContent?.(response.content, ctx) ?? response.content
-    const finalContent = this.withDeepSeekThinkingContent(content, response.reasoningContent)
+    this.assertValidDeepSeekThinkingContent(content)
 
     return {
       id: generateId(),
       sessionId: this.config.sessionId,
       role: 'assistant',
       messageType: 'message',
-      content: finalContent,
+      content,
       model: response.model,
       createdAt: now(),
     }
   }
 
-  private withDeepSeekThinkingContent(
-    content: ContentBlock[],
-    reasoningContent: string | undefined,
-  ): ContentBlock[] {
-    const trimmed = reasoningContent?.trim()
-    if (
-      this.config.adapter.apiType !== 'anthropic-deepseek' ||
-      !trimmed ||
-      content.some((block) => block.type === 'thinking')
-    ) {
-      return content
+  private assertValidDeepSeekThinkingContent(content: ContentBlock[]): void {
+    if (this.config.adapter.apiType !== 'anthropic-deepseek') return
+    if (!content.some((block) => block.type === 'tool_use')) return
+    if (hasSignedThinkingBlock(content)) {
+      return
     }
 
-    return [{ type: 'thinking', thinking: trimmed }, ...content]
+    throw new Error(
+      'Anthropic DeepSeek tool_use response missing signed thinking content; refusing to persist invalid history',
+    )
   }
 
   private buildToolResultMessage(content: ContentBlock[]): Message {
@@ -567,6 +569,7 @@ export class AgentLoop {
 
     const textParts: string[] = []
     const reasoningParts: string[] = []
+    const reasoningSignatureParts: string[] = []
     const toolCalls = new Map<string, { id: string; name: string; args: string }>()
 
     let currentToolId: string | null = null
@@ -589,6 +592,14 @@ export class AgentLoop {
         const delta = typeof data.text === 'string' ? data.text : ''
         if (!delta) continue
         reasoningParts.push(delta)
+        continue
+      }
+
+      if (event.type === 'reasoning_signature') {
+        const data = this.toRecord(event.data)
+        const signature = typeof data.signature === 'string' ? data.signature : ''
+        if (!signature) continue
+        reasoningSignatureParts.push(signature)
         continue
       }
 
@@ -649,6 +660,21 @@ export class AgentLoop {
     }
 
     const content: ContentBlock[] = []
+    const reasoningContent = reasoningParts.length > 0 ? reasoningParts.join('') : undefined
+    const reasoningSignature =
+      reasoningSignatureParts.length > 0 ? reasoningSignatureParts.join('') : undefined
+    if (
+      this.config.adapter.apiType === 'anthropic-deepseek' &&
+      reasoningContent &&
+      reasoningSignature
+    ) {
+      content.push({
+        type: 'thinking',
+        thinking: reasoningContent,
+        signature: reasoningSignature,
+      })
+    }
+
     if (textParts.length > 0) {
       content.push({ type: 'text', text: textParts.join('') })
     }
@@ -687,7 +713,7 @@ export class AgentLoop {
       stopReason,
       usage,
       model,
-      reasoningContent: reasoningParts.length > 0 ? reasoningParts.join('') : undefined,
+      reasoningContent,
     }
   }
 

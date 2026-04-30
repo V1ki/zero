@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { TrackedAdapter, type ProviderAdapter } from '@zero-os/model'
+import { type ProviderAdapter, TrackedAdapter } from '@zero-os/model'
 import { MetricsDB, Tracer } from '@zero-os/observe'
 import type {
   CompletionRequest,
@@ -7,8 +7,8 @@ import type {
   StreamEvent,
   ToolContext,
 } from '@zero-os/shared'
-import { BashTool } from '../../tool/bash'
 import { BaseTool } from '../../tool/base'
+import { BashTool } from '../../tool/bash'
 import { ReadTool } from '../../tool/read'
 import { ToolRegistry } from '../../tool/registry'
 import { Agent, type AgentConfig, type AgentContext, type AgentObservability } from '../agent'
@@ -140,6 +140,51 @@ class PlainTextAdapter implements ProviderAdapter {
   async *stream(_req: CompletionRequest): AsyncIterable<StreamEvent> {
     yield* []
     throw new Error('stream not supported in test')
+  }
+
+  async healthCheck(): Promise<boolean> {
+    return true
+  }
+}
+
+class DeepSeekThinkingToolAdapter implements ProviderAdapter {
+  readonly apiType = 'anthropic-deepseek'
+
+  async complete(_req: CompletionRequest): Promise<CompletionResponse> {
+    return {
+      id: 'resp_deepseek_tool',
+      content: [
+        { type: 'thinking', thinking: 'secret plan needs a read.', signature: 'sig_secret' },
+        {
+          type: 'tool_use',
+          id: 'call_read_1',
+          name: 'read',
+          input: { path: '/Users/v1ki/Desktop/test4_zero/package.json' },
+        },
+      ],
+      stopReason: 'tool_use',
+      usage: { input: 4, output: 2 },
+      model: 'deepseek-v4-pro',
+    }
+  }
+
+  async *stream(_req: CompletionRequest): AsyncIterable<StreamEvent> {
+    yield { type: 'reasoning_delta', data: { text: 'secret plan needs a read.' } }
+    yield { type: 'reasoning_signature', data: { signature: 'sig_secret' } }
+    yield { type: 'tool_use_start', data: { id: 'call_read_1', name: 'read' } }
+    yield {
+      type: 'tool_use_delta',
+      data: { arguments: '{"path":"/Users/v1ki/Desktop/test4_zero/package.json"}' },
+    }
+    yield { type: 'tool_use_end', data: { id: 'call_read_1' } }
+    yield {
+      type: 'done',
+      data: {
+        finishReason: 'tool_use',
+        usage: { input: 4, output: 2 },
+        model: 'deepseek-v4-pro',
+      },
+    }
   }
 
   async healthCheck(): Promise<boolean> {
@@ -476,6 +521,29 @@ describe('Agent', () => {
       // The word "hello" (case insensitive) should be filtered out
       expect(allText.toLowerCase()).not.toContain('hello')
     }
+  }, 30000)
+
+  test('run: secretFilter invalidates signed DeepSeek thinking when it changes thinking text', async () => {
+    const secretFilter = {
+      filter(text: string) {
+        return text.replace(/secret/gi, '***')
+      },
+      addSecret() {},
+      removeSecret() {},
+    }
+
+    const { agent, registry } = createAgentWithAdapter(
+      new DeepSeekThinkingToolAdapter(),
+      {},
+      {
+        secretFilter,
+      },
+    )
+    const context = createContext(registry)
+
+    await expect(agent.run(context, 'Use the read tool.')).rejects.toThrow(
+      'missing signed thinking content',
+    )
   }, 30000)
 
   test('run: bus emits session:update event', async () => {

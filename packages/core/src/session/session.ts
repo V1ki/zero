@@ -28,7 +28,10 @@ import { Mutex, generateId, generateSessionId, now, toErrorMessage } from '@zero
 import { Agent, type AgentConfig, type AgentContext, type AgentObservability } from '../agent/agent'
 import { AgentControl, type AgentSnapshot } from '../agent/agent-control'
 import { allocateBudget } from '../agent/budget'
-import { estimateConversationTokens } from '../agent/context'
+import {
+  estimateConversationTokens,
+  sanitizeConversationHistoryForSignedThinkingToolUse,
+} from '../agent/context'
 import { retrieveMemoriesWithDecision } from '../agent/memory-retrieval'
 import {
   buildDynamicContext,
@@ -998,6 +1001,10 @@ export class Session {
       model: modelRouter.normalizeModelReference(entry.model) ?? entry.model,
     }))
     const activeModel = modelRouter.resolveModel(normalizedCurrentModel)
+    const restoredMessages =
+      activeModel?.adapter.apiType === 'anthropic-deepseek'
+        ? sanitizeConversationHistoryForSignedThinkingToolUse(messages)
+        : messages
 
     const session = Object.create(Session.prototype) as Session
     const logger = {
@@ -1015,7 +1022,7 @@ export class Session {
         modelHistory: normalizedHistory,
         reasoningEffort: data.reasoningEffort,
       },
-      messages,
+      messages: restoredMessages,
       modelRouter,
       toolRegistry,
       activeModel,
@@ -1036,7 +1043,7 @@ export class Session {
       knownSkillNames: new Set<string>(),
       currentSnapshotId: undefined,
       lastSnapshotContext: null,
-      nextTurnIndex: Session.deriveNextTurnIndex(data.id, messages, deps.observability),
+      nextTurnIndex: Session.deriveNextTurnIndex(data.id, restoredMessages, deps.observability),
       pendingAgentRefresh: false,
       injectedMemoryIds: new Map<string, string>(),
       runningToolRegistry: new SessionRunningToolRegistry(),
