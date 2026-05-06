@@ -101,6 +101,7 @@ export interface FeishuChannelInstanceConfig extends BaseChannelInstanceConfig {
 export interface TelegramChannelInstanceConfig extends BaseChannelInstanceConfig {
   type: 'telegram'
   botTokenRef: string
+  streaming?: boolean
 }
 
 export interface WebChannelInstanceConfig extends BaseChannelInstanceConfig {

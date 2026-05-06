@@ -12,6 +12,7 @@ import {
 export interface TelegramChannelConfig {
   name?: string
   botToken: string
+  streaming?: boolean
 }
 
 export interface TelegramBotCommand {
@@ -286,7 +287,7 @@ export class TelegramChannel implements Channel {
 
   getCapabilities() {
     return {
-      streaming: true,
+      streaming: this.config.streaming ?? true,
       inlineImages: false,
       imageMessages: true,
       fileMessages: true,

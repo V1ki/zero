@@ -154,6 +154,11 @@ describe('TelegramChannel contract', () => {
     expect(channel.isConnected()).toBe(false)
   })
 
+  test('capabilities reflect disabled streaming config', () => {
+    const channel = new TelegramChannel({ botToken: 'test-token', streaming: false })
+    expect(channel.getCapabilities().streaming).toBe(false)
+  })
+
   test('reply sends message with reply_parameters', async () => {
     const channel = new TelegramChannel({ botToken: 'test-token' })
     const calls: RecordedArgs[] = []

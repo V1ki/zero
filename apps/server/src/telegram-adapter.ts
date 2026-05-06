@@ -2,8 +2,15 @@ import type { TelegramChannel } from '@zero-os/channel'
 import type { ChannelAdapter, StreamAdapter, TypingHandle } from './channel-adapter'
 import { createTelegramStreamFlusher, reconcileTelegramFinalText } from './telegram-streaming'
 
+export interface TelegramAdapterOptions {
+  streaming?: boolean
+}
+
 export class TelegramAdapter implements ChannelAdapter {
-  constructor(private readonly telegramChannel: TelegramChannel) {}
+  constructor(
+    private readonly telegramChannel: TelegramChannel,
+    private readonly options: TelegramAdapterOptions = {},
+  ) {}
 
   async reply(chatId: string, text: string, replyToMessageId?: string | number): Promise<void> {
     if (replyToMessageId !== undefined && replyToMessageId !== null) {
@@ -26,6 +33,8 @@ export class TelegramAdapter implements ChannelAdapter {
   }
 
   async createStreaming(chatId: string, replyToMessageId?: string | number): Promise<StreamAdapter | null> {
+    if (this.options.streaming === false) return null
+
     let streamText = ''
     const flusher = createTelegramStreamFlusher({
       minIntervalMs: 350,

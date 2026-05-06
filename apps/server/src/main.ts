@@ -122,6 +122,7 @@ interface FeishuRuntimeDefinition extends ChannelRuntimeDefinition {
 
 interface TelegramRuntimeDefinition extends ChannelRuntimeDefinition {
   type: 'telegram'
+  streaming: boolean
   credentials?: {
     botToken: string
   }
@@ -989,12 +990,15 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
     const telegramChannel = new TelegramChannel({
       name: definition.name,
       botToken: definition.credentials?.botToken ?? '',
+      streaming: definition.streaming,
     })
 
     if (definition.credentials) {
       const channelName = definition.name
       const agentName = buildAgentName(channelName)
-      const telegramAdapter = new TelegramAdapter(telegramChannel)
+      const telegramAdapter = new TelegramAdapter(telegramChannel, {
+        streaming: definition.streaming,
+      })
 
       telegramChannel.setMessageHandler(async (msg) => {
         await handleChannelMessage(msg, {
@@ -1241,6 +1245,7 @@ function buildExternalChannelDefinitions(
         type: 'telegram' as const,
         configured: !!botToken,
         receiveNotifications: channel.receiveNotifications ?? false,
+        streaming: channel.streaming ?? true,
         secretRefs: [channel.botTokenRef],
         credentials: botToken ? { botToken } : undefined,
       })
@@ -1279,6 +1284,7 @@ function buildExternalChannelDefinitions(
       type: 'telegram',
       configured: !!telegramToken,
       receiveNotifications: false,
+      streaming: true,
       secretRefs: ['telegram_bot_token'],
       credentials: telegramToken ? { botToken: telegramToken } : undefined,
     },

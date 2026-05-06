@@ -152,6 +152,7 @@ channels:
   - name: telegram:alerts
     type: telegram
     bot_token_ref: telegram_alerts_bot_token
+    streaming: false
   - name: weixin:personal
     type: weixin
     account_id_ref: weixin_personal_account_id
@@ -186,6 +187,7 @@ channels:
       enabled: true,
       receiveNotifications: false,
       botTokenRef: 'telegram_alerts_bot_token',
+      streaming: false,
     })
     expect(config.channels?.[2]).toEqual({
       name: 'weixin:personal',

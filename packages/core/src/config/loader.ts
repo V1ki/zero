@@ -136,6 +136,7 @@ function normalizeChannelConfig(raw: Record<string, unknown>): ChannelInstanceCo
       ...base,
       type,
       botTokenRef,
+      streaming: readBoolean(raw, 'streaming'),
     }
   }
 
