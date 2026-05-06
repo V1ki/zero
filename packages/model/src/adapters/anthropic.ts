@@ -244,7 +244,9 @@ export class AnthropicAdapter implements ProviderAdapter {
         const hadOriginalContent = msg.content.length > 0
         for (const block of msg.content) {
           if (block.type === 'text') {
-            parts.push({ type: 'text', text: block.text })
+            if (block.text.trim().length > 0) {
+              parts.push({ type: 'text', text: block.text })
+            }
           } else if (block.type === 'image') {
             parts.push({
               type: 'image',

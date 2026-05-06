@@ -162,6 +162,38 @@ describe('Anthropic Adapter (Pure Logic)', () => {
     expect(converted[1].content[0].text).toBe('Hi there')
   })
 
+  test('convertMessages skips empty text blocks on image-only user messages', () => {
+    const messages: Message[] = [
+      {
+        id: generateId(),
+        sessionId: 'test',
+        role: 'user',
+        messageType: 'message',
+        content: [
+          { type: 'text', text: '' },
+          { type: 'image', mediaType: 'image/png', data: 'aW1n' },
+        ],
+        createdAt: now(),
+      },
+    ]
+
+    const converted = getAnthropicHarness(adapter).convertMessages({
+      messages,
+    } as CompletionRequest) as unknown as ConvertedAnthropicMessage[]
+
+    expect(converted).toHaveLength(1)
+    expect(converted[0].content).toEqual([
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: 'image/png',
+          data: 'aW1n',
+        },
+      },
+    ])
+  })
+
   test('convertMessages correctly handles tool_result blocks', () => {
     const toolCallId = `toolu_${generateId()}`
     const messages: Message[] = [

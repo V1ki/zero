@@ -960,7 +960,10 @@ export class Session {
     images?: Array<{ mediaType: string; data: string }>,
     messageType: Message['messageType'] = 'message',
   ): Message {
-    const content: Message['content'] = [{ type: 'text', text }]
+    const content: Message['content'] = []
+    if (text.trim().length > 0) {
+      content.push({ type: 'text', text })
+    }
     if (images?.length) {
       for (const image of images) {
         content.push({ type: 'image', mediaType: image.mediaType, data: image.data })

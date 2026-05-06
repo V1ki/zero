@@ -220,6 +220,7 @@ describe('Session', () => {
       | { imageDelegationFiles?: Array<{ path: string; mediaType: string }> }
       | undefined
     let capturedImages: unknown
+    let capturedUserMessage: Message | undefined
     ;(
       session as unknown as {
         agent: {
@@ -227,24 +228,46 @@ describe('Session', () => {
             context: { imageDelegationFiles?: Array<{ path: string; mediaType: string }> },
             userMessage: string,
             images: unknown,
+            onNewMessage?: (message: Message) => void,
+            onTextDelta?: unknown,
+            shouldInterrupt?: unknown,
+            getQueuedMessages?: unknown,
+            requestLogMeta?: { userMessageEntry?: Message },
           ) => Promise<Message[]>
         }
       }
     ).agent = {
-      run: async (context, _userMessage, images) => {
+      run: async (
+        context,
+        _userMessage,
+        images,
+        _onNewMessage,
+        _onTextDelta,
+        _shouldInterrupt,
+        _getQueuedMessages,
+        requestLogMeta,
+      ) => {
         capturedContext = context
         capturedImages = images
+        capturedUserMessage = requestLogMeta?.userMessageEntry
         return []
       },
     }
 
-    await session.handleMessage('分析这张图', {
+    await session.handleMessage('', {
       images: [
         { mediaType: 'image/png', data: Buffer.from('fake image bytes').toString('base64') },
       ],
     })
 
     expect(capturedImages).toBeUndefined()
+    expect(capturedUserMessage?.content).toEqual([
+      {
+        type: 'image',
+        mediaType: 'image/png',
+        data: Buffer.from('fake image bytes').toString('base64'),
+      },
+    ])
     expect(capturedContext?.imageDelegationFiles).toHaveLength(1)
     expect(capturedContext?.imageDelegationFiles?.[0]).toMatchObject({ mediaType: 'image/png' })
     expect(existsSync(capturedContext?.imageDelegationFiles?.[0]?.path ?? '')).toBe(true)

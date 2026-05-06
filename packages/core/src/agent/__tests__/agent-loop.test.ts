@@ -3,6 +3,7 @@ import type { ProviderAdapter } from '@zero-os/model'
 import type {
   CompletionRequest,
   CompletionResponse,
+  ContentBlock,
   StreamEvent,
   ToolLogger,
 } from '@zero-os/shared'
@@ -192,6 +193,76 @@ describe('AgentLoop', () => {
 
     expect(messages[0]).toEqual(userMessage)
     expect(messages[1]?.content).toEqual([{ type: 'text', text: 'done' }])
+  })
+
+  test('builds image-only user messages without empty text blocks', async () => {
+    const adapter = new ScriptedAdapter([
+      {
+        id: 'resp_final',
+        content: [{ type: 'text', text: 'done' }],
+        stopReason: 'end_turn',
+        usage: { input: 2, output: 2 },
+        model: 'fake-model',
+      },
+    ])
+    const loop = new AgentLoop(
+      {
+        adapter,
+        sessionId: 'sess-agent-loop',
+        toolExecutor: createNoopExecutor(),
+        system: 'test system',
+        tools: [],
+        stream: false,
+        logger,
+      },
+      {
+        onEndTurn: () => ({ action: 'break' }),
+      },
+    )
+
+    const messages = await loop.run('', [], [{ mediaType: 'image/png', data: 'aW1n' }])
+
+    expect(messages[0]?.content).toEqual([{ type: 'image', mediaType: 'image/png', data: 'aW1n' }])
+    expect(adapter.requests[0]?.messages[0]?.content).toEqual([
+      { type: 'image', mediaType: 'image/png', data: 'aW1n' },
+    ])
+  })
+
+  test('can prefix image-only delegated requests without retaining empty text blocks', async () => {
+    const adapter = new ScriptedAdapter([
+      {
+        id: 'resp_final',
+        content: [{ type: 'text', text: 'done' }],
+        stopReason: 'end_turn',
+        usage: { input: 2, output: 2 },
+        model: 'fake-model',
+      },
+    ])
+    const loop = new AgentLoop(
+      {
+        adapter,
+        sessionId: 'sess-agent-loop',
+        toolExecutor: createNoopExecutor(),
+        system: 'test system',
+        tools: [],
+        stream: false,
+        logger,
+      },
+      {
+        buildRequestUserContent: (content: ContentBlock[]) => [
+          { type: 'text', text: '<image_delegation>paths</image_delegation>' },
+          ...content.filter((block) => block.type !== 'image'),
+        ],
+        onEndTurn: () => ({ action: 'break' }),
+      },
+    )
+
+    const messages = await loop.run('', [], [{ mediaType: 'image/png', data: 'aW1n' }])
+
+    expect(messages[0]?.content).toEqual([{ type: 'image', mediaType: 'image/png', data: 'aW1n' }])
+    expect(adapter.requests[0]?.messages[0]?.content).toEqual([
+      { type: 'text', text: '<image_delegation>paths</image_delegation>' },
+    ])
   })
 
   test('loops through tool_use, tool_result, then final assistant reply', async () => {

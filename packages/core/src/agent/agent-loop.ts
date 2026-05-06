@@ -262,7 +262,10 @@ export class AgentLoop {
     userMessage: string,
     userImages?: Array<{ mediaType: string; data: string }>,
   ): Message {
-    const content: ContentBlock[] = [{ type: 'text', text: userMessage }]
+    const content: ContentBlock[] = []
+    if (userMessage.trim().length > 0) {
+      content.push({ type: 'text', text: userMessage })
+    }
     if (userImages?.length) {
       for (const image of userImages) {
         content.push({
