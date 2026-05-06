@@ -164,12 +164,30 @@ export class Session {
     this.activeModel = currentModel
     this.deps = deps
     this.logger = {
-      info: (event: string, data?: Record<string, unknown>) =>
-        console.log(`[${this.data.id}] ${event}`, data ?? ''),
-      warn: (event: string, data?: Record<string, unknown>) =>
-        console.warn(`[${this.data.id}] ${event}`, data ?? ''),
-      error: (event: string, data?: Record<string, unknown>) =>
-        console.error(`[${this.data.id}] ${event}`, data ?? ''),
+      info: (event: string, data?: Record<string, unknown>) => {
+        const safeData = this.filterLogData(data)
+        console.log(`[${this.data.id}] ${event}`, safeData ?? '')
+        this.deps.tracer?.logSession(this.data.id, 'info', 'logger.info', {
+          logEvent: event,
+          ...(safeData ?? {}),
+        })
+      },
+      warn: (event: string, data?: Record<string, unknown>) => {
+        const safeData = this.filterLogData(data)
+        console.warn(`[${this.data.id}] ${event}`, safeData ?? '')
+        this.deps.tracer?.logSession(this.data.id, 'warn', 'logger.warn', {
+          logEvent: event,
+          ...(safeData ?? {}),
+        })
+      },
+      error: (event: string, data?: Record<string, unknown>) => {
+        const safeData = this.filterLogData(data)
+        console.error(`[${this.data.id}] ${event}`, safeData ?? '')
+        this.deps.tracer?.logSession(this.data.id, 'error', 'logger.error', {
+          logEvent: event,
+          ...(safeData ?? {}),
+        })
+      },
     }
     this.agentControl = new AgentControl({
       tracer: this.deps.tracer,
@@ -1174,6 +1192,35 @@ export class Session {
     }
 
     return undefined
+  }
+
+  private filterLogData(data?: Record<string, unknown>): Record<string, unknown> | undefined {
+    if (!data) return undefined
+    const filtered = this.filterLogValue(data)
+    return filtered && typeof filtered === 'object' && !Array.isArray(filtered)
+      ? (filtered as Record<string, unknown>)
+      : undefined
+  }
+
+  private filterLogValue(value: unknown): unknown {
+    if (typeof value === 'string') {
+      return this.deps.secretFilter ? this.deps.secretFilter.filter(value) : value
+    }
+
+    if (Array.isArray(value)) {
+      return value.map((item) => this.filterLogValue(item))
+    }
+
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).map(([key, nestedValue]) => [
+          key,
+          this.filterLogValue(nestedValue),
+        ]),
+      )
+    }
+
+    return value
   }
 }
 

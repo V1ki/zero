@@ -76,7 +76,8 @@ product source.
 - `.zero/fuse_list.yaml`: safety rules for shell execution
 - `.zero/memory/**`: long-term memory files
 - `.zero/workspace/**`: bootstrap files and agent workspace state
-- `.zero/logs/**`: observability data, including `events.jsonl`, metrics, and per-session traces
+- `.zero/logs/**`: observability data, including `events.jsonl`, metrics, per-session traces,
+  and per-session `run.log` runtime logs
 - `.zero/heartbeat.json`: liveness signal for supervisor/restart flows
 
 Do not commit `.zero/`, `dist/`, `node_modules/`, or `test-results/`.
@@ -295,8 +296,9 @@ e2e/            Playwright end-to-end coverage
 - shell execution is guarded by fuse-list rules
 - long-term memory is stored as local files under `.zero/memory`
 - schedule state and session state are persisted through the observability layer, with global
-  events in `.zero/logs/events.jsonl` and append-only session execution trace snapshots in
-  `.zero/logs/sessions/<date>/<session>/trace.jsonl`
+  events in `.zero/logs/events.jsonl`, append-only session execution trace snapshots in
+  `.zero/logs/sessions/<date>/<session>/trace.jsonl`, and full session runtime diagnostics in
+  `.zero/logs/sessions/<date>/<session>/run.log`
 - `events.jsonl` is a curated stream of key operational/session events rather than a full mirror
   of every internal bus event
 - key session-scoped events may include `sessionId` and `spanId` so they can be correlated back

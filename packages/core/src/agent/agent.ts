@@ -103,7 +103,9 @@ export interface AgentContext {
  */
 export interface AgentObservability {
   metrics?: MetricsDB
-  tracer?: Pick<Tracer, 'startSpan' | 'updateSpan' | 'endSpan' | 'getSpan'>
+  tracer?: Pick<Tracer, 'startSpan' | 'updateSpan' | 'endSpan' | 'getSpan'> & {
+    logSession?: Tracer['logSession']
+  }
   secretFilter?: SecretFilter
   bus?: {
     emit(topic: string, data: Record<string, unknown>): void
@@ -549,10 +551,34 @@ export class Agent {
           },
         )
         currentRequestSpanId = llmSpan?.id
+        this.obs.tracer?.logSession?.(
+          this.toolContext.sessionId,
+          'debug',
+          'llm_request.raw_request',
+          {
+            traceSpanId: currentRequestSpanId,
+            turnIndex: options.turnIndex,
+            parentId: pendingParentRequestId,
+            request: this.filterTraceValue(_request),
+          },
+        )
       },
       onCompletionEnd: (request, response, durationMs) => {
         response.model = this.obs.modelLabel ?? response.model
         options.executionState.currentRequestId = response.id
+
+        this.obs.tracer?.logSession?.(
+          this.toolContext.sessionId,
+          'debug',
+          'llm_request.raw_response',
+          {
+            traceSpanId: currentRequestSpanId,
+            turnIndex: options.turnIndex,
+            requestId: response.id,
+            durationMs,
+            response: this.filterTraceValue(response),
+          },
+        )
 
         this.logLLMRequest(
           request,
@@ -576,6 +602,12 @@ export class Agent {
         pendingParentRequestId = response.stopReason === 'tool_use' ? response.id : undefined
       },
       onCompletionError: (_request, error) => {
+        this.obs.tracer?.logSession?.(this.toolContext.sessionId, 'error', 'llm_request.error', {
+          traceSpanId: currentRequestSpanId,
+          turnIndex: options.turnIndex,
+          request: this.filterTraceValue(_request),
+          error: toErrorMessage(error),
+        })
         if (activeMemoryNudgeSpanId) {
           this.obs.tracer?.endSpan(activeMemoryNudgeSpanId, 'error', {
             error: toErrorMessage(error),
@@ -775,12 +807,13 @@ export class Agent {
       },
       onToolCallStart: (toolName, toolUseId, input) => {
         toolNamesByUseId.set(toolUseId, toolName)
+        const filteredToolInput = this.filterToolInput(input)
 
         this.obs.bus?.emit('tool:call', {
           sessionId: this.toolContext.sessionId,
           tool: toolName,
           toolUseId,
-          input: this.filterToolInput(input),
+          input: filteredToolInput,
         })
 
         const toolSpan = this.obs.tracer?.startSpan(
@@ -792,7 +825,7 @@ export class Agent {
             agentName: this.config.name,
             data: {
               tool: toolName,
-              inputSummary: this.stringifyTraceData(this.filterToolInput(input)),
+              inputSummary: this.stringifyTraceData(filteredToolInput),
               requestId: options.executionState.currentRequestId,
             },
           },
@@ -802,6 +835,13 @@ export class Agent {
           toolSpanIds.set(toolUseId, toolSpan.id)
         }
         options.executionState.currentTraceSpanId = toolSpan?.id
+        this.obs.tracer?.logSession?.(this.toolContext.sessionId, 'debug', 'tool_call.raw_input', {
+          traceSpanId: toolSpan?.id,
+          requestId: options.executionState.currentRequestId,
+          tool: toolName,
+          toolUseId,
+          input: filteredToolInput,
+        })
       },
       onToolCallEnd: (toolName, toolUseId, input, result) => {
         if (toolName === 'memory' && result.success) {
@@ -834,6 +874,19 @@ export class Agent {
             outputSummary: result.outputSummary,
           })
         }
+        this.obs.tracer?.logSession?.(
+          this.toolContext.sessionId,
+          result.success ? 'debug' : 'error',
+          'tool_call.raw_result',
+          {
+            traceSpanId: toolSpanId,
+            requestId: options.executionState.currentRequestId,
+            tool: toolName,
+            toolUseId,
+            input: this.filterToolInput(input),
+            result: this.filterTraceValue(result),
+          },
+        )
 
         this.obs.bus?.emit('tool:result', {
           sessionId: this.toolContext.sessionId,
@@ -1436,6 +1489,10 @@ export class Agent {
     return filtered && typeof filtered === 'object' && !Array.isArray(filtered)
       ? (filtered as Record<string, unknown>)
       : {}
+  }
+
+  private filterTraceValue(value: unknown): unknown {
+    return this.filterToolInputValue(value)
   }
 
   private stringifyTraceData(value: unknown, maxLength = 500): string {

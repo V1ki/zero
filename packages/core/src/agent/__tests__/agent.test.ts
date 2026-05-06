@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { type ProviderAdapter, TrackedAdapter } from '@zero-os/model'
 import { MetricsDB, Tracer } from '@zero-os/observe'
 import type {
@@ -641,5 +644,46 @@ describe('Agent', () => {
 
     expect(toolSpan).toBeDefined()
     expect(toolSpan?.metadata?.toolUseId).toBeTypeOf('string')
+  }, 30000)
+
+  test('run: session run.log records raw LLM and tool diagnostics', async () => {
+    const logsDir = mkdtempSync(join(tmpdir(), 'zero-agent-run-log-'))
+    try {
+      const tracer = new Tracer(logsDir)
+      const { agent, registry } = createAgentWithAdapter(
+        new ReadToolCallAdapter(),
+        {},
+        {
+          tracer,
+        },
+      )
+      const context = createContext(registry)
+
+      await agent.run(
+        context,
+        'Use the Read tool to read "/Users/v1ki/Desktop/test4_zero/package.json". Then summarize.',
+      )
+
+      const runLogPath = join(logsDir, 'sessions', 'test-session', 'run.log')
+      expect(existsSync(runLogPath)).toBe(true)
+
+      const entries = readFileSync(runLogPath, 'utf-8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+
+      expect(entries.some((entry) => entry.event === 'llm_request.raw_request')).toBe(true)
+      expect(entries.some((entry) => entry.event === 'llm_request.raw_response')).toBe(true)
+      expect(entries.some((entry) => entry.event === 'tool_call.raw_input')).toBe(true)
+      expect(entries.some((entry) => entry.event === 'tool_call.raw_result')).toBe(true)
+
+      const responseEntry = expectDefined(
+        entries.find((entry) => entry.event === 'llm_request.raw_response'),
+      )
+      const responseData = responseEntry.data as Record<string, unknown>
+      expect(responseData.response).toMatchObject({ id: 'resp_read_tool_use' })
+    } finally {
+      rmSync(logsDir, { recursive: true, force: true })
+    }
   }, 30000)
 })

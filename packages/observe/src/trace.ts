@@ -44,6 +44,21 @@ export interface TraceEntry {
   metadata?: Record<string, unknown>
 }
 
+export type RunLogLevel = 'debug' | 'info' | 'warn' | 'error'
+
+export interface RunLogEntry {
+  ts: string
+  level: RunLogLevel
+  event: string
+  sessionId: string
+  spanId?: string
+  parentSpanId?: string
+  name?: string
+  agentName?: string
+  data?: Record<string, unknown>
+  metadata?: Record<string, unknown>
+}
+
 interface StartSpanOptions {
   kind?: TraceKind
   agentName?: string
@@ -201,6 +216,26 @@ export class Tracer {
   }
 
   /**
+   * Append an arbitrary session-scoped runtime log entry to run.log.
+   */
+  logSession(
+    sessionId: string,
+    level: RunLogLevel,
+    event: string,
+    data?: Record<string, unknown>,
+  ): void {
+    if (!this.basePath) return
+
+    this.appendRunLogEntry({
+      ts: now(),
+      level,
+      event,
+      sessionId,
+      data,
+    })
+  }
+
+  /**
    * Get a span by ID.
    */
   getSpan(spanId: string): TraceSpan | undefined {
@@ -289,6 +324,33 @@ export class Tracer {
     if (!this.basePath) return
 
     const filePath = join(this.basePath, getSessionLogRelativeDir(entry.sessionId), 'trace.jsonl')
+    mkdirSync(dirname(filePath), { recursive: true })
+    appendFileSync(filePath, `${JSON.stringify(entry)}\n`, 'utf-8')
+    this.appendRunLogEntry({
+      ts: now(),
+      level: entry.status === 'error' ? 'error' : 'debug',
+      event: `trace.${entry.kind}.${entry.status}`,
+      sessionId: entry.sessionId,
+      spanId: entry.spanId,
+      parentSpanId: entry.parentSpanId,
+      name: entry.name,
+      agentName: entry.agentName,
+      data: {
+        kind: entry.kind,
+        startTime: entry.startTime,
+        endTime: entry.endTime,
+        durationMs: entry.durationMs,
+        status: entry.status,
+        ...(entry.data ? { spanData: entry.data } : {}),
+      },
+      metadata: entry.metadata,
+    })
+  }
+
+  private appendRunLogEntry(entry: RunLogEntry): void {
+    if (!this.basePath) return
+
+    const filePath = join(this.basePath, getSessionLogRelativeDir(entry.sessionId), 'run.log')
     mkdirSync(dirname(filePath), { recursive: true })
     appendFileSync(filePath, `${JSON.stringify(entry)}\n`, 'utf-8')
   }

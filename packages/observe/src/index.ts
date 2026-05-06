@@ -39,7 +39,14 @@ export type {
 export { SessionDB } from './session-db'
 export type { SessionRow } from './session-db'
 export { Tracer } from './trace'
-export type { TraceEntry, TraceKind, TraceSpan, TraceStatus } from './trace'
+export type {
+  RunLogEntry,
+  RunLogLevel,
+  TraceEntry,
+  TraceKind,
+  TraceSpan,
+  TraceStatus,
+} from './trace'
 export {
   projectSessionDecisionsFromTraceEntries,
   projectSessionClosuresFromTraceEntries,

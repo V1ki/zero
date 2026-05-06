@@ -65,7 +65,7 @@ describe('Tracer', () => {
     expect(exported[0].children).toHaveLength(2)
   })
 
-  test('persists span lifecycle snapshots to session trace.jsonl', () => {
+  test('persists span lifecycle snapshots to session trace.jsonl and run.log', () => {
     const logsDir = mkdtempSync(join(tmpdir(), 'zero-trace-'))
     tempDirs.push(logsDir)
     const sessionId = 'sess_20260316_1423_web_a1b2'
@@ -83,7 +83,9 @@ describe('Tracer', () => {
     tracer.endSpan(root.id, 'success')
 
     const tracePath = join(logsDir, 'sessions', '2026-03-16', sessionId, 'trace.jsonl')
+    const runLogPath = join(logsDir, 'sessions', '2026-03-16', sessionId, 'run.log')
     expect(existsSync(tracePath)).toBe(true)
+    expect(existsSync(runLogPath)).toBe(true)
 
     const entries = readFileSync(tracePath, 'utf-8')
       .trim()
@@ -99,6 +101,40 @@ describe('Tracer', () => {
     expect(entries[2].agentName).toBe('web')
     expect(entries[2].data).toEqual({ turnIndex: 1, requestCount: 1 })
     expect(entries[2].metadata).toEqual({ source: 'test' })
+
+    const runEntries = readFileSync(runLogPath, 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(runEntries).toHaveLength(3)
+    expect(runEntries[0].event).toBe('trace.turn.running')
+    expect(runEntries[2].event).toBe('trace.turn.success')
+    expect(runEntries[2].spanId).toBe(root.id)
+  })
+
+  test('logSession appends session debug entries to run.log', () => {
+    const logsDir = mkdtempSync(join(tmpdir(), 'zero-trace-'))
+    tempDirs.push(logsDir)
+    const sessionId = 'sess_20260316_1423_web_a1b2'
+    const tracer = new Tracer(logsDir)
+
+    tracer.logSession(sessionId, 'debug', 'llm_request.raw_request', {
+      request: { model: 'fake-model', prompt: 'hello' },
+    })
+
+    const runLogPath = join(logsDir, 'sessions', '2026-03-16', sessionId, 'run.log')
+    const entries = readFileSync(runLogPath, 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({
+      level: 'debug',
+      event: 'llm_request.raw_request',
+      sessionId,
+    })
+    expect(entries[0].data).toEqual({ request: { model: 'fake-model', prompt: 'hello' } })
   })
 
   test('readSessionEntries collapses lifecycle snapshots to latest state', () => {
