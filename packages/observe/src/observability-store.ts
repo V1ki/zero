@@ -7,13 +7,14 @@ import {
   readdirSync,
   readlinkSync,
   rmSync,
+  statSync,
   symlinkSync,
   unlinkSync,
 } from 'node:fs'
-import { dirname, join, relative } from 'node:path'
+import { basename, dirname, join, relative } from 'node:path'
 import { getSessionLogRelativeDir, now } from '@zero-os/shared'
 import type { CompletionResponse, StopReason, ToolResultBlock } from '@zero-os/shared'
-import { type TraceEntry, type TraceKind, collapseTraceEntries } from './trace'
+import { type RunLogEntry, type TraceEntry, type TraceKind, collapseTraceEntries } from './trace'
 import {
   projectSessionClosuresFromTraceEntries,
   projectSessionDecisionsFromTraceEntries,
@@ -183,6 +184,22 @@ export interface DecisionLogEntry {
   rationale?: string
 }
 
+export interface SessionRunLogSummary {
+  sessionId: string
+  entryCount: number
+  sizeBytes: number
+  firstTs?: string
+  lastTs?: string
+  lastEvent?: string
+  lastLevel?: LogLevel
+  levels: Partial<Record<LogLevel, number>>
+  events: Record<string, number>
+  rawRequestCount: number
+  rawResponseCount: number
+  toolCallCount: number
+  errorCount: number
+}
+
 /**
  * Observability store for global events and trace-backed session projections.
  */
@@ -305,6 +322,59 @@ export class ObservabilityStore {
   readSessionEntries<T = unknown>(sessionId: string, file: string): T[] {
     const filePath = join(this.basePath, getSessionLogRelativeDir(sessionId), file)
     return this.readJsonlFileSafely<T>(filePath)
+  }
+
+  readSessionRunLog(sessionId: string): RunLogEntry[] {
+    return this.readSessionEntries<RunLogEntry>(sessionId, 'run.log')
+  }
+
+  listSessionRunLogs(): SessionRunLogSummary[] {
+    const summaries: SessionRunLogSummary[] = []
+
+    for (const sessionDir of this.listSessionDirectories()) {
+      const runLogPath = join(sessionDir, 'run.log')
+      if (!existsSync(runLogPath)) continue
+
+      const entries = this.readJsonlFileSafely<RunLogEntry>(runLogPath)
+      const levels: Partial<Record<LogLevel, number>> = {}
+      const events: Record<string, number> = {}
+      let rawRequestCount = 0
+      let rawResponseCount = 0
+      let toolCallCount = 0
+      let errorCount = 0
+
+      for (const entry of entries) {
+        levels[entry.level] = (levels[entry.level] ?? 0) + 1
+        events[entry.event] = (events[entry.event] ?? 0) + 1
+        if (entry.event === 'llm_request.raw_request') rawRequestCount += 1
+        if (entry.event === 'llm_request.raw_response') rawResponseCount += 1
+        if (entry.event.startsWith('tool_call.')) toolCallCount += 1
+        if (entry.level === 'error') errorCount += 1
+      }
+
+      const sortedEntries = [...entries].sort((left, right) => left.ts.localeCompare(right.ts))
+      const first = sortedEntries[0]
+      const last = sortedEntries.at(-1)
+      const stat = statSync(runLogPath)
+
+      summaries.push({
+        sessionId: basename(sessionDir),
+        entryCount: entries.length,
+        sizeBytes: stat.size,
+        firstTs: first?.ts,
+        lastTs: last?.ts,
+        lastEvent: last?.event,
+        lastLevel: last?.level,
+        levels,
+        events,
+        rawRequestCount,
+        rawResponseCount,
+        toolCallCount,
+        errorCount,
+      })
+    }
+
+    return summaries.sort((left, right) => (right.lastTs ?? '').localeCompare(left.lastTs ?? ''))
   }
 
   appendSessionJudge(sessionId: string, entry: unknown): void {

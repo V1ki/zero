@@ -3,8 +3,8 @@ import { cpSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Message } from '@zero-os/shared'
 import { getSessionLogRelativeDir } from '@zero-os/shared'
-import { SessionRunningToolRegistry } from '../../../../../packages/core/src/session/running-tool-registry'
 import { createTestProjectRoot } from '../../../../../packages/core/src/session/__tests__/test-helpers'
+import type { SessionRunningToolRegistry } from '../../../../../packages/core/src/session/running-tool-registry'
 import { startZeroOS } from '../../../../server/src/main'
 import type { ZeroOS } from '../../../../server/src/main'
 import { createRoutes } from '../routes'
@@ -1746,6 +1746,42 @@ describe('API Routes Extended', () => {
           entry.spanId === span.id && entry.sessionId === sessionId && entry.status === 'running',
       ),
     ).toBe(true)
+  })
+
+  test('GET /api/logs/sessions exposes session run.log summaries and entries', async () => {
+    const sessionId = 'sess_20260316_2327_run_log_api'
+    zero.tracer.logSession(sessionId, 'debug', 'llm_request.raw_request', {
+      request: { model: 'fake-model', messages: [{ role: 'user', content: 'hello' }] },
+    })
+    zero.tracer.logSession(sessionId, 'error', 'tool_call.raw_result', {
+      tool: 'read',
+      result: { success: false, outputSummary: 'File not found' },
+    })
+
+    const listRes = await app.request('/api/logs/sessions?limit=20')
+    expect(listRes.status).toBe(200)
+    const listData = await listRes.json()
+    const summary = listData.sessions.find((entry: { sessionId: string }) => entry.sessionId === sessionId)
+    expect(summary).toMatchObject({
+      sessionId,
+      entryCount: 2,
+      rawRequestCount: 1,
+      errorCount: 1,
+    })
+
+    const detailRes = await app.request(`/api/logs/sessions/${sessionId}/run?level=error&q=File`)
+    expect(detailRes.status).toBe(200)
+    const detailData = await detailRes.json()
+    expect(detailData.total).toBe(2)
+    expect(detailData.matched).toBe(1)
+    expect(detailData.entries[0].event).toBe('tool_call.raw_result')
+
+    const descRes = await app.request(`/api/logs/sessions/${sessionId}/run?order=desc`)
+    expect(descRes.status).toBe(200)
+    const descData = await descRes.json()
+    expect(descData.order).toBe('desc')
+    expect(descData.entries[0].event).toBe('tool_call.raw_result')
+    expect(descData.entries[1].event).toBe('llm_request.raw_request')
   })
 
   test('GET /api/sessions/channel/:channel/current returns current candidates only', async () => {

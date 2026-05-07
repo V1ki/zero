@@ -1161,6 +1161,47 @@ describe('ObservabilityStore', () => {
     expect(history[1].savedAt).toBe('2026-03-16T02:00:00.000Z')
   })
 
+  test('lists and reads session run.log entries', () => {
+    const store = new ObservabilityStore(testDir)
+    const sessionId = 'sess_20260316_1423_web_a1b2'
+    const sessionDir = join(testDir, getSessionLogRelativeDir(sessionId))
+    mkdirSync(sessionDir, { recursive: true })
+    appendFileSync(
+      join(sessionDir, 'run.log'),
+      `${[
+        JSON.stringify({
+          ts: '2026-03-16T06:23:00.000Z',
+          level: 'debug',
+          event: 'llm_request.raw_request',
+          sessionId,
+          data: { request: { model: 'fake-model' } },
+        }),
+        JSON.stringify({
+          ts: '2026-03-16T06:23:01.000Z',
+          level: 'error',
+          event: 'tool_call.raw_result',
+          sessionId,
+          data: { tool: 'read', result: { success: false } },
+        }),
+      ].join('\n')}\n`,
+      'utf-8',
+    )
+
+    expect(store.readSessionRunLog(sessionId)).toHaveLength(2)
+    const summaries = store.listSessionRunLogs()
+    expect(summaries).toHaveLength(1)
+    expect(summaries[0]).toMatchObject({
+      sessionId,
+      entryCount: 2,
+      lastEvent: 'tool_call.raw_result',
+      lastLevel: 'error',
+      rawRequestCount: 1,
+      rawResponseCount: 0,
+      toolCallCount: 1,
+      errorCount: 1,
+    })
+  })
+
   test('readEntries returns empty array for missing file', () => {
     const store = new ObservabilityStore(testDir)
     expect(store.readEntries('nonexistent.jsonl')).toEqual([])

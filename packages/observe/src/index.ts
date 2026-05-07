@@ -14,6 +14,7 @@ export type {
   ClosureLogEntryInput,
   DecisionType,
   DecisionLogEntry,
+  SessionRunLogSummary,
   TaskClosureClassifierResponse,
 } from './observability-store'
 export { MetricsDB, USAGE_PURPOSES, isUsagePurpose } from './metrics'
