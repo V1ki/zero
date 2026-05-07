@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MEMORY_NUDGE_PROMPT } from '@zero-os/memory'
-import { TrackedAdapter, type ProviderAdapter } from '@zero-os/model'
+import { type ProviderAdapter, TrackedAdapter } from '@zero-os/model'
 import { MetricsDB, ObservabilityStore, Tracer } from '@zero-os/observe'
 import type {
   CompletionRequest,
@@ -248,17 +248,21 @@ type MemoryNudgeMode =
   | 'empty-on-nudge'
   | 'write-on-nudge'
   | 'write-fails-on-nudge'
+  | 'unsigned-deepseek-tool-on-nudge'
   | 'already-written'
   | 'delete-before-finish'
   | 'continue-after-nudge'
 
 class MemoryNudgeAdapter implements ProviderAdapter {
-  readonly apiType = 'fake-memory-nudge'
+  readonly apiType: string
   normalCalls = 0
   classifierCalls = 0
   nudgeCalls = 0
 
-  constructor(private readonly mode: MemoryNudgeMode) {}
+  constructor(private readonly mode: MemoryNudgeMode) {
+    this.apiType =
+      mode === 'unsigned-deepseek-tool-on-nudge' ? 'anthropic-deepseek' : 'fake-memory-nudge'
+  }
 
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
     if (isTaskClosureClassifierRequest(request)) {
@@ -309,7 +313,11 @@ class MemoryNudgeAdapter implements ProviderAdapter {
           model: 'fake-model',
         }
       }
-      if (this.mode === 'write-on-nudge' || this.mode === 'write-fails-on-nudge') {
+      if (
+        this.mode === 'write-on-nudge' ||
+        this.mode === 'write-fails-on-nudge' ||
+        this.mode === 'unsigned-deepseek-tool-on-nudge'
+      ) {
         return {
           id: 'resp_nudge_memory',
           content: [
@@ -387,7 +395,17 @@ class MemoryNudgeAdapter implements ProviderAdapter {
     if (this.normalCalls === 1) {
       return {
         id: 'resp_tool_use',
-        content: [{ type: 'tool_use', id: 'call_noop_1', name: 'noop', input: {} }],
+        content:
+          this.mode === 'unsigned-deepseek-tool-on-nudge'
+            ? [
+                {
+                  type: 'thinking',
+                  thinking: 'Need to call noop before finishing.',
+                  signature: 'sig_normal_tool_use',
+                },
+                { type: 'tool_use', id: 'call_noop_1', name: 'noop', input: {} },
+              ]
+            : [{ type: 'tool_use', id: 'call_noop_1', name: 'noop', input: {} }],
         stopReason: 'tool_use',
         usage: { input: 10, output: 5 },
         model: 'fake-model',
@@ -405,7 +423,36 @@ class MemoryNudgeAdapter implements ProviderAdapter {
   }
 
   async *stream(_request: CompletionRequest): AsyncIterable<StreamEvent> {
-    yield* failStream(new Error('stream not supported in test'))
+    if (this.apiType !== 'anthropic-deepseek') {
+      yield* failStream(new Error('stream not supported in test'))
+      return
+    }
+
+    const response = await this.complete({ ..._request, stream: false })
+    for (const block of response.content) {
+      if (block.type === 'thinking') {
+        yield { type: 'reasoning_delta', data: { text: block.thinking } }
+        if (block.signature) {
+          yield { type: 'reasoning_signature', data: { signature: block.signature } }
+        }
+      }
+      if (block.type === 'text') {
+        yield { type: 'text_delta', data: { text: block.text } }
+      }
+      if (block.type === 'tool_use') {
+        yield { type: 'tool_use_start', data: { id: block.id, name: block.name } }
+        yield { type: 'tool_use_delta', data: { arguments: JSON.stringify(block.input ?? {}) } }
+        yield { type: 'tool_use_end', data: { id: block.id } }
+      }
+    }
+    yield {
+      type: 'done',
+      data: {
+        finishReason: response.stopReason,
+        usage: response.usage,
+        model: response.model,
+      },
+    }
   }
 
   async healthCheck(): Promise<boolean> {
@@ -1316,6 +1363,48 @@ describe('Agent task closure gate', () => {
       purpose: 'memory_nudge',
       memoryWritten: true,
     })
+  })
+
+  test('discards unsigned DeepSeek tool_use responses during memory_nudge', async () => {
+    const registry = new ToolRegistry()
+    registry.register(new NoopTool())
+    registry.register(new MemoryToolStub())
+    const loggerEvents: Array<{ event: string; data?: Record<string, unknown> }> = []
+    const adapter = new MemoryNudgeAdapter('unsigned-deepseek-tool-on-nudge')
+    const tracer = new Tracer()
+    const agent = new Agent(
+      { name: 'test-agent', agentInstruction: 'Test prompt' },
+      adapter,
+      registry,
+      createToolContext({
+        logger: {
+          info: () => {},
+          warn: (event, data) => loggerEvents.push({ event, data }),
+          error: () => {},
+        },
+      }),
+      { tracer },
+    )
+
+    const messages = await agent.run(createContext(registry), '完成一个需要先查再总结的任务')
+    const assistantMessages = messages.filter((message) => message.role === 'assistant')
+    const memoryNudgeSpan = tracer
+      .exportSession('test-session')
+      .flatMap(flattenTraceSpans)
+      .find((span) => span.name === 'memory_nudge')
+
+    expect(assistantMessages).toHaveLength(2)
+    expect(getTextFromMessage(assistantMessages[1])).toBe('这轮工作已经完成')
+    expect(adapter.nudgeCalls).toBe(1)
+    expect(memoryNudgeSpan?.status).toBe('success')
+    expect(memoryNudgeSpan?.metadata).toMatchObject({
+      purpose: 'memory_nudge',
+      discardedInvalidResponse: true,
+      memoryWritten: false,
+    })
+    expect(loggerEvents.some((entry) => entry.event === 'memory_nudge_response_discarded')).toBe(
+      true,
+    )
   })
 
   test('skips task closure evaluation after a memory nudge continuation', async () => {

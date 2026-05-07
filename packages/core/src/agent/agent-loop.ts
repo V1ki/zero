@@ -67,6 +67,18 @@ export interface AgentLoopHooks {
   buildRequestUserContent?(content: ContentBlock[], ctx: LoopIterationContext): ContentBlock[]
   onNewMessage?(msg: Message, ctx: LoopIterationContext): void
   filterAssistantContent?(content: ContentBlock[], ctx: LoopIterationContext): ContentBlock[]
+  onInvalidAssistantResponse?(
+    request: CompletionRequest,
+    response: CompletionResponse,
+    error: unknown,
+    ctx: LoopIterationContext,
+  ):
+    | Promise<
+        { action: 'break' } | { action: 'continue'; continuationMessage: Message } | undefined
+      >
+    | { action: 'break' }
+    | { action: 'continue'; continuationMessage: Message }
+    | undefined
   onCompletionStart?(request: CompletionRequest, ctx: LoopIterationContext): void
   onCompletionEnd?(
     request: CompletionRequest,
@@ -196,7 +208,26 @@ export class AgentLoop {
 
       emptyResponseRetryCount = 0
 
-      const assistantMsg = this.buildAssistantMessage(response, ctx)
+      let assistantMsg: Message
+      try {
+        assistantMsg = this.buildAssistantMessage(response, ctx)
+      } catch (error) {
+        const decision = await this.hooks.onInvalidAssistantResponse?.(
+          request,
+          response,
+          error,
+          ctx,
+        )
+        if (decision?.action === 'break') {
+          break
+        }
+        if (decision?.action === 'continue') {
+          messages.push(decision.continuationMessage)
+          this.notifyNewMessage(decision.continuationMessage, ctx)
+          continue
+        }
+        throw error
+      }
       messages.push(assistantMsg)
       this.notifyNewMessage(assistantMsg, ctx)
 

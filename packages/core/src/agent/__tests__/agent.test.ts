@@ -677,6 +677,26 @@ describe('Agent', () => {
       expect(entries.some((entry) => entry.event === 'tool_call.raw_input')).toBe(true)
       expect(entries.some((entry) => entry.event === 'tool_call.raw_result')).toBe(true)
 
+      const rawToolResultEntry = expectDefined(
+        entries.find((entry) => entry.event === 'tool_call.raw_result'),
+      )
+      const rawToolResultData = rawToolResultEntry.data as {
+        result?: { output?: string; outputSummary?: string }
+      }
+      expect(rawToolResultData.result?.output).toContain('"name": "zero-os"')
+      expect(rawToolResultData.result?.output).not.toBe(rawToolResultData.result?.outputSummary)
+
+      const traceToolSuccessEntry = expectDefined(
+        entries.find((entry) => entry.event === 'trace.tool_call.success'),
+      )
+      const traceToolData = traceToolSuccessEntry.data as {
+        spanData?: { toolResult?: { output?: string; outputSummary?: string } }
+      }
+      expect(traceToolData.spanData?.toolResult?.output).toContain('"name": "zero-os"')
+      expect(traceToolData.spanData?.toolResult?.output).not.toBe(
+        traceToolData.spanData?.toolResult?.outputSummary,
+      )
+
       const responseEntry = expectDefined(
         entries.find((entry) => entry.event === 'llm_request.raw_response'),
       )

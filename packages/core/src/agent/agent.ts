@@ -71,6 +71,10 @@ function cloneMemoryInjections(
   return memoryInjections.map((memoryInjection) => ({ ...memoryInjection }))
 }
 
+function isMissingDeepSeekSignedThinkingError(error: unknown): boolean {
+  return toErrorMessage(error).includes('missing signed thinking content')
+}
+
 export interface AgentConfig {
   name: string
   /** High-level role or task intent consumed by the prompt builder, not the rendered system prompt. */
@@ -627,6 +631,44 @@ export class Agent {
           this.obs.tracer?.endSpan(currentRequestSpanId, 'error')
         }
       },
+      onInvalidAssistantResponse: (request, response, error) => {
+        if (memoryNudgeCount === 0 || !isMissingDeepSeekSignedThinkingError(error)) {
+          return undefined
+        }
+
+        const errorMessage = toErrorMessage(error)
+        this.toolContext.logger.warn?.('memory_nudge_response_discarded', {
+          sessionId: this.toolContext.sessionId,
+          responseId: response.id,
+          stopReason: response.stopReason,
+          reason: errorMessage,
+        })
+        this.obs.tracer?.logSession?.(
+          this.toolContext.sessionId,
+          'warn',
+          'memory_nudge.response_discarded',
+          {
+            traceSpanId: currentRequestSpanId,
+            turnIndex: options.turnIndex,
+            request: this.filterTraceValue(request),
+            response: this.filterTraceValue(response),
+            reason: errorMessage,
+          },
+        )
+
+        if (activeMemoryNudgeSpanId) {
+          this.obs.tracer?.endSpan(activeMemoryNudgeSpanId, 'success', {
+            discardedInvalidResponse: true,
+            memoryWritten: memoryWriteSucceededThisTurn,
+            reason: errorMessage,
+          })
+          activeMemoryNudgeSpanId = undefined
+        }
+        memoryNudgeCount = 0
+        syncRequestPurpose()
+
+        return { action: 'break' as const }
+      },
       onTextDelta: (delta, meta) => {
         if (memoryNudgeCount > 0) return
         options.onTextDelta?.(delta, meta)
@@ -825,6 +867,7 @@ export class Agent {
             agentName: this.config.name,
             data: {
               tool: toolName,
+              input: filteredToolInput,
               inputSummary: this.stringifyTraceData(filteredToolInput),
               requestId: options.executionState.currentRequestId,
             },
@@ -855,22 +898,28 @@ export class Agent {
         }
 
         const toolSpanId = toolSpanIds.get(toolUseId)
+        const filteredToolInput = this.filterToolInput(input)
+        const filteredToolResult = this.filterTraceValue(result)
         if (toolSpanId) {
           this.obs.tracer?.updateSpan(toolSpanId, {
             data: {
+              input: filteredToolInput,
+              toolResult: filteredToolResult,
               outputSummary: result.outputSummary,
             },
             metadata: {
               toolUseId,
               toolName,
-              input: this.filterToolInput(input),
-              result: result.outputSummary ?? result.output.slice(0, 500),
+              input: filteredToolInput,
+              result: filteredToolResult,
               outputSummary: result.outputSummary,
             },
           })
           this.obs.tracer?.endSpan(toolSpanId, result.success ? 'success' : 'error', {
             toolUseId,
             toolName,
+            input: filteredToolInput,
+            toolResult: filteredToolResult,
             outputSummary: result.outputSummary,
           })
         }
@@ -883,8 +932,8 @@ export class Agent {
             requestId: options.executionState.currentRequestId,
             tool: toolName,
             toolUseId,
-            input: this.filterToolInput(input),
-            result: this.filterTraceValue(result),
+            input: filteredToolInput,
+            result: filteredToolResult,
           },
         )
 
