@@ -1,4 +1,5 @@
-import { ArrowDown, MagnifyingGlass, Pause, Play } from '@phosphor-icons/react'
+import { ArrowDown, CaretRight, MagnifyingGlass, Pause, Play } from '@phosphor-icons/react'
+import { useNavigate } from '@tanstack/react-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Skeleton } from '../components/shared/Skeleton'
 import { useWebSocket } from '../hooks/useWebSocket'
@@ -24,6 +25,16 @@ interface LogEntry {
   childCount?: number
   input?: string
   outputSummary?: string
+  entryCount?: number
+  sizeBytes?: number
+  firstTs?: string
+  lastTs?: string
+  lastEvent?: string
+  lastLevel?: string
+  rawRequestCount?: number
+  rawResponseCount?: number
+  toolCallCount?: number
+  errorCount?: number
   [key: string]: unknown
 }
 
@@ -62,7 +73,7 @@ const levelRowBg: Record<string, string> = {
   warn: 'bg-amber-400/[0.05]',
 }
 
-const LOG_TYPES = ['events', 'requests', 'snapshots', 'trace'] as const
+const LOG_TYPES = ['events', 'requests', 'snapshots', 'trace', 'session'] as const
 type LogType = (typeof LOG_TYPES)[number]
 
 const TIME_RANGES = [
@@ -168,6 +179,45 @@ function getColumnConfig(type: LogType): ColumnConfig {
           </span>,
         ],
       }
+    case 'session':
+      return {
+        cols: 'grid-cols-[260px_80px_80px_90px_90px_1fr_22px]',
+        headers: ['Session', 'Entries', 'Errors', 'LLM', 'Tools', 'Last Event', ''],
+        render: (e) => [
+          <div key="sid" className="min-w-0">
+            <span className="block truncate font-mono text-[var(--color-text-primary)]">
+              {e.sessionId ?? '-'}
+            </span>
+            <span className="block truncate text-[10px] text-[var(--color-text-disabled)]">
+              {e.lastTs ? `${formatTimeAgo(e.lastTs)} · ${formatBytes(e.sizeBytes)}` : '-'}
+            </span>
+          </div>,
+          <span key="entries" className="text-[var(--color-text-secondary)]">
+            {e.entryCount ?? 0}
+          </span>,
+          <span
+            key="errors"
+            className={e.errorCount ? 'text-red-400' : 'text-[var(--color-text-muted)]'}
+          >
+            {e.errorCount ?? 0}
+          </span>,
+          <span key="llm" className="text-[var(--color-text-secondary)]">
+            {e.rawRequestCount ?? 0}/{e.rawResponseCount ?? 0}
+          </span>,
+          <span key="tools" className="text-[var(--color-text-muted)]">
+            {e.toolCallCount ?? 0}
+          </span>,
+          <span key="last" className="truncate text-[var(--color-text-muted)]">
+            {e.lastEvent ?? '-'}
+          </span>,
+          <CaretRight
+            key="go"
+            size={13}
+            className="text-[var(--color-text-disabled)]"
+            weight="bold"
+          />,
+        ],
+      }
   }
 }
 
@@ -226,6 +276,13 @@ function formatMs(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
   return `${(ms / 60_000).toFixed(1)}m`
+}
+
+function formatBytes(bytes?: number): string {
+  if (bytes === undefined) return '-'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 function WaterfallChart({ spans }: { spans: TraceSpan[] }) {
@@ -313,10 +370,19 @@ export function LogsPage() {
   const filterRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval>>(undefined)
+  const navigate = useNavigate()
 
   const fetchLogs = useCallback(
     (lvls: Set<string>, typ: LogType, range: string, cStart: string, cEnd: string) => {
       setLoading(true)
+      if (typ === 'session') {
+        apiFetch<{ sessions: LogEntry[] }>('/api/logs/sessions?limit=500')
+          .then((res) => setEntries(res.sessions))
+          .catch(() => {})
+          .finally(() => setLoading(false))
+        return
+      }
+
       const params = new URLSearchParams({ type: typ, limit: '200' })
 
       if (range === 'custom') {
@@ -480,6 +546,7 @@ export function LogsPage() {
                 onClick={() => {
                   setLogType(t)
                   setExpandedRowKey(null)
+                  if (t === 'session') setIsLive(false)
                 }}
                 className={`px-3 py-1 rounded-md text-[12px] transition-colors ${
                   logType === t
@@ -492,26 +559,27 @@ export function LogsPage() {
             ))}
           </div>
 
-          {/* Live button */}
-          <button
-            type="button"
-            onClick={() => setIsLive(!isLive)}
-            className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[12px] transition-colors ${
-              isLive
-                ? 'bg-cyan-400/10 text-cyan-400'
-                : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]'
-            }`}
-          >
-            {isLive ? <Pause size={12} weight="fill" /> : <Play size={12} weight="fill" />}
-            Live
-            {isLive && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />}
-          </button>
+          {logType !== 'session' && (
+            <button
+              type="button"
+              onClick={() => setIsLive(!isLive)}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[12px] transition-colors ${
+                isLive
+                  ? 'bg-cyan-400/10 text-cyan-400'
+                  : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]'
+              }`}
+            >
+              {isLive ? <Pause size={12} weight="fill" /> : <Play size={12} weight="fill" />}
+              Live
+              {isLive && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />}
+            </button>
+          )}
         </div>
 
         {/* Row 2: Level checkboxes + Time range + Search */}
         <div className="flex items-center gap-3">
           {/* Level toggles */}
-          {logType !== 'trace' && (
+          {logType !== 'trace' && logType !== 'session' && (
             <div className="flex gap-1.5">
               {(['info', 'warn', 'error'] as const).map((lvl) => (
                 <button
@@ -534,17 +602,19 @@ export function LogsPage() {
           )}
 
           {/* Time range */}
-          <select
-            className="input-field w-[140px] text-[12px]"
-            value={timeRange}
-            onChange={(e) => setTimeRange(e.target.value)}
-          >
-            {TIME_RANGES.map((r) => (
-              <option key={r.value} value={r.value}>
-                {r.label}
-              </option>
-            ))}
-          </select>
+          {logType !== 'session' && (
+            <select
+              className="input-field w-[140px] text-[12px]"
+              value={timeRange}
+              onChange={(e) => setTimeRange(e.target.value)}
+            >
+              {TIME_RANGES.map((r) => (
+                <option key={r.value} value={r.value}>
+                  {r.label}
+                </option>
+              ))}
+            </select>
+          )}
 
           {/* Search */}
           <div className="relative flex-1">
@@ -555,7 +625,9 @@ export function LogsPage() {
             <input
               ref={filterRef}
               type="text"
-              placeholder="Filter logs... (⌘F)"
+              placeholder={
+                logType === 'session' ? 'Filter sessions with run.log...' : 'Filter logs... (⌘F)'
+              }
               className="input-field pl-9 w-full text-[12px]"
               value={filterText}
               onChange={(e) => setFilterText(e.target.value)}
@@ -565,7 +637,7 @@ export function LogsPage() {
       </div>
 
       {/* Custom time range inputs */}
-      {timeRange === 'custom' && (
+      {timeRange === 'custom' && logType !== 'session' && (
         <div className="card p-3 mb-4 flex items-center gap-3 animate-fade-up">
           <span className="text-[12px] text-[var(--color-text-muted)]">From</span>
           <input
@@ -642,10 +714,20 @@ export function LogsPage() {
               return (
                 <div key={rowKey}>
                   <div
-                    onClick={() => setExpandedRowKey(expandedRowKey === rowKey ? null : rowKey)}
+                    onClick={() => {
+                      if (logType === 'session' && entry.sessionId) {
+                        navigate({ to: '/logs/session/$id', params: { id: entry.sessionId } })
+                        return
+                      }
+                      setExpandedRowKey(expandedRowKey === rowKey ? null : rowKey)
+                    }}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault()
+                        if (logType === 'session' && entry.sessionId) {
+                          navigate({ to: '/logs/session/$id', params: { id: entry.sessionId } })
+                          return
+                        }
                         setExpandedRowKey(expandedRowKey === rowKey ? null : rowKey)
                       }
                     }}

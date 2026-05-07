@@ -8,6 +8,7 @@ import { MemoryPage } from './routes/memory'
 import { MetricsPage } from './routes/metrics'
 import { SessionChannelDetailPage } from './routes/session-channel-detail'
 import { SessionDetailPage } from './routes/session-detail'
+import { SessionRunLogPage } from './routes/session-run-log'
 import { SessionsPage } from './routes/sessions'
 import { ToolsPage } from './routes/tools'
 
@@ -67,6 +68,12 @@ const logsRoute = createRoute({
   component: LogsPage,
 })
 
+const sessionRunLogRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/logs/session/$id',
+  component: SessionRunLogPage,
+})
+
 const configRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/config',
@@ -88,6 +95,7 @@ const routeTree = rootRoute.addChildren([
   memoRoute,
   toolsRoute,
   logsRoute,
+  sessionRunLogRoute,
   configRoute,
   metricsRoute,
 ])
