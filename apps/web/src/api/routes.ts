@@ -288,7 +288,6 @@ export function createRoutes(zero: ZeroOS) {
       schemaKeys: evidence.schemaKeys,
       artifactRefs: evidence.artifactRefs,
       failureClass: evidence.failureClass,
-      message: evidence.message,
     }
   }
 

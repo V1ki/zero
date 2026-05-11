@@ -46,8 +46,20 @@ describe('SourceCardService', () => {
       bindingType: 'externalStore',
       hasReference: true,
     })
+    expect(loaded?.adapter.revisions[0]).toMatchObject({
+      id: 'himalaya-cli-v1',
+      entrypointSummary: 'himalaya',
+      templateCounts: {
+        commands: 1,
+        endpoints: 0,
+        samples: 2,
+      },
+    })
     expect(text).not.toContain('external:himalaya/account/qq')
     expect(text).not.toContain('secret-token')
+    expect(text).not.toContain('commandTemplate')
+    expect(text).not.toContain('endpointTemplates')
+    expect(text).not.toContain('sampleQueries')
   })
 
   test('public views strip credential references from health evidence', () => {
@@ -63,6 +75,10 @@ describe('SourceCardService', () => {
         credentialRef: 'external:himalaya/account/qq',
         credentialLeaseId: 'lease_qq_mail',
         exitCode: 1,
+        message: 'do-not-return-cli-stderr',
+        details: {
+          stderr: 'do-not-return-private-stderr',
+        },
       },
     })
 
@@ -74,6 +90,10 @@ describe('SourceCardService', () => {
     expect(text).not.toContain('external:himalaya/account/qq')
     expect(text).not.toContain('credentialRef')
     expect(text).not.toContain('credentialLeaseId')
+    expect(text).not.toMatch(/"message"\s*:/)
+    expect(text).not.toMatch(/"details"\s*:/)
+    expect(text).not.toContain('do-not-return-cli-stderr')
+    expect(text).not.toContain('do-not-return-private-stderr')
     expect(text).toContain('"exitCode":1')
   })
 

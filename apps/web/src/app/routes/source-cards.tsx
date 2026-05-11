@@ -4,7 +4,6 @@ import type {
   SourceCard,
   SourceCardAdapterMode,
   SourceCardCredential,
-  SourceCardHealthEvidence,
   SourceCardState,
 } from '@zero-os/shared'
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
@@ -12,8 +11,52 @@ import { Skeleton } from '../components/shared/Skeleton'
 import { apiFetch } from '../lib/api'
 import { formatTimeAgo } from '../lib/format'
 
-export type SourceCardPublicView = Omit<SourceCard, 'credentials'> & {
+export type SourceCardPublicView = Omit<SourceCard, 'credentials' | 'adapter' | 'health'> & {
+  adapter: SourceCardPublicAdapter
+  health: SourceCardPublicHealth
   credentialBindings: SourceCredentialBindingView[]
+}
+
+export interface SourceCardPublicAdapter {
+  mode: SourceCard['adapter']['mode']
+  activeRevision: string
+  revisions: SourceCardPublicAdapterRevision[]
+}
+
+export interface SourceCardPublicAdapterRevision {
+  id: string
+  status: SourceCard['adapter']['revisions'][number]['status']
+  mode: SourceCard['adapter']['revisions'][number]['mode']
+  entrypointSummary: string
+  parser: SourceCard['adapter']['revisions'][number]['parser']
+  timeoutMs: number
+  rateLimit?: SourceCard['adapter']['revisions'][number]['rateLimit']
+  templateCounts: {
+    commands: number
+    endpoints: number
+    samples: number
+  }
+}
+
+export interface SourceCardPublicEvidence {
+  sourceCardId?: string
+  capabilityId?: string
+  adapterRevision?: string
+  commandTemplateHash?: string
+  endpointTemplateHash?: string
+  statusCode?: number
+  exitCode?: number
+  durationMs?: number
+  rowCount?: number
+  schemaKeys?: string[]
+  artifactRefs?: string[]
+  failureClass?: string
+}
+
+export type SourceCardPublicHealth = Omit<SourceCard['health'], 'lastResult'> & {
+  lastResult?: Omit<NonNullable<SourceCard['health']['lastResult']>, 'evidence'> & {
+    evidence: SourceCardPublicEvidence
+  }
 }
 
 export interface SourceCredentialBindingView {
@@ -36,7 +79,7 @@ export interface SourceObservationSummaryRow {
   observedAt: string
   kind: 'data' | 'health_check' | 'schema_sample' | 'error'
   cursor?: string | { type: 'object'; keys: string[] }
-  evidence?: Omit<SourceCardHealthEvidence, 'credentialRef' | 'credentialLeaseId' | 'details'>
+  evidence?: SourceCardPublicEvidence
 }
 
 export interface SourceObservationSummaryResponse {
@@ -695,7 +738,7 @@ export function SourceCardDetailView({
                 ['Mode', card.adapter.mode],
                 ['Active revision', card.adapter.activeRevision],
                 ['Revision status', revision?.status ?? 'unknown'],
-                ['Entrypoint', revision?.entrypoint ?? 'unknown'],
+                ['Entrypoint', revision?.entrypointSummary ?? 'unknown'],
                 ['Parser', revision?.parser.type ?? 'unknown'],
                 ['Schema keys', revision?.parser.schemaKeys.join(', ') ?? 'None'],
                 ['Timeout', revision ? `${revision.timeoutMs}ms` : 'unknown'],
@@ -704,6 +747,12 @@ export function SourceCardDetailView({
                   revision?.rateLimit
                     ? `${revision.rateLimit.minIntervalMs}ms min interval`
                     : 'None declared',
+                ],
+                [
+                  'Template counts',
+                  revision
+                    ? `${revision.templateCounts.commands} command, ${revision.templateCounts.endpoints} endpoint, ${revision.templateCounts.samples} sample`
+                    : 'None',
                 ],
               ]}
             />

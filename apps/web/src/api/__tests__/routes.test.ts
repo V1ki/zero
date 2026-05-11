@@ -68,6 +68,15 @@ function expectNoSourceCredentialMaterial(value: unknown) {
   expect(text).not.toMatch(/token|cookie|password|authorization/i)
 }
 
+function expectNoSourcePublicViewLeak(value: unknown) {
+  const text = JSON.stringify(value)
+  expect(text).not.toContain('commandTemplate')
+  expect(text).not.toContain('endpointTemplates')
+  expect(text).not.toContain('sampleQueries')
+  expect(text).not.toMatch(/"message"\s*:/)
+  expect(text).not.toMatch(/"details"\s*:/)
+}
+
 function writeConfig(dataDir: string) {
   writeFileSync(
     join(dataDir, 'config.yaml'),
@@ -293,6 +302,7 @@ describe('API Routes (Real)', () => {
     })
 
     expectNoSourceCredentialMaterial(data)
+    expectNoSourcePublicViewLeak(data)
   })
 
   test('GET /api/source-cards/:id returns one public Source Card view', async () => {
@@ -304,13 +314,31 @@ describe('API Routes (Real)', () => {
     expect(qqData.sourceCard.kind).toBe('private_mailbox')
     expect(qqData.sourceCard).not.toHaveProperty('credentials')
     expectNoSourceCredentialMaterial(qqData)
+    expectNoSourcePublicViewLeak(qqData)
+
+    zero.sourceCardManager.recordHealthResult('a-stock-market-data', {
+      checkId: 'eastmoney_quote_health',
+      status: 'failed',
+      checkedAt: '2026-05-11T00:00:00.000Z',
+      failureClass: 'schema',
+      evidence: {
+        statusCode: 200,
+        message: 'do-not-return-health-message',
+        details: {
+          rawResponse: 'do-not-return-health-details',
+        },
+      },
+    })
 
     const stockRes = await app.request('/api/source-cards/a-stock-market-data')
     expect(stockRes.status).toBe(200)
     const stockData = (await stockRes.json()) as { sourceCard: Record<string, unknown> }
     expect(JSON.stringify(stockData)).toContain('place_order')
     expect(JSON.stringify(stockData)).toContain('use_broker_account')
+    expect(JSON.stringify(stockData)).not.toContain('do-not-return-health-message')
+    expect(JSON.stringify(stockData)).not.toContain('do-not-return-health-details')
     expectNoSourceCredentialMaterial(stockData)
+    expectNoSourcePublicViewLeak(stockData)
   })
 
   test('GET /api/source-cards/:id/observations returns summaries without raw data', async () => {
@@ -326,6 +354,7 @@ describe('API Routes (Real)', () => {
         statusCode: 200,
         rowCount: 1,
         schemaKeys: ['symbol', 'price'],
+        message: 'do-not-return-observation-message',
         details: {
           rawQuote: 'do-not-return-this-raw-quote',
         },
@@ -340,10 +369,16 @@ describe('API Routes (Real)', () => {
     expect(data.sourceCardId).toBe('a-stock-market-data')
     expect(data.summaryOnly).toBe(true)
     expect(data.summary.total).toBeGreaterThan(0)
-    expect(data.observations[0].evidence.schemaKeys).toContain('symbol')
+    const dataObservation = data.observations.find(
+      (observation: { capabilityId?: string; kind?: string }) =>
+        observation.capabilityId === 'fetch_quotes' && observation.kind === 'data',
+    )
+    expect(dataObservation?.evidence.schemaKeys).toContain('symbol')
     expect(text).not.toContain('do-not-return-this-raw-quote')
+    expect(text).not.toContain('do-not-return-observation-message')
     expect(text).not.toContain('"rawQuote"')
     expectNoSourceCredentialMaterial(data)
+    expectNoSourcePublicViewLeak(data)
   })
 
   test('GET /api/source-cards/:id returns 404 for missing Source Card', async () => {

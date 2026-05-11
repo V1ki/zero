@@ -1,6 +1,10 @@
 import {
   type SourceCard,
+  type SourceCardAdapter,
+  type SourceCardAdapterRevision,
   type SourceCardCredential,
+  type SourceCardHealth,
+  type SourceCardHealthEvidence,
   type SourceCardHealthResult,
   type SourceCardValidationResult,
   type SourceObservation,
@@ -9,8 +13,44 @@ import {
 } from '@zero-os/shared'
 import type { SourceCardAuditContext, SourceCardManager } from './store'
 
-export type SourceCardPublicView = Omit<SourceCard, 'credentials'> & {
+export type SourceCardPublicView = Omit<SourceCard, 'credentials' | 'adapter' | 'health'> & {
+  adapter: SourceCardPublicAdapter
+  health: SourceCardPublicHealth
   credentialBindings: SourceCredentialBindingView[]
+}
+
+export interface SourceCardPublicAdapter {
+  mode: SourceCardAdapter['mode']
+  activeRevision: string
+  revisions: SourceCardPublicAdapterRevision[]
+}
+
+export interface SourceCardPublicAdapterRevision {
+  id: SourceCardAdapterRevision['id']
+  status: SourceCardAdapterRevision['status']
+  mode: SourceCardAdapterRevision['mode']
+  entrypointSummary: string
+  parser: SourceCardAdapterRevision['parser']
+  timeoutMs: number
+  rateLimit?: SourceCardAdapterRevision['rateLimit']
+  templateCounts: {
+    commands: number
+    endpoints: number
+    samples: number
+  }
+}
+
+export type SourceCardPublicHealthEvidence = Omit<
+  SourceCardHealthEvidence,
+  'credentialRef' | 'credentialLeaseId' | 'message' | 'details'
+>
+
+export type SourceCardPublicHealthResult = Omit<SourceCardHealthResult, 'evidence'> & {
+  evidence: SourceCardPublicHealthEvidence
+}
+
+export type SourceCardPublicHealth = Omit<SourceCardHealth, 'lastResult'> & {
+  lastResult?: SourceCardPublicHealthResult
 }
 
 export interface SourceCredentialBindingView {
@@ -80,6 +120,7 @@ export function toPublicSourceCard(card: SourceCard): SourceCardPublicView {
   const { credentials: _credentials, ...rest } = card
   return {
     ...rest,
+    adapter: toPublicAdapter(rest.adapter),
     health: toPublicHealth(rest.health),
     credentialBindings: card.credentials.map((credential) => ({
       id: credential.id,
@@ -92,13 +133,48 @@ export function toPublicSourceCard(card: SourceCard): SourceCardPublicView {
   }
 }
 
-function toPublicHealth(
-  cardHealth: SourceCardPublicView['health'],
-): SourceCardPublicView['health'] {
+function toPublicAdapter(adapter: SourceCardAdapter): SourceCardPublicAdapter {
+  return {
+    mode: adapter.mode,
+    activeRevision: adapter.activeRevision,
+    revisions: adapter.revisions.map((revision) => ({
+      id: revision.id,
+      status: revision.status,
+      mode: revision.mode,
+      entrypointSummary: summarizeEntrypoint(revision.entrypoint),
+      parser: {
+        type: revision.parser.type,
+        schemaKeys: [...revision.parser.schemaKeys],
+      },
+      timeoutMs: revision.timeoutMs,
+      rateLimit: revision.rateLimit ? { ...revision.rateLimit } : undefined,
+      templateCounts: {
+        commands: revision.commandTemplate ? 1 : 0,
+        endpoints: revision.endpointTemplates?.length ?? 0,
+        samples: revision.validation.sampleQueries.length,
+      },
+    })),
+  }
+}
+
+function summarizeEntrypoint(entrypoint: string): string {
+  try {
+    const url = new URL(entrypoint)
+    return url.origin
+  } catch {
+    const normalized = entrypoint.replaceAll('\\', '/')
+    const parts = normalized.split('/').filter(Boolean)
+    return parts[parts.length - 1] ?? entrypoint
+  }
+}
+
+function toPublicHealth(cardHealth: SourceCardHealth): SourceCardPublicHealth {
   if (!cardHealth.lastResult) return cardHealth
   const {
     credentialRef: _credentialRef,
     credentialLeaseId: _credentialLeaseId,
+    message: _message,
+    details: _details,
     ...evidence
   } = cardHealth.lastResult.evidence
   return {

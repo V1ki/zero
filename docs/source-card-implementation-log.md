@@ -282,3 +282,71 @@
 
 - 目前只读 UI 不支持 promote/retire 审批；后续实现 mutation 时必须继续复用 public view 和显式 reason/scope confirmation。
 - 当前 observations 只展示摘要；如果未来展示公共数据样本，需要由 observation contract 明确允许，并继续默认屏蔽 private source raw content。
+
+## 2026-05-11 Read-only API Public View Hardening
+
+### 本次目标
+
+修复 Source Card read-only API 的 public view 泄漏风险，继续保持不实现 promote/retire、不执行 health probe、不运行 `himalaya`、不读取私人邮件、不拉取真实股票数据、不修改 Watch/scheduler。
+
+### 已读取的关键上下文
+
+- `packages/core/src/source-card/service.ts`
+- `apps/web/src/api/routes.ts`
+- `apps/web/src/api/__tests__/routes.test.ts`
+- `apps/web/src/app/routes/source-cards.tsx`
+- `docs/source-card-implementation-log.md`
+
+### 实际修改的文件
+
+- `packages/core/src/source-card/service.ts`
+  - 将 `SourceCardPublicView` 收紧为真正的 public shape。
+  - adapter revision 只返回 `id/status/mode/entrypointSummary/parser/schemaKeys/timeout/rateLimit/templateCounts`。
+  - 不再返回 `commandTemplate`、`endpointTemplates`、`validation.sampleQueries`。
+  - public health evidence 不再返回 `credentialRef`、`credentialLeaseId`、`message`、`details`。
+- `apps/web/src/api/routes.ts`
+  - observation summary evidence 不再返回 `message`、`details` 或 raw observation `data`。
+- `apps/web/src/app/routes/source-cards.tsx`
+  - UI 改为消费 public adapter summary，展示 entrypoint summary 和 template counts。
+- `packages/core/src/source-card/__tests__/service-runner.test.ts`
+  - 覆盖 public health evidence 与 adapter summary 的脱敏/收敛边界。
+- `apps/web/src/api/__tests__/routes.test.ts`
+  - 覆盖 Source Card list/get 不包含 command template、endpoint templates、sample queries、message/details。
+  - 覆盖 observation summary 不包含 raw data、message/details。
+  - 保留 QQ 邮箱 external credential ref 不外露和 A 股 read-only/no-trading 信息断言。
+- `docs/source-card-implementation-log.md`
+  - 记录本次 hardening。
+
+### 关键设计决策
+
+- 收敛点放在 `SourceCardService.toPublicSourceCard()`，避免 Web/API 或未来 UI 调用方各自手动删字段。
+- adapter public view 保留可诊断的结构化摘要，不返回可执行命令模板、完整 endpoint 模板或 sample query。
+- observation summary 继续只做摘要，不承担 raw data viewer 角色。
+
+### 安全边界
+
+- 未实现 promote/retire。
+- 未实现真实 health probe。
+- 未执行 `himalaya`。
+- 未读取私人邮件。
+- 未 fetch 真实股票数据。
+- 未修改 Watch/scheduler。
+- credential 仍然只通过 `credentialBindings` 摘要展示，不返回 `credentials`、`binding.ref`、`credentialRef`、`credentialLeaseId`。
+
+### 验证命令和结果
+
+- `bun run check`
+  - 结果：通过。
+- `bun test apps/web/src/api/__tests__/routes.test.ts`
+  - 结果：35 pass，0 fail。
+  - 覆盖：API list/get/observation summary 的 public view hardening。
+- `bun test apps/web/src/app/routes/source-cards.test.tsx`
+  - 结果：4 pass，0 fail。
+  - 覆盖：UI 仍能展示 QQ candidate/private 与 A 股 active/public/read-only/no-trading。
+- `bun test packages/core/src/source-card/__tests__/service-runner.test.ts`
+  - 结果：5 pass，0 fail。
+  - 覆盖：service public view 不外露 adapter templates、sample queries、credential refs、health message/details。
+
+### 未解决风险或后续建议
+
+- 当前 hardening 仍保留 capability input/output schema。若后续 schema 本身可能带私人示例值，应引入 schema-level sanitizer 或 schema allowlist。
