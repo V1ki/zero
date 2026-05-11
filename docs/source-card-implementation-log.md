@@ -82,8 +82,76 @@
 
 ## 未解决风险或后续建议
 
-- 当前仅实现本地文件型 registry/manager，没有新增 UI、API endpoint 或 tool surface；下一步需要决定 Source Card 的用户审批入口和管理界面。
-- 当前 server 启动时会确保两个内置样例卡存在，但不会自动执行 health check；后续可以把 health runner 接入现有 runtime，但仍应保持与 scheduler/watch 分离。
+- 第一阶段仅实现本地文件型 registry/manager，没有新增 UI、API endpoint 或 tool surface；后续记录见下方 2026-05-11 安全修复与最小 Surface 补齐。
+- 第一阶段 server 启动时会确保两个内置样例卡存在，但不会自动执行 health check；后续记录见下方 health runner 骨架。
 - `qq-mail-himalaya` 仍是 `candidate`，背景 watch 必须等用户确认 mailbox/query/cadence 后再提升为 `active`。
 - `a-stock-market-data` 是公共 read-only source，Watch 可引用其 `fetch_quotes`/`fetch_rankings` capability，但仍禁止交易、券商账号、下单等语义。
 - adapter revision 的对比、升级、回滚已经有类型落点，但本次最小闭环未实现自动 revision 评测器。
+
+## 2026-05-11 安全修复与最小 Surface 补齐
+
+### 本次目标
+
+修复 Source Card 当前实现中的安全缺口，并补齐最小内部 service、tool surface 与 health runner 骨架。
+
+### 实际修改的文件
+
+- `packages/shared/src/types/source-card.ts`
+  - 新增 `isSafeSourceEntityId()` / `assertSafeSourceEntityId()`，用于 Source Card 和 Observation 的路径安全校验。
+- `packages/core/src/source-card/store.ts`
+  - `get/delete/listObservations/appendObservation` 统一校验 `card id`、`sourceCardId`、`observation id`、`capabilityId`，拒绝路径穿越。
+  - private/restricted 且 `metadata_only` 或附件 blocked 的 Source Card，拒绝落盘 body/raw/html/mime/payload/attachment 等 observation 字段。
+  - `recordHealthResult` 拒绝未在 Source Card health contract 中声明的 check id。
+  - health passed 时，`degraded` 恢复为 `active`；`broken` 恢复为 `verified`。
+- `packages/core/src/source-card/service.ts`
+  - 新增最小内部 service surface：`list/get/validate/validateStored/promote/retire/recordHealthResult/listObservations`。
+  - service 返回 public view，只暴露 credential binding metadata，不暴露 credential ref。
+- `packages/core/src/source-card/runner.ts`
+  - 新增 health runner 骨架：只接收已产生的 health result，并按 Source Card health check contract 记录结果；不执行 CLI/API/browser/direct adapter。
+- `packages/core/src/tool/source-card.ts`
+  - 新增 `source_card` 管理工具，只允许 `list/get/validate/promote/retire`。
+  - 明确不读取邮箱、不拉取股票数据、不执行 source adapter、不记录 health result。
+- `apps/server/src/main.ts`
+  - 初始化 `SourceCardService`，注册 `SourceCardTool`，并在 `ZeroOS` 暴露 `sourceCardService`。
+- `apps/server/src/__tests__/main-integration.test.ts`
+  - 更新 server 集成测试中的注册 tool 数量与 `source_card` 断言。
+- `packages/core/src/source-card/__tests__/manager.test.ts`
+  - 新增路径穿越拒绝、private observation 内容拒绝、health degraded 恢复 active 的测试。
+- `packages/core/src/source-card/__tests__/service-runner.test.ts`
+  - 新增 service surface、credential ref 不外露、health runner 只记录 health observation 的测试。
+- `packages/core/src/tool/__tests__/source-card.test.ts`
+  - 新增 tool surface 不外露 credential ref、只允许管理动作、拒绝 health/source 执行动作的测试。
+
+### 关键设计决策
+
+- 路径安全在 store 层强制执行，而不是只依赖上层调用方。
+- private source 的 observation 安全策略在 manager 写入前执行；不做“写入后再清理”。
+- service/tool surface 默认返回 public view；credential reference 仍可由底层 manager/runner 使用，但不从管理 API/tool 输出。
+- health runner 不接受 adapter executor，不接入 scheduler，不启动 Agent，也不执行真实数据源读取；它只验证 check id 并记录外部提供的 health result。
+
+### 验证命令和结果
+
+- `bun test packages/core/src/source-card/__tests__/manager.test.ts`
+  - 结果：11 pass，0 fail。
+  - 覆盖：路径穿越拒绝、private metadata-only observation 拒绝正文/附件、health check contract、health recovery、watch/credential 边界。
+- `bun test packages/core/src/source-card/__tests__/service-runner.test.ts`
+  - 结果：4 pass，0 fail。
+  - 覆盖：service surface、credential ref 不外露、health runner 只记录 health observation、不产生业务 data observation。
+- `bun test packages/core/src/tool/__tests__/source-card.test.ts`
+  - 结果：3 pass，0 fail。
+  - 覆盖：tool surface 不外露 credential ref、只允许管理动作、拒绝 health/source 执行动作。
+- `bun test packages/shared/src/__tests__/source-card.test.ts`
+  - 结果：6 pass，0 fail。
+- `bun test apps/server/src/__tests__/main-integration.test.ts`
+  - 结果：11 pass，0 fail。
+  - 覆盖：server 启动后注册 16 个工具并包含 `source_card`。
+- `bun run check`
+  - 结果：通过。
+- `bunx biome check packages/shared/src/types/source-card.ts packages/core/src/source-card/store.ts packages/core/src/source-card/service.ts packages/core/src/source-card/runner.ts packages/core/src/source-card/index.ts packages/core/src/source-card/__tests__/manager.test.ts packages/core/src/source-card/__tests__/service-runner.test.ts packages/core/src/tool/source-card.ts packages/core/src/tool/__tests__/source-card.test.ts packages/core/src/index.ts apps/server/src/main.ts apps/server/src/__tests__/main-integration.test.ts`
+  - 结果：通过。
+
+### 剩余风险或后续建议
+
+- 当前 health runner 只是记录骨架，尚未接入真实 adapter probe；接入时必须继续保持不由 scheduler/watch 保存凭证。
+- 当前 tool surface 是 Agent tool，不是 HTTP API；如果未来加 Web/API endpoint，应复用 `SourceCardService` 的 public view，避免重新暴露 credential ref。
+- private metadata-only 内容拦截使用字段名策略；后续如引入结构化 mail schema，应把正文/附件字段显式标注并由 schema 驱动拦截。

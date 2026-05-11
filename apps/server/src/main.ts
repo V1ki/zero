@@ -14,6 +14,8 @@ import {
   CONTEXT_PARAMS,
   CommandRouter,
   SourceCardManager,
+  SourceCardService,
+  SourceCardTool,
   createAStockMarketDataSourceCard,
   createQqMailHimalayaSourceCard,
   loadConfig,
@@ -201,6 +203,7 @@ export interface ZeroOS {
   toolRegistry: ToolRegistry
   sessionManager: SessionManager
   sourceCardManager: SourceCardManager
+  sourceCardService: SourceCardService
   memoryStore: MemoryRepository
   memoryRetriever: MemoryRetriever
   memoManager: MemoManager
@@ -282,6 +285,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
 
   // 4. Secret filter
   const secretFilter = new OutputSecretFilter(vault.entries())
+  const secretResolver = (ref: string) => vault.get(ref) ?? undefined
 
   // 5. Load config
   const configPath = join(ZERO_DIR, 'config.yaml')
@@ -336,6 +340,16 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
   const initResult = modelRouter.init()
   console.log(`[ZeRo OS] Model Router: ${initResult.message}`)
 
+  const sourceCardManager = new SourceCardManager(join(ZERO_DIR, 'source-cards'), {
+    secretFilter,
+    secretResolver,
+  })
+  sourceCardManager.ensureAll([
+    createQqMailHimalayaSourceCard(),
+    createAStockMarketDataSourceCard(),
+  ])
+  const sourceCardService = new SourceCardService(sourceCardManager)
+
   // 8. Initialize Tools
   const fuseRules = loadFuseList(join(ZERO_DIR, 'fuse_list.yaml'))
   const toolRegistry = new ToolRegistry()
@@ -349,6 +363,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
   toolRegistry.register(new MemoryReadTool())
   toolRegistry.register(new MemoryTool())
   toolRegistry.register(new ScheduleTool())
+  toolRegistry.register(new SourceCardTool(sourceCardService))
   toolRegistry.register(new CodexTool())
   toolRegistry.register(new SpawnAgentTool(modelRouter, toolRegistry, metrics))
   toolRegistry.register(new WaitAgentTool())
@@ -462,15 +477,6 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
   }
 
   // 10. Session Manager — pass observability deps, memory, bus, secret filter, and identity
-  const secretResolver = (ref: string) => vault.get(ref) ?? undefined
-  const sourceCardManager = new SourceCardManager(join(ZERO_DIR, 'source-cards'), {
-    secretFilter,
-    secretResolver,
-  })
-  sourceCardManager.ensureAll([
-    createQqMailHimalayaSourceCard(),
-    createAStockMarketDataSourceCard(),
-  ])
   // Pre-create scheduler + handles (trigger handler set later after sessionManager exists)
   const scheduler = new CronScheduler()
   const schedulerHandle = {
@@ -833,6 +839,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
     toolRegistry,
     sessionManager,
     sourceCardManager,
+    sourceCardService,
     memoryStore,
     memoryRetriever,
     memoManager,

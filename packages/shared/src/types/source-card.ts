@@ -387,6 +387,16 @@ export function assertValidSourceCard(value: unknown): asserts value is SourceCa
   }
 }
 
+export function isSafeSourceEntityId(value: unknown): value is string {
+  return typeof value === 'string' && SOURCE_CARD_ID_RE.test(value)
+}
+
+export function assertSafeSourceEntityId(value: unknown, path = 'id'): asserts value is string {
+  if (!isSafeSourceEntityId(value)) {
+    throw new Error(`${path} must be a lowercase id using letters, numbers, "_" or "-"`)
+  }
+}
+
 export function canTransitionSourceCardState(from: SourceCardState, to: SourceCardState): boolean {
   const allowed = SOURCE_CARD_STATE_TRANSITIONS[from] as readonly SourceCardState[]
   return from === to || allowed.includes(to)

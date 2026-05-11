@@ -14,6 +14,7 @@ export { MemoryTool } from './tool/memory'
 export { MemorySearchTool } from './tool/memory-search'
 export { MemoryReadTool } from './tool/memory-read'
 export { ScheduleTool } from './tool/schedule'
+export { SourceCardTool } from './tool/source-card'
 export { CodexTool } from './tool/codex'
 export { SpawnAgentTool } from './tool/spawn-agent'
 export { WaitAgentTool } from './tool/wait-agent'
@@ -70,16 +71,23 @@ export {
 
 // Source Cards
 export {
+  SourceCardHealthRunner,
   SourceCardManager,
+  SourceCardService,
   SourceCardStore,
   createAStockMarketDataSourceCard,
   createQqMailHimalayaSourceCard,
+  toPublicSourceCard,
 } from './source-card'
 export type {
   ResolvedSourceWatch,
   SourceCardAuditContext,
   SourceCardAuditEvent,
+  SourceCardHealthRunInput,
+  SourceCardHealthRunSummary,
   SourceCardManagerOptions,
+  SourceCardPublicView,
+  SourceCredentialBindingView,
 } from './source-card'
 
 // Context Engineering

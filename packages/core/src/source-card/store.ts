@@ -11,6 +11,7 @@ import {
   type SourceCredentialLease,
   type SourceObservation,
   type SourceWatchBinding,
+  assertSafeSourceEntityId,
   assertValidSourceCard,
   assertValidSourceWatchBinding,
   canTransitionSourceCardState,
@@ -18,6 +19,10 @@ import {
   now,
   sanitizeSourceCardTraceEvidence,
 } from '@zero-os/shared'
+
+const PRIVATE_BODY_KEY_RE = /^(body|bodyText|bodyHtml|html|raw|rawMessage|mime|payload)$/i
+const PRIVATE_ATTACHMENT_KEY_RE =
+  /^(attachment|attachments|attachmentContent|attachmentBytes|fileContent|fileBytes)$/i
 
 export interface SourceCardAuditContext {
   sessionId?: string
@@ -61,16 +66,21 @@ export class SourceCardStore {
 
   save(card: SourceCard): SourceCard {
     assertValidSourceCard(card)
+    assertSafeSourceEntityId(card.id, 'sourceCard.id')
     mkdirSync(this.cardsDir, { recursive: true })
     writeFileSync(this.cardPath(card.id), `${JSON.stringify(card, null, 2)}\n`)
     return card
   }
 
   get(id: string): SourceCard | undefined {
+    assertSafeSourceEntityId(id, 'sourceCardId')
     const path = this.cardPath(id)
     if (!existsSync(path)) return undefined
     const card = JSON.parse(readFileSync(path, 'utf8')) as SourceCard
     assertValidSourceCard(card)
+    if (card.id !== id) {
+      throw new Error(`Source card file id mismatch: ${id} != ${card.id}`)
+    }
     return card
   }
 
@@ -78,12 +88,22 @@ export class SourceCardStore {
     if (!existsSync(this.cardsDir)) return []
     return readdirSync(this.cardsDir)
       .filter((file) => file.endsWith('.json'))
-      .map((file) => this.get(file.slice(0, -5)))
+      .map((file) => file.slice(0, -5))
+      .filter((id) => {
+        try {
+          assertSafeSourceEntityId(id, 'sourceCardId')
+          return true
+        } catch {
+          return false
+        }
+      })
+      .map((id) => this.get(id))
       .filter((card): card is SourceCard => Boolean(card))
       .sort((a, b) => a.id.localeCompare(b.id))
   }
 
   delete(id: string): boolean {
+    assertSafeSourceEntityId(id, 'sourceCardId')
     const path = this.cardPath(id)
     if (!existsSync(path)) return false
     rmSync(path)
@@ -99,11 +119,19 @@ export class SourceCardStore {
   }
 
   listObservations(sourceCardId: string): SourceObservation[] {
+    assertSafeSourceEntityId(sourceCardId, 'sourceCardId')
     const dir = this.observationDir(sourceCardId)
     if (!existsSync(dir)) return []
     return readdirSync(dir)
       .filter((file) => file.endsWith('.json'))
-      .map((file) => JSON.parse(readFileSync(join(dir, file), 'utf8')) as SourceObservation)
+      .map((file) => {
+        const observation = JSON.parse(readFileSync(join(dir, file), 'utf8')) as SourceObservation
+        this.validateObservationShape(observation)
+        if (observation.sourceCardId !== sourceCardId) {
+          throw new Error(`Source observation file id mismatch: ${sourceCardId}`)
+        }
+        return observation
+      })
       .sort((a, b) => a.observedAt.localeCompare(b.observedAt))
   }
 
@@ -119,6 +147,9 @@ export class SourceCardStore {
     if (!observation.id || !observation.sourceCardId || !observation.capabilityId) {
       throw new Error('Source observation requires id, sourceCardId, and capabilityId')
     }
+    assertSafeSourceEntityId(observation.id, 'observation.id')
+    assertSafeSourceEntityId(observation.sourceCardId, 'observation.sourceCardId')
+    assertSafeSourceEntityId(observation.capabilityId, 'observation.capabilityId')
     if (!observation.observedAt) {
       throw new Error('Source observation requires observedAt')
     }
@@ -207,6 +238,11 @@ export class SourceCardManager {
     context: SourceCardAuditContext = {},
   ): SourceCard {
     const card = this.requireCard(sourceCardId)
+    if (!card.health.checks.some((check) => check.id === result.checkId)) {
+      throw new Error(
+        `Health check "${result.checkId}" is not declared by Source Card "${card.id}"`,
+      )
+    }
     const sanitizedResult: SourceCardHealthResult = {
       ...result,
       evidence: sanitizeSourceCardTraceEvidence(result.evidence, this.options.secretFilter),
@@ -220,6 +256,7 @@ export class SourceCardManager {
       sanitizedResult.evidence,
       observedAt,
     )
+    this.assertObservationPrivacy(card, observation)
     this.store.appendObservation(observation)
 
     const nextState = this.nextStateAfterHealth(card.state, sanitizedResult)
@@ -273,6 +310,7 @@ export class SourceCardManager {
         ? sanitizeSourceCardTraceEvidence(observation.evidence, this.options.secretFilter)
         : undefined,
     }
+    this.assertObservationPrivacy(card, sanitizedObservation)
     const saved = this.store.appendObservation(sanitizedObservation)
     this.audit(
       'source_card.observation_recorded',
@@ -402,7 +440,9 @@ export class SourceCardManager {
     result: SourceCardHealthResult,
   ): SourceCardState {
     if (result.status === 'passed') {
-      return current === 'degraded' || current === 'broken' ? 'verified' : current
+      if (current === 'degraded') return 'active'
+      if (current === 'broken') return 'verified'
+      return current
     }
     if (result.failureClass === 'auth' || result.failureClass === 'privacy_blocked') {
       return 'broken'
@@ -426,6 +466,23 @@ export class SourceCardManager {
     }
   }
 
+  private assertObservationPrivacy(card: SourceCard, observation: SourceObservation): void {
+    const metadataOnly = card.privacy.bodyPolicy === 'metadata_only'
+    const attachmentsBlocked = card.privacy.attachmentPolicy === 'blocked'
+    const privateSource = card.sensitivity === 'private' || card.sensitivity === 'restricted'
+    if (!privateSource || (!metadataOnly && !attachmentsBlocked)) return
+
+    const forbiddenPath = findForbiddenPrivateObservationPath(observation, {
+      metadataOnly,
+      attachmentsBlocked,
+    })
+    if (forbiddenPath) {
+      throw new Error(
+        `Private metadata-only Source Card observation cannot persist body or attachment content at ${forbiddenPath}`,
+      )
+    }
+  }
+
   private audit(
     event: string,
     sourceCardId: string | undefined,
@@ -446,4 +503,27 @@ export class SourceCardManager {
       context.tracer.logSession(context.sessionId, 'info', event, sanitized)
     }
   }
+}
+
+function findForbiddenPrivateObservationPath(
+  value: unknown,
+  policy: { metadataOnly: boolean; attachmentsBlocked: boolean },
+  path = 'observation',
+): string | undefined {
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      const nested = findForbiddenPrivateObservationPath(item, policy, `${path}[${index}]`)
+      if (nested) return nested
+    }
+    return undefined
+  }
+
+  if (!value || typeof value !== 'object') return undefined
+  for (const [key, nestedValue] of Object.entries(value)) {
+    if (policy.metadataOnly && PRIVATE_BODY_KEY_RE.test(key)) return `${path}.${key}`
+    if (policy.attachmentsBlocked && PRIVATE_ATTACHMENT_KEY_RE.test(key)) return `${path}.${key}`
+    const nested = findForbiddenPrivateObservationPath(nestedValue, policy, `${path}.${key}`)
+    if (nested) return nested
+  }
+  return undefined
 }

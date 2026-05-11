@@ -50,6 +50,25 @@ describe('SourceCardManager', () => {
     ).toThrow('Invalid SourceCard state transition')
   })
 
+  test('rejects unsafe ids before touching source card paths', () => {
+    const manager = createManager()
+    manager.create(createAStockMarketDataSourceCard())
+
+    expect(() => manager.get('../a-stock-market-data')).toThrow('sourceCardId must be')
+    expect(() => manager.listObservations('../a-stock-market-data')).toThrow('sourceCardId must be')
+    expect(() =>
+      manager.recordObservation({
+        id: '../evil',
+        sourceCardId: 'a-stock-market-data',
+        capabilityId: 'fetch_quotes',
+        kind: 'data',
+        data: {
+          rows: 1,
+        },
+      }),
+    ).toThrow('observation.id must be')
+  })
+
   test('records observations without mutating the Source Card', () => {
     const manager = createManager()
     const card = manager.create(createAStockMarketDataSourceCard())
@@ -67,6 +86,37 @@ describe('SourceCardManager', () => {
     expect(observation.id?.startsWith('obs_')).toBe(true)
     expect(manager.listObservations(card.id)).toHaveLength(1)
     expect(manager.get(card.id)?.updatedAt).toBe(card.updatedAt)
+  })
+
+  test('rejects private metadata-only body and attachment observations', () => {
+    const manager = createManager()
+    manager.create(createQqMailHimalayaSourceCard())
+
+    expect(() =>
+      manager.recordObservation({
+        sourceCardId: 'qq-mail-himalaya',
+        capabilityId: 'list_envelopes',
+        kind: 'data',
+        data: {
+          envelopeId: 'safe-metadata-id',
+          body: 'private mail body must not persist',
+        },
+      }),
+    ).toThrow('cannot persist body or attachment content')
+
+    expect(() =>
+      manager.recordObservation({
+        sourceCardId: 'qq-mail-himalaya',
+        capabilityId: 'list_envelopes',
+        kind: 'data',
+        data: {
+          envelopeId: 'safe-metadata-id',
+          attachments: [{ name: 'bill.pdf', fileBytes: 'private-bytes' }],
+        },
+      }),
+    ).toThrow('cannot persist body or attachment content')
+
+    expect(manager.listObservations('qq-mail-himalaya')).toHaveLength(0)
   })
 
   test('records health checks as redacted evidence and degrades unhealthy cards', () => {
@@ -97,6 +147,52 @@ describe('SourceCardManager', () => {
     expect(evidence?.details).toEqual({
       authorization: '[REDACTED]',
     })
+  })
+
+  test('rejects undeclared health check results', () => {
+    const manager = createManager()
+    const card = manager.create(createAStockMarketDataSourceCard())
+
+    expect(() =>
+      manager.recordHealthResult(card.id, {
+        checkId: 'unknown_health_check',
+        status: 'passed',
+        checkedAt: '2026-05-11T00:00:00.000Z',
+        evidence: {
+          sourceCardId: card.id,
+          capabilityId: 'unknown_health_check',
+        },
+      }),
+    ).toThrow('is not declared')
+  })
+
+  test('recovers degraded active sources back to active on healthy check', () => {
+    const manager = createManager()
+    const card = manager.create(createAStockMarketDataSourceCard())
+
+    const degraded = manager.recordHealthResult(card.id, {
+      checkId: 'eastmoney_quote_health',
+      status: 'failed',
+      checkedAt: '2026-05-11T00:00:00.000Z',
+      failureClass: 'network',
+      evidence: {
+        sourceCardId: card.id,
+        capabilityId: 'eastmoney_quote_health',
+      },
+    })
+
+    const recovered = manager.recordHealthResult(card.id, {
+      checkId: 'eastmoney_quote_health',
+      status: 'passed',
+      checkedAt: '2026-05-11T00:05:00.000Z',
+      evidence: {
+        sourceCardId: card.id,
+        capabilityId: 'eastmoney_quote_health',
+      },
+    })
+
+    expect(degraded.state).toBe('degraded')
+    expect(recovered.state).toBe('active')
   })
 
   test('resolves watch bindings without exposing credentials', () => {
