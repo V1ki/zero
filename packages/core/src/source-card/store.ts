@@ -20,9 +20,10 @@ import {
   sanitizeSourceCardTraceEvidence,
 } from '@zero-os/shared'
 
-const PRIVATE_BODY_KEY_RE = /^(body|bodyText|bodyHtml|html|raw|rawMessage|mime|payload)$/i
+const PRIVATE_BODY_KEY_RE =
+  /^(body|bodyText|bodyHtml|html|raw|rawMessage|mime|payload|mailBody|messageBody|emailBody|contentBody)$/i
 const PRIVATE_ATTACHMENT_KEY_RE =
-  /^(attachment|attachments|attachmentContent|attachmentBytes|fileContent|fileBytes)$/i
+  /^(attachment|attachments|attachmentText|attachmentContent|attachmentBytes|fileContent|fileBytes)$/i
 
 export interface SourceCardAuditContext {
   sessionId?: string

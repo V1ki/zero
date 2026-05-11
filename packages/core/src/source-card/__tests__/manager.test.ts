@@ -111,7 +111,31 @@ describe('SourceCardManager', () => {
         kind: 'data',
         data: {
           envelopeId: 'safe-metadata-id',
+          mailBody: 'private mail body must not persist',
+        },
+      }),
+    ).toThrow('cannot persist body or attachment content')
+
+    expect(() =>
+      manager.recordObservation({
+        sourceCardId: 'qq-mail-himalaya',
+        capabilityId: 'list_envelopes',
+        kind: 'data',
+        data: {
+          envelopeId: 'safe-metadata-id',
           attachments: [{ name: 'bill.pdf', fileBytes: 'private-bytes' }],
+        },
+      }),
+    ).toThrow('cannot persist body or attachment content')
+
+    expect(() =>
+      manager.recordObservation({
+        sourceCardId: 'qq-mail-himalaya',
+        capabilityId: 'list_envelopes',
+        kind: 'data',
+        data: {
+          envelopeId: 'safe-metadata-id',
+          attachmentText: 'private attachment text must not persist',
         },
       }),
     ).toThrow('cannot persist body or attachment content')

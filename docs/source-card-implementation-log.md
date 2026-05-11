@@ -155,3 +155,35 @@
 - 当前 health runner 只是记录骨架，尚未接入真实 adapter probe；接入时必须继续保持不由 scheduler/watch 保存凭证。
 - 当前 tool surface 是 Agent tool，不是 HTTP API；如果未来加 Web/API endpoint，应复用 `SourceCardService` 的 public view，避免重新暴露 credential ref。
 - private metadata-only 内容拦截使用字段名策略；后续如引入结构化 mail schema，应把正文/附件字段显式标注并由 schema 驱动拦截。
+
+## 2026-05-11 Private Observation 字段拦截补漏
+
+### 本次目标
+
+修复 private/restricted 且 `metadata_only` 或 attachment blocked Source Card 的 observation 字段拦截缺口，补齐正文和附件内容字段别名。
+
+### 实际修改的文件
+
+- `packages/core/src/source-card/store.ts`
+  - 正文字段拦截补充：`mailBody`、`messageBody`、`emailBody`、`contentBody`。
+  - 附件字段拦截补充：`attachmentText`。
+- `packages/core/src/source-card/__tests__/manager.test.ts`
+  - 新增断言证明 `mailBody` 和 `attachmentText` 会被 private metadata-only Source Card 拒绝。
+- `docs/source-card-implementation-log.md`
+  - 记录本次补漏和验证结果。
+
+### 安全边界
+
+- 未读取真实私人邮件。
+- 未执行 `himalaya`。
+- 未修改 Source Card 大架构。
+
+### 验证命令和结果
+
+- `bun test packages/core/src/source-card/__tests__/manager.test.ts`
+  - 结果：11 pass，0 fail。
+  - 覆盖：`mailBody` 和 `attachmentText` 被 private metadata-only Source Card 拒绝。
+- `bun run check`
+  - 结果：通过。
+- `bunx biome check packages/core/src/source-card/store.ts packages/core/src/source-card/__tests__/manager.test.ts docs/source-card-implementation-log.md`
+  - 结果：通过。
