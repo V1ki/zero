@@ -9,6 +9,8 @@ import {
   type SourceCardValidationResult,
   type SourceObservation,
   assertValidSourceCard,
+  canTransitionSourceCardState,
+  now,
   validateSourceCard,
 } from '@zero-os/shared'
 import type { SourceCardAuditContext, SourceCardManager } from './store'
@@ -62,6 +64,24 @@ export interface SourceCredentialBindingView {
   hasReference: boolean
 }
 
+export interface SourceCardPrivateScopeConfirmation {
+  metadataOnly: boolean
+  bodyAccessApproved: boolean
+  attachmentAccessApproved: boolean
+}
+
+export interface SourceCardPromoteRequest {
+  reason: string
+  reviewedCapabilityIds: string[]
+  privateScopeConfirmation?: SourceCardPrivateScopeConfirmation
+}
+
+interface ValidatedPromoteRequest {
+  reason: string
+  reviewedCapabilityIds: string[]
+  privateScopeConfirmation?: SourceCard['promotion']['privateScopeConfirmation']
+}
+
 export class SourceCardService {
   constructor(private readonly manager: SourceCardManager) {}
 
@@ -84,17 +104,45 @@ export class SourceCardService {
     return validateSourceCard(card)
   }
 
-  promote(id: string, reason: string, context: SourceCardAuditContext = {}): SourceCardPublicView {
+  promote(
+    id: string,
+    request: SourceCardPromoteRequest,
+    context: SourceCardAuditContext = {},
+  ): SourceCardPublicView {
     const current = this.requireCard(id)
     assertValidSourceCard(current)
     if (current.state !== 'verified' && current.state !== 'degraded') {
       throw new Error(`Source card "${id}" must be verified or degraded before promotion`)
     }
-    return toPublicSourceCard(this.manager.transitionState(id, 'active', reason, context))
+    if (!canTransitionSourceCardState(current.state, 'active')) {
+      throw new Error(`Invalid SourceCard state transition: ${current.state} -> active`)
+    }
+    const payload = validatePromoteRequest(current, request)
+
+    return toPublicSourceCard(
+      this.manager.update(
+        id,
+        (card) => ({
+          ...card,
+          state: 'active',
+          promotion: {
+            ...card.promotion,
+            reviewedCapabilityIds: payload.reviewedCapabilityIds,
+            privateScopeConfirmation: payload.privateScopeConfirmation,
+            lastDecisionAt: now(),
+            lastDecision: 'accepted',
+            decisionReason: payload.reason,
+          },
+        }),
+        context,
+      ),
+    )
   }
 
   retire(id: string, reason: string, context: SourceCardAuditContext = {}): SourceCardPublicView {
-    return toPublicSourceCard(this.manager.transitionState(id, 'retired', reason, context))
+    const trimmedReason = reason.trim()
+    if (!trimmedReason) throw new Error('Retire reason is required')
+    return toPublicSourceCard(this.manager.transitionState(id, 'retired', trimmedReason, context))
   }
 
   recordHealthResult(
@@ -113,6 +161,77 @@ export class SourceCardService {
     const card = this.manager.get(id)
     if (!card) throw new Error(`Source card "${id}" not found`)
     return card
+  }
+}
+
+function validatePromoteRequest(
+  card: SourceCard,
+  request: SourceCardPromoteRequest,
+): ValidatedPromoteRequest {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) {
+    throw new Error('Promotion approval payload is required')
+  }
+
+  const reason = typeof request.reason === 'string' ? request.reason.trim() : ''
+  if (!reason) throw new Error('Promotion reason is required')
+
+  if (!Array.isArray(request.reviewedCapabilityIds)) {
+    throw new Error('reviewedCapabilityIds must be an array')
+  }
+  const knownCapabilityIds = new Set(card.capabilities.map((capability) => capability.id))
+  const reviewedCapabilityIds = Array.from(
+    new Set(
+      request.reviewedCapabilityIds
+        .filter((id): id is string => typeof id === 'string')
+        .map((id) => id.trim())
+        .filter(Boolean),
+    ),
+  )
+  if (reviewedCapabilityIds.length === 0) {
+    throw new Error('At least one capability must be reviewed before promotion')
+  }
+  const unknownCapability = reviewedCapabilityIds.find((id) => !knownCapabilityIds.has(id))
+  if (unknownCapability) {
+    throw new Error(`Reviewed capability "${unknownCapability}" is not declared by Source Card`)
+  }
+  const unreviewedWatchable = card.capabilities.find(
+    (capability) => capability.watchable && !reviewedCapabilityIds.includes(capability.id),
+  )
+  if (unreviewedWatchable) {
+    throw new Error(`Watchable capability "${unreviewedWatchable.id}" must be reviewed`)
+  }
+
+  const privateScopeConfirmation = validatePrivateScopeConfirmation(card, request)
+  return {
+    reason,
+    reviewedCapabilityIds,
+    privateScopeConfirmation,
+  }
+}
+
+function validatePrivateScopeConfirmation(
+  card: SourceCard,
+  request: SourceCardPromoteRequest,
+): SourceCard['promotion']['privateScopeConfirmation'] {
+  if (card.sensitivity !== 'private' && card.sensitivity !== 'restricted') return undefined
+
+  const confirmation = request.privateScopeConfirmation
+  if (!confirmation) {
+    throw new Error('privateScopeConfirmation is required for private or restricted Source Cards')
+  }
+  if (confirmation.metadataOnly !== true) {
+    throw new Error('Private Source Card promotion requires metadataOnly confirmation')
+  }
+  if (confirmation.bodyAccessApproved !== false) {
+    throw new Error('Private Source Card promotion cannot approve body access')
+  }
+  if (confirmation.attachmentAccessApproved !== false) {
+    throw new Error('Private Source Card promotion cannot approve attachment access')
+  }
+  return {
+    metadataOnly: true,
+    bodyAccessApproved: false,
+    attachmentAccessApproved: false,
   }
 }
 

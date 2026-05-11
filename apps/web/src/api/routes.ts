@@ -1,4 +1,9 @@
-import { buildSessionInfoReply, loadConfig, parseSessionArgs } from '@zero-os/core'
+import {
+  type SourceCardPromoteRequest,
+  buildSessionInfoReply,
+  loadConfig,
+  parseSessionArgs,
+} from '@zero-os/core'
 import {
   ALL_MEMORY_TYPES,
   type MemoryStatus,
@@ -898,7 +903,7 @@ export function createRoutes(zero: ZeroOS) {
       return c.json({ ok: true })
     })
 
-    // Source Cards (read-only)
+    // Source Cards
     .get('/api/source-cards', (c) => {
       return c.json({ sourceCards: zero.sourceCardService.list() })
     })
@@ -921,6 +926,38 @@ export function createRoutes(zero: ZeroOS) {
       const sourceCard = zero.sourceCardService.get(id)
       if (!sourceCard) return c.json({ error: 'Source Card not found' }, 404)
       return c.json({ sourceCard })
+    })
+
+    .post('/api/source-cards/:id/promote', async (c) => {
+      const id = c.req.param('id')
+      const existing = zero.sourceCardService.get(id)
+      if (!existing) return c.json({ error: 'Source Card not found' }, 404)
+
+      const body = await c.req.json<SourceCardPromoteRequest>().catch(() => null)
+      if (!body) return c.json({ error: 'Promotion approval payload is required' }, 400)
+
+      try {
+        const sourceCard = zero.sourceCardService.promote(id, body)
+        return c.json({ sourceCard })
+      } catch (error) {
+        return c.json({ error: toErrorMessage(error) }, 400)
+      }
+    })
+
+    .post('/api/source-cards/:id/retire', async (c) => {
+      const id = c.req.param('id')
+      const existing = zero.sourceCardService.get(id)
+      if (!existing) return c.json({ error: 'Source Card not found' }, 404)
+
+      const body = await c.req.json<{ reason?: unknown }>().catch(() => null)
+      const reason = typeof body?.reason === 'string' ? body.reason : ''
+
+      try {
+        const sourceCard = zero.sourceCardService.retire(id, reason)
+        return c.json({ sourceCard })
+      } catch (error) {
+        return c.json({ error: toErrorMessage(error) }, 400)
+      }
     })
 
     // Memo

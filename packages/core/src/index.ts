@@ -86,6 +86,8 @@ export type {
   SourceCardHealthRunInput,
   SourceCardHealthRunSummary,
   SourceCardManagerOptions,
+  SourceCardPrivateScopeConfirmation,
+  SourceCardPromoteRequest,
   SourceCardPublicView,
   SourceCredentialBindingView,
 } from './source-card'

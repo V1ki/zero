@@ -350,3 +350,91 @@
 ### 未解决风险或后续建议
 
 - 当前 hardening 仍保留 capability input/output schema。若后续 schema 本身可能带私人示例值，应引入 schema-level sanitizer 或 schema allowlist。
+
+## 2026-05-11 Promote/Retire Approval API and UI
+
+### 本次目标
+
+实现 Source Card promotion/retire 的最小审批闭环：Web API 和详情页 UI 可以明确审批 promote/retire，并记录结构化 promotion payload。范围内不执行真实 health probe、不运行 `himalaya`、不读取私人邮件、不 fetch 股票真实数据、不创建 Watch、不修改 scheduler。
+
+### 已读取的关键上下文
+
+- `/Users/v1ki/.codex/skills/frontend-skill/SKILL.md`
+- `docs/source-card-ui-ux.md`
+- `docs/source-card-implementation-log.md`
+- `packages/core/src/source-card/service.ts`
+- `packages/core/src/source-card/store.ts`
+- `apps/web/src/api/routes.ts`
+- `apps/web/src/app/routes/source-cards.tsx`
+- 关联类型、tool、API/UI 测试文件
+
+### 实际修改的文件
+
+- `packages/shared/src/types/source-card.ts`
+  - `SourceCardPromotion` 增加 `reviewedCapabilityIds` 和 `privateScopeConfirmation`。
+- `packages/core/src/source-card/service.ts`
+  - `promote` 改为接收结构化 `SourceCardPromoteRequest`。
+  - promote 要求 reason、reviewedCapabilityIds，并要求所有 watchable capability 已被 review。
+  - private/restricted source promote 必须提供 metadata-only confirmation。
+  - private promote 拒绝 body access 或 attachment access approval。
+  - `retire` 增加非空 reason 校验。
+- `packages/core/src/source-card/index.ts`
+- `packages/core/src/index.ts`
+  - 导出 promote payload 相关类型。
+- `packages/core/src/tool/source-card.ts`
+  - `source_card` 管理工具同步改为结构化 promote 输入，不保留只传 reason 的 promote 调用路径。
+- `apps/web/src/api/routes.ts`
+  - 新增 `POST /api/source-cards/:id/promote`。
+  - 新增 `POST /api/source-cards/:id/retire`。
+  - mutation 响应继续只返回 `SourceCardService` public view。
+- `apps/web/src/app/routes/source-cards.tsx`
+  - Source Card 详情页右侧增加审批操作区。
+  - 新增 Promote drawer，包含 schema/state/capability/credential/privacy/prohibited/private metadata-only checklist。
+  - 新增 Retire dialog，要求 reason，并说明 retire 影响。
+  - promote/retire 成功后刷新详情数据和 observation summary，并通知列表页重拉 Source Cards 状态。
+- `packages/core/src/source-card/__tests__/service-runner.test.ts`
+- `packages/core/src/tool/__tests__/source-card.test.ts`
+- `apps/web/src/api/__tests__/routes.test.ts`
+- `apps/web/src/app/routes/source-cards.test.tsx`
+  - 增加结构化 promote、private scope failure、public view redaction、UI drawer/dialog 覆盖。
+- `docs/source-card-implementation-log.md`
+  - 记录本次实现过程。
+
+### 关键设计决策
+
+- Source Card promotion 是低频审批状态变更，记录在 `promotion` 字段；高频数据仍进入 Observation，不通过反复改 Source Card 表达。
+- API 只调用 SourceCardService，不引入真实 adapter 执行、health probe、Watch 创建或 scheduler 行为。
+- private/restricted source 的审批 payload 只能确认 metadata-only；body 和 attachment 后台访问在 service 层硬拒绝。
+- Web mutation 返回 public view，继续由 service 层统一去除 credential refs、command templates、endpoint templates、sample queries、health message/details。
+- UI 抽屉展示 credential binding summary，而不是 credential ref；用户审批的是 reference-presence 和 scope 摘要，不接触密钥值。
+
+### 安全边界
+
+- 未执行 `himalaya`。
+- 未读取私人邮件正文或附件。
+- 未 fetch 股票真实数据。
+- 未实现自动交易、自动下单、自动发送邮件或远端写操作。
+- 未创建 Watch。
+- 未修改 scheduler。
+- API/UI 不返回或渲染 `credentials`、`binding.ref`、`credentialRef`、`credentialLeaseId`、secret、token、cookie、password、authorization。
+- promote/retire 响应不包含 `commandTemplate`、`endpointTemplates`、`sampleQueries`、health `message/details`。
+
+### 验证命令和结果
+
+- `bun test packages/core/src/source-card/__tests__/service-runner.test.ts packages/core/src/tool/__tests__/source-card.test.ts`
+  - 结果：9 pass，0 fail。
+  - 覆盖：structured promote、private metadata-only enforcement、source_card tool 的结构化 promote、public view credential redaction。
+- `bun test apps/web/src/app/routes/source-cards.test.tsx`
+  - 结果：6 pass，0 fail。
+  - 覆盖：Promote drawer private metadata-only 确认项、UI 不渲染 credential ref、Retire dialog reason required。
+- `bun test apps/web/src/api/__tests__/routes.test.ts`
+  - 结果：39 pass，0 fail。
+  - 覆盖：public verified source promote 成功、private source 缺少 confirmation 失败、private body/attachment approval 失败、retire reason required、mutation public view redaction。
+- `bun run build:web`
+  - 结果：通过；Vite 仅提示 bundle chunk size warning。
+- `bun run check`
+  - 结果：通过。
+
+### 未解决风险或后续建议
+
+- 当前 promote 只记录审批 payload 并激活 Source Card，不执行 health probe。后续如接真实 probe，必须保持 trace 脱敏和 private metadata-only 默认边界。

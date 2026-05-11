@@ -104,7 +104,26 @@ describe('SourceCardService', () => {
     expect(service.validateStored('qq-mail-himalaya')).toEqual({ ok: true, errors: [] })
     manager.transitionState('qq-mail-himalaya', 'verified', 'metadata validated')
 
-    expect(service.promote('qq-mail-himalaya', 'approved metadata watch').state).toBe('active')
+    expect(
+      service.promote('qq-mail-himalaya', {
+        reason: 'approved metadata watch',
+        reviewedCapabilityIds: ['list_envelopes'],
+        privateScopeConfirmation: {
+          metadataOnly: true,
+          bodyAccessApproved: false,
+          attachmentAccessApproved: false,
+        },
+      }).state,
+    ).toBe('active')
+    expect(manager.get('qq-mail-himalaya')?.promotion).toMatchObject({
+      reviewedCapabilityIds: ['list_envelopes'],
+      privateScopeConfirmation: {
+        metadataOnly: true,
+        bodyAccessApproved: false,
+        attachmentAccessApproved: false,
+      },
+      decisionReason: 'approved metadata watch',
+    })
     expect(
       service.recordHealthResult('qq-mail-himalaya', {
         checkId: 'himalaya_account_health',
@@ -118,6 +137,43 @@ describe('SourceCardService', () => {
     ).toBe('healthy')
     expect(service.listObservations('qq-mail-himalaya')).toHaveLength(1)
     expect(service.retire('qq-mail-himalaya', 'user disabled source').state).toBe('retired')
+  })
+
+  test('promote enforces structured review payload for private sources', () => {
+    const { manager, service } = createHarness()
+    manager.create(createQqMailHimalayaSourceCard())
+    manager.transitionState('qq-mail-himalaya', 'verified', 'metadata validated')
+
+    expect(() =>
+      service.promote('qq-mail-himalaya', {
+        reason: 'missing scope confirmation',
+        reviewedCapabilityIds: ['list_envelopes'],
+      }),
+    ).toThrow('privateScopeConfirmation')
+
+    expect(() =>
+      service.promote('qq-mail-himalaya', {
+        reason: 'body access should fail',
+        reviewedCapabilityIds: ['list_envelopes'],
+        privateScopeConfirmation: {
+          metadataOnly: true,
+          bodyAccessApproved: true,
+          attachmentAccessApproved: false,
+        },
+      }),
+    ).toThrow('body access')
+
+    expect(() =>
+      service.promote('qq-mail-himalaya', {
+        reason: 'attachment access should fail',
+        reviewedCapabilityIds: ['list_envelopes'],
+        privateScopeConfirmation: {
+          metadataOnly: true,
+          bodyAccessApproved: false,
+          attachmentAccessApproved: true,
+        },
+      }),
+    ).toThrow('attachment access')
   })
 })
 

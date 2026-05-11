@@ -13,6 +13,8 @@ export {
   toPublicSourceCard,
 } from './service'
 export type {
+  SourceCardPrivateScopeConfirmation,
+  SourceCardPromoteRequest,
   SourceCardPublicView,
   SourceCredentialBindingView,
 } from './service'

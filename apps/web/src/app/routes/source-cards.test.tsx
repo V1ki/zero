@@ -6,6 +6,8 @@ import {
 } from '@zero-os/core'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
+  PromoteSourceDrawer,
+  RetireSourceDialog,
   SourceCardDetailView,
   SourceCardTableView,
   type SourceObservationSummaryResponse,
@@ -86,6 +88,32 @@ describe('Source Cards UI', () => {
     expect(html).toContain('No order placement')
     expect(html).toContain('place_order')
     expect(html).toContain('use_broker_account')
+    expect(html).not.toContain('external:himalaya/account/qq')
+  })
+
+  test('renders promote drawer private metadata-only confirmation without credential refs', () => {
+    const verifiedQq = { ...qqMail, state: 'verified' as const }
+    const html = renderToStaticMarkup(
+      <PromoteSourceDrawer card={verifiedQq} open={true} onClose={() => {}} onSubmit={() => {}} />,
+    )
+
+    expect(html).toContain('Promote Source Card')
+    expect(html).toContain('private metadata-only scope confirmed')
+    expect(html).toContain('Confirm private metadata-only scope')
+    expect(html).toContain('Background body access and attachment access remain rejected')
+    expect(html).not.toContain('external:himalaya/account/qq')
+    expect(html).not.toContain('credentialRef')
+    expect(html).not.toContain('binding.ref')
+  })
+
+  test('retire dialog requires a reason before submission', () => {
+    const html = renderToStaticMarkup(
+      <RetireSourceDialog card={stock} open={true} onClose={() => {}} onSubmit={() => {}} />,
+    )
+
+    expect(html).toContain('Retire Source Card')
+    expect(html).toContain('Retire reason')
+    expect(html).toContain('disabled=""')
     expect(html).not.toContain('external:himalaya/account/qq')
   })
 })

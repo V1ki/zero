@@ -386,6 +386,101 @@ describe('API Routes (Real)', () => {
     expect(res.status).toBe(404)
   })
 
+  test('POST /api/source-cards/:id/promote promotes a verified public source with public view only', async () => {
+    zero.sourceCardManager.update('a-stock-market-data', (card) => ({ ...card, state: 'verified' }))
+
+    const res = await app.request('/api/source-cards/a-stock-market-data/promote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        reason: 'reviewed public read-only market data source',
+        reviewedCapabilityIds: ['fetch_quotes', 'fetch_rankings'],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const data = (await res.json()) as { sourceCard: Record<string, unknown> }
+    expect(data.sourceCard.state).toBe('active')
+    expect(data.sourceCard).not.toHaveProperty('credentials')
+    expectNoSourceCredentialMaterial(data)
+    expectNoSourcePublicViewLeak(data)
+  })
+
+  test('POST /api/source-cards/:id/promote rejects private source without metadata-only confirmation', async () => {
+    zero.sourceCardManager.update('qq-mail-himalaya', (card) => ({ ...card, state: 'verified' }))
+
+    const res = await app.request('/api/source-cards/qq-mail-himalaya/promote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        reason: 'reviewed private metadata source',
+        reviewedCapabilityIds: ['list_envelopes'],
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    const data = await res.json()
+    expect(JSON.stringify(data)).toContain('privateScopeConfirmation')
+    expectNoSourceCredentialMaterial(data)
+    expectNoSourcePublicViewLeak(data)
+  })
+
+  test('POST /api/source-cards/:id/promote rejects private body or attachment approval', async () => {
+    const withBody = await app.request('/api/source-cards/qq-mail-himalaya/promote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        reason: 'attempt body approval',
+        reviewedCapabilityIds: ['list_envelopes'],
+        privateScopeConfirmation: {
+          metadataOnly: true,
+          bodyAccessApproved: true,
+          attachmentAccessApproved: false,
+        },
+      }),
+    })
+    const withAttachment = await app.request('/api/source-cards/qq-mail-himalaya/promote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        reason: 'attempt attachment approval',
+        reviewedCapabilityIds: ['list_envelopes'],
+        privateScopeConfirmation: {
+          metadataOnly: true,
+          bodyAccessApproved: false,
+          attachmentAccessApproved: true,
+        },
+      }),
+    })
+
+    expect(withBody.status).toBe(400)
+    expect(withAttachment.status).toBe(400)
+    expect(JSON.stringify(await withBody.json())).toContain('body access')
+    expect(JSON.stringify(await withAttachment.json())).toContain('attachment access')
+  })
+
+  test('POST /api/source-cards/:id/retire requires reason and returns public view only', async () => {
+    const missingReason = await app.request('/api/source-cards/a-stock-market-data/retire', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: '' }),
+    })
+    expect(missingReason.status).toBe(400)
+
+    const res = await app.request('/api/source-cards/a-stock-market-data/retire', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'deprecating this public source card' }),
+    })
+
+    expect(res.status).toBe(200)
+    const data = (await res.json()) as { sourceCard: Record<string, unknown> }
+    expect(data.sourceCard.state).toBe('retired')
+    expect(data.sourceCard).not.toHaveProperty('credentials')
+    expectNoSourceCredentialMaterial(data)
+    expectNoSourcePublicViewLeak(data)
+  })
+
   test('PUT /api/memo updates memo', async () => {
     const res = await app.request('/api/memo', {
       method: 'PUT',

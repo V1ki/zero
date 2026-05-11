@@ -68,6 +68,12 @@ describe('SourceCardTool', () => {
       action: 'promote',
       sourceCardId: 'qq-mail-himalaya',
       reason: 'approved metadata-only use',
+      reviewedCapabilityIds: ['list_envelopes'],
+      privateScopeConfirmation: {
+        metadataOnly: true,
+        bodyAccessApproved: false,
+        attachmentAccessApproved: false,
+      },
     })
     const retire = await tool.run(ctx, {
       action: 'retire',

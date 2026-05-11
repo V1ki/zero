@@ -1,5 +1,5 @@
 import type { SourceCard, ToolContext, ToolResult } from '@zero-os/shared'
-import type { SourceCardService } from '../source-card'
+import type { SourceCardPromoteRequest, SourceCardService } from '../source-card'
 import { BaseTool } from './base'
 
 type SourceCardToolAction = 'list' | 'get' | 'validate' | 'promote' | 'retire'
@@ -8,6 +8,8 @@ interface SourceCardToolInput {
   action: SourceCardToolAction
   sourceCardId?: string
   reason?: string
+  reviewedCapabilityIds?: string[]
+  privateScopeConfirmation?: SourceCardPromoteRequest['privateScopeConfirmation']
   card?: SourceCard
 }
 
@@ -32,6 +34,22 @@ export class SourceCardTool extends BaseTool {
       reason: {
         type: 'string',
         description: 'Required reason for promote/retire.',
+      },
+      reviewedCapabilityIds: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Required for promote. Capability ids the reviewer has checked, including every watchable capability.',
+      },
+      privateScopeConfirmation: {
+        type: 'object',
+        description:
+          'Required for private/restricted promote. Must confirm metadata-only access and cannot approve body or attachment access.',
+        properties: {
+          metadataOnly: { type: 'boolean' },
+          bodyAccessApproved: { type: 'boolean', const: false },
+          attachmentAccessApproved: { type: 'boolean', const: false },
+        },
       },
       card: {
         type: 'object',
@@ -65,7 +83,7 @@ export class SourceCardTool extends BaseTool {
         )
       case 'promote':
         return this.jsonResult(
-          this.sourceCards.promote(requireSourceCardId(parsed), requireReason(parsed)),
+          this.sourceCards.promote(requireSourceCardId(parsed), requirePromoteRequest(parsed)),
           'Promoted Source Card',
         )
       case 'retire':
@@ -102,6 +120,15 @@ function parseSourceCardToolInput(input: unknown): SourceCardToolInput {
     action: record.action as SourceCardToolAction,
     sourceCardId: typeof record.sourceCardId === 'string' ? record.sourceCardId : undefined,
     reason: typeof record.reason === 'string' ? record.reason : undefined,
+    reviewedCapabilityIds: Array.isArray(record.reviewedCapabilityIds)
+      ? record.reviewedCapabilityIds.filter((id): id is string => typeof id === 'string')
+      : undefined,
+    privateScopeConfirmation:
+      record.privateScopeConfirmation &&
+      typeof record.privateScopeConfirmation === 'object' &&
+      !Array.isArray(record.privateScopeConfirmation)
+        ? (record.privateScopeConfirmation as SourceCardToolInput['privateScopeConfirmation'])
+        : undefined,
     card: record.card as SourceCard | undefined,
   }
 }
@@ -114,4 +141,12 @@ function requireSourceCardId(input: SourceCardToolInput): string {
 function requireReason(input: SourceCardToolInput): string {
   if (!input.reason?.trim()) throw new Error('reason is required')
   return input.reason
+}
+
+function requirePromoteRequest(input: SourceCardToolInput): SourceCardPromoteRequest {
+  return {
+    reason: requireReason(input),
+    reviewedCapabilityIds: input.reviewedCapabilityIds ?? [],
+    privateScopeConfirmation: input.privateScopeConfirmation,
+  }
 }

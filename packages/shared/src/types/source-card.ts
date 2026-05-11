@@ -191,6 +191,12 @@ export interface SourceCardPromotion {
   requiredEvidence: string[]
   approvedBy?: string
   approvedAt?: string
+  reviewedCapabilityIds?: string[]
+  privateScopeConfirmation?: {
+    metadataOnly: boolean
+    bodyAccessApproved: false
+    attachmentAccessApproved: false
+  }
   lastDecision?: 'accepted' | 'rejected'
   lastDecisionAt?: string
   decisionReason?: string

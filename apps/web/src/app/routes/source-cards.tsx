@@ -1,4 +1,4 @@
-import { ArrowLeft, MagnifyingGlass } from '@phosphor-icons/react'
+import { ArrowLeft, CheckCircle, MagnifyingGlass, X } from '@phosphor-icons/react'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import type {
   SourceCard,
@@ -6,9 +6,9 @@ import type {
   SourceCardCredential,
   SourceCardState,
 } from '@zero-os/shared'
-import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { Skeleton } from '../components/shared/Skeleton'
-import { apiFetch } from '../lib/api'
+import { apiFetch, apiPost } from '../lib/api'
 import { formatTimeAgo } from '../lib/format'
 
 export type SourceCardPublicView = Omit<SourceCard, 'credentials' | 'adapter' | 'health'> & {
@@ -68,6 +68,16 @@ export interface SourceCredentialBindingView {
   hasReference: boolean
 }
 
+export interface SourceCardPromotePayload {
+  reason: string
+  reviewedCapabilityIds: string[]
+  privateScopeConfirmation?: {
+    metadataOnly: boolean
+    bodyAccessApproved: false
+    attachmentAccessApproved: false
+  }
+}
+
 interface SourceCardListResponse {
   sourceCards: SourceCardPublicView[]
 }
@@ -125,6 +135,7 @@ const LIFECYCLE: SourceCardState[] = [
   'broken',
   'retired',
 ]
+const SOURCE_CARDS_CHANGED_EVENT = 'zero:source-cards:changed'
 
 const STATE_STYLES: Record<SourceCardState, { dot: string; text: string; bg: string }> = {
   discovered: { dot: 'bg-slate-500', text: 'text-slate-400', bg: 'bg-slate-400/10' },
@@ -394,16 +405,27 @@ export function SourceCardsPage() {
   const [adapterFilter, setAdapterFilter] = useState<AdapterFilter>('all')
   const [sensitivityFilter, setSensitivityFilter] = useState<SensitivityFilter>('all')
 
-  useEffect(() => {
+  const loadSourceCards = useCallback(async () => {
     setLoading(true)
-    apiFetch<SourceCardListResponse>('/api/source-cards')
-      .then((res) => {
-        setSourceCards(res.sourceCards)
-        setError(null)
-      })
-      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load Source Cards'))
-      .finally(() => setLoading(false))
+    try {
+      const res = await apiFetch<SourceCardListResponse>('/api/source-cards')
+      setSourceCards(res.sourceCards)
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load Source Cards')
+    } finally {
+      setLoading(false)
+    }
   }, [])
+
+  useEffect(() => {
+    void loadSourceCards()
+    const handleSourceCardsChanged = () => {
+      void loadSourceCards()
+    }
+    window.addEventListener(SOURCE_CARDS_CHANGED_EVENT, handleSourceCardsChanged)
+    return () => window.removeEventListener(SOURCE_CARDS_CHANGED_EVENT, handleSourceCardsChanged)
+  }, [loadSourceCards])
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -543,30 +565,78 @@ export function SourceCardDetailPage() {
   const [card, setCard] = useState<SourceCardPublicView | null>(null)
   const [summary, setSummary] = useState<SourceObservationSummaryResponse | null>(null)
   const [loading, setLoading] = useState(true)
+  const [mutationBusy, setMutationBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    if (!id) {
-      setError('Source Card id is required')
-      setLoading(false)
-      return
-    }
+  const loadSourceCard = useCallback(
+    async (showLoading = true) => {
+      if (!id) {
+        setError('Source Card id is required')
+        setLoading(false)
+        return
+      }
 
-    setLoading(true)
-    Promise.all([
-      apiFetch<{ sourceCard: SourceCardPublicView }>(`/api/source-cards/${encodeURIComponent(id)}`),
-      apiFetch<SourceObservationSummaryResponse>(
-        `/api/source-cards/${encodeURIComponent(id)}/observations?summary=1`,
-      ),
-    ])
-      .then(([cardRes, summaryRes]) => {
+      if (showLoading) setLoading(true)
+      try {
+        const [cardRes, summaryRes] = await Promise.all([
+          apiFetch<{ sourceCard: SourceCardPublicView }>(
+            `/api/source-cards/${encodeURIComponent(id)}`,
+          ),
+          apiFetch<SourceObservationSummaryResponse>(
+            `/api/source-cards/${encodeURIComponent(id)}/observations?summary=1`,
+          ),
+        ])
         setCard(cardRes.sourceCard)
         setSummary(summaryRes)
         setError(null)
-      })
-      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load Source Card'))
-      .finally(() => setLoading(false))
-  }, [id])
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load Source Card')
+      } finally {
+        if (showLoading) setLoading(false)
+      }
+    },
+    [id],
+  )
+
+  useEffect(() => {
+    void loadSourceCard()
+  }, [loadSourceCard])
+
+  async function promoteSourceCard(payload: SourceCardPromotePayload) {
+    if (!id) {
+      return
+    }
+    setMutationBusy(true)
+    try {
+      const res = await apiPost<{ sourceCard: SourceCardPublicView }>(
+        `/api/source-cards/${encodeURIComponent(id)}/promote`,
+        payload,
+      )
+      setCard(res.sourceCard)
+      await loadSourceCard(false)
+      emitSourceCardsChanged()
+    } finally {
+      setMutationBusy(false)
+    }
+  }
+
+  async function retireSourceCard(reason: string) {
+    if (!id) {
+      return
+    }
+    setMutationBusy(true)
+    try {
+      const res = await apiPost<{ sourceCard: SourceCardPublicView }>(
+        `/api/source-cards/${encodeURIComponent(id)}/retire`,
+        { reason },
+      )
+      setCard(res.sourceCard)
+      await loadSourceCard(false)
+      emitSourceCardsChanged()
+    } finally {
+      setMutationBusy(false)
+    }
+  }
 
   if (loading) {
     return (
@@ -597,21 +667,35 @@ export function SourceCardDetailPage() {
       card={card}
       observationSummary={summary}
       onBack={() => navigate({ to: '/source-cards' })}
+      onPromote={promoteSourceCard}
+      onRetire={retireSourceCard}
+      mutationBusy={mutationBusy}
     />
   )
+}
+
+function emitSourceCardsChanged() {
+  window.dispatchEvent(new CustomEvent(SOURCE_CARDS_CHANGED_EVENT))
 }
 
 export function SourceCardDetailView({
   card,
   observationSummary,
   onBack,
+  onPromote,
+  onRetire,
+  mutationBusy = false,
 }: {
   card: SourceCardPublicView
   observationSummary: SourceObservationSummaryResponse | null
   onBack?: () => void
+  onPromote?: (payload: SourceCardPromotePayload) => Promise<void> | void
+  onRetire?: (reason: string) => Promise<void> | void
+  mutationBusy?: boolean
 }) {
   const revision = activeRevision(card)
   const watch = getWatchEligibility(card)
+  const [reviewPanel, setReviewPanel] = useState<'promote' | 'retire' | null>(null)
 
   return (
     <div className="mx-auto max-w-[1400px] p-6">
@@ -813,14 +897,33 @@ export function SourceCardDetailView({
 
         <aside className="space-y-4">
           <div className="card p-4">
-            <h2 className="text-[14px] font-semibold text-[var(--color-text-primary)]">
-              Read-only Review
-            </h2>
+            <h2 className="text-[14px] font-semibold text-[var(--color-text-primary)]">Approval</h2>
             <p className="mt-2 text-[12px] leading-5 text-[var(--color-text-muted)]">
               {watch.detail}
             </p>
-            <div className="mt-3">
+            <div className="mt-3 flex flex-wrap items-center gap-2">
               <WatchEligibilityBadge card={card} />
+              <SourceStateBadge state={card.state} />
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setReviewPanel('promote')}
+                disabled={!onPromote || !canOpenPromote(card)}
+                className="inline-flex items-center justify-center gap-2 rounded-md bg-[var(--color-accent)] px-3 py-2 text-[12px] font-medium text-black disabled:cursor-not-allowed disabled:bg-white/[0.06] disabled:text-[var(--color-text-disabled)]"
+              >
+                <CheckCircle size={14} />
+                Promote
+              </button>
+              <button
+                type="button"
+                onClick={() => setReviewPanel('retire')}
+                disabled={!onRetire || card.state === 'retired'}
+                className="inline-flex items-center justify-center gap-2 rounded-md border border-[var(--color-border)] px-3 py-2 text-[12px] font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:text-[var(--color-text-disabled)]"
+              >
+                <X size={14} />
+                Retire
+              </button>
             </div>
           </div>
 
@@ -859,6 +962,360 @@ export function SourceCardDetailView({
             <SafetyBoundary card={card} />
           </div>
         </aside>
+      </div>
+
+      <PromoteSourceDrawer
+        card={card}
+        open={reviewPanel === 'promote'}
+        busy={mutationBusy}
+        onClose={() => setReviewPanel(null)}
+        onSubmit={async (payload) => {
+          if (!onPromote) return
+          await onPromote(payload)
+          setReviewPanel(null)
+        }}
+      />
+      <RetireSourceDialog
+        card={card}
+        open={reviewPanel === 'retire'}
+        busy={mutationBusy}
+        onClose={() => setReviewPanel(null)}
+        onSubmit={async (reason) => {
+          if (!onRetire) return
+          await onRetire(reason)
+          setReviewPanel(null)
+        }}
+      />
+    </div>
+  )
+}
+
+function canOpenPromote(card: SourceCardPublicView): boolean {
+  return card.state === 'verified' || card.state === 'degraded'
+}
+
+export function PromoteSourceDrawer({
+  card,
+  open,
+  busy = false,
+  onClose,
+  onSubmit,
+}: {
+  card: SourceCardPublicView
+  open: boolean
+  busy?: boolean
+  onClose: () => void
+  onSubmit: (payload: SourceCardPromotePayload) => Promise<void> | void
+}) {
+  const [reason, setReason] = useState('')
+  const [reviewedCapabilityIds, setReviewedCapabilityIds] = useState<string[]>([])
+  const [credentialReviewed, setCredentialReviewed] = useState(false)
+  const [privacyReviewed, setPrivacyReviewed] = useState(false)
+  const [prohibitedReviewed, setProhibitedReviewed] = useState(false)
+  const [privateMetadataConfirmed, setPrivateMetadataConfirmed] = useState(false)
+
+  if (!open) return null
+
+  const watchableCapabilityIds = card.capabilities
+    .filter((capability) => capability.watchable)
+    .map((capability) => capability.id)
+  const schemaValid = true
+  const stateAllowed = canOpenPromote(card)
+  const watchableCapabilitiesReviewed =
+    watchableCapabilityIds.length === 0 ||
+    watchableCapabilityIds.every((id) => reviewedCapabilityIds.includes(id))
+  const privateSource = isPrivateSource(card)
+  const privateScopeConfirmed = !privateSource || privateMetadataConfirmed
+  const canSubmit =
+    reason.trim().length > 0 &&
+    schemaValid &&
+    stateAllowed &&
+    watchableCapabilitiesReviewed &&
+    credentialReviewed &&
+    privacyReviewed &&
+    prohibitedReviewed &&
+    privateScopeConfirmed
+
+  function toggleCapability(id: string) {
+    setReviewedCapabilityIds((current) =>
+      current.includes(id) ? current.filter((value) => value !== id) : [...current, id],
+    )
+  }
+
+  async function submit() {
+    if (!canSubmit) return
+    const privateScopeConfirmation: SourceCardPromotePayload['privateScopeConfirmation'] =
+      privateSource
+        ? {
+            metadataOnly: true,
+            bodyAccessApproved: false,
+            attachmentAccessApproved: false,
+          }
+        : undefined
+    await onSubmit({
+      reason: reason.trim(),
+      reviewedCapabilityIds,
+      privateScopeConfirmation,
+    })
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/45">
+      <div className="flex h-full w-full max-w-[560px] flex-col border-l border-[var(--color-border)] bg-[var(--color-bg-primary)] shadow-2xl">
+        <div className="flex items-start justify-between gap-3 border-b border-[var(--color-border)] px-5 py-4">
+          <div>
+            <h2 className="text-[16px] font-semibold text-[var(--color-text-primary)]">
+              Promote Source Card
+            </h2>
+            <p className="mt-1 font-mono text-[11px] text-[var(--color-text-disabled)]">
+              {card.id}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-1.5 text-[var(--color-text-muted)] hover:bg-white/[0.06] hover:text-[var(--color-text-primary)]"
+            aria-label="Close promotion review"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
+          <section>
+            <h3 className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-text-disabled)]">
+              Approval Checklist
+            </h3>
+            <div className="mt-3 space-y-2">
+              <ReviewCheckRow label="schema valid" checked={schemaValid} />
+              <ReviewCheckRow label="state is verified/degraded" checked={stateAllowed} />
+              <ReviewCheckRow
+                label="watchable capabilities reviewed"
+                checked={watchableCapabilitiesReviewed}
+              />
+              <ReviewCheckRow
+                label="credential binding summary reviewed"
+                checked={credentialReviewed}
+              />
+              <ReviewCheckRow label="privacy policy reviewed" checked={privacyReviewed} />
+              <ReviewCheckRow label="prohibited actions reviewed" checked={prohibitedReviewed} />
+              <ReviewCheckRow
+                label="private metadata-only scope confirmed"
+                checked={privateScopeConfirmed}
+              />
+            </div>
+          </section>
+
+          <section className="space-y-3">
+            <h3 className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-text-disabled)]">
+              Capabilities
+            </h3>
+            {card.capabilities.map((capability) => (
+              <label
+                key={capability.id}
+                className="flex cursor-pointer items-start gap-3 rounded-md border border-[var(--color-border)] bg-white/[0.02] p-3"
+              >
+                <input
+                  type="checkbox"
+                  checked={reviewedCapabilityIds.includes(capability.id)}
+                  onChange={() => toggleCapability(capability.id)}
+                  className="mt-0.5"
+                />
+                <span className="min-w-0">
+                  <span className="block font-mono text-[12px] text-[var(--color-text-primary)]">
+                    {capability.id}
+                  </span>
+                  <span className="mt-1 block text-[11px] text-[var(--color-text-muted)]">
+                    {capability.operation} · {capability.watchable ? 'watchable' : 'not watchable'}{' '}
+                    · {capability.defaultPrivacyScope}
+                  </span>
+                </span>
+              </label>
+            ))}
+          </section>
+
+          <section className="space-y-2">
+            <label className="flex items-start gap-3 text-[12px] text-[var(--color-text-secondary)]">
+              <input
+                type="checkbox"
+                checked={credentialReviewed}
+                onChange={(event) => setCredentialReviewed(event.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                Reviewed credential binding summary: {card.credentialBindings.length} binding
+                {card.credentialBindings.length === 1 ? '' : 's'}, reference presence only.
+              </span>
+            </label>
+            <label className="flex items-start gap-3 text-[12px] text-[var(--color-text-secondary)]">
+              <input
+                type="checkbox"
+                checked={privacyReviewed}
+                onChange={(event) => setPrivacyReviewed(event.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                Reviewed privacy policy: body {card.privacy.bodyPolicy}, attachments{' '}
+                {card.privacy.attachmentPolicy}.
+              </span>
+            </label>
+            <label className="flex items-start gap-3 text-[12px] text-[var(--color-text-secondary)]">
+              <input
+                type="checkbox"
+                checked={prohibitedReviewed}
+                onChange={(event) => setProhibitedReviewed(event.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                Reviewed prohibited actions across all capabilities. Promotion does not execute
+                adapters, create watches, or perform remote writes.
+              </span>
+            </label>
+            {privateSource && (
+              <label className="flex items-start gap-3 rounded-md border border-amber-400/25 bg-amber-400/[0.05] p-3 text-[12px] text-[var(--color-text-secondary)]">
+                <input
+                  type="checkbox"
+                  checked={privateMetadataConfirmed}
+                  onChange={(event) => setPrivateMetadataConfirmed(event.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>
+                  Confirm private metadata-only scope. Background body access and attachment access
+                  remain rejected.
+                </span>
+              </label>
+            )}
+          </section>
+
+          <section>
+            <label className="text-[12px] font-medium text-[var(--color-text-secondary)]">
+              Promotion reason
+              <textarea
+                value={reason}
+                onChange={(event) => setReason(event.target.value)}
+                className="input-field mt-2 min-h-[92px] w-full resize-y"
+                placeholder="Describe the reviewed evidence and approval boundary."
+              />
+            </label>
+          </section>
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-[var(--color-border)] px-5 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md px-3 py-2 text-[12px] text-[var(--color-text-muted)] hover:bg-white/[0.06] hover:text-[var(--color-text-primary)]"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={!canSubmit || busy}
+            onClick={submit}
+            className="inline-flex items-center gap-2 rounded-md bg-[var(--color-accent)] px-3 py-2 text-[12px] font-medium text-black disabled:cursor-not-allowed disabled:bg-white/[0.06] disabled:text-[var(--color-text-disabled)]"
+          >
+            <CheckCircle size={14} />
+            {busy ? 'Promoting...' : 'Promote'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ReviewCheckRow({ label, checked }: { label: string; checked: boolean }) {
+  return (
+    <div className="flex items-center justify-between rounded-md bg-white/[0.025] px-3 py-2">
+      <span className="text-[12px] text-[var(--color-text-secondary)]">{label}</span>
+      <span
+        className={`inline-flex items-center gap-1 text-[11px] ${
+          checked ? 'text-emerald-400' : 'text-[var(--color-text-disabled)]'
+        }`}
+      >
+        <CheckCircle size={13} />
+        {checked ? 'checked' : 'pending'}
+      </span>
+    </div>
+  )
+}
+
+export function RetireSourceDialog({
+  card,
+  open,
+  busy = false,
+  onClose,
+  onSubmit,
+}: {
+  card: SourceCardPublicView
+  open: boolean
+  busy?: boolean
+  onClose: () => void
+  onSubmit: (reason: string) => Promise<void> | void
+}) {
+  const [reason, setReason] = useState('')
+
+  if (!open) return null
+
+  const canSubmit = reason.trim().length > 0
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+      <div className="w-full max-w-[520px] rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-primary)] shadow-2xl">
+        <div className="flex items-start justify-between gap-3 border-b border-[var(--color-border)] px-5 py-4">
+          <div>
+            <h2 className="text-[16px] font-semibold text-[var(--color-text-primary)]">
+              Retire Source Card
+            </h2>
+            <p className="mt-1 font-mono text-[11px] text-[var(--color-text-disabled)]">
+              {card.id}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-1.5 text-[var(--color-text-muted)] hover:bg-white/[0.06] hover:text-[var(--color-text-primary)]"
+            aria-label="Close retire dialog"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="space-y-4 px-5 py-4">
+          <p className="text-[12px] leading-5 text-[var(--color-text-secondary)]">
+            Retiring this Source Card prevents future Watch bindings from referencing it. Existing
+            observations remain audit records, and no credential values or adapter templates are
+            exposed by this action.
+          </p>
+          <label className="text-[12px] font-medium text-[var(--color-text-secondary)]">
+            Retire reason
+            <textarea
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              className="input-field mt-2 min-h-[92px] w-full resize-y"
+              placeholder="Explain why this source should no longer be used."
+            />
+          </label>
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-[var(--color-border)] px-5 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md px-3 py-2 text-[12px] text-[var(--color-text-muted)] hover:bg-white/[0.06] hover:text-[var(--color-text-primary)]"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={!canSubmit || busy}
+            onClick={() => {
+              if (canSubmit) void onSubmit(reason.trim())
+            }}
+            className="rounded-md bg-red-400 px-3 py-2 text-[12px] font-medium text-black disabled:cursor-not-allowed disabled:bg-white/[0.06] disabled:text-[var(--color-text-disabled)]"
+          >
+            {busy ? 'Retiring...' : 'Retire Source Card'}
+          </button>
+        </div>
       </div>
     </div>
   )
