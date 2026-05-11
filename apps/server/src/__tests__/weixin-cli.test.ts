@@ -1,8 +1,8 @@
+import { describe, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, test } from 'bun:test'
 import { readYaml } from '@zero-os/shared'
 import { renderQrForTerminal, upsertWeixinChannelConfig } from '../weixin-cli'
 
@@ -62,7 +62,7 @@ channels:
         tokenRef: 'weixin_personal-bot_token',
         baseUrlRef: 'weixin_personal-bot_base_url',
         dmPolicy: 'open',
-        groupPolicy: 'open',
+        groupPolicy: 'disabled',
       })
     } finally {
       rmSync(dir, { recursive: true, force: true })

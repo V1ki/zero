@@ -22,14 +22,22 @@ describe('WeixinAdapter', () => {
     expect(stream).toBeNull()
   })
 
-  test('showTyping returns a handle with no-op clear', async () => {
+  test('showTyping starts keepalive and clear sends typing cancel once', async () => {
+    const calls: string[] = []
     const fake = {
-      sendTypingIndicator: async () => {},
+      sendTypingIndicator: async (chatId: string) => {
+        calls.push(`start:${chatId}`)
+      },
+      clearTypingIndicator: async (chatId: string) => {
+        calls.push(`stop:${chatId}`)
+      },
     } as unknown as import('@zero-os/channel').WeixinChannel
     const adapter = new WeixinAdapter(fake)
     const handle = await adapter.showTyping('peer')
     expect(handle).not.toBeNull()
     await handle?.clear()
+    await handle?.clear()
+    expect(calls).toEqual(['start:peer', 'stop:peer'])
   })
 
   test('sendImage delegates to channel.sendAttachment', async () => {

@@ -159,6 +159,7 @@ channels:
     token_ref: weixin_personal_token
     base_url_ref: weixin_personal_base_url
     cdn_base_url_ref: weixin_personal_cdn_base_url
+    bot_agent: Zero/0.1 (config test)
     dm_policy: allowlist
     group_policy: disabled
     allow_from:
@@ -198,6 +199,7 @@ channels:
       tokenRef: 'weixin_personal_token',
       baseUrlRef: 'weixin_personal_base_url',
       cdnBaseUrlRef: 'weixin_personal_cdn_base_url',
+      botAgent: 'Zero/0.1 (config test)',
       dmPolicy: 'allowlist',
       groupPolicy: 'disabled',
       allowFrom: ['wxid_friend'],

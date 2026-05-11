@@ -12,9 +12,24 @@ import type {
   ChannelCapabilities,
   FileAttachment,
   ImageAttachment,
-  IncomingMessage as ZeroIncomingMessage,
   MessageHandler,
+  IncomingMessage as ZeroIncomingMessage,
 } from '../base'
+import {
+  type ApiOptions,
+  type FetchImpl,
+  buildCdnDownloadUrl,
+  downloadBytes,
+  getTypingConfig,
+  getUpdates,
+  getUploadUrl,
+  notifyStart,
+  notifyStop,
+  sendRawMessage,
+  sendTextMessage,
+  sendTyping,
+  uploadCiphertext,
+} from './api'
 import {
   BACKOFF_DELAY_MS,
   ILINK_BASE_URL,
@@ -36,23 +51,9 @@ import {
   SESSION_EXPIRED_ERRCODE,
   SESSION_EXPIRED_PAUSE_MS,
   TYPING_START,
+  TYPING_STOP,
   WEIXIN_CDN_BASE_URL,
 } from './constants'
-import {
-  buildCdnDownloadUrl,
-  downloadBytes,
-  getTypingConfig,
-  getUpdates,
-  getUploadUrl,
-  notifyStart,
-  notifyStop,
-  sendRawMessage,
-  sendTextMessage,
-  sendTyping,
-  uploadCiphertext,
-  type ApiOptions,
-  type FetchImpl,
-} from './api'
 import {
   aesDecrypt,
   aesEncrypt,
@@ -66,8 +67,8 @@ import { normalizeMarkdownForWeixin, splitForWeixinDelivery } from './markdown'
 import { ContextTokenStore, MessageDeduplicator, loadSyncBuf, saveSyncBuf } from './storage'
 import type {
   ChatType,
-  IncomingMediaItem,
   IncomingMessage as ILinkIncomingMessage,
+  IncomingMediaItem,
   Policy,
   WeixinChannelConfig,
 } from './types'
@@ -165,6 +166,7 @@ export class WeixinChannel implements Channel {
   private readonly token: string
   private readonly baseUrl: string
   private readonly cdnBaseUrl: string
+  private readonly botAgent: string | undefined
   private readonly homeDir: string
   private readonly dmPolicy: Policy
   private readonly groupPolicy: Policy
@@ -201,6 +203,7 @@ export class WeixinChannel implements Channel {
     this.token = config.token
     this.baseUrl = (config.baseUrl ?? ILINK_BASE_URL).replace(/\/$/, '')
     this.cdnBaseUrl = (config.cdnBaseUrl ?? WEIXIN_CDN_BASE_URL).replace(/\/$/, '')
+    this.botAgent = config.botAgent
     this.homeDir = config.homeDir
     this.dmPolicy = config.dmPolicy ?? 'open'
     this.groupPolicy = config.groupPolicy ?? 'disabled'
@@ -281,9 +284,7 @@ export class WeixinChannel implements Channel {
         this.apiOpts(),
       )
       if (response.ret !== undefined && response.ret !== 0) {
-        console.warn(
-          `[WeixinChannel] notifyStop returned ret=${response.ret} channel=${this.name}`,
-        )
+        console.warn(`[WeixinChannel] notifyStop returned ret=${response.ret} channel=${this.name}`)
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err)
@@ -311,15 +312,12 @@ export class WeixinChannel implements Channel {
       reactions: false,
       threadReply: false,
       maxMessageLength: MAX_MESSAGE_LENGTH,
-      markdownNotes:
-        'Weixin does not support H1 headings (converted to 【Title】). H2+ become **bold**. ' +
-        'Tables are flattened to `- key: value` lists. Sent messages cannot be edited. ' +
-        `Long content is split into multiple bubbles at ${MAX_MESSAGE_LENGTH} chars.`,
+      markdownNotes: `Weixin does not support H1 headings (converted to 【Title】). H2+ become **bold**. Tables are flattened to \`- key: value\` lists. Sent messages cannot be edited. Long content is split into multiple bubbles at ${MAX_MESSAGE_LENGTH} chars.`,
     }
   }
 
   private apiOpts(): ApiOptions {
-    return { fetchImpl: this.fetchImpl }
+    return { fetchImpl: this.fetchImpl, botAgent: this.botAgent }
   }
 
   private assertNotSessionPaused(): void {
@@ -667,6 +665,14 @@ export class WeixinChannel implements Channel {
   }
 
   async sendTypingIndicator(chatId: string): Promise<void> {
+    await this.sendTypingStatus(chatId, TYPING_START)
+  }
+
+  async clearTypingIndicator(chatId: string): Promise<void> {
+    await this.sendTypingStatus(chatId, TYPING_STOP)
+  }
+
+  private async sendTypingStatus(chatId: string, status: number): Promise<void> {
     if (this.isSessionPaused()) return
     const cached = this.typingCache.get(chatId)
     if (!cached) return
@@ -677,7 +683,7 @@ export class WeixinChannel implements Channel {
           token: this.token,
           toUserId: chatId,
           typingTicket: cached.ticket,
-          status: TYPING_START,
+          status,
         },
         this.apiOpts(),
       )

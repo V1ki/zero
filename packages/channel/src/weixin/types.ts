@@ -89,6 +89,7 @@ export interface WeixinChannelConfig {
   token: string
   baseUrl?: string
   cdnBaseUrl?: string
+  botAgent?: string
   homeDir: string
   dmPolicy?: Policy
   groupPolicy?: Policy

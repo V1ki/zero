@@ -10,14 +10,15 @@ import {
 
 describe('constants', () => {
   test('CHANNEL_VERSION matches expected iLink schema', () => {
-    expect(WEIXIN_PROTOCOL_VERSION).toBe('2.1.10')
-    expect(CHANNEL_VERSION).toBe('2.1.10')
+    expect(WEIXIN_PROTOCOL_VERSION).toBe('2.4.3')
+    expect(CHANNEL_VERSION).toBe('2.4.3')
   })
 
   test('ILINK_APP_CLIENT_VERSION uses official version packing', () => {
     expect(buildClientVersion('2.1.10')).toBe(0x02010a)
+    expect(buildClientVersion('2.4.3')).toBe(0x020403)
     expect(buildClientVersion('258.257.266')).toBe(0x02010a)
-    expect(ILINK_APP_CLIENT_VERSION).toBe(131338)
+    expect(ILINK_APP_CLIENT_VERSION).toBe(132099)
   })
 
   test('basic limits and error codes', () => {

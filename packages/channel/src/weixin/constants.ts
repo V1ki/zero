@@ -1,12 +1,12 @@
 /**
  * iLink Bot API constants shared across the Weixin channel.
- * Mirrored from @tencent-weixin/openclaw-weixin 2.1.10.
+ * Mirrored from @tencent-weixin/openclaw-weixin 2.4.3.
  */
 
 export const ILINK_BASE_URL = 'https://ilinkai.weixin.qq.com'
 export const WEIXIN_CDN_BASE_URL = 'https://novac2c.cdn.weixin.qq.com/c2c'
 export const ILINK_APP_ID = 'bot'
-export const WEIXIN_PROTOCOL_VERSION = '2.1.10'
+export const WEIXIN_PROTOCOL_VERSION = '2.4.3'
 export const CHANNEL_VERSION = WEIXIN_PROTOCOL_VERSION
 
 export function buildClientVersion(version: string): number {

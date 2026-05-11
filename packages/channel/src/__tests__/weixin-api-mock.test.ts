@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   ILinkError,
+  buildBaseInfo,
   buildCdnDownloadUrl,
   buildCdnUploadUrl,
   getBotQrCode,
@@ -9,6 +10,7 @@ import {
   getUploadUrl,
   notifyStart,
   notifyStop,
+  sanitizeBotAgent,
   sendTextMessage,
   uploadCiphertext,
 } from '../weixin/api'
@@ -40,10 +42,12 @@ describe('buildCdnDownloadUrl / buildCdnUploadUrl', () => {
 })
 
 describe('sendTextMessage', () => {
-  test('injects base_info and context_token', async () => {
+  test('injects base_info and context_token without manual Content-Length', async () => {
     let capturedBody: unknown
+    let capturedContentLengthHeader = true
     const fetchImpl = async (_url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       capturedBody = JSON.parse(String(init?.body ?? '{}'))
+      capturedContentLengthHeader = new Headers(init?.headers).has('Content-Length')
       return okJson({ ret: 0 })
     }
     await sendTextMessage(
@@ -59,11 +63,35 @@ describe('sendTextMessage', () => {
     )
     const body = capturedBody as {
       msg: { context_token?: string; item_list: unknown[] }
-      base_info: { channel_version: string }
+      base_info: { channel_version: string; bot_agent: string }
     }
-    expect(body.base_info.channel_version).toBe('2.1.10')
+    expect(body.base_info.channel_version).toBe('2.4.3')
+    expect(body.base_info.bot_agent).toBe('OpenClaw')
     expect(body.msg.context_token).toBe('ctx')
     expect(Array.isArray(body.msg.item_list)).toBe(true)
+    expect(capturedContentLengthHeader).toBe(false)
+  })
+
+  test('uses custom sanitized bot_agent from api options', async () => {
+    let capturedBody: unknown
+    const fetchImpl = async (_url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      capturedBody = JSON.parse(String(init?.body ?? '{}'))
+      return okJson({ ret: 0 })
+    }
+
+    await sendTextMessage(
+      {
+        baseUrl: 'https://api.example',
+        token: 'tok',
+        to: 'peer',
+        text: 'hi',
+        clientId: 'cid',
+      },
+      { fetchImpl, botAgent: 'Zero/0.1 (test build) 中文 BadToken' },
+    )
+
+    const body = capturedBody as { base_info: { bot_agent: string } }
+    expect(body.base_info.bot_agent).toBe('Zero/0.1 (test build)')
   })
 
   test('rejects empty text', async () => {
@@ -88,12 +116,15 @@ describe('sendTextMessage', () => {
 
 describe('notifyStart / notifyStop', () => {
   test('post only base_info to notify endpoints', async () => {
-    const calls: Array<{ url: string; body: { base_info?: { channel_version?: string } } }> = []
+    const calls: Array<{
+      url: string
+      body: { base_info?: { channel_version?: string; bot_agent?: string } }
+    }> = []
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       calls.push({
         url: String(url),
         body: JSON.parse(String(init?.body ?? '{}')) as {
-          base_info?: { channel_version?: string }
+          base_info?: { channel_version?: string; bot_agent?: string }
         },
       })
       return okJson({ ret: 0 })
@@ -106,7 +137,19 @@ describe('notifyStart / notifyStop', () => {
       '/ilink/bot/msg/notifystart',
       '/ilink/bot/msg/notifystop',
     ])
-    expect(calls.every((call) => call.body.base_info?.channel_version === '2.1.10')).toBe(true)
+    expect(calls.every((call) => call.body.base_info?.channel_version === '2.4.3')).toBe(true)
+    expect(calls.every((call) => call.body.base_info?.bot_agent === 'OpenClaw')).toBe(true)
+  })
+})
+
+describe('base_info bot_agent', () => {
+  test('defaults and sanitizes bot_agent values', () => {
+    expect(buildBaseInfo()).toEqual({ channel_version: '2.4.3', bot_agent: 'OpenClaw' })
+    expect(sanitizeBotAgent('Zero/1.0 (local test) Other/2.0')).toBe(
+      'Zero/1.0 (local test) Other/2.0',
+    )
+    expect(sanitizeBotAgent('中文 MissingSlash Bad/ok')).toBe('Bad/ok')
+    expect(sanitizeBotAgent('not-a-product')).toBe('OpenClaw')
   })
 })
 
@@ -128,10 +171,7 @@ describe('getUpdates', () => {
       err.name = 'AbortError'
       throw err
     }
-    const res = await getUpdates(
-      { baseUrl: 'x', token: 't', syncBuf: 'cursor' },
-      { fetchImpl },
-    )
+    const res = await getUpdates({ baseUrl: 'x', token: 't', syncBuf: 'cursor' }, { fetchImpl })
     expect(res.msgs).toEqual([])
     expect(res.get_updates_buf).toBe('cursor')
   })
@@ -181,10 +221,7 @@ describe('uploadCiphertext', () => {
   test('throws when header missing', async () => {
     const fetchImpl = async (): Promise<Response> => new Response('', { status: 200 })
     await expect(
-      uploadCiphertext(
-        { uploadUrl: 'https://cdn/x', ciphertext: Buffer.alloc(0) },
-        { fetchImpl },
-      ),
+      uploadCiphertext({ uploadUrl: 'https://cdn/x', ciphertext: Buffer.alloc(0) }, { fetchImpl }),
     ).rejects.toThrow()
   })
 

@@ -212,14 +212,17 @@ channels:
     accountIdRef: weixin_personal-bot_account_id
     tokenRef: weixin_personal-bot_token
     baseUrlRef: weixin_personal-bot_base_url
+    # 可选：写入 iLink API 的 base_info.bot_agent，会按 OpenClaw 2.4.x 规则清洗
+    botAgent: Zero/0.1
     dmPolicy: open
-    groupPolicy: open
+    groupPolicy: disabled
 ```
 
 > ⚠️ Weixin 通道走腾讯 iLink Bot API。协议本身由腾讯官方为 OpenClaw 等 AI agent
 > 开放，但 Zero 的实现不是官方签约客户端，协议变更时可能暂时失效。
 > 当前实现按 `@tencent-weixin/openclaw-weixin` 的 direct-only 通道语义路由：
 > 入站消息使用 `from_user_id` 作为会话 peer，`groupPolicy` 先保留为配置字段。
+> 回复处理期间会发送 Weixin typing 状态，处理完成或出错后发送 cancel typing。
 
 ## macOS LaunchAgent
 

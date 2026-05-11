@@ -1,11 +1,6 @@
 import { existsSync } from 'node:fs'
 import { normalizeReasoningEffort, readYaml, readYamlOrDefault } from '@zero-os/shared'
-import type {
-  ChannelInstanceConfig,
-  FuseRule,
-  ModelPricing,
-  SystemConfig,
-} from '@zero-os/shared'
+import type { ChannelInstanceConfig, FuseRule, ModelPricing, SystemConfig } from '@zero-os/shared'
 import { readString } from '../utils/yaml'
 
 /**
@@ -151,6 +146,7 @@ function normalizeChannelConfig(raw: Record<string, unknown>): ChannelInstanceCo
       tokenRef,
       baseUrlRef: readString(raw, 'baseUrlRef', 'base_url_ref'),
       cdnBaseUrlRef: readString(raw, 'cdnBaseUrlRef', 'cdn_base_url_ref'),
+      botAgent: readString(raw, 'botAgent', 'bot_agent'),
       dmPolicy: readPolicy(raw, 'dmPolicy', 'dm_policy'),
       groupPolicy: readPolicy(raw, 'groupPolicy', 'group_policy'),
       allowFrom: readStringArray(raw, 'allowFrom', 'allow_from'),

@@ -3,9 +3,9 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { IncomingMessage as ZeroIncoming } from '../base'
-import { WeixinChannel, guessChatType } from '../weixin/channel'
 import type { FetchImpl } from '../weixin/api'
-import { SESSION_EXPIRED_PAUSE_MS } from '../weixin/constants'
+import { WeixinChannel, guessChatType } from '../weixin/channel'
+import { SESSION_EXPIRED_PAUSE_MS, TYPING_START, TYPING_STOP } from '../weixin/constants'
 
 let tempDir: string
 
@@ -22,9 +22,10 @@ interface FetchCall {
   init?: RequestInit
 }
 
-function makeFetch(
-  handler: (call: FetchCall) => Response | Promise<Response>,
-): { fetchImpl: FetchImpl; calls: FetchCall[] } {
+function makeFetch(handler: (call: FetchCall) => Response | Promise<Response>): {
+  fetchImpl: FetchImpl
+  calls: FetchCall[]
+} {
   const calls: FetchCall[] = []
   const fetchImpl: FetchImpl = async (url, init) => {
     const call: FetchCall = { url: String(url), init }
@@ -49,9 +50,10 @@ describe('guessChatType', () => {
   })
 
   test('follows OpenClaw direct-only routing even when group_id is present', () => {
-    expect(guessChatType({ from_user_id: 'u1', to_user_id: 'me', group_id: 'g1' }, 'me')).toEqual(
-      { chatType: 'dm', chatId: 'u1' },
-    )
+    expect(guessChatType({ from_user_id: 'u1', to_user_id: 'me', group_id: 'g1' }, 'me')).toEqual({
+      chatType: 'dm',
+      chatId: 'u1',
+    })
   })
 })
 
@@ -65,6 +67,7 @@ describe('WeixinChannel.send', () => {
         accountId: 'acc',
         token: 'tok',
         homeDir: tempDir,
+        botAgent: 'Zero/0.1 (channel test)',
         sendChunkDelayMs: 0,
       },
       { fetchImpl, sleep: async () => {} },
@@ -72,11 +75,43 @@ describe('WeixinChannel.send', () => {
     await ch.sendToChat('peer', 'hello')
     expect(calls.length).toBe(1)
     const body = JSON.parse(String(calls[0].init?.body ?? '{}')) as {
-      base_info: { channel_version: string }
+      base_info: { channel_version: string; bot_agent: string }
       msg: { item_list: Array<{ text_item?: { text?: string } }> }
     }
-    expect(body.base_info.channel_version).toBe('2.1.10')
+    expect(body.base_info.channel_version).toBe('2.4.3')
+    expect(body.base_info.bot_agent).toBe('Zero/0.1 (channel test)')
     expect(body.msg.item_list[0].text_item?.text).toBe('hello')
+  })
+
+  test('sends typing start and cancel using cached typing ticket', async () => {
+    const { fetchImpl, calls } = makeFetch(
+      () => new Response(JSON.stringify({ ret: 0 }), { status: 200 }),
+    )
+    const ch = new WeixinChannel(
+      { accountId: 'acc', token: 'tok', homeDir: tempDir },
+      { fetchImpl, sleep: async () => {} },
+    )
+    const internal = ch as unknown as {
+      typingCache: Map<string, { ticket: string; ts: number }>
+    }
+    internal.typingCache.set('peer', { ticket: 'ticket-1', ts: Date.now() })
+
+    await ch.sendTypingIndicator('peer')
+    await ch.clearTypingIndicator('peer')
+
+    expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+      '/ilink/bot/sendtyping',
+      '/ilink/bot/sendtyping',
+    ])
+    const statuses = calls.map((call) => {
+      const body = JSON.parse(String(call.init?.body ?? '{}')) as {
+        status?: number
+        typing_ticket?: string
+      }
+      expect(body.typing_ticket).toBe('ticket-1')
+      return body.status
+    })
+    expect(statuses).toEqual([TYPING_START, TYPING_STOP])
   })
 
   test('retries on error up to sendChunkRetries times', async () => {
@@ -103,9 +138,7 @@ describe('WeixinChannel.send', () => {
 
   test('routes incoming payloads as direct messages like OpenClaw', async () => {
     const received: ZeroIncoming[] = []
-    const { fetchImpl } = makeFetch(
-      () => new Response(JSON.stringify({ ret: 0 }), { status: 200 }),
-    )
+    const { fetchImpl } = makeFetch(() => new Response(JSON.stringify({ ret: 0 }), { status: 200 }))
     const ch = new WeixinChannel(
       { accountId: 'me', token: 't', homeDir: tempDir },
       { fetchImpl, sleep: async () => {} },
@@ -132,9 +165,7 @@ describe('WeixinChannel.send', () => {
 
   test('DM messages flow through handler and store context token by chatId', async () => {
     const received: ZeroIncoming[] = []
-    const { fetchImpl } = makeFetch(
-      () => new Response(JSON.stringify({ ret: 0 }), { status: 200 }),
-    )
+    const { fetchImpl } = makeFetch(() => new Response(JSON.stringify({ ret: 0 }), { status: 200 }))
     const ch = new WeixinChannel(
       { accountId: 'me', token: 't', homeDir: tempDir },
       { fetchImpl, sleep: async () => {} },

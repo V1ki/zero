@@ -140,6 +140,7 @@ interface WeixinRuntimeDefinition extends ChannelRuntimeDefinition {
     token: string
     baseUrl?: string
     cdnBaseUrl?: string
+    botAgent?: string
     dmPolicy?: 'open' | 'allowlist' | 'disabled'
     groupPolicy?: 'open' | 'allowlist' | 'disabled'
     allowFrom?: string[]
@@ -971,6 +972,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
         token: definition.credentials.token,
         baseUrl: definition.credentials.baseUrl,
         cdnBaseUrl: definition.credentials.cdnBaseUrl,
+        botAgent: definition.credentials.botAgent,
         homeDir: ZERO_DIR,
         dmPolicy: definition.credentials.dmPolicy,
         groupPolicy: definition.credentials.groupPolicy,
@@ -1249,6 +1251,7 @@ function buildExternalChannelDefinitions(
                   token,
                   baseUrl,
                   cdnBaseUrl,
+                  botAgent: channel.botAgent,
                   dmPolicy: channel.dmPolicy,
                   groupPolicy: channel.groupPolicy,
                   allowFrom: channel.allowFrom,

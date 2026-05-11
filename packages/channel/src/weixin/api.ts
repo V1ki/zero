@@ -39,6 +39,7 @@ export type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promis
 
 export interface ApiOptions {
   fetchImpl?: FetchImpl
+  botAgent?: string
 }
 
 export interface NotifyResponse {
@@ -57,11 +58,81 @@ export class ILinkError extends Error {
   }
 }
 
-function buildHeaders(token: string | null, body: string): Record<string, string> {
+const DEFAULT_BOT_AGENT = 'OpenClaw'
+const BOT_AGENT_MAX_LEN = 256
+
+export function sanitizeBotAgent(raw: string | undefined): string {
+  if (!raw || typeof raw !== 'string') return DEFAULT_BOT_AGENT
+  const trimmed = raw.trim()
+  if (!trimmed) return DEFAULT_BOT_AGENT
+
+  const productRe = /^[A-Za-z0-9_.-]{1,32}\/[A-Za-z0-9_.+-]{1,32}$/
+  const commentCharRe = /^[\x20-\x27\x2A-\x7E]{1,64}$/
+  const rawTokens = trimmed.split(/\s+/)
+  const tokens: string[] = []
+
+  for (let i = 0; i < rawTokens.length; i += 1) {
+    const tok = rawTokens[i]
+    if (tok.startsWith('(') && !tok.endsWith(')')) {
+      let acc = tok
+      while (i + 1 < rawTokens.length && !acc.endsWith(')')) {
+        i += 1
+        acc += ` ${rawTokens[i]}`
+      }
+      tokens.push(acc)
+    } else {
+      tokens.push(tok)
+    }
+  }
+
+  const accepted: string[] = []
+  let pendingProduct: string | null = null
+  for (const tok of tokens) {
+    if (tok.startsWith('(') && tok.endsWith(')')) {
+      const inner = tok.slice(1, -1)
+      if (pendingProduct && commentCharRe.test(inner)) {
+        accepted.push(`${pendingProduct} (${inner})`)
+        pendingProduct = null
+      } else if (pendingProduct) {
+        accepted.push(pendingProduct)
+        pendingProduct = null
+      }
+      continue
+    }
+    if (pendingProduct) {
+      accepted.push(pendingProduct)
+      pendingProduct = null
+    }
+    if (productRe.test(tok)) pendingProduct = tok
+  }
+  if (pendingProduct) accepted.push(pendingProduct)
+  if (accepted.length === 0) return DEFAULT_BOT_AGENT
+
+  const joined = accepted.join(' ')
+  if (Buffer.byteLength(joined, 'utf-8') <= BOT_AGENT_MAX_LEN) return joined
+
+  const truncated: string[] = []
+  let len = 0
+  for (const token of accepted) {
+    const add = (truncated.length === 0 ? 0 : 1) + Buffer.byteLength(token, 'utf-8')
+    if (len + add > BOT_AGENT_MAX_LEN) break
+    truncated.push(token)
+    len += add
+  }
+  return truncated.length > 0 ? truncated.join(' ') : DEFAULT_BOT_AGENT
+}
+
+export function buildBaseInfo(botAgent?: string): { channel_version: string; bot_agent: string } {
+  return {
+    channel_version: CHANNEL_VERSION,
+    bot_agent: sanitizeBotAgent(botAgent),
+  }
+}
+
+function buildHeaders(token: string | null): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     AuthorizationType: 'ilink_bot_token',
-    'Content-Length': String(Buffer.byteLength(body, 'utf-8')),
     'X-WECHAT-UIN': randomWechatUin(),
     'iLink-App-Id': ILINK_APP_ID,
     'iLink-App-ClientVersion': String(ILINK_APP_CLIENT_VERSION),
@@ -83,12 +154,13 @@ async function postJson<T>(
     token: string | null
     timeoutMs: number
   },
+  opts: Pick<ApiOptions, 'botAgent'> = {},
 ): Promise<T> {
   const url = `${params.baseUrl.replace(/\/$/, '')}/${params.endpoint}`
-  const body = jsonStringify({ ...params.payload, base_info: { channel_version: CHANNEL_VERSION } })
+  const body = jsonStringify({ ...params.payload, base_info: buildBaseInfo(opts.botAgent) })
   const response = await fetchImpl(url, {
     method: 'POST',
-    headers: buildHeaders(params.token, body),
+    headers: buildHeaders(params.token),
     body,
     signal: AbortSignal.timeout(params.timeoutMs),
   })
@@ -141,13 +213,17 @@ export async function getUpdates(
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch
   const timeoutMs = params.timeoutMs ?? LONG_POLL_TIMEOUT_MS
   try {
-    return await postJson<GetUpdatesResponse>(fetchImpl, {
-      baseUrl: params.baseUrl,
-      endpoint: EP_GET_UPDATES,
-      payload: { get_updates_buf: params.syncBuf },
-      token: params.token,
-      timeoutMs,
-    })
+    return await postJson<GetUpdatesResponse>(
+      fetchImpl,
+      {
+        baseUrl: params.baseUrl,
+        endpoint: EP_GET_UPDATES,
+        payload: { get_updates_buf: params.syncBuf },
+        token: params.token,
+        timeoutMs,
+      },
+      opts,
+    )
   } catch (err) {
     if (isAbortError(err)) {
       return { ret: 0, msgs: [], get_updates_buf: params.syncBuf }
@@ -160,26 +236,34 @@ export async function notifyStart(
   params: { baseUrl: string; token: string },
   opts: ApiOptions = {},
 ): Promise<NotifyResponse> {
-  return postJson(opts.fetchImpl ?? globalThis.fetch, {
-    baseUrl: params.baseUrl,
-    endpoint: EP_NOTIFY_START,
-    payload: {},
-    token: params.token,
-    timeoutMs: CONFIG_TIMEOUT_MS,
-  })
+  return postJson(
+    opts.fetchImpl ?? globalThis.fetch,
+    {
+      baseUrl: params.baseUrl,
+      endpoint: EP_NOTIFY_START,
+      payload: {},
+      token: params.token,
+      timeoutMs: CONFIG_TIMEOUT_MS,
+    },
+    opts,
+  )
 }
 
 export async function notifyStop(
   params: { baseUrl: string; token: string },
   opts: ApiOptions = {},
 ): Promise<NotifyResponse> {
-  return postJson(opts.fetchImpl ?? globalThis.fetch, {
-    baseUrl: params.baseUrl,
-    endpoint: EP_NOTIFY_STOP,
-    payload: {},
-    token: params.token,
-    timeoutMs: CONFIG_TIMEOUT_MS,
-  })
+  return postJson(
+    opts.fetchImpl ?? globalThis.fetch,
+    {
+      baseUrl: params.baseUrl,
+      endpoint: EP_NOTIFY_STOP,
+      payload: {},
+      token: params.token,
+      timeoutMs: CONFIG_TIMEOUT_MS,
+    },
+    opts,
+  )
 }
 
 export async function sendTextMessage(
@@ -205,13 +289,17 @@ export async function sendTextMessage(
     item_list: [{ type: ITEM_TEXT, text_item: { text: params.text } }],
   }
   if (params.contextToken) msg.context_token = params.contextToken
-  await postJson(opts.fetchImpl ?? globalThis.fetch, {
-    baseUrl: params.baseUrl,
-    endpoint: EP_SEND_MESSAGE,
-    payload: { msg },
-    token: params.token,
-    timeoutMs: API_TIMEOUT_MS,
-  })
+  await postJson(
+    opts.fetchImpl ?? globalThis.fetch,
+    {
+      baseUrl: params.baseUrl,
+      endpoint: EP_SEND_MESSAGE,
+      payload: { msg },
+      token: params.token,
+      timeoutMs: API_TIMEOUT_MS,
+    },
+    opts,
+  )
 }
 
 export async function sendRawMessage(
@@ -222,13 +310,17 @@ export async function sendRawMessage(
   },
   opts: ApiOptions = {},
 ): Promise<void> {
-  await postJson(opts.fetchImpl ?? globalThis.fetch, {
-    baseUrl: params.baseUrl,
-    endpoint: EP_SEND_MESSAGE,
-    payload: { msg: params.msg },
-    token: params.token,
-    timeoutMs: API_TIMEOUT_MS,
-  })
+  await postJson(
+    opts.fetchImpl ?? globalThis.fetch,
+    {
+      baseUrl: params.baseUrl,
+      endpoint: EP_SEND_MESSAGE,
+      payload: { msg: params.msg },
+      token: params.token,
+      timeoutMs: API_TIMEOUT_MS,
+    },
+    opts,
+  )
 }
 
 export async function sendTyping(
@@ -241,17 +333,21 @@ export async function sendTyping(
   },
   opts: ApiOptions = {},
 ): Promise<void> {
-  await postJson(opts.fetchImpl ?? globalThis.fetch, {
-    baseUrl: params.baseUrl,
-    endpoint: EP_SEND_TYPING,
-    payload: {
-      ilink_user_id: params.toUserId,
-      typing_ticket: params.typingTicket,
-      status: params.status,
+  await postJson(
+    opts.fetchImpl ?? globalThis.fetch,
+    {
+      baseUrl: params.baseUrl,
+      endpoint: EP_SEND_TYPING,
+      payload: {
+        ilink_user_id: params.toUserId,
+        typing_ticket: params.typingTicket,
+        status: params.status,
+      },
+      token: params.token,
+      timeoutMs: CONFIG_TIMEOUT_MS,
     },
-    token: params.token,
-    timeoutMs: CONFIG_TIMEOUT_MS,
-  })
+    opts,
+  )
 }
 
 export async function getTypingConfig(
@@ -265,13 +361,17 @@ export async function getTypingConfig(
 ): Promise<{ typing_ticket?: string } & Record<string, unknown>> {
   const payload: Record<string, unknown> = { ilink_user_id: params.userId }
   if (params.contextToken) payload.context_token = params.contextToken
-  return postJson(opts.fetchImpl ?? globalThis.fetch, {
-    baseUrl: params.baseUrl,
-    endpoint: EP_GET_CONFIG,
-    payload,
-    token: params.token,
-    timeoutMs: CONFIG_TIMEOUT_MS,
-  })
+  return postJson(
+    opts.fetchImpl ?? globalThis.fetch,
+    {
+      baseUrl: params.baseUrl,
+      endpoint: EP_GET_CONFIG,
+      payload,
+      token: params.token,
+      timeoutMs: CONFIG_TIMEOUT_MS,
+    },
+    opts,
+  )
 }
 
 export async function getUploadUrl(
@@ -288,22 +388,26 @@ export async function getUploadUrl(
   },
   opts: ApiOptions = {},
 ): Promise<UploadUrlResponse> {
-  return postJson(opts.fetchImpl ?? globalThis.fetch, {
-    baseUrl: params.baseUrl,
-    endpoint: EP_GET_UPLOAD_URL,
-    payload: {
-      filekey: params.filekey,
-      media_type: params.mediaType,
-      to_user_id: params.toUserId,
-      rawsize: params.rawsize,
-      rawfilemd5: params.rawfilemd5,
-      filesize: params.filesize,
-      no_need_thumb: true,
-      aeskey: params.aesKeyHex,
+  return postJson(
+    opts.fetchImpl ?? globalThis.fetch,
+    {
+      baseUrl: params.baseUrl,
+      endpoint: EP_GET_UPLOAD_URL,
+      payload: {
+        filekey: params.filekey,
+        media_type: params.mediaType,
+        to_user_id: params.toUserId,
+        rawsize: params.rawsize,
+        rawfilemd5: params.rawfilemd5,
+        filesize: params.filesize,
+        no_need_thumb: true,
+        aeskey: params.aesKeyHex,
+      },
+      token: params.token,
+      timeoutMs: API_TIMEOUT_MS,
     },
-    token: params.token,
-    timeoutMs: API_TIMEOUT_MS,
-  })
+    opts,
+  )
 }
 
 /**

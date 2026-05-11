@@ -114,6 +114,7 @@ export interface WeixinChannelInstanceConfig extends BaseChannelInstanceConfig {
   tokenRef: string
   baseUrlRef?: string
   cdnBaseUrlRef?: string
+  botAgent?: string
   dmPolicy?: 'open' | 'allowlist' | 'disabled'
   groupPolicy?: 'open' | 'allowlist' | 'disabled'
   allowFrom?: string[]

@@ -1,16 +1,12 @@
-import { createRequire } from 'node:module'
 import { existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { runQrLogin } from '@zero-os/channel'
 import { Vault, getMasterKey } from '@zero-os/secrets'
 import { readYaml, writeYaml } from '@zero-os/shared'
 
 const require = createRequire(import.meta.url)
 const qrcodeTerminal = require('qrcode-terminal') as {
-  generate: (
-    input: string,
-    options: { small?: boolean },
-    callback: (qr: string) => void,
-  ) => void
+  generate: (input: string, options: { small?: boolean }, callback: (qr: string) => void) => void
 }
 
 /**
@@ -73,7 +69,7 @@ export async function weixinCli(
   if (credentials.baseUrl) vault.set(secretRefs.baseUrlRef, credentials.baseUrl)
   vault.save()
 
-  console.log(`[ZeRo OS] Stored in vault:`)
+  console.log('[ZeRo OS] Stored in vault:')
   console.log(`  ${secretRefs.accountIdRef}`)
   console.log(`  ${secretRefs.tokenRef}`)
   if (credentials.baseUrl) console.log(`  ${secretRefs.baseUrlRef}`)
@@ -137,7 +133,7 @@ export function upsertWeixinChannelConfig(configPath: string, entry: WeixinConfi
     tokenRef: entry.tokenRef,
     ...(entry.baseUrlRef ? { baseUrlRef: entry.baseUrlRef } : {}),
     dmPolicy: 'open',
-    groupPolicy: 'open',
+    groupPolicy: 'disabled',
   }
   const existingIndex = channels.findIndex(
     (channel) => channel.type === 'weixin' && channel.name === entry.name,

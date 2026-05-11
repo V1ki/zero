@@ -8,7 +8,10 @@ import type { ChannelAdapter, StreamAdapter, TypingHandle } from './channel-adap
  * `reply()`.
  */
 export class WeixinAdapter implements ChannelAdapter {
-  constructor(private readonly channel: WeixinChannel) {}
+  constructor(
+    private readonly channel: WeixinChannel,
+    private readonly typingKeepaliveMs = 5_000,
+  ) {}
 
   async reply(chatId: string, text: string): Promise<void> {
     await this.channel.sendToChat(chatId, text)
@@ -16,10 +19,16 @@ export class WeixinAdapter implements ChannelAdapter {
 
   async showTyping(chatId: string): Promise<TypingHandle | null> {
     await this.channel.sendTypingIndicator(chatId).catch(() => {})
+    const timer = setInterval(() => {
+      this.channel.sendTypingIndicator(chatId).catch(() => {})
+    }, this.typingKeepaliveMs)
+    let cleared = false
     return {
       clear: async () => {
-        // no dedicated typing-stop flow in our channel wrapper; expiring
-        // ticket handles it
+        if (cleared) return
+        cleared = true
+        clearInterval(timer)
+        await this.channel.clearTypingIndicator(chatId).catch(() => {})
       },
     }
   }
