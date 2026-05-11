@@ -13,6 +13,9 @@ import type { AgentSnapshot, Command } from '@zero-os/core'
 import {
   CONTEXT_PARAMS,
   CommandRouter,
+  SourceCardManager,
+  createAStockMarketDataSourceCard,
+  createQqMailHimalayaSourceCard,
   loadConfig,
   loadFuseList,
   registerBuiltinCommands,
@@ -78,8 +81,8 @@ import {
 } from './restart-trigger'
 import { TelegramAdapter } from './telegram-adapter'
 import { syncTelegramCommandMenu } from './telegram-menu'
-import { WeixinAdapter } from './weixin-adapter'
 import { rebuildWebBundle } from './web-build'
+import { WeixinAdapter } from './weixin-adapter'
 
 export interface StartOptions {
   dataDir?: string
@@ -197,6 +200,7 @@ export interface ZeroOS {
   modelRouter: ModelRouter
   toolRegistry: ToolRegistry
   sessionManager: SessionManager
+  sourceCardManager: SourceCardManager
   memoryStore: MemoryRepository
   memoryRetriever: MemoryRetriever
   memoManager: MemoManager
@@ -459,6 +463,14 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
 
   // 10. Session Manager — pass observability deps, memory, bus, secret filter, and identity
   const secretResolver = (ref: string) => vault.get(ref) ?? undefined
+  const sourceCardManager = new SourceCardManager(join(ZERO_DIR, 'source-cards'), {
+    secretFilter,
+    secretResolver,
+  })
+  sourceCardManager.ensureAll([
+    createQqMailHimalayaSourceCard(),
+    createAStockMarketDataSourceCard(),
+  ])
   // Pre-create scheduler + handles (trigger handler set later after sessionManager exists)
   const scheduler = new CronScheduler()
   const schedulerHandle = {
@@ -820,6 +832,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
     modelRouter,
     toolRegistry,
     sessionManager,
+    sourceCardManager,
     memoryStore,
     memoryRetriever,
     memoManager,
@@ -1205,7 +1218,9 @@ function buildExternalChannelDefinitions(
       if (channel.type === 'weixin') {
         const accountId = vault.get(channel.accountIdRef)
         const token = vault.get(channel.tokenRef)
-        const baseUrl = channel.baseUrlRef ? (vault.get(channel.baseUrlRef) ?? undefined) : undefined
+        const baseUrl = channel.baseUrlRef
+          ? (vault.get(channel.baseUrlRef) ?? undefined)
+          : undefined
         const cdnBaseUrl = channel.cdnBaseUrlRef
           ? (vault.get(channel.cdnBaseUrlRef) ?? undefined)
           : undefined

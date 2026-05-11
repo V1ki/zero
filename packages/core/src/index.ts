@@ -68,6 +68,20 @@ export {
   DEFAULT_TEMPLATES,
 } from './bootstrap/templates'
 
+// Source Cards
+export {
+  SourceCardManager,
+  SourceCardStore,
+  createAStockMarketDataSourceCard,
+  createQqMailHimalayaSourceCard,
+} from './source-card'
+export type {
+  ResolvedSourceWatch,
+  SourceCardAuditContext,
+  SourceCardAuditEvent,
+  SourceCardManagerOptions,
+} from './source-card'
+
 // Context Engineering
 export {
   buildSystemPrompt,
