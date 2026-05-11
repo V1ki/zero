@@ -58,6 +58,16 @@ function recordAgentLoopUsage(
   })
 }
 
+function expectNoSourceCredentialMaterial(value: unknown) {
+  const text = JSON.stringify(value)
+  expect(text).not.toContain('external:himalaya/account/qq')
+  expect(text).not.toContain('"credentials"')
+  expect(text).not.toContain('"credentialRef"')
+  expect(text).not.toContain('"credentialLeaseId"')
+  expect(text).not.toMatch(/"ref"\s*:/)
+  expect(text).not.toMatch(/token|cookie|password|authorization/i)
+}
+
 function writeConfig(dataDir: string) {
   writeFileSync(
     join(dataDir, 'config.yaml'),
@@ -260,6 +270,85 @@ describe('API Routes (Real)', () => {
     const types = data.memories.map((memory) => memory.type)
     expect(types).toContain('inbox')
     expect(types).toContain('preference')
+  })
+
+  test('GET /api/source-cards returns public Source Card views', async () => {
+    const res = await app.request('/api/source-cards')
+    expect(res.status).toBe(200)
+
+    const data = (await res.json()) as { sourceCards: Array<Record<string, unknown>> }
+    const ids = data.sourceCards.map((card) => card.id)
+    expect(ids).toContain('qq-mail-himalaya')
+    expect(ids).toContain('a-stock-market-data')
+
+    const qq = data.sourceCards.find((card) => card.id === 'qq-mail-himalaya')
+    const stock = data.sourceCards.find((card) => card.id === 'a-stock-market-data')
+    expect(qq?.state).toBe('candidate')
+    expect(qq?.sensitivity).toBe('private')
+    expect(stock?.state).toBe('active')
+    expect(stock?.sensitivity).toBe('public')
+    expect((qq?.credentialBindings as Array<Record<string, unknown>>)[0]).toMatchObject({
+      bindingType: 'externalStore',
+      hasReference: true,
+    })
+
+    expectNoSourceCredentialMaterial(data)
+  })
+
+  test('GET /api/source-cards/:id returns one public Source Card view', async () => {
+    const qqRes = await app.request('/api/source-cards/qq-mail-himalaya')
+    expect(qqRes.status).toBe(200)
+    const qqData = (await qqRes.json()) as { sourceCard: Record<string, unknown> }
+
+    expect(qqData.sourceCard.id).toBe('qq-mail-himalaya')
+    expect(qqData.sourceCard.kind).toBe('private_mailbox')
+    expect(qqData.sourceCard).not.toHaveProperty('credentials')
+    expectNoSourceCredentialMaterial(qqData)
+
+    const stockRes = await app.request('/api/source-cards/a-stock-market-data')
+    expect(stockRes.status).toBe(200)
+    const stockData = (await stockRes.json()) as { sourceCard: Record<string, unknown> }
+    expect(JSON.stringify(stockData)).toContain('place_order')
+    expect(JSON.stringify(stockData)).toContain('use_broker_account')
+    expectNoSourceCredentialMaterial(stockData)
+  })
+
+  test('GET /api/source-cards/:id/observations returns summaries without raw data', async () => {
+    zero.sourceCardManager.recordObservation({
+      sourceCardId: 'a-stock-market-data',
+      capabilityId: 'fetch_quotes',
+      kind: 'data',
+      data: {
+        rawQuote: 'do-not-return-this-raw-quote',
+        symbol: 'SH000001',
+      },
+      evidence: {
+        statusCode: 200,
+        rowCount: 1,
+        schemaKeys: ['symbol', 'price'],
+        details: {
+          rawQuote: 'do-not-return-this-raw-quote',
+        },
+      },
+    })
+
+    const res = await app.request('/api/source-cards/a-stock-market-data/observations?summary=1')
+    expect(res.status).toBe(200)
+    const data = await res.json()
+    const text = JSON.stringify(data)
+
+    expect(data.sourceCardId).toBe('a-stock-market-data')
+    expect(data.summaryOnly).toBe(true)
+    expect(data.summary.total).toBeGreaterThan(0)
+    expect(data.observations[0].evidence.schemaKeys).toContain('symbol')
+    expect(text).not.toContain('do-not-return-this-raw-quote')
+    expect(text).not.toContain('"rawQuote"')
+    expectNoSourceCredentialMaterial(data)
+  })
+
+  test('GET /api/source-cards/:id returns 404 for missing Source Card', async () => {
+    const res = await app.request('/api/source-cards/missing-source-card')
+    expect(res.status).toBe(404)
   })
 
   test('PUT /api/memo updates memo', async () => {
@@ -591,7 +680,7 @@ describe('API Routes (Real)', () => {
     const res = await app.request('/api/tools')
     expect(res.status).toBe(200)
     const data = await res.json()
-    expect(data.tools.length).toBe(15)
+    expect(data.tools.length).toBe(16)
     const names = data.tools.map((t: { name: string }) => t.name)
     expect(names).toContain('read')
     expect(names).toContain('read_image')
@@ -603,6 +692,7 @@ describe('API Routes (Real)', () => {
     expect(names).toContain('memory_search')
     expect(names).toContain('memory_read')
     expect(names).toContain('schedule')
+    expect(names).toContain('source_card')
     expect(names).toContain('codex')
     expect(names).toContain('spawn_agent')
     expect(names).toContain('wait_agent')

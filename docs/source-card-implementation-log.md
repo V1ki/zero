@@ -187,3 +187,98 @@
   - 结果：通过。
 - `bunx biome check packages/core/src/source-card/store.ts packages/core/src/source-card/__tests__/manager.test.ts docs/source-card-implementation-log.md`
   - 结果：通过。
+
+## 2026-05-11 Read-only Web UI / API 第一版
+
+### 本次目标
+
+实现 Source Card 的第一版只读产品入口，让 Web UI 能查看 Source Cards 列表与详情，同时保持本阶段不提供 promote/retire mutation、不执行真实 health probe、不运行 CLI/API adapter、不读取私人邮件正文、不修改凭证。
+
+### 已读取的关键上下文
+
+- `/Users/v1ki/.codex/skills/frontend-skill/SKILL.md`
+- `docs/source-card-ui-ux.md`
+- `docs/source-card-implementation-log.md`
+- `packages/core/src/source-card/service.ts`
+- `packages/core/src/source-card/store.ts`
+- `packages/core/src/tool/source-card.ts`
+- `apps/web/src/api/routes.ts`
+- `apps/web/src/app/router.tsx`
+- `apps/web/src/app/components/layout/Sidebar.tsx`
+- `apps/web/src/app/routes/tools.tsx`
+- `apps/web/src/app/routes/memory.tsx`
+
+### 实际修改的文件
+
+- `packages/core/src/source-card/service.ts`
+  - `toPublicSourceCard()` 在隐藏 `credentials` 的基础上，也从 public health evidence 中去掉 `credentialRef` 和 `credentialLeaseId`。
+- `apps/web/src/api/routes.ts`
+  - 新增 `GET /api/source-cards`。
+  - 新增 `GET /api/source-cards/:id`。
+  - 新增 `GET /api/source-cards/:id/observations?summary=1`。
+  - observations API 只返回 summary rows，不返回 observation `data` 或 evidence `details`。
+- `apps/web/src/app/routes/source-cards.tsx`
+  - 新增 `/source-cards` 列表工作台。
+  - 新增 `/source-cards/$id` 详情视图。
+  - 展示 identity、lifecycle、capabilities、adapter revision、credential binding summary、privacy、health 和 observation summary。
+  - 私有邮箱展示 metadata-only/body hidden/attachments blocked/credential refs hidden。
+  - 公共股票源展示 public read-only/no trading/no broker/order/rebalancing。
+- `apps/web/src/app/router.tsx`
+  - 注册 Source Cards 列表与详情路由。
+- `apps/web/src/app/components/layout/Sidebar.tsx`
+  - 新增 `Sources` 入口。
+- `apps/web/src/api/__tests__/routes.test.ts`
+  - 覆盖 Source Card read-only API、public view redaction、observation summary 不含 raw data、missing 404。
+- `apps/web/src/app/routes/source-cards.test.tsx`
+  - 覆盖列表和详情的关键安全文案、Watch eligibility、QQ 邮箱 candidate/private 与 A 股 active/public 的区分。
+- `docs/source-card-implementation-log.md`
+  - 记录本次实现过程。
+
+### 关键设计决策
+
+- Web API 复用 `SourceCardService` public view，不暴露 `credentials`。
+- API 层不实现 promote/retire，不提供 health probe 执行入口，只提供 read-only list/get/observation summary。
+- Observation endpoint 只做摘要，不做 raw observation 或日志浏览器，避免高频数据和私人内容进入 UI。
+- 前端首屏是表格/列表工作台，状态和 Watch eligibility 都有文字标签，不只依赖颜色。
+- 详情页右侧 inspector 只展示 credential binding type、inject mode、scope 和 reference-present 状态，不展示引用值。
+
+### 安全边界
+
+- 未执行 `himalaya`。
+- 未拉取真实股票数据。
+- 未读取私人邮件正文或附件。
+- 未实现自动交易、自动发送邮件、远端写操作。
+- 未修改 scheduler。
+- 未新增 Watch 创建向导。
+- UI/API 不展示 `binding.ref`、credential ref、token、cookie、password、authorization。
+
+### 验证命令和结果
+
+- `bun test packages/core/src/source-card/__tests__/service-runner.test.ts`
+  - 结果：5 pass，0 fail。
+  - 覆盖：SourceCardService public view 不外露 credential refs，包括 health evidence 中的 `credentialRef` / `credentialLeaseId`。
+- `bun test apps/web/src/api/__tests__/routes.test.ts`
+  - 结果：35 pass，0 fail。
+  - 覆盖：Source Card list/get/observation summary API、public view redaction、缺失 Source Card 404、`source_card` tool 注册数。
+- `bun test apps/web/src/app/routes/source-cards.test.tsx`
+  - 结果：4 pass，0 fail。
+  - 覆盖：Watch eligibility、列表展示、QQ 邮箱 private/candidate 安全文案、A 股 public/active read-only/no-trading 文案。
+- `bun run check`
+  - 结果：通过。
+- `bunx biome check --write packages/core/src/source-card/service.ts apps/web/src/api/routes.ts apps/web/src/api/__tests__/routes.test.ts apps/web/src/app/routes/source-cards.tsx apps/web/src/app/routes/source-cards.test.tsx apps/web/src/app/router.tsx apps/web/src/app/components/layout/Sidebar.tsx`
+  - 结果：通过，并格式化 3 个文件。
+- `bunx biome check packages/core/src/source-card/service.ts apps/web/src/api/routes.ts apps/web/src/api/__tests__/routes.test.ts apps/web/src/app/routes/source-cards.tsx apps/web/src/app/routes/source-cards.test.tsx apps/web/src/app/router.tsx apps/web/src/app/components/layout/Sidebar.tsx`
+  - 结果：通过。
+- `bun run build:web`
+  - 结果：通过；Vite 仅提示 bundle chunk size warning。
+- 临时 `PORT=3101` Zero Web 服务验证：
+  - `GET /api/source-cards` 返回两个样例 Source Card。
+  - `GET /source-cards` 返回 200。
+  - `GET /source-cards/qq-mail-himalaya` 返回 200。
+  - `GET /api/source-cards/qq-mail-himalaya` 敏感字段扫描无 `external:himalaya/account/qq`、`credentialRef`、`credentialLeaseId`、`credentials`、token/cookie/password/authorization 命中。
+  - Playwright 截图通过：`/tmp/source-cards-list.png`、`/tmp/source-cards-qq.png`、`/tmp/source-cards-stock.png`。
+
+### 未解决风险或后续建议
+
+- 目前只读 UI 不支持 promote/retire 审批；后续实现 mutation 时必须继续复用 public view 和显式 reason/scope confirmation。
+- 当前 observations 只展示摘要；如果未来展示公共数据样本，需要由 observation contract 明确允许，并继续默认屏蔽 private source raw content。

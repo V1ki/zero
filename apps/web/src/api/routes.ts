@@ -4,6 +4,7 @@ import {
   type MemoryStatus,
   type MemoryType,
   type ModelPricing,
+  type SourceObservation,
   toErrorMessage,
 } from '@zero-os/shared'
 import { readYaml, writeYaml } from '@zero-os/shared/utils'
@@ -66,8 +67,8 @@ export function createRoutes(zero: ZeroOS) {
           const secretRef = provider.auth.apiKeyRef ?? provider.auth.oauthTokenRef
           const configured = secretRef ? !!zero.vault.get(secretRef) : false
           const oauthStatus = managedOAuth.supportsProvider(name)
-          ? await managedOAuth.getStatusWithRefresh(name)
-          : undefined
+            ? await managedOAuth.getStatusWithRefresh(name)
+            : undefined
 
           return [
             name,
@@ -227,6 +228,70 @@ export function createRoutes(zero: ZeroOS) {
     }
   }
 
+  function summarizeSourceObservations(observations: SourceObservation[]) {
+    const kindCounts: Record<string, number> = {}
+    const capabilityIds = new Set<string>()
+    let latestFailureClass: string | undefined
+
+    const rows = observations.map((observation) => {
+      kindCounts[observation.kind] = (kindCounts[observation.kind] ?? 0) + 1
+      capabilityIds.add(observation.capabilityId)
+      if (observation.evidence?.failureClass) {
+        latestFailureClass = observation.evidence.failureClass
+      }
+
+      return {
+        id: observation.id,
+        sourceCardId: observation.sourceCardId,
+        capabilityId: observation.capabilityId,
+        observedAt: observation.observedAt,
+        kind: observation.kind,
+        cursor: summarizeObservationCursor(observation.cursor),
+        evidence: summarizeObservationEvidence(observation.evidence),
+      }
+    })
+
+    const last = rows.length > 0 ? rows[rows.length - 1] : undefined
+    return {
+      summary: {
+        total: observations.length,
+        kindCounts,
+        capabilityIds: [...capabilityIds].sort(),
+        lastObservedAt: last?.observedAt,
+        latestFailureClass,
+      },
+      observations: rows,
+    }
+  }
+
+  function summarizeObservationCursor(cursor: SourceObservation['cursor']) {
+    if (!cursor) return undefined
+    if (typeof cursor === 'string') return cursor
+    return {
+      type: 'object',
+      keys: Object.keys(cursor).sort(),
+    }
+  }
+
+  function summarizeObservationEvidence(evidence: SourceObservation['evidence']) {
+    if (!evidence) return undefined
+    return {
+      sourceCardId: evidence.sourceCardId,
+      capabilityId: evidence.capabilityId,
+      adapterRevision: evidence.adapterRevision,
+      commandTemplateHash: evidence.commandTemplateHash,
+      endpointTemplateHash: evidence.endpointTemplateHash,
+      statusCode: evidence.statusCode,
+      exitCode: evidence.exitCode,
+      durationMs: evidence.durationMs,
+      rowCount: evidence.rowCount,
+      schemaKeys: evidence.schemaKeys,
+      artifactRefs: evidence.artifactRefs,
+      failureClass: evidence.failureClass,
+      message: evidence.message,
+    }
+  }
+
   const app = new Hono()
     .use('*', cors())
 
@@ -243,7 +308,8 @@ export function createRoutes(zero: ZeroOS) {
       return c.json({
         status,
         uptime: process.uptime(),
-        currentModel: currentWebSession?.data.currentModel ?? zero.sessionManager.getPreferredModel('web'),
+        currentModel:
+          currentWebSession?.data.currentModel ?? zero.sessionManager.getPreferredModel('web'),
         version: '0.1.0',
         heartbeatAge,
         currentSessions: currentSessions.length,
@@ -315,7 +381,8 @@ export function createRoutes(zero: ZeroOS) {
       const q = c.req.query('q')?.toLowerCase() ?? ''
       const currentIds = getCurrentSessionIds()
 
-      let sessions = filter === 'current' ? zero.sessionManager.listCurrent() : zero.sessionManager.listAll()
+      let sessions =
+        filter === 'current' ? zero.sessionManager.listCurrent() : zero.sessionManager.listAll()
 
       if (filter === 'background') {
         sessions = sessions.filter((session) => !currentIds.has(session.data.id))
@@ -395,17 +462,18 @@ export function createRoutes(zero: ZeroOS) {
         }
       }
 
-      const filtered = (q
-        ? result.filter(
-            (s) =>
-              (s.id as string).toLowerCase().includes(q) ||
-              (s.source as string).toLowerCase().includes(q) ||
-              ((s.channelName as string)?.toLowerCase().includes(q) ?? false) ||
-              (s.currentModel as string).toLowerCase().includes(q) ||
-              ((s.summary as string)?.toLowerCase().includes(q) ?? false) ||
-              ((s.channelId as string)?.toLowerCase().includes(q) ?? false),
-          )
-        : result
+      const filtered = (
+        q
+          ? result.filter(
+              (s) =>
+                (s.id as string).toLowerCase().includes(q) ||
+                (s.source as string).toLowerCase().includes(q) ||
+                ((s.channelName as string)?.toLowerCase().includes(q) ?? false) ||
+                (s.currentModel as string).toLowerCase().includes(q) ||
+                ((s.summary as string)?.toLowerCase().includes(q) ?? false) ||
+                ((s.channelId as string)?.toLowerCase().includes(q) ?? false),
+            )
+          : result
       ).sort((left, right) => (right.updatedAt as string).localeCompare(left.updatedAt as string))
 
       return c.json({ sessions: filtered })
@@ -721,7 +789,12 @@ export function createRoutes(zero: ZeroOS) {
       const body = await c.req.json<{ message: string; sessionId?: string }>()
       const isSessionCommand = parseSessionArgs(body.message) !== null
       const selected = body.sessionId
-        ? zero.sessionManager.switchCurrentSessionForChannel('web', 'default', body.sessionId, 'web')
+        ? zero.sessionManager.switchCurrentSessionForChannel(
+            'web',
+            'default',
+            body.sessionId,
+            'web',
+          )
         : zero.sessionManager.getOrCreateForChannel('web', 'default', 'web')
       const session = selected?.session
 
@@ -824,6 +897,31 @@ export function createRoutes(zero: ZeroOS) {
       const deleted = await zero.memoryStore.delete(type, id)
       if (!deleted) return c.json({ error: 'Memory not found' }, 404)
       return c.json({ ok: true })
+    })
+
+    // Source Cards (read-only)
+    .get('/api/source-cards', (c) => {
+      return c.json({ sourceCards: zero.sourceCardService.list() })
+    })
+
+    .get('/api/source-cards/:id/observations', (c) => {
+      const id = c.req.param('id')
+      const sourceCard = zero.sourceCardService.get(id)
+      if (!sourceCard) return c.json({ error: 'Source Card not found' }, 404)
+
+      const observations = zero.sourceCardService.listObservations(id)
+      return c.json({
+        sourceCardId: id,
+        summaryOnly: true,
+        ...summarizeSourceObservations(observations),
+      })
+    })
+
+    .get('/api/source-cards/:id', (c) => {
+      const id = c.req.param('id')
+      const sourceCard = zero.sourceCardService.get(id)
+      if (!sourceCard) return c.json({ error: 'Source Card not found' }, 404)
+      return c.json({ sourceCard })
     })
 
     // Memo

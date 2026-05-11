@@ -10,6 +10,7 @@ import { SessionChannelDetailPage } from './routes/session-channel-detail'
 import { SessionDetailPage } from './routes/session-detail'
 import { SessionRunLogPage } from './routes/session-run-log'
 import { SessionsPage } from './routes/sessions'
+import { SourceCardDetailPage, SourceCardsPage } from './routes/source-cards'
 import { ToolsPage } from './routes/tools'
 
 const rootRoute = createRootRoute({
@@ -62,6 +63,18 @@ const toolsRoute = createRoute({
   component: ToolsPage,
 })
 
+const sourceCardsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/source-cards',
+  component: SourceCardsPage,
+})
+
+const sourceCardDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/source-cards/$id',
+  component: SourceCardDetailPage,
+})
+
 const logsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/logs',
@@ -94,6 +107,8 @@ const routeTree = rootRoute.addChildren([
   memoryRoute,
   memoRoute,
   toolsRoute,
+  sourceCardsRoute,
+  sourceCardDetailRoute,
   logsRoute,
   sessionRunLogRoute,
   configRoute,

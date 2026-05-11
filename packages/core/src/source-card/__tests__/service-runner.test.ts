@@ -50,6 +50,33 @@ describe('SourceCardService', () => {
     expect(text).not.toContain('secret-token')
   })
 
+  test('public views strip credential references from health evidence', () => {
+    const { manager, service } = createHarness()
+    manager.create(createQqMailHimalayaSourceCard())
+
+    service.recordHealthResult('qq-mail-himalaya', {
+      checkId: 'himalaya_account_health',
+      status: 'failed',
+      checkedAt: '2026-05-11T00:00:00.000Z',
+      failureClass: 'auth',
+      evidence: {
+        credentialRef: 'external:himalaya/account/qq',
+        credentialLeaseId: 'lease_qq_mail',
+        exitCode: 1,
+      },
+    })
+
+    const text = JSON.stringify({
+      listed: service.list(),
+      loaded: service.get('qq-mail-himalaya'),
+    })
+
+    expect(text).not.toContain('external:himalaya/account/qq')
+    expect(text).not.toContain('credentialRef')
+    expect(text).not.toContain('credentialLeaseId')
+    expect(text).toContain('"exitCode":1')
+  })
+
   test('validate, promote, retire, recordHealthResult, and listObservations form the service surface', () => {
     const { manager, service } = createHarness()
     manager.create(createQqMailHimalayaSourceCard())

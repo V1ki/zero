@@ -80,6 +80,7 @@ export function toPublicSourceCard(card: SourceCard): SourceCardPublicView {
   const { credentials: _credentials, ...rest } = card
   return {
     ...rest,
+    health: toPublicHealth(rest.health),
     credentialBindings: card.credentials.map((credential) => ({
       id: credential.id,
       required: credential.required,
@@ -88,5 +89,23 @@ export function toPublicSourceCard(card: SourceCard): SourceCardPublicView {
       scopes: [...credential.scopes],
       hasReference: 'ref' in credential.binding,
     })),
+  }
+}
+
+function toPublicHealth(
+  cardHealth: SourceCardPublicView['health'],
+): SourceCardPublicView['health'] {
+  if (!cardHealth.lastResult) return cardHealth
+  const {
+    credentialRef: _credentialRef,
+    credentialLeaseId: _credentialLeaseId,
+    ...evidence
+  } = cardHealth.lastResult.evidence
+  return {
+    ...cardHealth,
+    lastResult: {
+      ...cardHealth.lastResult,
+      evidence,
+    },
   }
 }
