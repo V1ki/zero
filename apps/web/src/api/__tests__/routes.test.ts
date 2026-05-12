@@ -77,6 +77,15 @@ function expectNoSourcePublicViewLeak(value: unknown) {
   expect(text).not.toMatch(/"details"\s*:/)
 }
 
+function expectNoSourceDraftSecretMaterial(value: unknown) {
+  const text = JSON.stringify(value)
+  expect(text).not.toContain('external:himalaya/account/qq')
+  expect(text).not.toContain('credentialRef')
+  expect(text).not.toContain('credentialLeaseId')
+  expect(text).not.toContain('sk-test-placeholder')
+  expect(text).not.toMatch(/authorization|cookie|password|token/i)
+}
+
 function writeConfig(dataDir: string) {
   writeFileSync(
     join(dataDir, 'config.yaml'),
@@ -479,6 +488,122 @@ describe('API Routes (Real)', () => {
     expect(data.sourceCard).not.toHaveProperty('credentials')
     expectNoSourceCredentialMaterial(data)
     expectNoSourcePublicViewLeak(data)
+  })
+
+  test('POST /api/source-card-drafts mines a draft and creates only candidate cards', async () => {
+    const createdAt = '2026-05-12T03:00:00.000Z'
+    const sourceSessionId = 'sess_routes_source_miner'
+    const sessionData: SessionData = {
+      id: sourceSessionId,
+      createdAt,
+      updatedAt: createdAt,
+      source: 'web',
+      currentModel: 'openai-codex/gpt-5.4-medium',
+      modelHistory: [{ model: 'openai-codex/gpt-5.4-medium', from: createdAt, to: null }],
+      tags: [],
+      channelId: 'default',
+      channelName: 'web',
+    }
+    zero.sessionDb.saveSession(sessionData)
+    zero.sessionDb.saveMessages(sourceSessionId, [
+      {
+        id: 'msg_source_miner_user',
+        sessionId: sourceSessionId,
+        role: 'user',
+        messageType: 'message',
+        createdAt,
+        content: [
+          {
+            type: 'text',
+            text: '把 Eastmoney public stock quote API 的已有 session evidence 做成 Source Card draft',
+          },
+        ],
+      },
+      {
+        id: 'msg_source_miner_assistant',
+        sessionId: sourceSessionId,
+        role: 'assistant',
+        messageType: 'message',
+        createdAt,
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: 'tool_eastmoney',
+            outputSummary: 'public quote metadata',
+            content:
+              'GET https://push2.eastmoney.com/api/qt/stock/get statusCode 200 schemaKeys data diff f43 f57 f58',
+          },
+        ],
+      },
+    ])
+    const span = zero.tracer.startSpan(
+      sourceSessionId,
+      'fetch eastmoney quote evidence',
+      undefined,
+      {
+        kind: 'tool_call',
+        data: {
+          input: { url: 'https://push2.eastmoney.com/api/qt/stock/get' },
+          toolResult: {
+            outputSummary: 'HTTP 200 with quote schema',
+            schemaKeys: ['data', 'diff', 'f43', 'f57', 'f58'],
+          },
+        },
+      },
+    )
+    zero.tracer.endSpan(span.id, 'success')
+
+    const draftRes = await app.request('/api/source-card-drafts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: sourceSessionId }),
+    })
+    expect(draftRes.status).toBe(200)
+    const draftData = (await draftRes.json()) as { draft: Record<string, unknown> }
+    const draft = draftData.draft
+
+    expect(draft.sourceSessionId).toBe(sourceSessionId)
+    expect((draft.proposedCard as Record<string, unknown>).state).toBe('candidate')
+    expect((draft.proposedCard as Record<string, unknown>).kind).toBe('public_market_data')
+    expect(Array.isArray(draft.evidenceRefs)).toBe(true)
+    expect(JSON.stringify(draft.evidenceRefs)).toContain('push2.eastmoney.com')
+    expect(JSON.stringify(draft.evidenceRefs)).toContain('schemaKeys')
+    expectNoSourceDraftSecretMaterial(draftData)
+
+    const validateRes = await app.request('/api/source-card-drafts/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ draft }),
+    })
+    expect(validateRes.status).toBe(200)
+    expect(((await validateRes.json()) as { validation: { ok: boolean } }).validation.ok).toBe(true)
+
+    const rejected = await app.request('/api/source-card-drafts/candidates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ draft, confirm: false }),
+    })
+    expect(rejected.status).toBe(400)
+
+    const tamperedDedupe = await app.request('/api/source-card-drafts/candidates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ draft: { ...draft, dedupeCandidates: [] }, confirm: true }),
+    })
+    expect(tamperedDedupe.status).toBe(400)
+    expect(JSON.stringify(await tamperedDedupe.json())).toContain('dedupeDecision')
+
+    const created = await app.request('/api/source-card-drafts/candidates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ draft, confirm: true, dedupeDecision: 'new_card' }),
+    })
+    expect(created.status).toBe(200)
+    const createdData = (await created.json()) as { sourceCard: Record<string, unknown> }
+    expect(createdData.sourceCard.state).toBe('candidate')
+    expect(createdData.sourceCard.state).not.toBe('active')
+    expectNoSourceCredentialMaterial(createdData)
+    expectNoSourcePublicViewLeak(createdData)
   })
 
   test('PUT /api/memo updates memo', async () => {

@@ -13,6 +13,8 @@ import type { AgentSnapshot, Command } from '@zero-os/core'
 import {
   CONTEXT_PARAMS,
   CommandRouter,
+  SessionSourceMiner,
+  type SessionSourceMinerArtifact,
   SourceCardManager,
   SourceCardService,
   SourceCardTool,
@@ -205,6 +207,7 @@ export interface ZeroOS {
   sessionManager: SessionManager
   sourceCardManager: SourceCardManager
   sourceCardService: SourceCardService
+  sourceCardMiner: SessionSourceMiner
   memoryStore: MemoryRepository
   memoryRetriever: MemoryRetriever
   memoManager: MemoManager
@@ -252,6 +255,40 @@ export function createUsageRecorder(metrics: MetricsDB): UsageRecorder {
       })
     },
   }
+}
+
+const SOURCE_MINER_ARTIFACT_MAX_CHARS = 65_536
+
+function readSessionSourceMinerArtifacts(
+  artifactRefs: string[],
+  artifactSearchRoots: string[] = [],
+): SessionSourceMinerArtifact[] {
+  return artifactRefs
+    .map((ref) => {
+      const path = resolveSessionArtifactRef(ref, artifactSearchRoots)
+      if (!path) return { ref }
+
+      try {
+        const text = readFileSync(path, 'utf8').slice(0, SOURCE_MINER_ARTIFACT_MAX_CHARS)
+        return {
+          ref,
+          path,
+          text,
+          sizeBytes: text.length,
+        }
+      } catch {
+        return { ref, path }
+      }
+    })
+    .filter((artifact, index, artifacts) => {
+      return artifacts.findIndex((candidate) => candidate.ref === artifact.ref) === index
+    })
+}
+
+function resolveSessionArtifactRef(ref: string, artifactSearchRoots: string[]): string | undefined {
+  if (!ref.includes('.artifacts/')) return undefined
+  const candidates = [ref, ...artifactSearchRoots.map((root) => join(root, ref))]
+  return candidates.find((candidate) => existsSync(candidate))
 }
 
 /**
@@ -350,6 +387,22 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
     createAStockMarketDataSourceCard(),
   ])
   const sourceCardService = new SourceCardService(sourceCardManager)
+  const sessionManagerRef: { current?: SessionManager } = {}
+  const sourceCardMiner = new SessionSourceMiner({
+    secretFilter,
+    listSourceCards: () => sourceCardService.list(),
+    reader: {
+      readSession: (sessionId) =>
+        sessionManagerRef.current?.get(sessionId)?.data ?? sessionDb.getSession(sessionId),
+      readMessages: (sessionId) =>
+        sessionManagerRef.current?.get(sessionId)?.getMessages() ??
+        sessionDb.loadSessionMessages(sessionId),
+      readTraceEntries: (sessionId) => observability.readSessionTraceEntries(sessionId),
+      readRunLog: (sessionId) => observability.readSessionRunLog(sessionId),
+      readArtifacts: (_sessionId, options) =>
+        readSessionSourceMinerArtifacts(options.artifactRefs, options.artifactSearchRoots),
+    },
+  })
 
   // 8. Initialize Tools
   const fuseRules = loadFuseList(join(ZERO_DIR, 'fuse_list.yaml'))
@@ -364,7 +417,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
   toolRegistry.register(new MemoryReadTool())
   toolRegistry.register(new MemoryTool())
   toolRegistry.register(new ScheduleTool())
-  toolRegistry.register(new SourceCardTool(sourceCardService))
+  toolRegistry.register(new SourceCardTool(sourceCardService, sourceCardMiner))
   toolRegistry.register(new CodexTool())
   toolRegistry.register(new SpawnAgentTool(modelRouter, toolRegistry, metrics))
   toolRegistry.register(new WaitAgentTool())
@@ -511,6 +564,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
     },
     sessionDb,
   )
+  sessionManagerRef.current = sessionManager
 
   // 10.5. Restore current bound sessions from DB
   heartbeat.setReady(false, 'restoring_sessions')
@@ -841,6 +895,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
     sessionManager,
     sourceCardManager,
     sourceCardService,
+    sourceCardMiner,
     memoryStore,
     memoryRetriever,
     memoManager,

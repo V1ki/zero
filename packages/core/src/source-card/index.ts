@@ -18,6 +18,28 @@ export type {
   SourceCardPublicView,
   SourceCredentialBindingView,
 } from './service'
+export {
+  SessionSourceMiner,
+  containsSensitiveDraftMaterial,
+  findSourceCardDraftDedupeCandidates,
+  redactSourceCardDraft,
+} from './miner'
+export type {
+  SessionMinerSession,
+  SessionSourceMinerArtifact,
+  SessionSourceMinerDeps,
+  SessionSourceMinerOptions,
+  SessionSourceMinerReader,
+  SourceCardDedupeSource,
+  SourceCardDraft,
+  SourceCardDraftCandidateRequest,
+  SourceCardDraftDedupeCandidate,
+  SourceCardDraftDedupeDecision,
+  SourceCardDraftEvidenceRef,
+  SourceCardDraftEvidenceSource,
+  SourceCardDraftTriggerSnapshot,
+  SourceCardDraftValidationResult,
+} from './miner'
 export { SourceCardHealthRunner } from './runner'
 export type {
   SourceCardHealthRunInput,

@@ -1,4 +1,5 @@
 import {
+  type SourceCardDraftCandidateRequest,
   type SourceCardPromoteRequest,
   buildSessionInfoReply,
   loadConfig,
@@ -901,6 +902,56 @@ export function createRoutes(zero: ZeroOS) {
       const deleted = await zero.memoryStore.delete(type, id)
       if (!deleted) return c.json({ error: 'Memory not found' }, 404)
       return c.json({ ok: true })
+    })
+
+    // Source Card Drafts
+    .post('/api/source-card-drafts', async (c) => {
+      const body = (await c.req
+        .json<{ sessionId?: unknown; current?: unknown }>()
+        .catch(() => ({}))) as { sessionId?: unknown; current?: unknown }
+      const useCurrentSession = body.current === true
+      const sessionId =
+        typeof body.sessionId === 'string' && body.sessionId.trim()
+          ? body.sessionId
+          : useCurrentSession
+            ? getCurrentWebSession()?.data.id
+            : undefined
+
+      if (!sessionId) {
+        return c.json(
+          { error: 'sessionId is required unless current=true resolves a session' },
+          400,
+        )
+      }
+
+      try {
+        const draft = zero.sourceCardMiner.generateDraft(sessionId, {
+          currentSession: useCurrentSession && !body.sessionId,
+        })
+        return c.json({ draft })
+      } catch (error) {
+        const message = toErrorMessage(error)
+        return c.json({ error: message }, message.includes('not found') ? 404 : 400)
+      }
+    })
+
+    .post('/api/source-card-drafts/validate', async (c) => {
+      const body = (await c.req.json<{ draft?: unknown }>().catch(() => ({}))) as {
+        draft?: unknown
+      }
+      return c.json({ validation: zero.sourceCardService.validateDraft(body.draft) })
+    })
+
+    .post('/api/source-card-drafts/candidates', async (c) => {
+      const body = await c.req.json<SourceCardDraftCandidateRequest>().catch(() => null)
+      if (!body) return c.json({ error: 'Source Card draft candidate request is required' }, 400)
+
+      try {
+        const sourceCard = zero.sourceCardService.createCandidateFromDraft(body)
+        return c.json({ sourceCard })
+      } catch (error) {
+        return c.json({ error: toErrorMessage(error) }, 400)
+      }
     })
 
     // Source Cards
