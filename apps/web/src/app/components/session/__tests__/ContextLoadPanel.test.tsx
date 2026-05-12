@@ -47,4 +47,29 @@ describe('ContextLoadPanel', () => {
     expect(html).toContain('Latest Request')
     expect(html).toContain('test-model')
   })
+
+  test('renders a stacked sidebar layout when embedded in the context panel', () => {
+    const summary: ContextTokenSummary = {
+      estimatedContextTokens: 120,
+      cumulative: {
+        totalTokens: 120,
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheWriteTokens: 0,
+        cacheReadTokens: 0,
+        reasoningTokens: 0,
+        effectiveInputTokens: 100,
+        totalCost: 0.005,
+        requestCount: 1,
+      },
+      sections: [{ key: 'user', label: 'User', tokens: 120, detail: 'prompts', tone: 'user' }],
+      hotspots: [],
+    }
+
+    const html = renderToStaticMarkup(<ContextLoadPanel summary={summary} layout="sidebar" />)
+
+    expect(html).toContain('data-layout="sidebar"')
+    expect(html).toContain('Context Load')
+    expect(html).toContain('Distribution')
+  })
 })

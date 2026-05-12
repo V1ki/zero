@@ -5,7 +5,6 @@ import { useWebSocket } from '../../hooks/useWebSocket'
 import { apiFetch, isAbortError } from '../../lib/api'
 import { useUIStore } from '../../stores/ui'
 import { Skeleton, SkeletonText } from '../shared/Skeleton'
-import { ContextLoadPanel } from './ContextLoadPanel'
 import { ContextPanel } from './ContextPanel'
 import { MetadataBar } from './MetadataBar'
 import { TimelineView } from './TimelineView'
@@ -623,57 +622,60 @@ export function SessionDetailScreen({
   }
 
   return (
-    <div className="relative mx-auto max-w-[1720px] px-4 py-6 sm:px-6">
+    <div className="relative mx-auto flex h-screen max-w-[1720px] flex-col overflow-hidden px-4 py-6 sm:px-6">
       <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[480px] bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.12),transparent_35%),radial-gradient(circle_at_top_right,rgba(245,158,11,0.1),transparent_28%)]" />
-      {pageHeader}
+      <div data-testid="session-detail-header" className="shrink-0">
+        {pageHeader}
 
-      <div className="flex items-center gap-2 mb-3 flex-wrap">
-        <span className="text-[11px] font-mono text-[var(--color-text-disabled)]">
-          {session.id}
-        </span>
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
+          <span className="text-[11px] font-mono text-[var(--color-text-disabled)]">
+            {session.id}
+          </span>
+        </div>
+
+        <MetadataBar
+          sessionId={session.id}
+          summary={session.summary}
+          source={session.source}
+          isCurrent={session.isCurrent}
+          placement={session.placement}
+          currentModel={session.currentModel}
+          channelName={session.channelName}
+          channelId={session.channelId}
+          createdAt={session.createdAt}
+          updatedAt={session.updatedAt}
+          modelHistory={session.modelHistory}
+          requestCount={session.requestCount}
+          totalTokens={session.totalTokens}
+          inputTokens={session.inputTokens}
+          outputTokens={session.outputTokens}
+          cacheWriteTokens={session.cacheWriteTokens}
+          cacheReadTokens={session.cacheReadTokens}
+          reasoningTokens={session.reasoningTokens}
+          effectiveInputTokens={session.effectiveInputTokens}
+          cacheHitRate={session.cacheHitRate}
+          totalCost={session.totalCost}
+          auxiliaryCost={session.auxiliaryCost}
+          purposeBreakdown={session.purposeBreakdown}
+          toolCallCount={sessionInsights.toolCallCount}
+          decisionCount={sessionInsights.decisionCount}
+          taskClosureCount={sessionInsights.taskClosureCount}
+          timelineCount={sessionInsights.timelineCount}
+          systemEventCount={sessionInsights.systemEventCount}
+          subAgentCount={sessionInsights.subAgentCount}
+          onDeleted={goBack}
+        />
       </div>
-
-      <MetadataBar
-        sessionId={session.id}
-        summary={session.summary}
-        source={session.source}
-        isCurrent={session.isCurrent}
-        placement={session.placement}
-        currentModel={session.currentModel}
-        channelName={session.channelName}
-        channelId={session.channelId}
-        createdAt={session.createdAt}
-        updatedAt={session.updatedAt}
-        modelHistory={session.modelHistory}
-        requestCount={session.requestCount}
-        totalTokens={session.totalTokens}
-        inputTokens={session.inputTokens}
-        outputTokens={session.outputTokens}
-        cacheWriteTokens={session.cacheWriteTokens}
-        cacheReadTokens={session.cacheReadTokens}
-        reasoningTokens={session.reasoningTokens}
-        effectiveInputTokens={session.effectiveInputTokens}
-        cacheHitRate={session.cacheHitRate}
-        totalCost={session.totalCost}
-        auxiliaryCost={session.auxiliaryCost}
-        purposeBreakdown={session.purposeBreakdown}
-        toolCallCount={sessionInsights.toolCallCount}
-        decisionCount={sessionInsights.decisionCount}
-        taskClosureCount={sessionInsights.taskClosureCount}
-        timelineCount={sessionInsights.timelineCount}
-        systemEventCount={sessionInsights.systemEventCount}
-        subAgentCount={sessionInsights.subAgentCount}
-        onDeleted={goBack}
-      />
-
-      {contextTokenSummary && <ContextLoadPanel summary={contextTokenSummary} />}
 
       <div
         data-testid="session-detail-layout"
-        className="mt-5 grid min-h-0 grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_340px] xl:items-start 2xl:grid-cols-[minmax(0,1fr)_360px]"
+        className="mt-5 grid min-h-0 flex-1 grid-cols-1 gap-5 overflow-y-auto xl:grid-cols-[minmax(0,1fr)_340px] xl:items-stretch xl:overflow-hidden 2xl:grid-cols-[minmax(0,1fr)_360px]"
       >
-        <section data-testid="session-timeline-stage" className="card overflow-hidden p-0">
-          <div className="border-b border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01))] px-4 py-3 sm:px-5">
+        <section
+          data-testid="session-timeline-stage"
+          className="card flex min-h-[520px] flex-col overflow-hidden p-0 xl:min-h-0"
+        >
+          <div className="shrink-0 border-b border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01))] px-4 py-3 sm:px-5">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--color-text-disabled)]">
@@ -711,7 +713,7 @@ export function SessionDetailScreen({
 
           <div
             ref={timelineRef}
-            className="min-h-[360px] bg-[linear-gradient(180deg,rgba(10,14,20,0.72),rgba(9,11,16,0.98))] px-4 py-4 sm:px-5 xl:max-h-[calc(100vh-190px)] xl:overflow-y-auto xl:[scrollbar-gutter:stable]"
+            className="min-h-0 flex-1 overflow-y-auto bg-[linear-gradient(180deg,rgba(10,14,20,0.72),rgba(9,11,16,0.98))] px-4 py-4 sm:px-5 [scrollbar-gutter:stable]"
           >
             {session.messages.length === 0 ? (
               <div className="rounded-[24px] border border-white/8 bg-white/[0.03] p-8 text-center text-[13px] text-[var(--color-text-muted)]">
@@ -739,7 +741,7 @@ export function SessionDetailScreen({
           </div>
         </section>
 
-        <div className="min-h-0 xl:sticky xl:top-6 xl:h-[calc(100vh-190px)]">
+        <div className="min-h-[520px] xl:min-h-0">
           <ContextPanel
             sessionId={session.id}
             summary={session.summary}
@@ -758,6 +760,7 @@ export function SessionDetailScreen({
             cacheWriteCost={session.cacheWriteCost}
             grossAvoidedInputCost={session.grossAvoidedInputCost}
             netSavings={session.netSavings}
+            contextTokenSummary={contextTokenSummary}
             llmRequests={llmRequests}
             selectedDecision={selectedDecision}
             selectedTaskClosure={selectedTaskClosure}

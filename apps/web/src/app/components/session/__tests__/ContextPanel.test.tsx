@@ -59,6 +59,54 @@ describe('TraceSummaryCard', () => {
     expect(html).toContain('h-full min-h-0 overflow-y-auto')
   })
 
+  test('embeds context load stats in the summary sidebar', () => {
+    const html = renderToStaticMarkup(
+      <ContextPanel
+        sessionId="sess_1"
+        modelHistory={[]}
+        toolCalls={[]}
+        filesTouched={[]}
+        totalTokens={120}
+        contextTokenSummary={{
+          estimatedContextTokens: 120,
+          latestRequest: {
+            id: 'req_1',
+            model: 'gpt-test',
+            provider: 'openai',
+            ts: '2026-04-24T01:00:00.000Z',
+            total: 90,
+            input: 80,
+            output: 10,
+            effectiveInput: 100,
+            cost: 0.004,
+            source: 'request',
+          },
+          cumulative: {
+            totalTokens: 120,
+            inputTokens: 100,
+            outputTokens: 20,
+            cacheWriteTokens: 0,
+            cacheReadTokens: 0,
+            reasoningTokens: 0,
+            effectiveInputTokens: 100,
+            totalCost: 0.004,
+            requestCount: 1,
+          },
+          sections: [
+            { key: 'user', label: 'User', tokens: 80, detail: 'prompts', tone: 'user' },
+            { key: 'assistant', label: 'Assistant', tokens: 40, tone: 'assistant' },
+          ],
+          hotspots: [{ id: 'msg_1', label: 'User', tokens: 80, detail: 'hello' }],
+        }}
+      />,
+    )
+
+    expect(html).toContain('data-layout="sidebar"')
+    expect(html).toContain('Context Load')
+    expect(html).toContain('Latest Request')
+    expect(html).toContain('gpt-test')
+  })
+
   test('keeps summary visible without rendering tool detail panels in the sidebar', () => {
     const html = renderToStaticMarkup(
       <ContextPanel

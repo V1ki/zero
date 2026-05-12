@@ -8,12 +8,11 @@ import { apiFetch, apiPost } from '../../lib/api'
 import { toolColors } from '../../lib/colors'
 import { formatCost, formatModelHistory, formatNumber, formatTimeAgo } from '../../lib/format'
 import { CompressionSpanCard } from './CompressionSpanCard'
+import { ContextLoadPanel } from './ContextLoadPanel'
 import { SubAgentSpanCard } from './SubAgentSpanCard'
+import type { ContextTokenSummary } from './context-tokens'
 import {
   type MemoryInjectionEntry,
-  type MemoryRetrievalDetail,
-  type MemoryRetrievalSearchSummary,
-  type MemoryRetrievalTokens,
   getMemoryRetrievalSearchCount,
   getMemoryRetrievalSelectedCount,
   readMemoryRetrievalDetail,
@@ -114,6 +113,7 @@ interface Props {
   cacheWriteCost?: number
   grossAvoidedInputCost?: number
   netSavings?: number
+  contextTokenSummary?: ContextTokenSummary | null
   llmRequests?: LlmRequestEntry[]
   selectedDecision?: DecisionTimelineItem | null
   selectedTaskClosure?: TaskClosureTimelineItem | null
@@ -143,6 +143,7 @@ export function ContextPanel({
   cacheWriteCost,
   grossAvoidedInputCost,
   netSavings,
+  contextTokenSummary,
   llmRequests = [],
   selectedDecision = null,
   selectedTaskClosure = null,
@@ -312,6 +313,10 @@ export function ContextPanel({
 
       {tab === 'summary' && (
         <div className="space-y-4">
+          {contextTokenSummary ? (
+            <ContextLoadPanel summary={contextTokenSummary} layout="sidebar" />
+          ) : null}
+
           <Section title="Trace Eval">
             <TraceEvalCard
               report={traceEval}

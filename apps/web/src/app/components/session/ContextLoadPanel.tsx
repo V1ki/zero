@@ -4,19 +4,38 @@ import type { ContextTokenSection, ContextTokenSummary } from './context-tokens'
 
 interface Props {
   summary: ContextTokenSummary
+  layout?: 'wide' | 'sidebar'
 }
 
-export function ContextLoadPanel({ summary }: Props) {
+export function ContextLoadPanel({ summary, layout = 'wide' }: Props) {
   const maxSectionTokens = Math.max(...summary.sections.map((section) => section.tokens), 1)
   const latest = summary.latestRequest
+  const isSidebar = layout === 'sidebar'
 
   return (
     <section
       data-testid="session-context-load"
-      className="mt-4 overflow-hidden rounded-[22px] border border-white/8 bg-[linear-gradient(135deg,rgba(16,24,32,0.94),rgba(10,12,18,0.92))]"
+      data-layout={layout}
+      className={
+        isSidebar
+          ? 'border-b border-white/8 pb-4'
+          : 'mt-4 overflow-hidden rounded-[22px] border border-white/8 bg-[linear-gradient(135deg,rgba(16,24,32,0.94),rgba(10,12,18,0.92))]'
+      }
     >
-      <div className="grid gap-0 lg:grid-cols-[minmax(260px,0.85fr)_minmax(0,1.45fr)_minmax(240px,0.9fr)]">
-        <div className="border-b border-white/8 p-4 lg:border-r lg:border-b-0">
+      <div
+        className={
+          isSidebar
+            ? 'space-y-4'
+            : 'grid gap-0 lg:grid-cols-[minmax(260px,0.85fr)_minmax(0,1.45fr)_minmax(240px,0.9fr)]'
+        }
+      >
+        <div
+          className={
+            isSidebar
+              ? 'border-b border-white/8 pb-4'
+              : 'border-b border-white/8 p-4 lg:border-r lg:border-b-0'
+          }
+        >
           <div className="flex items-center gap-2">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-2xl border border-cyan-400/20 bg-cyan-400/10">
               <Gauge size={15} weight="bold" className="text-cyan-200" />
@@ -48,7 +67,13 @@ export function ContextLoadPanel({ summary }: Props) {
           </div>
         </div>
 
-        <div className="border-b border-white/8 p-4 lg:border-r lg:border-b-0">
+        <div
+          className={
+            isSidebar
+              ? 'border-b border-white/8 pb-4'
+              : 'border-b border-white/8 p-4 lg:border-r lg:border-b-0'
+          }
+        >
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <Heartbeat size={14} className="text-[var(--color-accent)]" />
@@ -74,7 +99,7 @@ export function ContextLoadPanel({ summary }: Props) {
           </div>
         </div>
 
-        <div className="p-4">
+        <div className={isSidebar ? '' : 'p-4'}>
           <div className="flex items-center gap-2">
             <Database size={14} className="text-emerald-300" />
             <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-secondary)]">
