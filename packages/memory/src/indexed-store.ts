@@ -3,7 +3,7 @@ import type { EmbeddingProvider } from './embedding'
 import type { MemoryRepository } from './store'
 import type { MemoryVectorMeta, VectorIndexLike } from './vector-index'
 
-const REINDEX_BATCH_SIZE = 25
+const REINDEX_BATCH_SIZE = 10
 
 export class IndexedMemoryStore implements MemoryRepository {
   constructor(

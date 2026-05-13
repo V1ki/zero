@@ -191,4 +191,56 @@ describe('IndexedMemoryStore', () => {
 
     rmSync(reindexDir, { recursive: true, force: true })
   })
+
+  test('reindexAll splits pending memories into provider-safe batches', async () => {
+    const reindexDir = mkdtempSync(join(tmpdir(), 'zero-indexed-batches-'))
+    const reindexBaseStore = new MemoryStore(reindexDir)
+    const memoryCount = 21
+
+    for (let index = 0; index < memoryCount; index++) {
+      await reindexBaseStore.create('note', `Batch ${index}`, `content ${index}`, {
+        status: 'verified',
+      })
+    }
+
+    const batchSizes: number[] = []
+    const seen: string[] = []
+    const reindexStore = new IndexedMemoryStore(
+      reindexBaseStore,
+      {
+        async embed(): Promise<number[]> {
+          throw new Error('reindexAll should use embedBatch')
+        },
+        async embedBatch(texts: string[]): Promise<number[][]> {
+          batchSizes.push(texts.length)
+          if (texts.length > 10) {
+            throw new Error(`batch too large: ${texts.length}`)
+          }
+          return texts.map((text) => [text.length, 1])
+        },
+        memoryToText(memory) {
+          return `${memory.title}\n${memory.content}`
+        },
+      },
+      {
+        async ensureIndex() {},
+        async upsert(memoryId) {
+          seen.push(memoryId)
+        },
+        async query() {
+          return []
+        },
+        async delete() {},
+        async getStats() {
+          return { itemCount: seen.length }
+        },
+      },
+    )
+
+    await expect(reindexStore.reindexAll()).resolves.toBe(memoryCount)
+    expect(batchSizes).toEqual([10, 10, 1])
+    expect(seen).toHaveLength(memoryCount)
+
+    rmSync(reindexDir, { recursive: true, force: true })
+  })
 })
