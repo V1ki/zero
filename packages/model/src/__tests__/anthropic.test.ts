@@ -253,6 +253,74 @@ describe('Anthropic Adapter (Pure Logic)', () => {
     expect(toolResultMsg.content[0].content).toBe('4')
   })
 
+  test('convertMessages omits internal evidence metadata from provider payload', () => {
+    const toolCallId = `toolu_${generateId()}`
+    const messages: Message[] = [
+      {
+        id: generateId(),
+        sessionId: 'test',
+        role: 'assistant',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_use',
+            id: toolCallId,
+            name: 'calculator',
+            input: { expression: '2 + 2' },
+            evidence: {
+              kind: 'tool_use_input',
+              sessionId: 'test',
+              toolUseId: toolCallId,
+              toolName: 'calculator',
+              path: '/repo/.artifacts/test/tool-evidence/input.json',
+              chars: 20,
+              bytes: 20,
+              sha256: 'input-sha',
+              createdAt: now(),
+            },
+          },
+        ],
+        createdAt: now(),
+      },
+      {
+        id: generateId(),
+        sessionId: 'test',
+        role: 'user',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: toolCallId,
+            content: '4',
+            evidence: {
+              kind: 'tool_result_output',
+              sessionId: 'test',
+              toolUseId: toolCallId,
+              toolName: 'calculator',
+              path: '/repo/.artifacts/test/tool-evidence/output.txt',
+              chars: 1,
+              bytes: 1,
+              sha256: 'output-sha',
+              createdAt: now(),
+            },
+          },
+        ],
+        createdAt: now(),
+      },
+    ]
+
+    const converted = getAnthropicHarness(adapter).convertMessages({
+      messages,
+    } as CompletionRequest)
+    const payload = JSON.stringify(converted)
+
+    expect(payload).not.toContain('evidence')
+    expect(payload).not.toContain('.artifacts')
+    expect(payload).not.toContain('output-sha')
+    expect(payload).toContain('"expression":"2 + 2"')
+    expect(payload).toContain('4')
+  })
+
   test('convertTools maps to Anthropic format', () => {
     const tools: CompletionRequest['tools'] = [
       {

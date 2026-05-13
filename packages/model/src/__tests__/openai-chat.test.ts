@@ -477,6 +477,72 @@ describe('OpenAI Chat Completions Adapter (Pure Logic)', () => {
     expect(toolMsg.content).toBe('file contents here')
   })
 
+  test('convertMessages: omits internal evidence metadata from provider payload', () => {
+    const toolCallId = `call_${generateId()}`
+    const messages: Message[] = [
+      {
+        id: generateId(),
+        sessionId: 'test',
+        role: 'assistant',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_use',
+            id: toolCallId,
+            name: 'read',
+            input: { path: '/tmp/f.txt' },
+            evidence: {
+              kind: 'tool_use_input',
+              sessionId: 'test',
+              toolUseId: toolCallId,
+              toolName: 'read',
+              path: '/repo/.artifacts/test/tool-evidence/input.json',
+              chars: 21,
+              bytes: 21,
+              sha256: 'input-sha',
+              createdAt: now(),
+            },
+          },
+        ],
+        createdAt: now(),
+      },
+      {
+        id: generateId(),
+        sessionId: 'test',
+        role: 'user',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: toolCallId,
+            content: 'file contents here',
+            evidence: {
+              kind: 'tool_result_output',
+              sessionId: 'test',
+              toolUseId: toolCallId,
+              toolName: 'read',
+              path: '/repo/.artifacts/test/tool-evidence/output.txt',
+              chars: 18,
+              bytes: 18,
+              sha256: 'output-sha',
+              createdAt: now(),
+            },
+          },
+        ],
+        createdAt: now(),
+      },
+    ]
+
+    const converted = getConvertedMessages(adapter, messages)
+    const payload = JSON.stringify(converted)
+
+    expect(payload).not.toContain('evidence')
+    expect(payload).not.toContain('.artifacts')
+    expect(payload).not.toContain('output-sha')
+    expect(payload).toContain('/tmp/f.txt')
+    expect(payload).toContain('file contents here')
+  })
+
   test('complete forwards session reasoning effort to chat completions', async () => {
     const createCalls: unknown[] = []
     const mockAdapter = new OpenAIChatAdapter({

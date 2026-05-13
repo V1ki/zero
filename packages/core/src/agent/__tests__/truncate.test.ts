@@ -76,13 +76,40 @@ describe('truncateToolOutput', () => {
 })
 
 describe('artifactizeToolOutput', () => {
-  test('delegates to truncateToolOutput when output is within artifact threshold', () => {
+  test('keeps short inline output unchanged when output is within prompt budget', () => {
     const output = 'Hello world\nThis stays inline.'
     const result = artifactizeToolOutput('read', output, { workDir: process.cwd() })
 
     expect(result).toEqual({
-      content: truncateToolOutput('read', output),
+      content: output,
     })
+  })
+
+  test('stores raw evidence for medium outputs that exceed tool budget without truncating active turn content', () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'zero-medium-evidence-'))
+
+    try {
+      const output = 'medium-line\n'.repeat(2000)
+      expect(output.length).toBeLessThan(65536)
+      expect(truncateToolOutput('write', output)).not.toBe(output)
+
+      const result = artifactizeToolOutput('write', output, {
+        workDir,
+        sessionId: 'sess_medium_budget',
+        toolUseId: 'tool-medium',
+      })
+
+      expect(result.artifactPath).toBeUndefined()
+      expect(result.content).toBe(output)
+      expect(result.evidence).toBeDefined()
+      expect(result.evidence?.path).toContain('.artifacts/sess_medium_budget/tool-evidence')
+      expect(result.evidence?.chars).toBe(output.length)
+      expect(result.evidence?.kind).toBe('tool_result_output')
+      expect(result.evidence?.toolUseId).toBe('tool-medium')
+      expect(readFileSync(result.evidence?.path ?? '', 'utf-8')).toBe(output)
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
   })
 
   test('writes oversized output to artifact file and returns compact reference', () => {

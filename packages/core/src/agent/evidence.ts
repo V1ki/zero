@@ -39,7 +39,11 @@ interface EpisodeBuildOptions {
   sessionId: string
 }
 
+const runtimeArtifactsDir = '.artifacts'
 const evidenceBaseDir = 'tool-evidence'
+const episodeBoundaryStrategy = 'deterministic_contiguous_older_turns_v1'
+const episodeBoundaryReason =
+  'Grouped from contiguous older replay messages after the latest active turn; future semantic classifiers can replace this boundary without changing evidence pointers.'
 
 export function shouldPersistToolInput(input: Record<string, unknown>): boolean {
   return stableStringify(input).length > CONTEXT_PARAMS.toolOutput.artifactThresholdChars
@@ -50,7 +54,7 @@ export function persistToolEvidence(input: EvidenceWriteInput): ToolEvidence {
   const safeTool = sanitizePathPart(input.toolName)
   const safeUseId = sanitizePathPart(input.toolUseId)
   const ext = input.extension ?? (input.kind === 'tool_use_input' ? 'json' : 'txt')
-  const dir = join(input.workDir, '.artifacts', input.sessionId, evidenceBaseDir)
+  const dir = join(input.workDir, runtimeArtifactsDir, input.sessionId, evidenceBaseDir)
   mkdirSync(dir, { recursive: true })
 
   const filename = `${safeUseId}-${input.kind}-${safeTool}-${sha256.slice(0, 12)}.${ext}`
@@ -146,8 +150,8 @@ export function buildEpisodeCompaction(
   )
   const goal = extractEpisodeGoal(messages)
   const scope = buildEpisodeScope(observations)
-  const confirmedFacts = buildConfirmedFacts(messages, observations)
-  const inferredFacts = buildInferredFacts(observations)
+  const confirmedFacts = buildConfirmedFacts(observations)
+  const inferredFacts = buildInferredFacts(messages, observations)
   const blockers = buildBlockers(messages, observations)
   const needsRawReview = evidence.map(
     (item) => `${item.toolName}:${item.toolUseId}:${item.kind} -> ${item.path}`,
@@ -166,6 +170,8 @@ export function buildEpisodeCompaction(
     id,
     sessionId: options.sessionId,
     status,
+    boundaryStrategy: episodeBoundaryStrategy,
+    boundaryReason: episodeBoundaryReason,
     goal,
     scope,
     toolUseIds: observations.map((observation) => observation.toolUseId),
@@ -369,6 +375,8 @@ function collectToolObservations(
 function formatEpisodeSummary(params: {
   id: string
   status: EpisodeCompaction['status']
+  boundaryStrategy?: string
+  boundaryReason?: string
   goal: string
   scope: string[]
   observations: ToolObservation[]
@@ -380,13 +388,15 @@ function formatEpisodeSummary(params: {
 }): string {
   return [
     `<episode_compaction id="${params.id}" status="${params.status}">`,
+    `boundary_strategy: ${params.boundaryStrategy ?? episodeBoundaryStrategy}`,
+    `boundary_reason: ${params.boundaryReason ?? episodeBoundaryReason}`,
     `goal: ${params.goal}`,
     'why_tools_were_called:',
     ...formatList(params.observations.map(formatToolReason)),
     'actual_scope_read_or_written:',
     ...formatList(params.scope),
     'learned:',
-    ...formatList(params.confirmedFacts),
+    ...formatList(buildLearnedFacts(params.confirmedFacts, params.inferredFacts, params.blockers)),
     'confirmed:',
     ...formatList(params.confirmedFacts),
     'inferred:',
@@ -420,22 +430,31 @@ function buildEpisodeScope(observations: ToolObservation[]): string[] {
   return uniqueStrings(scope).slice(0, 12)
 }
 
-function buildConfirmedFacts(messages: Message[], observations: ToolObservation[]): string[] {
+function buildConfirmedFacts(observations: ToolObservation[]): string[] {
   const facts: string[] = []
   for (const observation of observations) {
     const result = observation.result
     if (!result) continue
-    if (result.isError) {
-      facts.push(`${observation.toolName}:${observation.toolUseId} failed and needs recovery.`)
-      continue
-    }
-    const resultSummary = summarizeToolResult(
-      observation.toolName,
-      result.content,
-      result.outputSummary,
+    if (result.isError) continue
+
+    const evidenceSuffix = observation.resultEvidence
+      ? ` evidence=${observation.resultEvidence.path} chars=${observation.resultEvidence.chars} sha256=${observation.resultEvidence.sha256.slice(0, 12)}`
+      : ` chars=${result.content.length}`
+    facts.push(
+      `${observation.toolName}:${observation.toolUseId} returned a tool_result payload; this confirms only the tool IO was captured, not any model interpretation.${evidenceSuffix}`,
     )
-    facts.push(`${observation.toolName}:${observation.toolUseId} ${resultSummary}`)
   }
+
+  return uniqueStrings(facts).slice(0, 12)
+}
+
+function buildInferredFacts(messages: Message[], observations: ToolObservation[]): string[] {
+  const inferred: string[] = observations
+    .filter((observation) => !observation.result)
+    .map(
+      (observation) =>
+        `${observation.toolName}:${observation.toolUseId} intent is known, but no paired result is present in this compacted episode.`,
+    )
 
   const assistantTexts = messages.flatMap((message) =>
     message.role === 'assistant'
@@ -443,20 +462,37 @@ function buildConfirmedFacts(messages: Message[], observations: ToolObservation[
       : [],
   )
   for (const text of assistantTexts) {
-    if (text.length > 0) facts.push(`assistant concluded: ${truncateOneLine(text, 220)}`)
+    if (text.length > 0) {
+      inferred.push(`assistant text, not independently confirmed: ${truncateOneLine(text, 220)}`)
+    }
   }
 
-  return uniqueStrings(facts).slice(0, 12)
+  for (const observation of observations) {
+    const result = observation.result
+    if (!result || result.isError) continue
+    const resultSummary = summarizeToolResult(
+      observation.toolName,
+      result.content,
+      result.outputSummary,
+    )
+    inferred.push(
+      `${observation.toolName}:${observation.toolUseId} output summary for orientation only: ${resultSummary}`,
+    )
+  }
+
+  return uniqueStrings(inferred).slice(0, 8)
 }
 
-function buildInferredFacts(observations: ToolObservation[]): string[] {
-  const inferred = observations
-    .filter((observation) => !observation.result)
-    .map(
-      (observation) =>
-        `${observation.toolName}:${observation.toolUseId} intent is known, but no paired result is present in this compacted episode.`,
-    )
-  return uniqueStrings(inferred).slice(0, 6)
+function buildLearnedFacts(
+  confirmedFacts: string[],
+  inferredFacts: string[],
+  blockers: string[],
+): string[] {
+  return uniqueStrings([
+    ...confirmedFacts,
+    ...inferredFacts.map((fact) => `inferred: ${fact}`),
+    ...blockers.map((blocker) => `blocked: ${blocker}`),
+  ]).slice(0, 12)
 }
 
 function buildBlockers(messages: Message[], observations: ToolObservation[]): string[] {
@@ -471,9 +507,19 @@ function buildBlockers(messages: Message[], observations: ToolObservation[]): st
     })
 
   for (const message of messages) {
-    if (message.controlKind === 'task_closure') {
+    if (message.taskClosure?.action === 'block') {
       blockers.push(
-        'task_closure continuation occurred inside this episode; review raw messages before treating it as fully finished.',
+        `task_closure=block for this episode; recovery is required before treating it as finished. reason=${truncateOneLine(message.taskClosure.reason, 220)}`,
+      )
+      continue
+    }
+
+    if (message.controlKind === 'task_closure') {
+      const reason = message.content
+        .flatMap((block) => (block.type === 'text' ? [block.text.trim()] : []))
+        .find((text) => text.length > 0)
+      blockers.push(
+        `task_closure continuation occurred inside this episode; review raw messages before treating it as fully finished.${reason ? ` reason=${truncateOneLine(reason, 220)}` : ''}`,
       )
     }
   }
@@ -487,9 +533,9 @@ function summarizeToolResult(toolName: string, content: string, outputSummary?: 
 
   switch (normalized) {
     case 'write':
-      return `confirmed write result: ${truncateOneLine(source || 'write completed', 220)}`
+      return `write tool output captured: ${truncateOneLine(source || 'write completed', 220)}`
     case 'edit':
-      return `confirmed edit result: ${truncateOneLine(source || 'edit completed', 220)}`
+      return `edit tool output captured: ${truncateOneLine(source || 'edit completed', 220)}`
     case 'read':
       return `read evidence captured: ${truncateOneLine(source || 'file content captured', 220)}`
     case 'bash':

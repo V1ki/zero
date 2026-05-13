@@ -104,7 +104,7 @@ function makeChatGptSessionJson(
         'https://api.openai.com/auth': {
           chatgpt_account_id: accountId,
         },
-    }),
+      }),
     refreshToken: 'refresh-token',
     expiresAt: expMs,
     tokenType,
@@ -196,6 +196,75 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
       call_id: toolCallId,
       output: '4',
     })
+  })
+
+  test('buildInput: omits internal evidence metadata from provider payload', () => {
+    const toolCallId = `call_${generateId()}`
+    const messages: Message[] = [
+      {
+        id: generateId(),
+        sessionId: 'test',
+        role: 'assistant',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_use',
+            id: toolCallId,
+            name: 'calculator',
+            input: { expression: '2 + 2' },
+            evidence: {
+              kind: 'tool_use_input',
+              sessionId: 'test',
+              toolUseId: toolCallId,
+              toolName: 'calculator',
+              path: '/repo/.artifacts/test/tool-evidence/input.json',
+              chars: 20,
+              bytes: 20,
+              sha256: 'input-sha',
+              createdAt: now(),
+            },
+          },
+        ],
+        createdAt: now(),
+      },
+      {
+        id: generateId(),
+        sessionId: 'test',
+        role: 'user',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: toolCallId,
+            content: '4',
+            evidence: {
+              kind: 'tool_result_output',
+              sessionId: 'test',
+              toolUseId: toolCallId,
+              toolName: 'calculator',
+              path: '/repo/.artifacts/test/tool-evidence/output.txt',
+              chars: 1,
+              bytes: 1,
+              sha256: 'output-sha',
+              createdAt: now(),
+            },
+          },
+        ],
+        createdAt: now(),
+      },
+    ]
+
+    const input = getResponsesHarness(adapter).buildInput({
+      messages,
+      stream: false,
+    } as CompletionRequest)
+    const payload = JSON.stringify(input)
+
+    expect(payload).not.toContain('evidence')
+    expect(payload).not.toContain('.artifacts')
+    expect(payload).not.toContain('output-sha')
+    expect(payload).toContain('expression')
+    expect(payload).toContain('4')
   })
 
   test('buildInput: empty tool_result output falls back to outputSummary', () => {

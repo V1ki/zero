@@ -76,6 +76,10 @@ export interface Message {
   role: MessageRole
   messageType: MessageType
   controlKind?: ControlKind
+  taskClosure?: {
+    action: 'finish' | 'continue' | 'block'
+    reason: string
+  }
   content: ContentBlock[]
   model?: string
   createdAt: string

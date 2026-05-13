@@ -113,6 +113,32 @@ describe('ToolCallDetail', () => {
     expect(html).toContain('Command aborted by user from Session Detail.')
   })
 
+  test('renders evidence path hash and character count for compacted tool IO', () => {
+    const html = renderToStaticMarkup(
+      <ToolCallDetail
+        name="bash"
+        input={{ command: 'rg tool_result packages/core/src' }}
+        result="summary only"
+        evidence={[
+          {
+            kind: 'tool_result_output',
+            toolUseId: 'call_1',
+            toolName: 'bash',
+            path: '/repo/.artifacts/sess_1/tool-evidence/call_1-tool_result_output-bash.txt',
+            chars: 12345,
+            sha256: 'abcdef1234567890',
+          },
+        ]}
+      />,
+    )
+
+    expect(html).toContain('Evidence')
+    expect(html).toContain('tool_result_output')
+    expect(html).toContain('12,345 chars')
+    expect(html).toContain('sha256 abcdef123456')
+    expect(html).toContain('/repo/.artifacts/sess_1/tool-evidence')
+  })
+
   test('does not show an abort action for completed bash calls', () => {
     const html = renderToStaticMarkup(
       <ToolCallDetail

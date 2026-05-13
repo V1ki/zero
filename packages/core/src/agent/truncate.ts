@@ -11,12 +11,16 @@ const TOOL_OUTPUT_LIMITS: Record<string, number> = {
   fetch: CONTEXT_PARAMS.toolOutput.fetch,
 }
 
+function toolOutputLimit(toolName: string): number {
+  return TOOL_OUTPUT_LIMITS[toolName.toLowerCase()] ?? CONTEXT_PARAMS.toolOutput.default
+}
+
 /**
  * Truncate tool output to fit within the tool's token budget.
  * Uses head 60% + tail 20% strategy with an omission marker in the middle.
  */
 export function truncateToolOutput(toolName: string, output: string): string {
-  const limit = TOOL_OUTPUT_LIMITS[toolName.toLowerCase()] ?? CONTEXT_PARAMS.toolOutput.default
+  const limit = toolOutputLimit(toolName)
   const tokens = estimateTokens(output)
   if (tokens <= limit) return output
 
@@ -37,9 +41,9 @@ export function truncateToolOutput(toolName: string, output: string): string {
 }
 
 /**
- * For oversized tool output (>64KB chars), save raw output to disk as an artifact
- * and return a compact reference for the conversation context.
- * For normal-sized output, delegates to truncateToolOutput.
+ * For medium output that exceeds the per-tool prompt budget, save raw output
+ * before any later replay compaction while keeping the active turn high fidelity.
+ * For oversized output (>64KB chars), return a compact reference.
  */
 export function artifactizeToolOutput(
   toolName: string,
@@ -47,11 +51,27 @@ export function artifactizeToolOutput(
   opts: { workDir: string; sessionId?: string; toolUseId?: string; outputSummary?: string },
 ): { content: string; artifactPath?: string; evidence?: ToolEvidence } {
   const threshold = CONTEXT_PARAMS.toolOutput.artifactThresholdChars
+  const toolUseId = opts.toolUseId ?? 'unknown_tool_use'
+  const tokenCount = estimateTokens(output)
+  const exceedsPromptBudget = tokenCount > toolOutputLimit(toolName)
+
   if (output.length <= threshold) {
-    return { content: truncateToolOutput(toolName, output) }
+    if (!exceedsPromptBudget) {
+      return { content: output }
+    }
+
+    const evidence = persistToolResultEvidence({
+      workDir: opts.workDir,
+      sessionId: opts.sessionId ?? 'session',
+      toolUseId,
+      toolName,
+      content: output,
+      outputSummary: opts.outputSummary,
+    })
+
+    return { content: output, evidence }
   }
 
-  const toolUseId = opts.toolUseId ?? 'unknown_tool_use'
   const evidence = persistToolResultEvidence({
     workDir: opts.workDir,
     sessionId: opts.sessionId ?? 'session',

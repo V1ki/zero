@@ -700,6 +700,10 @@ describe('Agent task closure gate', () => {
 
     expect(assistantMessages).toHaveLength(1)
     expect(getTextFromMessage(assistantMessages[0])).toBe(BLOCK_REPLY)
+    expect(assistantMessages[0].taskClosure).toEqual({
+      action: 'block',
+      reason: '缺少登录态',
+    })
     expect(adapter.normalCalls).toBe(1)
     expect(adapter.classifierCalls).toBe(1)
   })

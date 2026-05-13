@@ -557,12 +557,15 @@ describe('prepareConversationHistory', () => {
       expect(compactedJsonChars).toBeLessThan(originalJsonChars * 0.45)
       expect(text).toContain('<episode_compaction')
       expect(text).toContain('<working_state_compaction>')
+      expect(text).toContain('boundary_strategy: deterministic_contiguous_older_turns_v1')
       expect(text).toContain('why_tools_were_called')
       expect(text).toContain('actual_scope_read_or_written')
       expect(text).toContain('learned:')
       expect(text).toContain('confirmed:')
       expect(text).toContain('inferred:')
       expect(text).toContain('blocked:')
+      expect(text).toContain('confirms only the tool IO was captured')
+      expect(text).toContain('assistant text, not independently confirmed')
       expect(text).toContain('full_evidence:')
       expect(text).toContain('read /repo/packages/core/src/agent/agent-loop.ts')
       expect(text).toContain('write /repo/tmp/design.md contentChars=')
@@ -573,12 +576,104 @@ describe('prepareConversationHistory', () => {
       expect(text).toContain('.artifacts/sess_20260512_1006_fei_8161_fixture/tool-evidence')
       expect(JSON.stringify(result)).not.toContain('AGENT_LOOP_RAW_')
       expect(JSON.stringify(result)).toContain('RECENT_RAW_')
+      expect(text).not.toContain('assistant concluded:')
+      expect(text).not.toContain('confirmed write result')
 
       const evidencePaths = Array.from(text.matchAll(/path=([^\s]+)/g), (match) => match[1])
       expect(evidencePaths.length).toBeGreaterThan(0)
       const firstEvidence = evidencePaths[0]
       expect(existsSync(firstEvidence)).toBe(true)
       expect(readFileSync(firstEvidence, 'utf-8').length).toBeGreaterThan(0)
+
+      const outputEvidencePaths = Array.from(
+        text.matchAll(/tool_result_output path=([^\s]+)/g),
+        (match) => match[1],
+      )
+      expect(outputEvidencePaths.length).toBeGreaterThan(0)
+      expect(readFileSync(outputEvidencePaths[0], 'utf-8')).toContain('AGENT_LOOP_RAW_')
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
+
+  test('keeps artifact evidence root out of tracked source by gitignore policy', () => {
+    const gitignore = readFileSync(join(process.cwd(), '.gitignore'), 'utf-8')
+
+    expect(gitignore.split(/\r?\n/)).toContain('.artifacts/')
+  })
+
+  test('marks task-closure continuation episodes as blocked instead of finished work', () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-blocked-'))
+    const messages = [
+      makeUserText('old blocked task'),
+      makeAssistantToolUseWithInput('bash', 'blocked_tool', { command: 'check-login' }),
+      makeToolResult('blocked_tool', 'missing login cookie'),
+      {
+        ...makeMessage('user', [
+          {
+            type: 'text',
+            text: '<system_notice><classifier_reason>缺少登录态</classifier_reason></system_notice>',
+          },
+        ]),
+        messageType: 'control' as const,
+        controlKind: 'task_closure' as const,
+      },
+      ...buildConversation(4),
+      makeUserText('current task'),
+      makeAssistantText('working'),
+    ]
+
+    try {
+      const result = prepareConversationHistory(messages, {
+        enableEpisodeCompaction: true,
+        evidenceWorkDir: workDir,
+        sessionId: 'sess_blocked_fixture',
+      })
+      const text = result
+        .flatMap((message) =>
+          message.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])),
+        )
+        .join('\n')
+
+      expect(text).toContain('<episode_compaction')
+      expect(text).toContain('status="blocked"')
+      expect(text).toContain('task_closure continuation occurred inside this episode')
+      expect(text).toContain('缺少登录态')
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
+
+  test('marks persisted task_closure=block assistant messages as blocked episodes', () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-task-block-'))
+    const blockedAssistant = makeAssistantText('要继续线上核验，我需要你的账号登录态或截图授权。')
+    blockedAssistant.taskClosure = { action: 'block', reason: '缺少登录态' }
+    const messages = [
+      makeUserText('old task with blocker'),
+      makeAssistantToolUseWithInput('bash', 'task_block_tool', { command: 'check-login' }),
+      makeToolResult('task_block_tool', 'login cookie missing'),
+      blockedAssistant,
+      ...buildConversation(4),
+      makeUserText('current task'),
+      makeAssistantText('working'),
+    ]
+
+    try {
+      const result = prepareConversationHistory(messages, {
+        enableEpisodeCompaction: true,
+        evidenceWorkDir: workDir,
+        sessionId: 'sess_task_block_fixture',
+      })
+      const text = result
+        .flatMap((message) =>
+          message.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])),
+        )
+        .join('\n')
+
+      expect(text).toContain('<episode_compaction')
+      expect(text).toContain('status="blocked"')
+      expect(text).toContain('task_closure=block for this episode')
+      expect(text).toContain('缺少登录态')
     } finally {
       rmSync(workDir, { recursive: true, force: true })
     }

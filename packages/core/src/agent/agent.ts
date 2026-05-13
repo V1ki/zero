@@ -757,6 +757,16 @@ export class Agent {
           return gate2
         }
 
+        if (
+          assistantMsg?.role === 'assistant' &&
+          taskClosureEvaluation.decision?.action === 'block'
+        ) {
+          assistantMsg.taskClosure = {
+            action: 'block',
+            reason: taskClosureEvaluation.decision.reason,
+          }
+        }
+
         finalizeTaskClosureSpan(taskClosureEvaluation, assistantMsg)
 
         if (assistantMsg?.role === 'assistant' && taskClosureEvaluation.eventPayload) {

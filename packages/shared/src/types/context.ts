@@ -132,6 +132,8 @@ export interface EpisodeCompaction {
   id: string
   sessionId: string
   status: 'confirmed' | 'inferred' | 'blocked'
+  boundaryStrategy: string
+  boundaryReason: string
   goal: string
   scope: string[]
   toolUseIds: string[]
