@@ -30,6 +30,7 @@ export class OpenAIChatAdapter implements ProviderAdapter {
   readonly apiType = 'openai_chat_completions'
   private client: OpenAI
   private modelId: string
+  private extraBody?: Record<string, unknown>
 
   constructor(config: AdapterConfig) {
     this.client = new OpenAI({
@@ -37,6 +38,7 @@ export class OpenAIChatAdapter implements ProviderAdapter {
       baseURL: config.baseUrl.endsWith('/v1') ? config.baseUrl : `${config.baseUrl}/v1`,
     })
     this.modelId = config.modelConfig.modelId
+    this.extraBody = config.modelConfig.extraBody
   }
 
   async complete(req: CompletionRequest): Promise<CompletionResponse> {
@@ -44,6 +46,7 @@ export class OpenAIChatAdapter implements ProviderAdapter {
     const tools = req.tools ? this.convertTools(req.tools) : undefined
 
     const response = await this.client.chat.completions.create({
+      ...this.extraBody,
       model: req.model ?? this.modelId,
       messages,
       tools,
@@ -79,6 +82,7 @@ export class OpenAIChatAdapter implements ProviderAdapter {
     const tools = req.tools ? this.convertTools(req.tools) : undefined
 
     const stream = await this.client.chat.completions.create({
+      ...this.extraBody,
       model: req.model ?? this.modelId,
       messages,
       tools,
@@ -108,15 +112,19 @@ export class OpenAIChatAdapter implements ProviderAdapter {
       if (delta.tool_calls) {
         for (const tc of delta.tool_calls) {
           if (tc.id) {
-            // New tool call starting
-            hadToolCalls = true
-            if (currentToolCall) {
+            const isNewToolCall = !currentToolCall || currentToolCall.id !== tc.id
+            if (isNewToolCall && currentToolCall) {
               yield { type: 'tool_use_end', data: { id: currentToolCall.id } }
             }
-            currentToolCall = { id: tc.id, name: tc.function?.name ?? '', arguments: '' }
-            yield {
-              type: 'tool_use_start',
-              data: { id: tc.id, name: tc.function?.name ?? '' },
+            if (isNewToolCall) {
+              hadToolCalls = true
+              currentToolCall = { id: tc.id, name: tc.function?.name ?? '', arguments: '' }
+              yield {
+                type: 'tool_use_start',
+                data: { id: tc.id, name: tc.function?.name ?? '' },
+              }
+            } else if (tc.function?.name && currentToolCall && !currentToolCall.name) {
+              currentToolCall.name = tc.function.name
             }
           }
           if (tc.function?.arguments) {
@@ -156,6 +164,7 @@ export class OpenAIChatAdapter implements ProviderAdapter {
   async healthCheck(): Promise<boolean> {
     try {
       const response = await this.client.chat.completions.create({
+        ...this.extraBody,
         model: this.modelId,
         messages: [{ role: 'user', content: 'ping' }],
         max_tokens: 5,

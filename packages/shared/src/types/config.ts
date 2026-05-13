@@ -42,6 +42,7 @@ export interface ModelConfig {
   maxOutput: number
   reasoningEffort?: ReasoningEffort
   thinkingTokens?: number
+  extraBody?: Record<string, unknown>
   capabilities: string[]
   tags: string[]
   pricing?: ModelPricing

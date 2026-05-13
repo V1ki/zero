@@ -1,0 +1,7 @@
+{
+  "sessionId": "sess_fixture_zero_runtime",
+  "source": "web",
+  "status": "active",
+  "messageCount": 2,
+  "expectedDiagnosis": "Main assistant answer completed before a later task_closure classifier parse failure."
+}

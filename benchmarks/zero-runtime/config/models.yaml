@@ -1,0 +1,50 @@
+# Benchmark-only model overlay.
+#
+# This file is merged with .zero/config.yaml by the zero-runtime benchmark runner only.
+# It is not used by `bun zero start`, so these models do not appear in the real
+# runtime model list unless they are also added to .zero/config.yaml.
+
+providers:
+  qwen-local:
+    api_type: openai_chat_completions
+    base_url: http://172.18.8.200:8100/v1
+    auth:
+      type: api_key
+    models:
+      qwen3.6-27b:
+        model_id: qwen3.6-27b
+        max_context: 131072
+        max_output: 32768
+        extra_body:
+          chat_template_kwargs:
+            enable_thinking: false
+        capabilities:
+          - tools
+          - reasoning
+        tags:
+          - qwen
+          - local
+          - vllm
+          - four-gpu
+          - benchmark-only
+
+  dashscope-token-plan:
+    api_type: openai_chat_completions
+    base_url: https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+    auth:
+      type: api_key
+      api_key_ref: qwen_token_plan_api_key
+    models:
+      qwen3.6-plus:
+        model_id: qwen3.6-plus
+        max_context: 1000000
+        max_output: 32768
+        capabilities:
+          - tools
+          - vision
+          - reasoning
+        tags:
+          - qwen
+          - dashscope
+          - token-plan
+          - benchmark-only

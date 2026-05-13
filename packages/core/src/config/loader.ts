@@ -34,6 +34,7 @@ function normalizeConfig(raw: Record<string, unknown>): SystemConfig {
         maxOutput: (m.max_output as number) ?? 8192,
         reasoningEffort: normalizeReasoningEffort(m.reasoning_effort as string | undefined),
         thinkingTokens: m.thinking_tokens as number | undefined,
+        extraBody: isRecord(m.extra_body) ? m.extra_body : undefined,
         capabilities: (m.capabilities as string[]) ?? [],
         tags: (m.tags as string[]) ?? [],
         pricing: normalizeModelPricing(m.pricing),

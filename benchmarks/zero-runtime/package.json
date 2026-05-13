@@ -1,0 +1,18 @@
+{
+  "name": "@zero-os/benchmark-zero-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "plan": "bun run src/cli.ts plan",
+    "run": "bun run src/cli.ts run",
+    "check": "bunx tsc -p ../../tsconfig.check.json --noEmit"
+  },
+  "dependencies": {
+    "@zero-os/core": "workspace:*",
+    "@zero-os/model": "workspace:*",
+    "@zero-os/observe": "workspace:*",
+    "@zero-os/secrets": "workspace:*",
+    "@zero-os/shared": "workspace:*"
+  }
+}

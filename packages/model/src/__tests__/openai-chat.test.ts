@@ -607,4 +607,188 @@ describe('OpenAI Chat Completions Adapter (Pure Logic)', () => {
       reasoning_effort: 'xhigh',
     })
   })
+
+  test('complete forwards model extra body fields to chat completions', async () => {
+    const createCalls: unknown[] = []
+    const mockAdapter = new OpenAIChatAdapter({
+      baseUrl: BASE_URL,
+      auth: { type: 'api_key', apiKeyRef: 'test' },
+      modelConfig: {
+        modelId: MODEL_ID,
+        maxContext: 400000,
+        maxOutput: 128000,
+        extraBody: {
+          chat_template_kwargs: {
+            enable_thinking: false,
+          },
+        },
+        capabilities: ['tools', 'vision', 'reasoning'],
+        tags: ['powerful', 'coding'],
+      },
+      apiKey: API_KEY,
+    }) as unknown as {
+      complete(req: CompletionRequest): Promise<unknown>
+      client: {
+        chat: {
+          completions: {
+            create(input: unknown): Promise<{
+              id: string
+              model: string
+              choices: Array<{
+                finish_reason: 'stop'
+                message: { content: string; tool_calls?: undefined }
+              }>
+              usage: null
+            }>
+          }
+        }
+      }
+    }
+
+    mockAdapter.client = {
+      chat: {
+        completions: {
+          create: async (input: unknown) => {
+            createCalls.push(input)
+            return {
+              id: 'chatcmpl_test',
+              model: MODEL_ID,
+              choices: [
+                {
+                  finish_reason: 'stop',
+                  message: { content: 'ok' },
+                },
+              ],
+              usage: null,
+            }
+          },
+        },
+      },
+    }
+
+    await mockAdapter.complete({
+      messages: [makeMessage('user', 'hello')],
+      stream: false,
+    })
+
+    expect(createCalls).toHaveLength(1)
+    expect(createCalls[0]).toMatchObject({
+      chat_template_kwargs: {
+        enable_thinking: false,
+      },
+    })
+  })
+
+  test('stream accumulates vLLM tool deltas that repeat the same tool call id', async () => {
+    async function* chunks() {
+      yield {
+        id: 'chatcmpl_test',
+        model: MODEL_ID,
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  id: 'chatcmpl-tool-1',
+                  type: 'function',
+                  index: 0,
+                  function: { name: 'read', arguments: '' },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      }
+      yield {
+        id: 'chatcmpl_test',
+        model: MODEL_ID,
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  id: 'chatcmpl-tool-1',
+                  type: 'function',
+                  index: 0,
+                  function: { name: null, arguments: '{"path": ' },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      }
+      yield {
+        id: 'chatcmpl_test',
+        model: MODEL_ID,
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  id: 'chatcmpl-tool-1',
+                  type: 'function',
+                  index: 0,
+                  function: { name: null, arguments: '"/tmp/a.txt"}' },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      }
+      yield {
+        id: 'chatcmpl_test',
+        model: MODEL_ID,
+        choices: [{ delta: {}, finish_reason: 'tool_calls' }],
+      }
+    }
+
+    const mockAdapter = new OpenAIChatAdapter({
+      baseUrl: BASE_URL,
+      auth: { type: 'api_key', apiKeyRef: 'test' },
+      modelConfig: {
+        modelId: MODEL_ID,
+        maxContext: 400000,
+        maxOutput: 128000,
+        capabilities: ['tools', 'vision', 'reasoning'],
+        tags: ['powerful', 'coding'],
+      },
+      apiKey: API_KEY,
+    }) as unknown as {
+      stream(req: CompletionRequest): AsyncIterable<unknown>
+      client: {
+        chat: {
+          completions: {
+            create(input: unknown): Promise<AsyncIterable<unknown>>
+          }
+        }
+      }
+    }
+
+    mockAdapter.client = {
+      chat: {
+        completions: {
+          create: async () => chunks(),
+        },
+      },
+    }
+
+    const events = []
+    for await (const event of mockAdapter.stream({
+      messages: [makeMessage('user', 'read /tmp/a.txt')],
+      stream: true,
+    })) {
+      events.push(event)
+    }
+
+    expect(events).toEqual([
+      { type: 'tool_use_start', data: { id: 'chatcmpl-tool-1', name: 'read' } },
+      { type: 'tool_use_delta', data: { arguments: '{"path": ' } },
+      { type: 'tool_use_delta', data: { arguments: '"/tmp/a.txt"}' } },
+      { type: 'tool_use_end', data: { id: 'chatcmpl-tool-1' } },
+      { type: 'done', data: { finishReason: 'tool_calls', model: MODEL_ID } },
+    ])
+  })
 })

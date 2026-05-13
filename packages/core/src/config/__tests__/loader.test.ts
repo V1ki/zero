@@ -76,6 +76,9 @@ providers:
         max_output: 16384
         reasoning_effort: max
         thinking_tokens: 2048
+        extra_body:
+          chat_template_kwargs:
+            enable_thinking: false
         pricing:
           input: 1.74
           output: 3.48
@@ -100,6 +103,11 @@ default_model: test/claude
     expect(model.maxOutput).toBe(16384)
     expect(model.reasoningEffort).toBe('xhigh')
     expect(model.thinkingTokens).toBe(2048)
+    expect(model.extraBody).toEqual({
+      chat_template_kwargs: {
+        enable_thinking: false,
+      },
+    })
     expect(model.pricing).toEqual({
       input: 1.74,
       output: 3.48,
