@@ -17,7 +17,7 @@ import { formatTime } from '../../lib/format'
 import { useUIStore } from '../../stores/ui'
 import { TokenUsagePill } from './TokenUsagePill'
 import { ToolCallDetail, summarizeToolInput } from './ToolCallDetail'
-import type { ToolResultContentItem } from './ToolCallDetail'
+import type { ToolEvidencePointer, ToolResultContentItem } from './ToolCallDetail'
 import type { TokenUsageSummary } from './context-tokens'
 
 const toolIcons: Record<string, typeof Terminal> = {
@@ -37,6 +37,7 @@ interface Props {
   result?: string
   summary?: string
   contentItems?: ToolResultContentItem[]
+  evidence?: ToolEvidencePointer[]
   isError?: boolean
   status?: 'running' | 'success' | 'error'
   durationMs?: number
@@ -55,6 +56,7 @@ export function ToolCallBlock({
   result,
   summary,
   contentItems,
+  evidence,
   isError,
   status,
   durationMs,
@@ -177,6 +179,7 @@ export function ToolCallBlock({
           result={result}
           summary={summary}
           contentItems={contentItems}
+          evidence={evidence}
           isError={isError}
           status={status}
           durationMs={durationMs}

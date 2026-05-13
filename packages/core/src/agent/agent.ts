@@ -30,6 +30,7 @@ import type { ToolRegistry } from '../tool/registry'
 import { AgentLoop, type AgentLoopHooks, type ToolExecutor } from './agent-loop'
 import { allocateBudget, shouldCompress } from './budget'
 import { estimateConversationTokens, prepareConversationHistory } from './context'
+import { attachLargeToolUseEvidence } from './evidence'
 import { retrieveMemoriesWithDecision } from './memory-retrieval'
 import { CONTEXT_PARAMS } from './params'
 import { wrapMemoryInjection } from './prompt'
@@ -210,6 +211,9 @@ export class Agent {
   ): Promise<Message[]> {
     const history = prepareConversationHistory(context.conversationHistory, {
       requireThinkingForToolUse: this.adapter.apiType === 'anthropic-deepseek',
+      enableEpisodeCompaction: true,
+      evidenceWorkDir: this.toolContext.workDir,
+      sessionId: this.toolContext.sessionId,
     })
     const turnIndex = requestLogMeta?.turnIndex ?? 1
     let emittedMessageCount = 0
@@ -538,7 +542,11 @@ export class Agent {
           })
         }
       },
-      filterAssistantContent: (content) => this.filterContent(content),
+      filterAssistantContent: (content) =>
+        attachLargeToolUseEvidence(this.filterContent(content), {
+          workDir: this.toolContext.workDir,
+          sessionId: this.toolContext.sessionId,
+        }),
       onCompletionStart: (_request) => {
         const llmSpan = this.obs.tracer?.startSpan(
           this.toolContext.sessionId,
@@ -953,10 +961,16 @@ export class Agent {
           if (block.type !== 'tool_result') return block
 
           const toolName = toolNamesByUseId.get(block.toolUseId) ?? 'unknown_tool'
-          const { content, artifactPath } = artifactizeToolOutput(toolName, block.content, {
-            workDir: this.toolContext.workDir,
-            toolUseId: block.toolUseId,
-          })
+          const { content, artifactPath, evidence } = artifactizeToolOutput(
+            toolName,
+            block.content,
+            {
+              workDir: this.toolContext.workDir,
+              sessionId: this.toolContext.sessionId,
+              toolUseId: block.toolUseId,
+              outputSummary: block.outputSummary,
+            },
+          )
 
           if (artifactPath) {
             this.toolContext.logger.info('tool_output_artifactized', {
@@ -969,6 +983,7 @@ export class Agent {
           return {
             ...block,
             content,
+            ...(evidence ? { evidence } : {}),
           }
         })
 
@@ -1438,6 +1453,7 @@ export class Agent {
           id: block.id,
           name: block.name,
           input: this.filterToolInput(block.input),
+          evidence: block.evidence,
         },
       ]
     })
@@ -1453,6 +1469,7 @@ export class Agent {
           content: block.content,
           isError: block.isError,
           outputSummary: block.outputSummary,
+          evidence: block.evidence,
         },
       ]
     })

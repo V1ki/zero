@@ -120,6 +120,7 @@ interface TimelineToolResult {
   isError?: boolean
   outputSummary?: string
   contentItems?: ToolResultContentItem[]
+  evidence?: ToolEvidencePointer
 }
 
 interface TimelineRequestLike {
@@ -175,6 +176,19 @@ export type ToolResultContentItem =
   | { type: 'text'; text: string }
   | { type: 'image'; mediaType: string; data: string }
 
+export interface ToolEvidencePointer {
+  kind: 'tool_use_input' | 'tool_result_output'
+  sessionId?: string
+  toolUseId: string
+  toolName: string
+  path: string
+  chars?: number
+  bytes?: number
+  sha256?: string
+  summary?: string
+  strategy?: string
+}
+
 export interface MemoryNudgeTimelineItem {
   type: 'memory-nudge'
   id: string
@@ -229,6 +243,7 @@ export type TimelineItem =
       result?: string
       summary?: string
       contentItems?: ToolResultContentItem[]
+      evidence?: ToolEvidencePointer[]
       isError?: boolean
       status?: TraceSpan['status']
       durationMs?: number
@@ -357,6 +372,7 @@ export function buildTimeline(
           const toolId = block.id as string
           const toolInput = (block.input as Record<string, unknown>) ?? {}
           const result = toolResults.get(toolId)
+          const evidence = normalizeEvidencePointers([block.evidence, result?.evidence])
 
           if (nestedMemoryNudgeToolUseIds.has(toolId)) {
             continue
@@ -447,6 +463,7 @@ export function buildTimeline(
               result: result?.content,
               summary: result?.summary,
               contentItems: result?.contentItems,
+              evidence,
               isError: result?.isError,
               status:
                 toolStatuses.get(toolId) ??
@@ -1058,6 +1075,7 @@ function buildToolResultMap(
         content: asString(block.content),
         summary: asString(block.outputSummary),
         contentItems: normalizeToolResultContentItems(block.contentItems),
+        evidence: normalizeToolEvidence(block.evidence),
         isError: block.isError === true,
       })
     }
@@ -1069,6 +1087,7 @@ function buildToolResultMap(
         content: result.content,
         summary: result.outputSummary,
         contentItems: result.contentItems,
+        evidence: normalizeToolEvidence(result.evidence),
         isError: result.isError === true,
       })
     }
@@ -1142,6 +1161,7 @@ function mergeToolResult(
       incoming.contentItems && incoming.contentItems.length > 0
         ? incoming.contentItems
         : current?.contentItems,
+    evidence: incoming.evidence ?? current?.evidence,
     isError: current?.isError === true || incoming.isError === true,
   })
 }
@@ -1150,7 +1170,50 @@ interface TimelineToolResultData {
   content?: string
   summary?: string
   contentItems?: ToolResultContentItem[]
+  evidence?: ToolEvidencePointer
   isError?: boolean
+}
+
+function normalizeEvidencePointers(values: unknown[]): ToolEvidencePointer[] | undefined {
+  const pointers = values.flatMap((value) => {
+    const pointer = normalizeToolEvidence(value)
+    return pointer ? [pointer] : []
+  })
+  return pointers.length > 0 ? pointers : undefined
+}
+
+function normalizeToolEvidence(value: unknown): ToolEvidencePointer | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const record = value as Record<string, unknown>
+  const kind = record.kind
+  const toolUseId = asString(record.toolUseId)
+  const toolName = asString(record.toolName)
+  const path = asString(record.path)
+  if (
+    (kind !== 'tool_use_input' && kind !== 'tool_result_output') ||
+    !toolUseId ||
+    !toolName ||
+    !path
+  ) {
+    return undefined
+  }
+
+  return {
+    kind,
+    sessionId: asString(record.sessionId),
+    toolUseId,
+    toolName,
+    path,
+    chars: asOptionalNumber(record.chars),
+    bytes: asOptionalNumber(record.bytes),
+    sha256: asString(record.sha256),
+    summary: asString(record.summary),
+    strategy: asString(record.strategy),
+  }
+}
+
+function asOptionalNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
 function normalizeToolResultContentItems(value: unknown): ToolResultContentItem[] | undefined {

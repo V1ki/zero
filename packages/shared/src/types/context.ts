@@ -127,3 +127,30 @@ export interface CompressionResult {
     compressedRange?: string
   }
 }
+
+export interface EpisodeCompaction {
+  id: string
+  sessionId: string
+  status: 'confirmed' | 'inferred' | 'blocked'
+  goal: string
+  scope: string[]
+  toolUseIds: string[]
+  confirmedFacts: string[]
+  inferredFacts: string[]
+  blockers: string[]
+  needsRawReview: string[]
+  evidence: import('./message').ToolEvidence[]
+  summary: string
+  messageIds: string[]
+}
+
+export interface WorkingStateCompaction {
+  currentGoal: string
+  scope: string[]
+  confirmedFacts: string[]
+  nextAction: string
+  blockers: string[]
+  doNot: string[]
+  evidencePointers: import('./message').ToolEvidence[]
+  sourceEpisodeIds: string[]
+}

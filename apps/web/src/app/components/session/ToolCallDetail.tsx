@@ -17,6 +17,7 @@ interface ToolCallDetailProps {
   result?: string
   summary?: string
   contentItems?: ToolResultContentItem[]
+  evidence?: ToolEvidencePointer[]
   isError?: boolean
   status?: 'running' | 'success' | 'error'
   durationMs?: number
@@ -35,6 +36,18 @@ export type ToolResultContentItem =
   | { type: 'text'; text: string }
   | { type: 'image'; mediaType: string; data: string }
 
+export interface ToolEvidencePointer {
+  kind: 'tool_use_input' | 'tool_result_output'
+  toolUseId: string
+  toolName: string
+  path: string
+  chars?: number
+  bytes?: number
+  sha256?: string
+  summary?: string
+  strategy?: string
+}
+
 const stderrMarker = '\n[stderr]\n'
 
 export function ToolCallDetail({
@@ -43,6 +56,7 @@ export function ToolCallDetail({
   result,
   summary,
   contentItems,
+  evidence,
   isError,
   status,
   durationMs,
@@ -51,107 +65,153 @@ export function ToolCallDetail({
   nested = false,
 }: ToolCallDetailProps) {
   const toolName = getToolName(name)
+  const detail = (() => {
+    switch (toolName) {
+      case 'bash':
+        return (
+          <BashToolDetail
+            input={input}
+            result={result}
+            summary={summary}
+            isError={isError}
+            status={status}
+            durationMs={durationMs}
+            abortPending={abortPending}
+            onAbort={onAbort}
+            nested={nested}
+          />
+        )
+      case 'edit':
+        return (
+          <EditToolDetail
+            input={input}
+            result={result}
+            summary={summary}
+            isError={isError}
+            nested={nested}
+          />
+        )
+      case 'read':
+        return <ReadToolDetail input={input} result={result} isError={isError} nested={nested} />
+      case 'read_image':
+        return (
+          <ReadImageToolDetail
+            input={input}
+            result={result}
+            summary={summary}
+            contentItems={contentItems}
+            isError={isError}
+            nested={nested}
+          />
+        )
+      case 'write':
+        return (
+          <WriteToolDetail
+            input={input}
+            result={result}
+            summary={summary}
+            isError={isError}
+            nested={nested}
+          />
+        )
+      case 'memory':
+        return (
+          <MemoryToolDetail
+            input={input}
+            result={result}
+            summary={summary}
+            isError={isError}
+            nested={nested}
+          />
+        )
+      case 'memory_search':
+        return (
+          <MemorySearchToolDetail
+            input={input}
+            result={result}
+            summary={summary}
+            isError={isError}
+            nested={nested}
+          />
+        )
+      case 'memory_read':
+        return (
+          <MemoryReadToolDetail
+            input={input}
+            result={result}
+            summary={summary}
+            isError={isError}
+            nested={nested}
+          />
+        )
+      case 'fetch':
+        return (
+          <FetchToolDetail
+            input={input}
+            result={result}
+            summary={summary}
+            isError={isError}
+            nested={nested}
+          />
+        )
+      default:
+        return (
+          <GenericToolDetail
+            name={name}
+            input={input}
+            result={result}
+            summary={summary}
+            isError={isError}
+            nested={nested}
+          />
+        )
+    }
+  })()
 
-  switch (toolName) {
-    case 'bash':
-      return (
-        <BashToolDetail
-          input={input}
-          result={result}
-          summary={summary}
-          isError={isError}
-          status={status}
-          durationMs={durationMs}
-          abortPending={abortPending}
-          onAbort={onAbort}
-          nested={nested}
-        />
-      )
-    case 'edit':
-      return (
-        <EditToolDetail
-          input={input}
-          result={result}
-          summary={summary}
-          isError={isError}
-          nested={nested}
-        />
-      )
-    case 'read':
-      return <ReadToolDetail input={input} result={result} isError={isError} nested={nested} />
-    case 'read_image':
-      return (
-        <ReadImageToolDetail
-          input={input}
-          result={result}
-          summary={summary}
-          contentItems={contentItems}
-          isError={isError}
-          nested={nested}
-        />
-      )
-    case 'write':
-      return (
-        <WriteToolDetail
-          input={input}
-          result={result}
-          summary={summary}
-          isError={isError}
-          nested={nested}
-        />
-      )
-    case 'memory':
-      return (
-        <MemoryToolDetail
-          input={input}
-          result={result}
-          summary={summary}
-          isError={isError}
-          nested={nested}
-        />
-      )
-    case 'memory_search':
-      return (
-        <MemorySearchToolDetail
-          input={input}
-          result={result}
-          summary={summary}
-          isError={isError}
-          nested={nested}
-        />
-      )
-    case 'memory_read':
-      return (
-        <MemoryReadToolDetail
-          input={input}
-          result={result}
-          summary={summary}
-          isError={isError}
-          nested={nested}
-        />
-      )
-    case 'fetch':
-      return (
-        <FetchToolDetail
-          input={input}
-          result={result}
-          summary={summary}
-          isError={isError}
-          nested={nested}
-        />
-      )
-    default:
-      return (
-        <GenericToolDetail
-          name={name}
-          input={input}
-          result={result}
-          summary={summary}
-          isError={isError}
-          nested={nested}
-        />
-      )
+  if (evidence?.length) {
+    return (
+      <>
+        <EvidencePointers evidence={evidence} nested={nested} />
+        {detail}
+      </>
+    )
   }
+
+  return detail
+}
+
+function EvidencePointers({
+  evidence,
+  nested,
+}: {
+  evidence: ToolEvidencePointer[]
+  nested: boolean
+}) {
+  return (
+    <div className={`${nested ? 'px-0 pb-2' : 'border-t border-white/[0.06] px-4 py-3'}`}>
+      <div className="space-y-2 rounded-md border border-white/[0.06] bg-black/15 p-3">
+        <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-text-muted)]">
+          <FileArrowDown size={13} />
+          Evidence
+        </div>
+        {evidence.map((item) => (
+          <div key={`${item.kind}-${item.path}`} className="space-y-1">
+            <div className="flex flex-wrap gap-2 text-[10px] font-mono text-[var(--color-text-disabled)]">
+              <span>{item.kind}</span>
+              {item.chars !== undefined && <span>{item.chars.toLocaleString()} chars</span>}
+              {item.sha256 && <span>sha256 {item.sha256.slice(0, 12)}</span>}
+            </div>
+            <p className="break-all font-mono text-[11px] text-[var(--color-text-secondary)]">
+              {item.path}
+            </p>
+            {item.summary && (
+              <p className="text-[11px] text-[var(--color-text-muted)]">{item.summary}</p>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 export function summarizeToolInput(name: string, input: Record<string, unknown>): string {

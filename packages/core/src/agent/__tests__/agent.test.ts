@@ -7,6 +7,7 @@ import { MetricsDB, Tracer } from '@zero-os/observe'
 import type {
   CompletionRequest,
   CompletionResponse,
+  Message,
   StreamEvent,
   ToolContext,
 } from '@zero-os/shared'
@@ -302,6 +303,65 @@ class FakeMemoryReadTool extends BaseTool {
   }
 }
 
+class ActiveTurnTool extends BaseTool {
+  name = 'active_turn_tool'
+  description = 'Return a distinctive active-turn output.'
+  parameters = {
+    type: 'object',
+    properties: {},
+  }
+
+  protected async execute() {
+    return {
+      success: true,
+      output: `ACTIVE_RESULT_RAW_${'still inline '.repeat(500)}`,
+      outputSummary: 'active turn result',
+    }
+  }
+}
+
+class ActiveTurnCaptureAdapter implements ProviderAdapter {
+  readonly apiType = 'fake-active-turn'
+  requests: CompletionRequest[] = []
+
+  async complete(req: CompletionRequest): Promise<CompletionResponse> {
+    this.requests.push(req)
+    if (this.requests.length === 1) {
+      return {
+        id: 'resp_active_tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_active_turn_1',
+            name: 'active_turn_tool',
+            input: {},
+          },
+        ],
+        stopReason: 'tool_use',
+        usage: { input: 5, output: 2 },
+        model: 'fake-model',
+      }
+    }
+
+    return {
+      id: 'resp_active_final',
+      content: [{ type: 'text', text: 'active result consumed' }],
+      stopReason: 'end_turn',
+      usage: { input: 4, output: 2 },
+      model: 'fake-model',
+    }
+  }
+
+  async *stream(_req: CompletionRequest): AsyncIterable<StreamEvent> {
+    yield* []
+    throw new Error('stream not supported in test')
+  }
+
+  async healthCheck(): Promise<boolean> {
+    return true
+  }
+}
+
 function expectDefined<T>(value: T | null | undefined): NonNullable<T> {
   expect(value).toBeDefined()
   if (value == null) {
@@ -430,6 +490,107 @@ describe('Agent', () => {
     const toolResultBlock = toolResultMsg.content.find((b) => b.type === 'tool_result')
     expect(toolResultBlock).toBeDefined()
   }, 30000)
+
+  test('run: active turn keeps fresh tool_result inline while old history is compacted', async () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'zero-agent-active-turn-'))
+    const registry = new ToolRegistry()
+    registry.register(new ActiveTurnTool())
+    const adapter = new ActiveTurnCaptureAdapter()
+    const agentConfig: AgentConfig = {
+      name: 'test-agent',
+      agentInstruction: 'Use active_turn_tool.',
+      promptMode: 'minimal',
+    }
+    const localToolContext: ToolContext = {
+      ...toolContext,
+      sessionId: 'sess_agent_active_turn',
+      workDir,
+    }
+    const agent = new Agent(agentConfig, adapter, registry, localToolContext)
+    const oldHistory: Message[] = [
+      {
+        id: 'old_user_1',
+        sessionId: 'sess_agent_active_turn',
+        role: 'user',
+        messageType: 'message',
+        content: [{ type: 'text', text: 'old investigation' }],
+        createdAt: '2026-05-12T00:00:00.000Z',
+      },
+      {
+        id: 'old_assistant_1',
+        sessionId: 'sess_agent_active_turn',
+        role: 'assistant',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'old_tool_1',
+            name: 'bash',
+            input: { command: 'printf old' },
+          },
+        ],
+        createdAt: '2026-05-12T00:00:01.000Z',
+      },
+      {
+        id: 'old_result_1',
+        sessionId: 'sess_agent_active_turn',
+        role: 'user',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: 'old_tool_1',
+            content: `OLD_RESULT_RAW_${'old inline '.repeat(500)}`,
+            outputSummary: 'old result summary',
+          },
+        ],
+        createdAt: '2026-05-12T00:00:02.000Z',
+      },
+      {
+        id: 'old_assistant_2',
+        sessionId: 'sess_agent_active_turn',
+        role: 'assistant',
+        messageType: 'message',
+        content: [{ type: 'text', text: 'old result handled' }],
+        createdAt: '2026-05-12T00:00:03.000Z',
+      },
+      {
+        id: 'latest_user',
+        sessionId: 'sess_agent_active_turn',
+        role: 'user',
+        messageType: 'message',
+        content: [{ type: 'text', text: 'latest retained turn' }],
+        createdAt: '2026-05-12T00:01:00.000Z',
+      },
+      {
+        id: 'latest_assistant',
+        sessionId: 'sess_agent_active_turn',
+        role: 'assistant',
+        messageType: 'message',
+        content: [{ type: 'text', text: 'latest retained answer' }],
+        createdAt: '2026-05-12T00:01:01.000Z',
+      },
+    ]
+    const context: AgentContext = {
+      systemPrompt: 'Use active_turn_tool.',
+      conversationHistory: oldHistory,
+      tools: registry.getDefinitions(),
+    }
+
+    try {
+      await agent.run(context, 'current active task')
+      expect(adapter.requests.length).toBeGreaterThanOrEqual(2)
+      const firstRequestText = JSON.stringify(adapter.requests[0].messages)
+      const secondRequestText = JSON.stringify(adapter.requests[1].messages)
+
+      expect(firstRequestText).toContain('<episode_compaction')
+      expect(firstRequestText).not.toContain('OLD_RESULT_RAW_')
+      expect(secondRequestText).toContain('ACTIVE_RESULT_RAW_')
+      expect(secondRequestText).not.toContain('OLD_RESULT_RAW_')
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
 
   test('run: unknown tool name returns error tool_result', async () => {
     const registry = createToolRegistry()

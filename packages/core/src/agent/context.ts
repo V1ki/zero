@@ -1,9 +1,13 @@
 import type { ContentBlock, Message, ToolResultBlock } from '@zero-os/shared'
-import { estimateMessageTokens, hasSignedThinkingBlock } from '@zero-os/shared'
+import { estimateMessageTokens, hasSignedThinkingBlock, now } from '@zero-os/shared'
+import { buildEpisodeCompaction, buildWorkingStateCompaction, formatWorkingState } from './evidence'
 import { CONTEXT_PARAMS } from './params'
 
 export interface ConversationHistoryOptions {
   requireThinkingForToolUse?: boolean
+  enableEpisodeCompaction?: boolean
+  evidenceWorkDir?: string
+  sessionId?: string
 }
 
 export function sanitizeConversationHistoryForSignedThinkingToolUse(
@@ -165,32 +169,17 @@ export function prepareConversationHistory(
     ? sanitizeConversationHistoryForSignedThinkingToolUse(paired)
     : paired
 
-  // Assign turn indices by scanning from the end
-  const turnBoundaries: number[] = []
-  for (let i = cleaned.length - 1; i >= 0; i--) {
-    const msg = cleaned[i]
-    if (startsTopLevelTurn(msg)) {
-      turnBoundaries.push(i)
-    }
+  const turnBoundaries = findTurnBoundaries(cleaned)
+  if (options.enableEpisodeCompaction && options.evidenceWorkDir) {
+    return compactEpisodeHistory(cleaned, turnBoundaries, {
+      workDir: options.evidenceWorkDir,
+      sessionId: options.sessionId ?? cleaned[0]?.sessionId ?? 'session',
+    })
   }
-  // turnBoundaries[0] = most recent user text message index (turn 0)
 
-  // Build a map: message index -> turn age (distance from most recent turn)
-  const turnAgeMap = new Map<number, number>()
-  for (let t = 0; t < turnBoundaries.length; t++) {
-    const startIdx = turnBoundaries[t]
-    const endIdx = t === 0 ? cleaned.length : turnBoundaries[t - 1]
-    for (let i = startIdx; i < endIdx; i++) {
-      turnAgeMap.set(i, t)
-    }
-  }
-  // Messages before the oldest identified turn get max age
-  if (turnBoundaries.length > 0) {
-    const oldestTurnStart = turnBoundaries[turnBoundaries.length - 1]
-    for (let i = 0; i < oldestTurnStart; i++) {
-      turnAgeMap.set(i, turnBoundaries.length)
-    }
-  }
+  // Assign turn indices by scanning from the end
+  const turnAgeMap = buildTurnAgeMap(cleaned, turnBoundaries)
+  // turnBoundaries[0] = most recent user text message index (turn 0)
 
   return cleaned.map((msg, idx) => {
     if (msg.role !== 'user') return msg
@@ -234,6 +223,173 @@ export function prepareConversationHistory(
 
     return { ...msg, content: newContent }
   })
+}
+
+function findTurnBoundaries(messages: Message[]): number[] {
+  const turnBoundaries: number[] = []
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (startsTopLevelTurn(msg)) {
+      turnBoundaries.push(i)
+    }
+  }
+  return turnBoundaries
+}
+
+function buildTurnAgeMap(messages: Message[], turnBoundaries: number[]): Map<number, number> {
+  // Build a map: message index -> turn age (distance from most recent turn)
+  const turnAgeMap = new Map<number, number>()
+  for (let t = 0; t < turnBoundaries.length; t++) {
+    const startIdx = turnBoundaries[t]
+    const endIdx = t === 0 ? messages.length : turnBoundaries[t - 1]
+    for (let i = startIdx; i < endIdx; i++) {
+      turnAgeMap.set(i, t)
+    }
+  }
+  // Messages before the oldest identified turn get max age
+  if (turnBoundaries.length > 0) {
+    const oldestTurnStart = turnBoundaries[turnBoundaries.length - 1]
+    for (let i = 0; i < oldestTurnStart; i++) {
+      turnAgeMap.set(i, turnBoundaries.length)
+    }
+  }
+
+  return turnAgeMap
+}
+
+function compactEpisodeHistory(
+  messages: Message[],
+  turnBoundaries: number[],
+  options: { workDir: string; sessionId: string },
+): Message[] {
+  if (turnBoundaries.length <= CONTEXT_PARAMS.history.episodeFullRetainTurns + 1) {
+    return messages
+  }
+
+  const turnAgeMap = buildTurnAgeMap(messages, turnBoundaries)
+  const compactable = new Set<number>()
+  for (let index = 0; index < messages.length; index++) {
+    const age = turnAgeMap.get(index) ?? turnBoundaries.length
+    if (age <= CONTEXT_PARAMS.history.episodeFullRetainTurns) continue
+    compactable.add(index)
+  }
+
+  removeUnfinishedToolTurns(messages, compactable)
+
+  const result: Message[] = []
+  const episodes = []
+  let index = 0
+  while (index < messages.length) {
+    if (!compactable.has(index)) {
+      result.push(messages[index])
+      index++
+      continue
+    }
+
+    const start = index
+    while (index < messages.length && compactable.has(index)) {
+      index++
+    }
+    const episodeMessages = messages.slice(start, index)
+    if (!episodeMessages.some((message) => message.content.some(isToolIoBlock))) {
+      result.push(...episodeMessages)
+      continue
+    }
+
+    const episode = buildEpisodeCompaction(episodeMessages, options)
+    episodes.push(episode)
+    result.push({
+      id: episode.id,
+      sessionId: options.sessionId,
+      role: 'user',
+      messageType: 'message',
+      content: [{ type: 'text', text: episode.summary }],
+      createdAt: episodeMessages[0]?.createdAt ?? now(),
+    })
+  }
+
+  if (episodes.length === 0) {
+    return messages
+  }
+
+  const workingState = buildWorkingStateCompaction({
+    currentGoal: extractCurrentGoal(messages),
+    retainedMessages: result,
+    episodes,
+  })
+  const workingStateId = `working_state_${episodes
+    .map((episode) => episode.id.replace(/^episode_/, ''))
+    .join('_')}`
+  const firstRetainedIndex = result.findIndex((message) => !message.id.startsWith('episode_'))
+  const workingStateMessage: Message = {
+    id: workingStateId,
+    sessionId: options.sessionId,
+    role: 'user',
+    messageType: 'message',
+    content: [{ type: 'text', text: formatWorkingState(workingState) }],
+    createdAt: now(),
+  }
+
+  if (firstRetainedIndex < 0) {
+    return [...result, workingStateMessage]
+  }
+
+  return [
+    ...result.slice(0, firstRetainedIndex),
+    workingStateMessage,
+    ...result.slice(firstRetainedIndex),
+  ]
+}
+
+function removeUnfinishedToolTurns(messages: Message[], compactable: Set<number>): void {
+  const toolUseIds = new Map<string, number>()
+  const toolResultIds = new Set<string>()
+
+  for (let index = 0; index < messages.length; index++) {
+    for (const block of messages[index].content) {
+      if (block.type === 'tool_use') toolUseIds.set(block.id, index)
+      if (block.type === 'tool_result') toolResultIds.add(block.toolUseId)
+    }
+  }
+
+  for (const [toolUseId, messageIndex] of toolUseIds) {
+    if (toolResultIds.has(toolUseId)) continue
+    const turnStart = findContainingTurnStart(messages, messageIndex)
+    const turnEnd = findContainingTurnEnd(messages, turnStart)
+    for (let index = turnStart; index < turnEnd; index++) {
+      compactable.delete(index)
+    }
+  }
+}
+
+function findContainingTurnStart(messages: Message[], messageIndex: number): number {
+  for (let index = messageIndex; index >= 0; index--) {
+    if (startsTopLevelTurn(messages[index])) return index
+  }
+  return 0
+}
+
+function findContainingTurnEnd(messages: Message[], turnStart: number): number {
+  for (let index = turnStart + 1; index < messages.length; index++) {
+    if (startsTopLevelTurn(messages[index])) return index
+  }
+  return messages.length
+}
+
+function isToolIoBlock(block: ContentBlock): boolean {
+  return block.type === 'tool_use' || block.type === 'tool_result'
+}
+
+function extractCurrentGoal(messages: Message[]): string {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]
+    if (!startsTopLevelTurn(message)) continue
+    const text = message.content
+      .flatMap((block) => (block.type === 'text' ? [block.text.trim()] : []))
+      .find((value) => value.length > 0)
+    if (text) return text.length > 240 ? `${text.slice(0, 240)}...` : text
+  }
+  return 'Continue the current session task.'
 }
 
 function startsTopLevelTurn(message: Message): boolean {

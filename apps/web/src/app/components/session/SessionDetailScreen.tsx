@@ -46,6 +46,17 @@ interface ToolResultEntry {
   content: string
   isError?: boolean
   outputSummary?: string
+  evidence?: {
+    kind: 'tool_use_input' | 'tool_result_output'
+    toolUseId: string
+    toolName: string
+    path: string
+    chars?: number
+    bytes?: number
+    sha256?: string
+    summary?: string
+    strategy?: string
+  }
 }
 
 interface ToolCallEntry {

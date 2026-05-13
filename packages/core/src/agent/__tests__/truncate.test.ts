@@ -1,7 +1,7 @@
+import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, test } from 'bun:test'
 import { artifactizeToolOutput, truncateToolOutput } from '../truncate'
 
 describe('truncateToolOutput', () => {
@@ -90,17 +90,26 @@ describe('artifactizeToolOutput', () => {
 
     try {
       const output = `${'A'.repeat(70000)}\n${'B'.repeat(300)}`
-      const result = artifactizeToolOutput('bash', output, { workDir, toolUseId: 'tool-1' })
+      const result = artifactizeToolOutput('bash', output, {
+        workDir,
+        sessionId: 'sess_artifact_test',
+        toolUseId: 'tool-1',
+      })
 
       expect(result.artifactPath).toBeDefined()
+      expect(result.evidence).toBeDefined()
+      expect(result.evidence?.kind).toBe('tool_result_output')
+      expect(result.evidence?.toolUseId).toBe('tool-1')
       expect(result.content).toContain('[Artifact: 原始输出')
       expect(result.content).toContain('--- 摘要 ---')
       expect(result.content).toContain('--- 尾部 ---')
       expect(result.content).toContain('[使用 read 工具查看完整内容:')
 
-      const artifactPath = result.artifactPath!
+      const artifactPath = result.artifactPath
+      expect(artifactPath).toBeDefined()
+      if (!artifactPath) throw new Error('Expected artifact path')
       expect(existsSync(artifactPath)).toBe(true)
-      expect(artifactPath.startsWith(join(workDir, '.artifacts'))).toBe(true)
+      expect(artifactPath.startsWith(join(workDir, '.artifacts', 'sess_artifact_test'))).toBe(true)
       expect(readFileSync(artifactPath, 'utf-8')).toBe(output)
     } finally {
       rmSync(workDir, { recursive: true, force: true })

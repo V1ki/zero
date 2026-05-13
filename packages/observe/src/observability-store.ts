@@ -13,7 +13,7 @@ import {
 } from 'node:fs'
 import { basename, dirname, join, relative } from 'node:path'
 import { getSessionLogRelativeDir, now } from '@zero-os/shared'
-import type { CompletionResponse, StopReason, ToolResultBlock } from '@zero-os/shared'
+import type { CompletionResponse, StopReason, ToolEvidence, ToolResultBlock } from '@zero-os/shared'
 import { type RunLogEntry, type TraceEntry, type TraceKind, collapseTraceEntries } from './trace'
 import {
   projectSessionClosuresFromTraceEntries,
@@ -36,6 +36,7 @@ export interface RequestToolCallEntry {
   id: string
   name: string
   input: Record<string, unknown>
+  evidence?: ToolEvidence
 }
 
 export interface RequestToolResultEntry extends ToolResultBlock {}
@@ -240,7 +241,7 @@ export class ObservabilityStore {
 
     const sessionDirs: string[] = []
     for (const dirent of readdirSync(sessionsDir, { withFileTypes: true })) {
-      if ((dirent.name === '_active' || dirent.name === '_current') || !dirent.isDirectory()) {
+      if (dirent.name === '_active' || dirent.name === '_current' || !dirent.isDirectory()) {
         continue
       }
 

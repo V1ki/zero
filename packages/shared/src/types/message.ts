@@ -13,6 +13,22 @@ export type ControlKind =
 
 export type ContentBlockType = 'text' | 'tool_use' | 'tool_result' | 'image' | 'thinking'
 
+export type ToolEvidenceKind = 'tool_use_input' | 'tool_result_output'
+
+export interface ToolEvidence {
+  kind: ToolEvidenceKind
+  sessionId: string
+  toolUseId: string
+  toolName: string
+  path: string
+  chars: number
+  bytes: number
+  sha256: string
+  createdAt: string
+  summary?: string
+  strategy?: string
+}
+
 export interface TextBlock {
   type: 'text'
   text: string
@@ -23,6 +39,7 @@ export interface ToolUseBlock {
   id: string
   name: string
   input: Record<string, unknown>
+  evidence?: ToolEvidence
 }
 
 export interface ToolResultBlock {
@@ -32,6 +49,7 @@ export interface ToolResultBlock {
   contentItems?: ToolResultContentItem[]
   isError?: boolean
   outputSummary?: string
+  evidence?: ToolEvidence
   /** Tracks the truncation level applied to this block for cache-friendly idempotency */
   truncationLevel?: 'full' | 'summary' | 'status'
 }

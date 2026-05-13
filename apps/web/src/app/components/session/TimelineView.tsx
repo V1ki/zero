@@ -84,6 +84,7 @@ export function TimelineView({
                 result={item.result}
                 summary={item.summary}
                 contentItems={item.contentItems}
+                evidence={item.evidence}
                 isError={item.isError}
                 status={item.status}
                 durationMs={item.durationMs}

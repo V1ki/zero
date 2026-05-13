@@ -1,6 +1,6 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { estimateTokens } from '@zero-os/shared'
+import type { ToolEvidence } from '@zero-os/shared'
+import { persistToolResultEvidence } from './evidence'
 import { CONTEXT_PARAMS } from './params'
 
 const TOOL_OUTPUT_LIMITS: Record<string, number> = {
@@ -44,18 +44,23 @@ export function truncateToolOutput(toolName: string, output: string): string {
 export function artifactizeToolOutput(
   toolName: string,
   output: string,
-  opts: { workDir: string; toolUseId?: string },
-): { content: string; artifactPath?: string } {
+  opts: { workDir: string; sessionId?: string; toolUseId?: string; outputSummary?: string },
+): { content: string; artifactPath?: string; evidence?: ToolEvidence } {
   const threshold = CONTEXT_PARAMS.toolOutput.artifactThresholdChars
   if (output.length <= threshold) {
     return { content: truncateToolOutput(toolName, output) }
   }
 
-  const artifactDir = join(opts.workDir, '.artifacts')
-  mkdirSync(artifactDir, { recursive: true })
-  const filename = `tool-output-${Date.now()}-${toolName}.txt`
-  const artifactPath = join(artifactDir, filename)
-  writeFileSync(artifactPath, output, 'utf-8')
+  const toolUseId = opts.toolUseId ?? 'unknown_tool_use'
+  const evidence = persistToolResultEvidence({
+    workDir: opts.workDir,
+    sessionId: opts.sessionId ?? 'session',
+    toolUseId,
+    toolName,
+    content: output,
+    outputSummary: opts.outputSummary,
+  })
+  const artifactPath = evidence.path
 
   const summary = output.slice(0, 500)
   const tail = output.slice(-200)
@@ -72,5 +77,5 @@ export function artifactizeToolOutput(
     `[使用 read 工具查看完整内容: ${artifactPath}]`,
   ].join('\n')
 
-  return { content, artifactPath }
+  return { content, artifactPath, evidence }
 }

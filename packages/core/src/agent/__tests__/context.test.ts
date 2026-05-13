@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { generateId, now } from '@zero-os/shared'
 import type { ContentBlock, Message } from '@zero-os/shared'
 import {
@@ -52,6 +55,17 @@ function makeAssistantToolUse(name: string, toolUseId: string): Message {
   ])
 }
 
+function makeAssistantToolUseWithInput(
+  name: string,
+  toolUseId: string,
+  input: Record<string, unknown>,
+): Message {
+  return makeMessage('assistant', [
+    { type: 'text', text: `Using ${name}...` },
+    { type: 'tool_use', id: toolUseId, name, input },
+  ])
+}
+
 function expectDefined<T>(value: T | null | undefined): NonNullable<T> {
   expect(value).toBeDefined()
   if (value == null) {
@@ -79,6 +93,103 @@ function buildConversation(turnCount: number): Message[] {
     )
     messages.push(makeAssistantText(`Response for turn ${i}`))
   }
+  return messages
+}
+
+function buildLongToolConversation(sessionId = 'sess_20260512_1006_fei_8161_fixture'): Message[] {
+  const toolSpecs: Array<{
+    name: string
+    input: Record<string, unknown>
+    output: string
+    summary: string
+  }> = [
+    {
+      name: 'read',
+      input: { path: '/repo/packages/core/src/agent/agent-loop.ts', offset: 1, limit: 120 },
+      output: `AGENT_LOOP_RAW_${'read evidence '.repeat(900)}`,
+      summary: 'Read AgentLoop tool loop and request construction.',
+    },
+    {
+      name: 'write',
+      input: { path: '/repo/tmp/design.md', content: 'design content '.repeat(500) },
+      output: 'Wrote /repo/tmp/design.md',
+      summary: 'Wrote design note.',
+    },
+    {
+      name: 'edit',
+      input: {
+        path: '/repo/packages/core/src/agent/context.ts',
+        old_string: 'old behavior '.repeat(200),
+        new_string: 'new behavior '.repeat(200),
+      },
+      output: 'Edited /repo/packages/core/src/agent/context.ts',
+      summary: 'Edited context preparation.',
+    },
+    {
+      name: 'bash',
+      input: {
+        command: 'rg "tool_result" packages/core/src',
+        description: 'scan tool_result flow',
+      },
+      output: `BASH_RAW_${'tool_result line\n'.repeat(800)}`,
+      summary: 'Scanned tool_result flow.',
+    },
+    {
+      name: 'memory_search',
+      input: { query: 'episode compaction boundaries', topN: 5 },
+      output: 'Found memory entries about working-state compaction.',
+      summary: 'Found relevant memories.',
+    },
+    {
+      name: 'memory_read',
+      input: { path: '/Users/v1ki/.codex/memories/MEMORY.md' },
+      output: `MEMORY_RAW_${'working state compaction '.repeat(500)}`,
+      summary: 'Read memory guidance.',
+    },
+  ]
+  const messages: Message[] = []
+
+  for (let index = 0; index < toolSpecs.length; index++) {
+    const spec = toolSpecs[index]
+    const toolId = `fixture_tool_${index}_${spec.name}`
+    messages.push({
+      ...makeUserText(`Investigate subproblem ${index}: ${spec.name}`),
+      sessionId,
+    })
+    messages.push({
+      ...makeAssistantToolUseWithInput(spec.name, toolId, spec.input),
+      sessionId,
+    })
+    messages.push({
+      ...makeMessage('user', [
+        {
+          type: 'tool_result',
+          toolUseId: toolId,
+          content: spec.output,
+          outputSummary: spec.summary,
+        },
+      ]),
+      sessionId,
+    })
+    messages.push({
+      ...makeAssistantText(`Confirmed ${spec.summary}`),
+      sessionId,
+    })
+  }
+
+  messages.push({ ...makeUserText('Current task: finish the implementation safely'), sessionId })
+  messages.push({
+    ...makeAssistantToolUseWithInput('bash', 'fixture_recent_bash', {
+      command: 'bun test packages/core/src/agent/__tests__/context.test.ts',
+    }),
+    sessionId,
+  })
+  messages.push({
+    ...makeToolResult('fixture_recent_bash', `RECENT_RAW_${'keep full '.repeat(500)}`),
+    sessionId,
+  })
+  messages.push({ ...makeAssistantText('Still working on current task.'), sessionId })
+
   return messages
 }
 
@@ -417,6 +528,123 @@ describe('prepareConversationHistory', () => {
 
     expect(olderToolResult.content).toBe('A'.repeat(400))
     expect(result[4]).toBe(messages[4])
+  })
+
+  test('compacts old tool-heavy turns into episode and working-state messages with evidence paths', () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-context-'))
+    const messages = buildLongToolConversation()
+    const originalJsonChars = JSON.stringify(messages).length
+    const oldestResult = expectDefined(
+      messages[2].content.find((block) => block.type === 'tool_result'),
+    )
+    const oldestRawContent = oldestResult.content
+
+    try {
+      const result = prepareConversationHistory(messages, {
+        enableEpisodeCompaction: true,
+        evidenceWorkDir: workDir,
+        sessionId: 'sess_20260512_1006_fei_8161_fixture',
+      })
+      const compactedJsonChars = JSON.stringify(result).length
+      const text = result
+        .flatMap((message) =>
+          message.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])),
+        )
+        .join('\n')
+
+      expect(oldestResult.content).toBe(oldestRawContent)
+      expect(result.length).toBeLessThan(messages.length)
+      expect(compactedJsonChars).toBeLessThan(originalJsonChars * 0.45)
+      expect(text).toContain('<episode_compaction')
+      expect(text).toContain('<working_state_compaction>')
+      expect(text).toContain('why_tools_were_called')
+      expect(text).toContain('actual_scope_read_or_written')
+      expect(text).toContain('learned:')
+      expect(text).toContain('confirmed:')
+      expect(text).toContain('inferred:')
+      expect(text).toContain('blocked:')
+      expect(text).toContain('full_evidence:')
+      expect(text).toContain('read /repo/packages/core/src/agent/agent-loop.ts')
+      expect(text).toContain('write /repo/tmp/design.md contentChars=')
+      expect(text).toContain('edit /repo/packages/core/src/agent/context.ts oldChars=')
+      expect(text).toContain('bash scan tool_result flow')
+      expect(text).toContain('memory_search query=episode compaction boundaries')
+      expect(text).toContain('memory_read /Users/v1ki/.codex/memories/MEMORY.md')
+      expect(text).toContain('.artifacts/sess_20260512_1006_fei_8161_fixture/tool-evidence')
+      expect(JSON.stringify(result)).not.toContain('AGENT_LOOP_RAW_')
+      expect(JSON.stringify(result)).toContain('RECENT_RAW_')
+
+      const evidencePaths = Array.from(text.matchAll(/path=([^\s]+)/g), (match) => match[1])
+      expect(evidencePaths.length).toBeGreaterThan(0)
+      const firstEvidence = evidencePaths[0]
+      expect(existsSync(firstEvidence)).toBe(true)
+      expect(readFileSync(firstEvidence, 'utf-8').length).toBeGreaterThan(0)
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
+
+  test('keeps unfinished unpaired tool turns out of episode compaction', () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-unfinished-'))
+    const messages = [
+      makeUserText('old unfinished task'),
+      makeAssistantToolUseWithInput('bash', 'unfinished_tool', { command: 'sleep 10' }),
+      ...buildConversation(6),
+    ]
+
+    try {
+      const result = prepareConversationHistory(messages, {
+        enableEpisodeCompaction: true,
+        evidenceWorkDir: workDir,
+        sessionId: 'sess_unfinished_fixture',
+      })
+
+      expect(
+        result.some((message) =>
+          message.content.some(
+            (block) => block.type === 'tool_use' && block.id === 'unfinished_tool',
+          ),
+        ),
+      ).toBe(true)
+      expect(
+        result.some((message) =>
+          message.content.some(
+            (block) => block.type === 'tool_result' && block.toolUseId === 'unfinished_tool',
+          ),
+        ),
+      ).toBe(false)
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
+
+  test('episode compaction preserves legal tool_use and tool_result pairing in retained history', () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-pairs-'))
+    const messages = buildLongToolConversation('sess_pair_fixture')
+
+    try {
+      const result = prepareConversationHistory(messages, {
+        enableEpisodeCompaction: true,
+        evidenceWorkDir: workDir,
+        sessionId: 'sess_pair_fixture',
+      })
+      const toolUseIds = new Set<string>()
+      const toolResultIds = new Set<string>()
+
+      for (const message of result) {
+        for (const block of message.content) {
+          if (block.type === 'tool_use') toolUseIds.add(block.id)
+          if (block.type === 'tool_result') toolResultIds.add(block.toolUseId)
+        }
+      }
+
+      expect(toolUseIds.size).toBeGreaterThan(0)
+      for (const toolUseId of toolUseIds) {
+        expect(toolResultIds.has(toolUseId)).toBe(true)
+      }
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
   })
 })
 

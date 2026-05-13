@@ -50,6 +50,8 @@ export const CONTEXT_PARAMS = {
   history: {
     /** Turns 0..N: full tool output preserved */
     fullRetainTurns: 3,
+    /** Episode compaction keeps only the latest active/current turn fully expanded */
+    episodeFullRetainTurns: 0,
     /** Turns N+1..M: tool output truncated to summary */
     summaryRetainTurns: 8,
     /** Summary truncation length (chars) */
