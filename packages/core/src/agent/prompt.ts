@@ -219,6 +219,8 @@ export function buildToolRulesBlock(tools: ToolDefinition[]): string {
       'Memory Read：根据 memory_search 返回的 path 精读记忆文件。仅在 snippet 不足以回答时使用。',
     memory:
       'Memory：写入或维护长期记忆。完成工作步骤后，评估是否产生了值得跨会话保留的信息（偏好、决策、经验、流程），如有则调用 create 或 update。不要等到会话结束才写，每个阶段性成果完成时就评估。',
+    source_card:
+      'Source Card：当用户请求像是在查询已知外部数据源（股票行情、邮箱状态、系统数据、长期可复用数据源）时，优先调用 source_card list/get 做 preflight。Source Card 只提供数据源边界、状态、隐私策略、禁止动作和出处，不是执行器，也不代表已经能自动获取数据。若匹配到 active/public Source Card，可继续使用现有 fetch/bash/browser 等前台工具，但必须遵守 privacy 和 prohibitedActions；若匹配到 private/restricted/candidate Source Card，说明阻塞原因，不要绕过 Source Card 去后台读取。',
     task: 'Task：拆分 SubAgent 时明确每个子任务的输入、输出和依赖关系。不要把含糊的大任务直接丢给 SubAgent。',
     spawn_agent:
       'Spawn Agent：用于创建子 agent。spawn 立即返回 agent_id，不会阻塞。mode="standard"（默认）执行后自动完成；mode="interactive" 执行后进入等待状态，可通过 send_input 持续发送指令，最后用 close_agent 关闭。',

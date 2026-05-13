@@ -438,3 +438,59 @@
 ### 未解决风险或后续建议
 
 - 当前 promote 只记录审批 payload 并激活 Source Card，不执行 health probe。后续如接真实 probe，必须保持 trace 脱敏和 private metadata-only 默认边界。
+
+## 2026-05-12 LLM-guided Source Card Preflight
+
+### 本次目标
+
+实现 Source Card 的 LLM-guided preflight MVP：当 Agent 面对像是查询已知外部数据源的用户请求时，先通过现有 `source_card` 管理工具查看 Source Cards，再由 LLM 判断是否应参考某张卡的状态、隐私策略、禁止动作和出处边界。Source Card 当前定位是 source boundary，不是统一数据查询入口。
+
+### 实际修改的文件
+
+- `packages/core/src/agent/prompt.ts`
+  - 在 tool rules 中为 `source_card` 增加 preflight 规则。
+  - 明确外部数据源查询优先 `source_card list/get`。
+  - 明确 active/public Source Card 只允许后续前台查询工具在 Source Card 边界内继续执行。
+  - 明确 private/restricted/candidate Source Card 应说明 blocker，不得绕过后台读取。
+  - 明确 Source Card 不是执行器，不代表已经能自动获取数据。
+- `packages/core/src/agent/__tests__/prompt.test.ts`
+  - 覆盖外部数据查询应先检查 Source Cards。
+  - 覆盖 private/restricted/candidate Source Card 不应被绕过。
+  - 覆盖 Source Card 是边界和出处，不是执行器。
+- `docs/source-card-implementation-log.md`
+  - 记录本次定位调整。
+
+### 关键设计决策
+
+- 不新增 `SourceResolver`，不新增 `source_query`，不修改 Source Card schema。
+- 匹配判断先交给 LLM：Agent 通过 `source_card list/get` 读取现有卡，再判断用户请求是否落在某张卡的边界内。
+- Source Card 只提供可审计边界：状态、sensitivity、privacy、prohibitedActions、capabilities、credential binding summary 和来源。
+- 数据获取仍使用现有前台工具，例如 `fetch`、`bash`、`browser`，但必须受匹配 Source Card 的 privacy/prohibitedActions 约束。
+
+### 安全边界
+
+- 未实现 Watch binding。
+- 未修改 scheduler。
+- 未新增后台定时任务。
+- 未新增自动 health runner。
+- 未实现 QQ 邮箱后台 metadata adapter validation。
+- 未新增 SourceResolver 或 `source_query`。
+- 未修改 Source Card schema。
+- 未读取私人邮件正文或附件。
+- 未运行 `himalaya`。
+
+### 验证命令和结果
+
+- `bun test packages/core/src/agent/__tests__/prompt.test.ts`
+  - 结果：52 pass，0 fail。
+- `bun test packages/core/src/tool/__tests__/source-card.test.ts`
+  - 结果：3 pass，0 fail。
+- `bun test packages/core/src/tool/__tests__/source-card.test.ts packages/core/src/source-card/__tests__/service-runner.test.ts`
+  - 结果：9 pass，0 fail。
+- `bun run check`
+  - 结果：通过。
+
+### 未解决风险或后续建议
+
+- 当前只是 prompt/tool-rule 层面的 preflight 指引，不是强制执行网关。
+- Source Card 与后续 `fetch/bash/browser` 的严格联动仍依赖 Agent 遵守规则，尚未在 runtime 层阻断绕过行为。
