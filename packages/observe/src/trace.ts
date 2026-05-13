@@ -8,6 +8,7 @@ export type TraceKind =
   | 'turn'
   | 'llm_request'
   | 'tool_call'
+  | 'context_compaction'
   | 'sub_agent'
   | 'snapshot'
   | 'closure_decision'

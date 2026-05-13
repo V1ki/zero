@@ -508,6 +508,44 @@ export function projectSessionDecisionsFromTraceEntries(entries: TraceEntry[]): 
       continue
     }
 
+    if (entry.kind === 'context_compaction') {
+      const compaction = asRecord(asRecord(entry.data)?.compaction)
+      if (!compaction || asString(compaction.event) !== 'episode_compaction') continue
+
+      results.push({
+        ...base,
+        decisionType: 'context_compression',
+        outcome: 'episode_compaction',
+        context: compactRecord({
+          strategy: asString(compaction.strategy),
+          boundaryReason: asString(compaction.boundaryReason),
+          turnIndex: asNumber(compaction.turnIndex),
+          episodeFullRetainTurns: asNumber(compaction.episodeFullRetainTurns),
+          skippedUnfinishedToolUseIds: asStringArray(compaction.skippedUnfinishedToolUseIds),
+        }),
+        detail: compactRecord({
+          messagesBefore: asNumber(compaction.messagesBefore),
+          messagesAfter: asNumber(compaction.messagesAfter),
+          compactedMessageCount: asNumber(compaction.compactedMessageCount),
+          retainedMessageCount: asNumber(compaction.retainedMessageCount),
+          promptCharsBefore: asNumber(compaction.promptCharsBefore),
+          promptCharsAfter: asNumber(compaction.promptCharsAfter),
+          tokensBefore: asNumber(compaction.tokensBefore),
+          tokensAfter: asNumber(compaction.tokensAfter),
+          episodesCreated: asNumber(compaction.episodesCreated),
+          workingStateId: asString(compaction.workingStateId),
+          toolUseIds: asStringArray(compaction.toolUseIds),
+          evidenceCount: asNumber(compaction.evidenceCount),
+          evidenceChars: asNumber(compaction.evidenceChars),
+          evidenceBytes: asNumber(compaction.evidenceBytes),
+          rawCharsMovedToEvidence: asNumber(compaction.rawCharsMovedToEvidence),
+        }),
+        rationale: asString(compaction.boundaryReason),
+        ts: entry.endTime ?? entry.startTime,
+      })
+      continue
+    }
+
     if (entry.kind === 'llm_request') {
       const metadata = asRecord(entry.metadata)
       const request = asRecord(asRecord(entry.data)?.request)

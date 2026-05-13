@@ -15,6 +15,19 @@ function toolOutputLimit(toolName: string): number {
   return TOOL_OUTPUT_LIMITS[toolName.toLowerCase()] ?? CONTEXT_PARAMS.toolOutput.default
 }
 
+export type ToolEvidenceReason = 'per_tool_prompt_budget' | 'oversized_artifact'
+
+export interface ToolOutputArtifactization {
+  content: string
+  artifactPath?: string
+  evidence?: ToolEvidence
+  evidenceReason?: ToolEvidenceReason
+  originalChars?: number
+  originalTokens?: number
+  promptTokenLimit?: number
+  thresholdChars?: number
+}
+
 /**
  * Truncate tool output to fit within the tool's token budget.
  * Uses head 60% + tail 20% strategy with an omission marker in the middle.
@@ -49,11 +62,12 @@ export function artifactizeToolOutput(
   toolName: string,
   output: string,
   opts: { workDir: string; sessionId?: string; toolUseId?: string; outputSummary?: string },
-): { content: string; artifactPath?: string; evidence?: ToolEvidence } {
+): ToolOutputArtifactization {
   const threshold = CONTEXT_PARAMS.toolOutput.artifactThresholdChars
   const toolUseId = opts.toolUseId ?? 'unknown_tool_use'
   const tokenCount = estimateTokens(output)
-  const exceedsPromptBudget = tokenCount > toolOutputLimit(toolName)
+  const promptTokenLimit = toolOutputLimit(toolName)
+  const exceedsPromptBudget = tokenCount > promptTokenLimit
 
   if (output.length <= threshold) {
     if (!exceedsPromptBudget) {
@@ -69,7 +83,15 @@ export function artifactizeToolOutput(
       outputSummary: opts.outputSummary,
     })
 
-    return { content: output, evidence }
+    return {
+      content: output,
+      evidence,
+      evidenceReason: 'per_tool_prompt_budget',
+      originalChars: output.length,
+      originalTokens: tokenCount,
+      promptTokenLimit,
+      thresholdChars: threshold,
+    }
   }
 
   const evidence = persistToolResultEvidence({
@@ -97,5 +119,14 @@ export function artifactizeToolOutput(
     `[使用 read 工具查看完整内容: ${artifactPath}]`,
   ].join('\n')
 
-  return { content, artifactPath, evidence }
+  return {
+    content,
+    artifactPath,
+    evidence,
+    evidenceReason: 'oversized_artifact',
+    originalChars: output.length,
+    originalTokens: tokenCount,
+    promptTokenLimit,
+    thresholdChars: threshold,
+  }
 }

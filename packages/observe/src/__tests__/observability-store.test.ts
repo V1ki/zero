@@ -674,6 +674,70 @@ describe('ObservabilityStore', () => {
     })
   })
 
+  test('readSessionDecisions projects episode compaction trace spans', () => {
+    const store = new ObservabilityStore(testDir)
+    const sessionId = 'sess_20260512_1006_episode_compaction'
+
+    writeSessionTraceEntries(testDir, sessionId, [
+      {
+        spanId: 'span_episode_compaction',
+        sessionId,
+        kind: 'context_compaction',
+        name: 'episode_compaction',
+        startTime: '2026-05-12T02:05:00.000Z',
+        endTime: '2026-05-12T02:05:00.050Z',
+        durationMs: 50,
+        status: 'success',
+        data: {
+          compaction: {
+            event: 'episode_compaction',
+            strategy: 'deterministic_contiguous_older_turns_v1',
+            boundaryReason: 'Grouped older turns.',
+            turnIndex: 7,
+            messagesBefore: 20,
+            messagesAfter: 8,
+            compactedMessageCount: 12,
+            retainedMessageCount: 8,
+            promptCharsBefore: 50000,
+            promptCharsAfter: 9000,
+            tokensBefore: 12500,
+            tokensAfter: 2250,
+            episodesCreated: 2,
+            workingStateId: 'working_state_a_b',
+            episodeFullRetainTurns: 0,
+            skippedUnfinishedToolUseIds: ['dangling_tool'],
+            toolUseIds: ['tool_a', 'tool_b'],
+            evidenceCount: 4,
+            evidenceChars: 42000,
+            evidenceBytes: 43000,
+            rawCharsMovedToEvidence: 42000,
+          },
+        },
+      },
+    ])
+
+    const entries = store.readSessionDecisions(sessionId)
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({
+      decisionType: 'context_compression',
+      outcome: 'episode_compaction',
+      context: {
+        strategy: 'deterministic_contiguous_older_turns_v1',
+        turnIndex: 7,
+        skippedUnfinishedToolUseIds: ['dangling_tool'],
+      },
+      detail: {
+        messagesBefore: 20,
+        messagesAfter: 8,
+        episodesCreated: 2,
+        workingStateId: 'working_state_a_b',
+        evidenceCount: 4,
+        rawCharsMovedToEvidence: 42000,
+      },
+      rationale: 'Grouped older turns.',
+    })
+  })
+
   test('readSessionDecisions prefers the closest compression span and consumes each span once', () => {
     const store = new ObservabilityStore(testDir)
     const sessionId = 'sess_20260316_0210_competition'

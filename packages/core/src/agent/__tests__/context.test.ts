@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { generateId, now } from '@zero-os/shared'
 import type { ContentBlock, Message } from '@zero-os/shared'
 import {
+  type EpisodeCompactionTraceEvent,
   estimateConversationTokens,
   mergeInterleavedQueuedMessages,
   prepareConversationHistory,
@@ -533,6 +534,7 @@ describe('prepareConversationHistory', () => {
   test('compacts old tool-heavy turns into episode and working-state messages with evidence paths', () => {
     const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-context-'))
     const messages = buildLongToolConversation()
+    const compactionEvents: EpisodeCompactionTraceEvent[] = []
     const originalJsonChars = JSON.stringify(messages).length
     const oldestResult = expectDefined(
       messages[2].content.find((block) => block.type === 'tool_result'),
@@ -544,6 +546,7 @@ describe('prepareConversationHistory', () => {
         enableEpisodeCompaction: true,
         evidenceWorkDir: workDir,
         sessionId: 'sess_20260512_1006_fei_8161_fixture',
+        onEpisodeCompaction: (event) => compactionEvents.push(event),
       })
       const compactedJsonChars = JSON.stringify(result).length
       const text = result
@@ -591,6 +594,19 @@ describe('prepareConversationHistory', () => {
       )
       expect(outputEvidencePaths.length).toBeGreaterThan(0)
       expect(readFileSync(outputEvidencePaths[0], 'utf-8')).toContain('AGENT_LOOP_RAW_')
+      const compactionEvent = expectDefined(compactionEvents[0])
+      expect(compactionEvents).toHaveLength(1)
+      expect(compactionEvent.event).toBe('episode_compaction')
+      expect(compactionEvent.messagesBefore).toBe(messages.length)
+      expect(compactionEvent.messagesAfter).toBe(result.length)
+      expect(compactionEvent.episodesCreated).toBeGreaterThan(0)
+      expect(compactionEvent.compactedMessageCount).toBeGreaterThan(0)
+      expect(compactionEvent.promptCharsAfter).toBeLessThan(compactionEvent.promptCharsBefore)
+      expect(compactionEvent.tokensAfter).toBeLessThan(compactionEvent.tokensBefore)
+      expect(compactionEvent.evidenceCount).toBeGreaterThan(0)
+      expect(compactionEvent.rawCharsMovedToEvidence).toBeGreaterThan(0)
+      expect(compactionEvent.workingStateId).toContain('working_state_')
+      expect(compactionEvent.evidence.some((item) => item.writeStatus === 'created')).toBe(true)
     } finally {
       rmSync(workDir, { recursive: true, force: true })
     }

@@ -27,6 +27,7 @@ export interface ToolEvidence {
   createdAt: string
   summary?: string
   strategy?: string
+  writeStatus?: 'created' | 'existing'
 }
 
 export interface TextBlock {

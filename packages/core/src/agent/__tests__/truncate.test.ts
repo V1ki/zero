@@ -101,11 +101,14 @@ describe('artifactizeToolOutput', () => {
 
       expect(result.artifactPath).toBeUndefined()
       expect(result.content).toBe(output)
+      expect(result.evidenceReason).toBe('per_tool_prompt_budget')
+      expect(result.originalChars).toBe(output.length)
       expect(result.evidence).toBeDefined()
       expect(result.evidence?.path).toContain('.artifacts/sess_medium_budget/tool-evidence')
       expect(result.evidence?.chars).toBe(output.length)
       expect(result.evidence?.kind).toBe('tool_result_output')
       expect(result.evidence?.toolUseId).toBe('tool-medium')
+      expect(result.evidence?.writeStatus).toBe('created')
       expect(readFileSync(result.evidence?.path ?? '', 'utf-8')).toBe(output)
     } finally {
       rmSync(workDir, { recursive: true, force: true })
@@ -125,8 +128,10 @@ describe('artifactizeToolOutput', () => {
 
       expect(result.artifactPath).toBeDefined()
       expect(result.evidence).toBeDefined()
+      expect(result.evidenceReason).toBe('oversized_artifact')
       expect(result.evidence?.kind).toBe('tool_result_output')
       expect(result.evidence?.toolUseId).toBe('tool-1')
+      expect(result.evidence?.writeStatus).toBe('created')
       expect(result.content).toContain('[Artifact: 原始输出')
       expect(result.content).toContain('--- 摘要 ---')
       expect(result.content).toContain('--- 尾部 ---')

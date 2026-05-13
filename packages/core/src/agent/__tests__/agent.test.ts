@@ -11,6 +11,7 @@ import type {
   StreamEvent,
   ToolContext,
 } from '@zero-os/shared'
+import { getSessionLogRelativeDir } from '@zero-os/shared'
 import { BaseTool } from '../../tool/base'
 import { BashTool } from '../../tool/bash'
 import { ReadTool } from '../../tool/read'
@@ -320,6 +321,26 @@ class ActiveTurnTool extends BaseTool {
   }
 }
 
+class LargeInputTool extends BaseTool {
+  name = 'large_input_tool'
+  description = 'Accept a large input payload.'
+  parameters = {
+    type: 'object',
+    properties: {
+      content: { type: 'string' },
+    },
+    required: ['content'],
+  }
+
+  protected async execute() {
+    return {
+      success: true,
+      output: 'large input accepted',
+      outputSummary: 'large input accepted',
+    }
+  }
+}
+
 class ActiveTurnCaptureAdapter implements ProviderAdapter {
   readonly apiType = 'fake-active-turn'
   requests: CompletionRequest[] = []
@@ -346,6 +367,49 @@ class ActiveTurnCaptureAdapter implements ProviderAdapter {
     return {
       id: 'resp_active_final',
       content: [{ type: 'text', text: 'active result consumed' }],
+      stopReason: 'end_turn',
+      usage: { input: 4, output: 2 },
+      model: 'fake-model',
+    }
+  }
+
+  async *stream(_req: CompletionRequest): AsyncIterable<StreamEvent> {
+    yield* []
+    throw new Error('stream not supported in test')
+  }
+
+  async healthCheck(): Promise<boolean> {
+    return true
+  }
+}
+
+class LargeInputToolAdapter implements ProviderAdapter {
+  readonly apiType = 'fake-large-input'
+  private completeCalls = 0
+
+  async complete(_req: CompletionRequest): Promise<CompletionResponse> {
+    this.completeCalls += 1
+
+    if (this.completeCalls === 1) {
+      return {
+        id: 'resp_large_input_tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_large_input_1',
+            name: 'large_input_tool',
+            input: { content: 'large-input '.repeat(7000) },
+          },
+        ],
+        stopReason: 'tool_use',
+        usage: { input: 5, output: 2 },
+        model: 'fake-model',
+      }
+    }
+
+    return {
+      id: 'resp_large_input_final',
+      content: [{ type: 'text', text: 'large input done' }],
       stopReason: 'end_turn',
       usage: { input: 4, output: 2 },
       model: 'fake-model',
@@ -496,6 +560,7 @@ describe('Agent', () => {
     const registry = new ToolRegistry()
     registry.register(new ActiveTurnTool())
     const adapter = new ActiveTurnCaptureAdapter()
+    const tracer = new Tracer(workDir)
     const agentConfig: AgentConfig = {
       name: 'test-agent',
       agentInstruction: 'Use active_turn_tool.',
@@ -506,7 +571,7 @@ describe('Agent', () => {
       sessionId: 'sess_agent_active_turn',
       workDir,
     }
-    const agent = new Agent(agentConfig, adapter, registry, localToolContext)
+    const agent = new Agent(agentConfig, adapter, registry, localToolContext, { tracer })
     const oldHistory: Message[] = [
       {
         id: 'old_user_1',
@@ -587,6 +652,102 @@ describe('Agent', () => {
       expect(firstRequestText).not.toContain('OLD_RESULT_RAW_')
       expect(secondRequestText).toContain('ACTIVE_RESULT_RAW_')
       expect(secondRequestText).not.toContain('OLD_RESULT_RAW_')
+
+      const compactionSpan = findSpanDeep(
+        tracer.getSessionTraces('sess_agent_active_turn'),
+        'episode_compaction',
+      )
+      expect(compactionSpan?.kind).toBe('context_compaction')
+      expect(compactionSpan?.data?.compaction).toMatchObject({
+        event: 'episode_compaction',
+        episodesCreated: 1,
+        evidenceCount: 2,
+        toolUseIds: ['old_tool_1'],
+      })
+
+      const runLogPath = join(
+        workDir,
+        getSessionLogRelativeDir('sess_agent_active_turn'),
+        'run.log',
+      )
+      const runEntries = readFileSync(runLogPath, 'utf-8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+      expect(runEntries.some((entry) => entry.event === 'context_compaction.episode')).toBe(true)
+      expect(runEntries.some((entry) => entry.event === 'trace.context_compaction.success')).toBe(
+        true,
+      )
+
+      const evidenceEntries = runEntries.filter(
+        (entry) =>
+          entry.event === 'tool_evidence.persisted' &&
+          (entry.data as { source?: string } | undefined)?.source === 'episode_compaction',
+      )
+      expect(evidenceEntries.length).toBeGreaterThanOrEqual(2)
+      expect(
+        evidenceEntries.some((entry) => {
+          const evidence = (entry.data as { evidence?: { kind?: string } } | undefined)?.evidence
+          return evidence?.kind === 'tool_result_output'
+        }),
+      ).toBe(true)
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
+
+  test('run: logs active tool_use input evidence when assistant input is large', async () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'zero-agent-large-input-'))
+    const registry = new ToolRegistry()
+    registry.register(new LargeInputTool())
+    const tracer = new Tracer(workDir)
+    const agentConfig: AgentConfig = {
+      name: 'test-agent',
+      agentInstruction: 'Use large_input_tool.',
+      promptMode: 'minimal',
+    }
+    const localToolContext: ToolContext = {
+      ...toolContext,
+      sessionId: 'sess_agent_large_input',
+      workDir,
+    }
+    const agent = new Agent(agentConfig, new LargeInputToolAdapter(), registry, localToolContext, {
+      tracer,
+    })
+    const context: AgentContext = {
+      systemPrompt: 'Use large_input_tool.',
+      conversationHistory: [],
+      tools: registry.getDefinitions(),
+    }
+
+    try {
+      await agent.run(context, 'send a large input')
+
+      const runLogPath = join(
+        workDir,
+        getSessionLogRelativeDir('sess_agent_large_input'),
+        'run.log',
+      )
+      const runEntries = readFileSync(runLogPath, 'utf-8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+      const evidenceEntry = expectDefined(
+        runEntries.find(
+          (entry) =>
+            entry.event === 'tool_evidence.persisted' &&
+            (entry.data as { source?: string } | undefined)?.source === 'active_tool_use',
+        ),
+      )
+      const data = evidenceEntry.data as {
+        reason?: string
+        evidence?: { kind?: string; writeStatus?: string; path?: string }
+      }
+
+      expect(data.reason).toBe('large_tool_input')
+      expect(data.evidence?.kind).toBe('tool_use_input')
+      expect(data.evidence?.writeStatus).toBe('created')
+      expect(existsSync(data.evidence?.path ?? '')).toBe(true)
     } finally {
       rmSync(workDir, { recursive: true, force: true })
     }

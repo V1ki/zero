@@ -13,7 +13,7 @@
 `ToolEvidence`
 
 - Layer: message metadata, trace request entries, artifact path, UI tool detail.
-- Shape: `kind`, `sessionId`, `toolUseId`, `toolName`, `path`, `chars`, `bytes`, `sha256`, optional `summary` and `strategy`.
+- Shape: `kind`, `sessionId`, `toolUseId`, `toolName`, `path`, `chars`, `bytes`, `sha256`, optional `summary`, `strategy`, and `writeStatus`.
 - Purpose: point to exact raw tool input/output without replaying it inline forever.
 
 `EpisodeCompaction`
@@ -43,6 +43,8 @@
 
 - `tool_result` blocks can carry `evidence`.
 - request trace `toolCalls` / `toolResults` preserve evidence pointers.
+- When episode compaction happens, Agent emits a `context_compaction` trace span named `episode_compaction` plus a `context_compaction.episode` run.log entry. The payload includes before/after message counts, prompt chars/tokens, compacted/retained message ids, episode count, boundary strategy, skipped unfinished tool ids, and evidence totals.
+- Each active-turn tool input/output evidence write and each episode-compaction evidence pointer is logged as `tool_evidence.persisted` with source, reason, tool id, evidence path, chars, bytes, hash, and write status.
 - Session detail tool cards render evidence path, chars, and hash when available.
 
 ## Known Risks And Extensions

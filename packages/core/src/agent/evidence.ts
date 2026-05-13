@@ -59,7 +59,8 @@ export function persistToolEvidence(input: EvidenceWriteInput): ToolEvidence {
 
   const filename = `${safeUseId}-${input.kind}-${safeTool}-${sha256.slice(0, 12)}.${ext}`
   const path = join(dir, filename)
-  if (!existsSync(path)) {
+  const alreadyExists = existsSync(path)
+  if (!alreadyExists) {
     writeFileSync(path, input.payload, 'utf-8')
   }
 
@@ -75,6 +76,7 @@ export function persistToolEvidence(input: EvidenceWriteInput): ToolEvidence {
     createdAt: now(),
     summary: input.summary,
     strategy: input.strategy,
+    writeStatus: alreadyExists ? 'existing' : 'created',
   }
 }
 
@@ -122,18 +124,24 @@ export function persistToolResultEvidence(params: {
 
 export function attachLargeToolUseEvidence(
   content: Message['content'],
-  options: { workDir: string; sessionId: string },
+  options: {
+    workDir: string
+    sessionId: string
+    onEvidence?: (evidence: ToolEvidence, toolUse: ToolUseBlock) => void
+  },
 ): Message['content'] {
   return content.map((block) => {
     if (block.type !== 'tool_use') return block
     if (block.evidence || !shouldPersistToolInput(block.input)) return block
+    const evidence = persistToolInputEvidence({
+      workDir: options.workDir,
+      sessionId: options.sessionId,
+      toolUse: block,
+    })
+    options.onEvidence?.(evidence, block)
     return {
       ...block,
-      evidence: persistToolInputEvidence({
-        workDir: options.workDir,
-        sessionId: options.sessionId,
-        toolUse: block,
-      }),
+      evidence,
     }
   })
 }

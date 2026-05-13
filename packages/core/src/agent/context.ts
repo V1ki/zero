@@ -1,4 +1,10 @@
-import type { ContentBlock, Message, ToolResultBlock } from '@zero-os/shared'
+import type {
+  ContentBlock,
+  EpisodeCompaction,
+  Message,
+  ToolEvidence,
+  ToolResultBlock,
+} from '@zero-os/shared'
 import { estimateMessageTokens, hasSignedThinkingBlock, now } from '@zero-os/shared'
 import { buildEpisodeCompaction, buildWorkingStateCompaction, formatWorkingState } from './evidence'
 import { CONTEXT_PARAMS } from './params'
@@ -8,6 +14,48 @@ export interface ConversationHistoryOptions {
   enableEpisodeCompaction?: boolean
   evidenceWorkDir?: string
   sessionId?: string
+  onEpisodeCompaction?: (event: EpisodeCompactionTraceEvent) => void
+}
+
+export interface EpisodeCompactionTraceEpisode {
+  id: string
+  status: EpisodeCompaction['status']
+  goal: string
+  scope: string[]
+  messageIds: string[]
+  toolUseIds: string[]
+  evidenceCount: number
+  evidenceChars: number
+  evidenceBytes: number
+  blockerCount: number
+}
+
+export interface EpisodeCompactionTraceEvent {
+  event: 'episode_compaction'
+  sessionId: string
+  strategy: string
+  boundaryReason: string
+  messagesBefore: number
+  messagesAfter: number
+  compactedMessageCount: number
+  retainedMessageCount: number
+  promptCharsBefore: number
+  promptCharsAfter: number
+  tokensBefore: number
+  tokensAfter: number
+  episodesCreated: number
+  workingStateId: string
+  episodeFullRetainTurns: number
+  skippedUnfinishedToolUseIds: string[]
+  compactedMessageIds: string[]
+  retainedMessageIds: string[]
+  toolUseIds: string[]
+  evidenceCount: number
+  evidenceChars: number
+  evidenceBytes: number
+  rawCharsMovedToEvidence: number
+  evidence: ToolEvidence[]
+  episodes: EpisodeCompactionTraceEpisode[]
 }
 
 export function sanitizeConversationHistoryForSignedThinkingToolUse(
@@ -174,6 +222,7 @@ export function prepareConversationHistory(
     return compactEpisodeHistory(cleaned, turnBoundaries, {
       workDir: options.evidenceWorkDir,
       sessionId: options.sessionId ?? cleaned[0]?.sessionId ?? 'session',
+      onEpisodeCompaction: options.onEpisodeCompaction,
     })
   }
 
@@ -260,7 +309,11 @@ function buildTurnAgeMap(messages: Message[], turnBoundaries: number[]): Map<num
 function compactEpisodeHistory(
   messages: Message[],
   turnBoundaries: number[],
-  options: { workDir: string; sessionId: string },
+  options: {
+    workDir: string
+    sessionId: string
+    onEpisodeCompaction?: (event: EpisodeCompactionTraceEvent) => void
+  },
 ): Message[] {
   if (turnBoundaries.length <= CONTEXT_PARAMS.history.episodeFullRetainTurns + 1) {
     return messages
@@ -274,10 +327,10 @@ function compactEpisodeHistory(
     compactable.add(index)
   }
 
-  removeUnfinishedToolTurns(messages, compactable)
+  const skippedUnfinishedToolUseIds = removeUnfinishedToolTurns(messages, compactable)
 
   const result: Message[] = []
-  const episodes = []
+  const episodes: EpisodeCompaction[] = []
   let index = 0
   while (index < messages.length) {
     if (!compactable.has(index)) {
@@ -330,20 +383,33 @@ function compactEpisodeHistory(
     createdAt: now(),
   }
 
-  if (firstRetainedIndex < 0) {
-    return [...result, workingStateMessage]
-  }
+  const compactedMessages =
+    firstRetainedIndex < 0
+      ? [...result, workingStateMessage]
+      : [
+          ...result.slice(0, firstRetainedIndex),
+          workingStateMessage,
+          ...result.slice(firstRetainedIndex),
+        ]
 
-  return [
-    ...result.slice(0, firstRetainedIndex),
-    workingStateMessage,
-    ...result.slice(firstRetainedIndex),
-  ]
+  options.onEpisodeCompaction?.(
+    buildEpisodeCompactionTraceEvent({
+      sessionId: options.sessionId,
+      messagesBefore: messages,
+      messagesAfter: compactedMessages,
+      episodes,
+      workingStateId,
+      skippedUnfinishedToolUseIds,
+    }),
+  )
+
+  return compactedMessages
 }
 
-function removeUnfinishedToolTurns(messages: Message[], compactable: Set<number>): void {
+function removeUnfinishedToolTurns(messages: Message[], compactable: Set<number>): string[] {
   const toolUseIds = new Map<string, number>()
   const toolResultIds = new Set<string>()
+  const skippedToolUseIds: string[] = []
 
   for (let index = 0; index < messages.length; index++) {
     for (const block of messages[index].content) {
@@ -356,10 +422,75 @@ function removeUnfinishedToolTurns(messages: Message[], compactable: Set<number>
     if (toolResultIds.has(toolUseId)) continue
     const turnStart = findContainingTurnStart(messages, messageIndex)
     const turnEnd = findContainingTurnEnd(messages, turnStart)
+    let removedFromCompaction = false
     for (let index = turnStart; index < turnEnd; index++) {
-      compactable.delete(index)
+      removedFromCompaction = compactable.delete(index) || removedFromCompaction
     }
+    if (removedFromCompaction) skippedToolUseIds.push(toolUseId)
   }
+
+  return skippedToolUseIds
+}
+
+function buildEpisodeCompactionTraceEvent(params: {
+  sessionId: string
+  messagesBefore: Message[]
+  messagesAfter: Message[]
+  episodes: EpisodeCompaction[]
+  workingStateId: string
+  skippedUnfinishedToolUseIds: string[]
+}): EpisodeCompactionTraceEvent {
+  const evidence = params.episodes.flatMap((episode) => episode.evidence)
+  const compactedMessageIds = params.episodes.flatMap((episode) => episode.messageIds)
+  const compactedMessageIdSet = new Set(compactedMessageIds)
+  const retainedMessageIds = params.messagesBefore
+    .map((message) => message.id)
+    .filter((id) => !compactedMessageIdSet.has(id))
+  const evidenceChars = evidence.reduce((total, item) => total + item.chars, 0)
+  const evidenceBytes = evidence.reduce((total, item) => total + item.bytes, 0)
+
+  return {
+    event: 'episode_compaction',
+    sessionId: params.sessionId,
+    strategy: params.episodes[0]?.boundaryStrategy ?? 'none',
+    boundaryReason: params.episodes[0]?.boundaryReason ?? 'No episode compaction was produced.',
+    messagesBefore: params.messagesBefore.length,
+    messagesAfter: params.messagesAfter.length,
+    compactedMessageCount: compactedMessageIds.length,
+    retainedMessageCount: retainedMessageIds.length,
+    promptCharsBefore: stableJsonLength(params.messagesBefore),
+    promptCharsAfter: stableJsonLength(params.messagesAfter),
+    tokensBefore: estimateConversationTokens(params.messagesBefore),
+    tokensAfter: estimateConversationTokens(params.messagesAfter),
+    episodesCreated: params.episodes.length,
+    workingStateId: params.workingStateId,
+    episodeFullRetainTurns: CONTEXT_PARAMS.history.episodeFullRetainTurns,
+    skippedUnfinishedToolUseIds: params.skippedUnfinishedToolUseIds,
+    compactedMessageIds,
+    retainedMessageIds,
+    toolUseIds: params.episodes.flatMap((episode) => episode.toolUseIds),
+    evidenceCount: evidence.length,
+    evidenceChars,
+    evidenceBytes,
+    rawCharsMovedToEvidence: evidenceChars,
+    evidence,
+    episodes: params.episodes.map((episode) => ({
+      id: episode.id,
+      status: episode.status,
+      goal: episode.goal,
+      scope: episode.scope,
+      messageIds: episode.messageIds,
+      toolUseIds: episode.toolUseIds,
+      evidenceCount: episode.evidence.length,
+      evidenceChars: episode.evidence.reduce((total, item) => total + item.chars, 0),
+      evidenceBytes: episode.evidence.reduce((total, item) => total + item.bytes, 0),
+      blockerCount: episode.blockers.length,
+    })),
+  }
+}
+
+function stableJsonLength(value: unknown): number {
+  return JSON.stringify(value).length
 }
 
 function findContainingTurnStart(messages: Message[], messageIndex: number): number {

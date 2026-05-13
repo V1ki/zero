@@ -24,12 +24,17 @@ import type {
   SecretFilter,
   ToolContext,
   ToolDefinition,
+  ToolEvidence,
 } from '@zero-os/shared'
 import { generateId, now, toErrorMessage } from '@zero-os/shared'
 import type { ToolRegistry } from '../tool/registry'
 import { AgentLoop, type AgentLoopHooks, type ToolExecutor } from './agent-loop'
 import { allocateBudget, shouldCompress } from './budget'
-import { estimateConversationTokens, prepareConversationHistory } from './context'
+import {
+  type EpisodeCompactionTraceEvent,
+  estimateConversationTokens,
+  prepareConversationHistory,
+} from './context'
 import { attachLargeToolUseEvidence } from './evidence'
 import { retrieveMemoriesWithDecision } from './memory-retrieval'
 import { CONTEXT_PARAMS } from './params'
@@ -56,6 +61,7 @@ import {
   parseTaskClosureDecision,
 } from './task-closure'
 import { artifactizeToolOutput } from './truncate'
+import type { ToolEvidenceReason } from './truncate'
 
 interface FailedToolAttempt {
   toolUseId: string
@@ -209,13 +215,15 @@ export class Agent {
     getQueuedMessages?: () => QueuedMessage[],
     requestLogMeta?: { turnIndex?: number; userMessageEntry?: Message },
   ): Promise<Message[]> {
+    const turnIndex = requestLogMeta?.turnIndex ?? 1
+    const episodeCompactionEvents: EpisodeCompactionTraceEvent[] = []
     const history = prepareConversationHistory(context.conversationHistory, {
       requireThinkingForToolUse: this.adapter.apiType === 'anthropic-deepseek',
       enableEpisodeCompaction: true,
       evidenceWorkDir: this.toolContext.workDir,
       sessionId: this.toolContext.sessionId,
+      onEpisodeCompaction: (event) => episodeCompactionEvents.push(event),
     })
-    const turnIndex = requestLogMeta?.turnIndex ?? 1
     let emittedMessageCount = 0
 
     const rootSpan = this.obs.tracer?.startSpan(
@@ -228,6 +236,10 @@ export class Agent {
         data: { turnIndex },
       },
     )
+
+    for (const event of episodeCompactionEvents) {
+      this.recordEpisodeCompactionTrace(event, rootSpan?.id, turnIndex)
+    }
 
     const systemParts: string[] = [context.systemPrompt]
     if (context.identityMemory) systemParts.push(context.identityMemory)
@@ -546,6 +558,16 @@ export class Agent {
         attachLargeToolUseEvidence(this.filterContent(content), {
           workDir: this.toolContext.workDir,
           sessionId: this.toolContext.sessionId,
+          onEvidence: (evidence, toolUse) => {
+            this.logToolEvidence(evidence, {
+              source: 'active_tool_use',
+              reason: 'large_tool_input',
+              turnIndex: options.turnIndex,
+              traceSpanId: currentRequestSpanId,
+              requestId: options.executionState.currentRequestId,
+              originalChars: JSON.stringify(toolUse.input).length,
+            })
+          },
         }),
       onCompletionStart: (_request) => {
         const llmSpan = this.obs.tracer?.startSpan(
@@ -971,22 +993,33 @@ export class Agent {
           if (block.type !== 'tool_result') return block
 
           const toolName = toolNamesByUseId.get(block.toolUseId) ?? 'unknown_tool'
-          const { content, artifactPath, evidence } = artifactizeToolOutput(
-            toolName,
-            block.content,
-            {
-              workDir: this.toolContext.workDir,
-              sessionId: this.toolContext.sessionId,
-              toolUseId: block.toolUseId,
-              outputSummary: block.outputSummary,
-            },
-          )
+          const artifactized = artifactizeToolOutput(toolName, block.content, {
+            workDir: this.toolContext.workDir,
+            sessionId: this.toolContext.sessionId,
+            toolUseId: block.toolUseId,
+            outputSummary: block.outputSummary,
+          })
+          const { content, artifactPath, evidence } = artifactized
 
           if (artifactPath) {
             this.toolContext.logger.info('tool_output_artifactized', {
               tool: toolName,
               originalChars: block.content.length,
               artifactPath,
+            })
+          }
+          if (evidence) {
+            this.logToolEvidence(evidence, {
+              source: 'active_tool_result',
+              reason: artifactized.evidenceReason ?? 'tool_result_output',
+              turnIndex: options.turnIndex,
+              requestId: options.executionState.currentRequestId,
+              artifactPath,
+              originalChars: artifactized.originalChars,
+              originalTokens: artifactized.originalTokens,
+              promptTokenLimit: artifactized.promptTokenLimit,
+              thresholdChars: artifactized.thresholdChars,
+              inlineContentChars: content.length,
             })
           }
 
@@ -1302,6 +1335,123 @@ export class Agent {
   /**
    * Log an LLM request to the observability layer.
    */
+  private recordEpisodeCompactionTrace(
+    event: EpisodeCompactionTraceEvent,
+    parentSpanId: string | undefined,
+    turnIndex: number,
+  ): void {
+    const payload = this.filterTraceValue({
+      ...event,
+      turnIndex,
+      agentName: this.config.name,
+    }) as Record<string, unknown>
+    const span = this.obs.tracer?.startSpan(
+      this.toolContext.sessionId,
+      'episode_compaction',
+      parentSpanId,
+      {
+        kind: 'context_compaction',
+        agentName: this.config.name,
+        data: {
+          compaction: payload,
+        },
+        metadata: {
+          turnIndex,
+          strategy: event.strategy,
+          episodesCreated: event.episodesCreated,
+          evidenceCount: event.evidenceCount,
+          messagesBefore: event.messagesBefore,
+          messagesAfter: event.messagesAfter,
+        },
+      },
+    )
+
+    this.obs.tracer?.logSession?.(
+      this.toolContext.sessionId,
+      'info',
+      'context_compaction.episode',
+      {
+        traceSpanId: span?.id,
+        ...payload,
+      },
+    )
+
+    for (const evidence of event.evidence) {
+      this.logToolEvidence(evidence, {
+        source: 'episode_compaction',
+        reason: 'replay_compaction',
+        turnIndex,
+        traceSpanId: span?.id,
+        compactionId: event.workingStateId,
+      })
+    }
+
+    if (span) {
+      this.obs.tracer?.endSpan(span.id, 'success', {
+        turnIndex,
+        episodesCreated: event.episodesCreated,
+        evidenceCount: event.evidenceCount,
+      })
+    }
+  }
+
+  private logToolEvidence(
+    evidence: ToolEvidence,
+    meta: {
+      source: 'active_tool_use' | 'active_tool_result' | 'episode_compaction'
+      reason: ToolEvidenceReason | 'large_tool_input' | 'replay_compaction' | 'tool_result_output'
+      turnIndex: number
+      traceSpanId?: string
+      requestId?: string
+      compactionId?: string
+      artifactPath?: string
+      originalChars?: number
+      originalTokens?: number
+      promptTokenLimit?: number
+      thresholdChars?: number
+      inlineContentChars?: number
+    },
+  ): void {
+    const payload = this.filterTraceValue({
+      traceSpanId: meta.traceSpanId,
+      requestId: meta.requestId,
+      compactionId: meta.compactionId,
+      source: meta.source,
+      reason: meta.reason,
+      turnIndex: meta.turnIndex,
+      tool: evidence.toolName,
+      toolUseId: evidence.toolUseId,
+      artifactPath: meta.artifactPath,
+      originalChars: meta.originalChars,
+      originalTokens: meta.originalTokens,
+      promptTokenLimit: meta.promptTokenLimit,
+      thresholdChars: meta.thresholdChars,
+      inlineContentChars: meta.inlineContentChars,
+      evidence: {
+        kind: evidence.kind,
+        sessionId: evidence.sessionId,
+        toolUseId: evidence.toolUseId,
+        toolName: evidence.toolName,
+        path: evidence.path,
+        chars: evidence.chars,
+        bytes: evidence.bytes,
+        sha256: evidence.sha256,
+        createdAt: evidence.createdAt,
+        summary: evidence.summary,
+        strategy: evidence.strategy,
+        writeStatus: evidence.writeStatus,
+      },
+    }) as Record<string, unknown>
+
+    this.obs.tracer?.logSession?.(
+      this.toolContext.sessionId,
+      'info',
+      'tool_evidence.persisted',
+      payload,
+    )
+    this.toolContext.logger.info('tool_evidence_persisted', payload)
+  }
+
   private logLLMRequest(
     request: CompletionRequest,
     response: CompletionResponse,
