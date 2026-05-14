@@ -2,13 +2,8 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { Message } from '@zero-os/shared'
-import {
-  SessionSourceMiner,
-  SourceCardManager,
-  SourceCardService,
-  createQqMailHimalayaSourceCard,
-} from '../index'
+import type { Message, SourceCard } from '@zero-os/shared'
+import { SessionSourceMiner, SourceCardManager, SourceCardService } from '../index'
 import type { SessionSourceMinerReader } from '../miner'
 
 const tempDirs: string[] = []
@@ -23,6 +18,21 @@ function createMessage(id: string, content: Message['content']): Message {
     messageType: 'message',
     content,
     createdAt: '2026-05-12T02:30:00.000Z',
+  }
+}
+
+function createExistingMailCard(): SourceCard {
+  return {
+    schemaVersion: 1,
+    id: 'qq-mail-source',
+    title: 'QQ Mail source',
+    state: 'active',
+    sensitivity: 'private',
+    tags: ['mail', 'qq-mail', 'himalaya'],
+    sourceDoc: {
+      format: 'markdown',
+      body: '# QQ Mail source\n\n## When to use\n- Use for QQ Mail metadata.\n\n## How to use\n- Use himalaya metadata commands only.',
+    },
   }
 }
 
@@ -120,6 +130,33 @@ function createReader(calls: string[]): SessionSourceMinerReader {
   }
 }
 
+function createMarketReader(): SessionSourceMinerReader {
+  return {
+    readSession: (id) => ({ id, source: 'web' }),
+    readMessages: (id) => [
+      {
+        id: 'msg_market',
+        sessionId: id,
+        role: 'assistant',
+        messageType: 'message',
+        createdAt: '2026-05-12T00:00:00.000Z',
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: 'tool_market',
+            outputSummary: 'Eastmoney quote metadata',
+            content:
+              'fetch https://push2.eastmoney.com/api/qt/stock/get statusCode 200 schemaKeys data diff f43 f57 f58',
+          },
+        ],
+      },
+    ],
+    readTraceEntries: () => [],
+    readRunLog: () => [],
+    readArtifacts: () => [],
+  }
+}
+
 function createService(): {
   manager: SourceCardManager
   service: SourceCardService
@@ -155,10 +192,14 @@ describe('SessionSourceMiner', () => {
       const text = JSON.stringify(draft)
 
       expect(draft.sourceSessionId).toBe(sessionId)
-      expect(draft.proposedCard.state).toBe('candidate')
-      expect(draft.proposedCard.kind).toBe('private_mailbox')
-      expect(draft.proposedCard.privacy.bodyPolicy).toBe('metadata_only')
-      expect(draft.proposedCard.privacy.attachmentPolicy).toBe('blocked')
+      expect(draft.proposedCard.state).toBe('draft')
+      expect(draft.proposedCard.title).toBe('QQ Mail source')
+      expect(draft.proposedCard.sensitivity).toBe('private')
+      expect(draft.proposedCard.tags).toEqual(
+        expect.arrayContaining(['mail', 'qq-mail', 'himalaya']),
+      )
+      expect(draft.proposedCard.sourceDoc.body).toContain('## How to use')
+      expect(draft.proposedCard.sourceDoc.body).toContain('himalaya CLI metadata commands')
       expect(draft.evidenceRefs.map((ref) => ref.source)).toEqual(
         expect.arrayContaining(['message', 'trace', 'run_log', 'artifact']),
       )
@@ -168,8 +209,7 @@ describe('SessionSourceMiner', () => {
         runLogEntryCount: 1,
         messageCount: 2,
       })
-      expect(draft.missingFields).toContain('credential.binding')
-      expect(draft.riskFlags.join('\n')).toContain('did not execute CLI/API/browser/fetch')
+      expect(draft.riskFlags.join('\n')).toContain('Did not execute CLI/API/browser/fetch')
       expect(draft.confidence).toBeGreaterThan(0.5)
       expect(calls).toEqual([
         'readSession',
@@ -187,7 +227,6 @@ describe('SessionSourceMiner', () => {
       const evidenceSummaryText = draft.evidenceRefs.map((ref) => ref.summary).join('\n')
       expect(evidenceSummaryText).toContain('metadata-only summary')
       expect(evidenceSummaryText).toContain('cli:himalaya')
-      expect(evidenceSummaryText).toContain('redaction applied')
       expect(evidenceSummaryText).not.toContain('我今天的邮箱正文示例')
       expect(evidenceSummaryText).not.toContain('私人附件内容')
       expect(evidenceSummaryText).not.toContain('raw private payload')
@@ -197,65 +236,65 @@ describe('SessionSourceMiner', () => {
     }
   })
 
-  test('candidate creation recomputes dedupe candidates server-side', () => {
+  test('createFromDraft recomputes dedupe candidates server-side', () => {
     const calls: string[] = []
     const miner = new SessionSourceMiner({
       reader: createReader(calls),
       listSourceCards: () => [],
     })
     const { service, manager } = createService()
-    manager.create(createQqMailHimalayaSourceCard())
+    manager.create(createExistingMailCard())
     const draft = {
       ...miner.generateDraft(sessionId),
       dedupeCandidates: [],
     }
 
     expect(draft.dedupeCandidates).toEqual([])
-    expect(() => service.createCandidateFromDraft({ draft, confirm: true })).toThrow(
-      'dedupeDecision',
-    )
+    expect(() => service.createFromDraft({ draft, confirm: true })).toThrow('dedupeDecision')
     expect(() =>
-      service.createCandidateFromDraft({
+      service.createFromDraft({
         draft,
         confirm: true,
-        dedupeDecision: 'append_adapter_revision',
+        dedupeDecision: 'append_evidence',
       }),
     ).toThrow('not implemented')
 
     expect(
-      service.createCandidateFromDraft({
+      service.createFromDraft({
         draft,
         confirm: true,
         dedupeDecision: 'new_card',
       }).state,
-    ).toBe('candidate')
+    ).toBe('draft')
   })
 
-  test('reports dedupe candidates and requires explicit candidate creation confirmation', () => {
+  test('reports dedupe candidates and requires explicit creation confirmation', () => {
     const calls: string[] = []
+    const existing = createExistingMailCard()
     const miner = new SessionSourceMiner({
       reader: createReader(calls),
-      listSourceCards: () => [createQqMailHimalayaSourceCard()],
+      listSourceCards: () => [existing],
     })
     const { manager, service } = createService()
     const draft = miner.generateDraft(sessionId)
 
-    expect(draft.dedupeCandidates.map((candidate) => candidate.id)).toContain('qq-mail-himalaya')
-    expect(() => service.createCandidateFromDraft({ draft, confirm: false })).toThrow(
-      'confirm=true',
-    )
+    expect(draft.dedupeCandidates.map((candidate) => candidate.id)).toContain(existing.id)
+    expect(() => service.createFromDraft({ draft, confirm: false })).toThrow('confirm=true')
 
-    const created = service.createCandidateFromDraft({ draft, confirm: true })
+    const created = service.createFromDraft({
+      draft,
+      confirm: true,
+      dedupeDecision: 'new_card',
+    })
 
-    expect(created.state).toBe('candidate')
+    expect(created.state).toBe('draft')
     expect(created).not.toHaveProperty('credentials')
-    expect(manager.get(draft.proposedCard.id)?.state).toBe('candidate')
+    expect(manager.get(draft.proposedCard.id)?.state).toBe('draft')
   })
 
-  test('validates drafts through the existing Source Card validation boundary', () => {
-    const calls: string[] = []
+  test('validates drafts through the Source Card document validation boundary', () => {
     const miner = new SessionSourceMiner({
-      reader: createReader(calls),
+      reader: createMarketReader(),
       listSourceCards: () => [],
     })
     const { service } = createService()
@@ -267,9 +306,9 @@ describe('SessionSourceMiner', () => {
         ...draft,
         proposedCard: {
           ...draft.proposedCard,
-          adapter: {
-            ...draft.proposedCard.adapter,
-            activeRevision: 'missing',
+          sourceDoc: {
+            format: 'markdown',
+            body: 'Use external:himalaya/account/qq directly.',
           },
         },
       }).ok,

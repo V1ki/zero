@@ -1,114 +1,108 @@
 import { describe, expect, test } from 'bun:test'
-import {
-  createAStockMarketDataSourceCard,
-  createQqMailHimalayaSourceCard,
-  toPublicSourceCard,
-} from '@zero-os/core'
+import type { SourceCard } from '@zero-os/shared'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
-  PromoteSourceDrawer,
+  ActivateSourceDialog,
   RetireSourceDialog,
   SourceCardDetailView,
   SourceCardTableView,
-  type SourceObservationSummaryResponse,
-  getWatchEligibility,
+  getSourceCardReadiness,
 } from './source-cards'
 
-const qqMail = toPublicSourceCard(createQqMailHimalayaSourceCard())
-const stock = toPublicSourceCard(createAStockMarketDataSourceCard())
-
-function emptySummary(sourceCardId: string): SourceObservationSummaryResponse {
+function createCard(overrides: Partial<SourceCard> = {}): SourceCard {
   return {
-    sourceCardId,
-    summaryOnly: true,
-    summary: {
-      total: 0,
-      kindCounts: {},
-      capabilityIds: [],
+    schemaVersion: 1,
+    id: 'qq-mail-source',
+    title: 'QQ Mail source',
+    state: 'draft',
+    sensitivity: 'private',
+    tags: ['mail', 'qq-mail', 'himalaya'],
+    sourceDoc: {
+      format: 'markdown',
+      body: '# QQ Mail source\n\n## When to use\n- Use for QQ Mail metadata.\n\n## How to use\n- Use himalaya CLI metadata commands first.\n\n## Safety boundary\n- Do not read body content or attachments without explicit approval.',
     },
-    observations: [],
+    source: {
+      sessionId: 'sess_20260512_1030_web_mine',
+      traceRefs: ['trace:span_mail'],
+      summary: 'Mined from existing QQ Mail metadata evidence.',
+    },
+    createdAt: '2026-05-12T00:00:00.000Z',
+    updatedAt: '2026-05-12T00:10:00.000Z',
+    ...overrides,
   }
 }
 
 describe('Source Cards UI', () => {
-  test('computes watch eligibility without giving candidate private mail watch access', () => {
-    expect(getWatchEligibility(qqMail)).toMatchObject({
-      label: 'Needs verification',
-      tone: 'pending',
+  test('computes document-card readiness from the simplified lifecycle', () => {
+    expect(getSourceCardReadiness(createCard())).toMatchObject({
+      label: 'Draft review',
+      tone: 'draft',
     })
-    expect(getWatchEligibility(stock)).toMatchObject({
-      label: 'Allowed',
-      tone: 'allowed',
+    expect(getSourceCardReadiness(createCard({ state: 'active' }))).toMatchObject({
+      label: 'Active',
+      tone: 'active',
+    })
+    expect(getSourceCardReadiness(createCard({ state: 'retired' }))).toMatchObject({
+      label: 'Retired',
+      tone: 'retired',
     })
   })
 
-  test('renders a dense read-only table for private and public sample cards', () => {
+  test('renders a compact table without adapter, health, or credential columns', () => {
     const html = renderToStaticMarkup(
-      <SourceCardTableView sourceCards={[qqMail, stock]} onOpen={() => {}} />,
+      <SourceCardTableView
+        sourceCards={[createCard(), createCard({ id: 'a-share-source', title: 'A-share data' })]}
+        onOpen={() => {}}
+      />,
     )
 
-    expect(html).toContain('QQ Mail via himalaya CLI')
-    expect(html).toContain('qq-mail-himalaya')
-    expect(html).toContain('candidate')
+    expect(html).toContain('QQ Mail source')
+    expect(html).toContain('qq-mail-source')
+    expect(html).toContain('draft')
     expect(html).toContain('private')
-    expect(html).toContain('Needs verification')
-    expect(html).toContain('A-share market data')
-    expect(html).toContain('a-stock-market-data')
-    expect(html).toContain('active')
-    expect(html).toContain('public')
-    expect(html).toContain('Allowed')
+    expect(html).toContain('A-share data')
+    expect(html).not.toContain('adapter')
+    expect(html).not.toContain('credential')
+    expect(html).not.toContain('health')
     expect(html).not.toContain('external:himalaya/account/qq')
   })
 
-  test('renders private Source Card detail without body, attachment, or credential refs', () => {
-    const html = renderToStaticMarkup(
-      <SourceCardDetailView card={qqMail} observationSummary={emptySummary(qqMail.id)} />,
-    )
+  test('renders Source Card detail as a Markdown document with source evidence', () => {
+    const html = renderToStaticMarkup(<SourceCardDetailView card={createCard()} />)
 
-    expect(html).toContain('QQ Mail via himalaya CLI')
-    expect(html).toContain('private mailbox')
-    expect(html).toContain('Metadata only by default')
-    expect(html).toContain('Mail body content is hidden')
-    expect(html).toContain('Attachments are blocked')
-    expect(html).toContain('externalStore')
-    expect(html).toContain('configured reference present')
-    expect(html).not.toContain('external:himalaya/account/qq')
-    expect(html).not.toContain('binding.ref')
-  })
-
-  test('renders public market Source Card detail as read-only and no-trading', () => {
-    const html = renderToStaticMarkup(
-      <SourceCardDetailView card={stock} observationSummary={emptySummary(stock.id)} />,
-    )
-
-    expect(html).toContain('A-share market data')
-    expect(html).toContain('public market data')
-    expect(html).toContain('Public read-only market data')
-    expect(html).toContain('No broker login')
-    expect(html).toContain('No order placement')
-    expect(html).toContain('place_order')
-    expect(html).toContain('use_broker_account')
-    expect(html).not.toContain('external:himalaya/account/qq')
-  })
-
-  test('renders promote drawer private metadata-only confirmation without credential refs', () => {
-    const verifiedQq = { ...qqMail, state: 'verified' as const }
-    const html = renderToStaticMarkup(
-      <PromoteSourceDrawer card={verifiedQq} open={true} onClose={() => {}} onSubmit={() => {}} />,
-    )
-
-    expect(html).toContain('Promote Source Card')
-    expect(html).toContain('private metadata-only scope confirmed')
-    expect(html).toContain('Confirm private metadata-only scope')
-    expect(html).toContain('Background body access and attachment access remain rejected')
+    expect(html).toContain('QQ Mail source')
+    expect(html).toContain('Source Doc')
+    expect(html).toContain('himalaya CLI metadata commands first')
+    expect(html).toContain('Source Evidence')
+    expect(html).toContain('sess_20260512_1030_web_mine')
+    expect(html).toContain('trace:span_mail')
     expect(html).not.toContain('external:himalaya/account/qq')
     expect(html).not.toContain('credentialRef')
-    expect(html).not.toContain('binding.ref')
+  })
+
+  test('activate dialog requires a reason before submission', () => {
+    const html = renderToStaticMarkup(
+      <ActivateSourceDialog
+        card={createCard()}
+        open={true}
+        onClose={() => {}}
+        onSubmit={() => {}}
+      />,
+    )
+
+    expect(html).toContain('Activate Source Card')
+    expect(html).toContain('Activation reason')
+    expect(html).toContain('disabled=""')
   })
 
   test('retire dialog requires a reason before submission', () => {
     const html = renderToStaticMarkup(
-      <RetireSourceDialog card={stock} open={true} onClose={() => {}} onSubmit={() => {}} />,
+      <RetireSourceDialog
+        card={createCard({ state: 'active' })}
+        open={true}
+        onClose={() => {}}
+        onSubmit={() => {}}
+      />,
     )
 
     expect(html).toContain('Retire Source Card')

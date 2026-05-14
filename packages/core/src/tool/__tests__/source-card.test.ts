@@ -2,14 +2,8 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ToolContext } from '@zero-os/shared'
-import {
-  SessionSourceMiner,
-  SourceCardManager,
-  SourceCardService,
-  createAStockMarketDataSourceCard,
-  createQqMailHimalayaSourceCard,
-} from '../../source-card'
+import type { SourceCard, ToolContext } from '@zero-os/shared'
+import { SessionSourceMiner, SourceCardManager, SourceCardService } from '../../source-card'
 import type { SessionSourceMinerReader } from '../../source-card'
 import { SourceCardTool } from '../source-card'
 
@@ -41,6 +35,22 @@ function createTool(reader: SessionSourceMinerReader = createMinerReader()): {
     },
   } as ToolContext
   return { manager, tool, minerTool, ctx }
+}
+
+function createCard(overrides: Partial<SourceCard> = {}): SourceCard {
+  return {
+    schemaVersion: 1,
+    id: 'market-doc',
+    title: 'Market data doc',
+    state: 'draft',
+    sensitivity: 'public',
+    tags: ['market-data'],
+    sourceDoc: {
+      format: 'markdown',
+      body: '# Market data doc\n\n## When to use\n- Use for public stock quotes.\n\n## How to use\n- Fetch https://push2.eastmoney.com/api/qt/stock/get.',
+    },
+    ...overrides,
+  }
 }
 
 function createMinerReader(): SessionSourceMinerReader {
@@ -116,63 +126,80 @@ afterEach(() => {
 describe('SourceCardTool', () => {
   test('lists and validates Source Cards without exposing credential refs', async () => {
     const { manager, tool, ctx } = createTool()
-    manager.create(createQqMailHimalayaSourceCard())
+    manager.create(createCard())
+    manager.create(
+      createCard({
+        id: 'mail-doc',
+        title: 'Mail metadata doc',
+        sensitivity: 'private',
+        tags: ['mail', 'himalaya'],
+        sourceDoc: {
+          format: 'markdown',
+          body: '# Mail metadata doc\n\n## How to use\n- Use himalaya metadata commands only.',
+        },
+      }),
+    )
 
     const listResult = await tool.run(ctx, { action: 'list' })
+    const getResult = await tool.run(ctx, {
+      action: 'get',
+      sourceCardId: 'market-doc',
+    })
     const validateResult = await tool.run(ctx, {
       action: 'validate',
-      sourceCardId: 'qq-mail-himalaya',
+      sourceCardId: 'mail-doc',
     })
 
     expect(listResult.success).toBe(true)
-    expect(listResult.output).toContain('qq-mail-himalaya')
+    expect(listResult.output).toContain('mail-doc')
+    expect(getResult.output).toContain('"sourceDoc"')
+    expect(getResult.output).toContain('push2.eastmoney.com/api/qt/stock/get')
     expect(listResult.output).not.toContain('external:himalaya/account/qq')
     expect(listResult.output).not.toContain('secret-token')
     expect(validateResult.output).toContain('"ok": true')
   })
 
-  test('promotes and retires only through explicit management actions', async () => {
+  test('activates and retires only through explicit management actions', async () => {
     const { manager, tool, ctx } = createTool()
-    manager.create(createQqMailHimalayaSourceCard())
-    manager.transitionState('qq-mail-himalaya', 'verified', 'verified in test')
+    manager.create(createCard())
 
-    const promote = await tool.run(ctx, {
-      action: 'promote',
-      sourceCardId: 'qq-mail-himalaya',
-      reason: 'approved metadata-only use',
-      reviewedCapabilityIds: ['list_envelopes'],
-      privateScopeConfirmation: {
-        metadataOnly: true,
-        bodyAccessApproved: false,
-        attachmentAccessApproved: false,
-      },
+    const activate = await tool.run(ctx, {
+      action: 'activate',
+      sourceCardId: 'market-doc',
+      reason: 'approved document',
     })
     const retire = await tool.run(ctx, {
       action: 'retire',
-      sourceCardId: 'qq-mail-himalaya',
+      sourceCardId: 'market-doc',
       reason: 'user disabled source',
     })
 
-    expect(promote.success).toBe(true)
-    expect(promote.output).toContain('"state": "active"')
+    expect(activate.success).toBe(true)
+    expect(activate.output).toContain('"state": "active"')
     expect(retire.success).toBe(true)
     expect(retire.output).toContain('"state": "retired"')
   })
 
-  test('does not expose health recording or source execution actions', async () => {
+  test('does not expose health recording, promotion, or source execution actions', async () => {
     const { manager, tool, ctx } = createTool()
-    manager.create(createQqMailHimalayaSourceCard())
+    manager.create(createCard())
 
-    const result = await tool.run(ctx, {
+    const recordHealth = await tool.run(ctx, {
       action: 'recordHealthResult',
-      sourceCardId: 'qq-mail-himalaya',
+      sourceCardId: 'market-doc',
+    })
+    const promote = await tool.run(ctx, {
+      action: 'promote',
+      sourceCardId: 'market-doc',
     })
 
-    expect(result.success).toBe(false)
-    expect(result.output).toContain('Unsupported source_card action')
+    expect(recordHealth.success).toBe(false)
+    expect(recordHealth.output).toContain('Unsupported source_card action')
+    expect(promote.success).toBe(false)
+    expect(promote.output).toContain('Unsupported source_card action')
   })
 
-  test('generates, validates, and creates candidate drafts through explicit actions', async () => {
+  test('generates, validates, and creates document drafts through explicit actions', async () => {
     const { manager, minerTool, ctx } = createTool()
 
     const generated = await minerTool.run(ctx, {
@@ -183,8 +210,9 @@ describe('SourceCardTool', () => {
 
     const draft = JSON.parse(generated.output)
     expect(draft.sourceSessionId).toBe(ctx.sessionId)
-    expect(draft.proposedCard.state).toBe('candidate')
-    expect(draft.proposedCard.kind).toBe('public_market_data')
+    expect(draft.proposedCard.state).toBe('draft')
+    expect(draft.proposedCard.title).toBe('A-share market data')
+    expect(draft.proposedCard.sourceDoc.body).toContain('## How to use')
 
     const validation = await minerTool.run(ctx, {
       action: 'validate_draft',
@@ -193,7 +221,7 @@ describe('SourceCardTool', () => {
     expect(validation.output).toContain('"ok": true')
 
     const rejected = await minerTool.run(ctx, {
-      action: 'create_candidate_from_draft',
+      action: 'create_from_draft',
       draft,
       confirm: false,
     })
@@ -201,19 +229,26 @@ describe('SourceCardTool', () => {
     expect(rejected.output).toContain('confirm=true')
 
     const created = await minerTool.run(ctx, {
-      action: 'create_candidate_from_draft',
+      action: 'create_from_draft',
       draft,
       confirm: true,
     })
     expect(created.success).toBe(true)
-    expect(created.output).toContain('"state": "candidate"')
+    expect(created.output).toContain('"state": "draft"')
     expect(created.output).not.toContain('"state": "active"')
-    expect(manager.get(draft.proposedCard.id)?.state).toBe('candidate')
+    expect(manager.get(draft.proposedCard.id)?.state).toBe('draft')
   })
 
-  test('create candidate recomputes dedupe and private summaries stay metadata-only', async () => {
+  test('create_from_draft recomputes dedupe and private summaries stay metadata-only', async () => {
     const { manager, minerTool, ctx } = createTool(createPrivateMinerReader())
-    manager.create(createQqMailHimalayaSourceCard())
+    manager.create(
+      createCard({
+        id: 'qq-mail-source',
+        title: 'QQ Mail source',
+        sensitivity: 'private',
+        tags: ['mail', 'qq-mail', 'himalaya'],
+      }),
+    )
 
     const generated = await minerTool.run(ctx, {
       action: 'generate_draft',
@@ -232,7 +267,7 @@ describe('SourceCardTool', () => {
 
     const tampered = { ...draft, dedupeCandidates: [] }
     const rejected = await minerTool.run(ctx, {
-      action: 'create_candidate_from_draft',
+      action: 'create_from_draft',
       draft: tampered,
       confirm: true,
     })
@@ -240,38 +275,12 @@ describe('SourceCardTool', () => {
     expect(rejected.output).toContain('dedupeDecision')
 
     const append = await minerTool.run(ctx, {
-      action: 'create_candidate_from_draft',
+      action: 'create_from_draft',
       draft: tampered,
       confirm: true,
       dedupeDecision: 'append_evidence',
     })
     expect(append.success).toBe(false)
     expect(append.output).toContain('not implemented')
-  })
-
-  test('public market draft keeps useful metadata summaries', async () => {
-    const { manager, minerTool, ctx } = createTool()
-    manager.create(createAStockMarketDataSourceCard())
-
-    const generated = await minerTool.run(ctx, {
-      action: 'generate_draft',
-      useCurrentSession: true,
-    })
-    const draft = JSON.parse(generated.output)
-    const summaryText = JSON.stringify(draft.evidenceRefs)
-
-    expect(generated.success).toBe(true)
-    expect(draft.proposedCard.sensitivity).toBe('public')
-    expect(summaryText).toContain('push2.eastmoney.com')
-    expect(summaryText).toContain('schemaKeys')
-
-    const tampered = { ...draft, dedupeCandidates: [] }
-    const rejected = await minerTool.run(ctx, {
-      action: 'create_candidate_from_draft',
-      draft: tampered,
-      confirm: true,
-    })
-    expect(rejected.success).toBe(false)
-    expect(rejected.output).toContain('dedupeDecision')
   })
 })

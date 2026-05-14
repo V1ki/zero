@@ -18,8 +18,6 @@ import {
   SourceCardManager,
   SourceCardService,
   SourceCardTool,
-  createAStockMarketDataSourceCard,
-  createQqMailHimalayaSourceCard,
   loadConfig,
   loadFuseList,
   registerBuiltinCommands,
@@ -380,12 +378,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
 
   const sourceCardManager = new SourceCardManager(join(ZERO_DIR, 'source-cards'), {
     secretFilter,
-    secretResolver,
   })
-  sourceCardManager.ensureAll([
-    createQqMailHimalayaSourceCard(),
-    createAStockMarketDataSourceCard(),
-  ])
   const sourceCardService = new SourceCardService(sourceCardManager)
   const sessionManagerRef: { current?: SessionManager } = {}
   const sourceCardMiner = new SessionSourceMiner({

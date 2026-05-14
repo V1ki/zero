@@ -1,10 +1,10 @@
 import type { SourceCard, ToolContext, ToolResult } from '@zero-os/shared'
 import type {
   SessionSourceMiner,
+  SourceCardActivateRequest,
   SourceCardDraft,
-  SourceCardDraftCandidateRequest,
+  SourceCardDraftCreateRequest,
   SourceCardDraftDedupeDecision,
-  SourceCardPromoteRequest,
   SourceCardService,
 } from '../source-card'
 import { BaseTool } from './base'
@@ -15,8 +15,8 @@ type SourceCardToolAction =
   | 'validate'
   | 'generate_draft'
   | 'validate_draft'
-  | 'create_candidate_from_draft'
-  | 'promote'
+  | 'create_from_draft'
+  | 'activate'
   | 'retire'
 
 interface SourceCardToolInput {
@@ -25,8 +25,6 @@ interface SourceCardToolInput {
   sourceSessionId?: string
   useCurrentSession?: boolean
   reason?: string
-  reviewedCapabilityIds?: string[]
-  privateScopeConfirmation?: SourceCardPromoteRequest['privateScopeConfirmation']
   card?: SourceCard
   draft?: SourceCardDraft
   confirm?: boolean
@@ -36,7 +34,7 @@ interface SourceCardToolInput {
 export class SourceCardTool extends BaseTool {
   name = 'source_card'
   description =
-    'Manage Source Cards and mine Source Card drafts from existing session evidence without executing data source adapters. It never reads new mail, fetches market data, sends messages, or runs source health adapters.'
+    'Manage Source Cards and mine Source Card drafts from existing session evidence without executing the documented data-source methods. Use list for preflight, then get a matching card to read its sourceDoc Markdown usage guide before selecting URLs, CLI commands, fields, fallbacks, or safety boundaries. It never reads new mail, fetches market data, sends messages, or runs health checks.'
 
   parameters = {
     type: 'object',
@@ -49,16 +47,16 @@ export class SourceCardTool extends BaseTool {
           'validate',
           'generate_draft',
           'validate_draft',
-          'create_candidate_from_draft',
-          'promote',
+          'create_from_draft',
+          'activate',
           'retire',
         ],
         description:
-          'Management action. Draft mining only reads persisted session evidence and cannot execute the underlying data source or access credentials.',
+          'Management action. Source Cards are Markdown documents. Draft mining only reads persisted session evidence and cannot execute the underlying data source or access credentials.',
       },
       sourceCardId: {
         type: 'string',
-        description: 'Source Card id for get/validate/promote/retire.',
+        description: 'Source Card id for get/validate/activate/retire.',
       },
       sourceSessionId: {
         type: 'string',
@@ -72,23 +70,7 @@ export class SourceCardTool extends BaseTool {
       },
       reason: {
         type: 'string',
-        description: 'Required reason for promote/retire.',
-      },
-      reviewedCapabilityIds: {
-        type: 'array',
-        items: { type: 'string' },
-        description:
-          'Required for promote. Capability ids the reviewer has checked, including every watchable capability.',
-      },
-      privateScopeConfirmation: {
-        type: 'object',
-        description:
-          'Required for private/restricted promote. Must confirm metadata-only access and cannot approve body or attachment access.',
-        properties: {
-          metadataOnly: { type: 'boolean' },
-          bodyAccessApproved: { type: 'boolean', const: false },
-          attachmentAccessApproved: { type: 'boolean', const: false },
-        },
+        description: 'Required reason for activate/retire.',
       },
       card: {
         type: 'object',
@@ -96,18 +78,18 @@ export class SourceCardTool extends BaseTool {
       },
       draft: {
         type: 'object',
-        description: 'Unsaved Source Card Draft for validate_draft or create_candidate_from_draft.',
+        description: 'Unsaved Source Card Draft for validate_draft or create_from_draft.',
       },
       confirm: {
         type: 'boolean',
         description:
-          'Required true for create_candidate_from_draft. Draft generation and validation ignore this.',
+          'Required true for create_from_draft. Draft generation and validation ignore this.',
       },
       dedupeDecision: {
         type: 'string',
-        enum: ['new_card', 'append_adapter_revision', 'append_evidence'],
+        enum: ['new_card', 'append_evidence'],
         description:
-          'Required when a draft has dedupeCandidates. This MVP only persists new_card; append modes are reported as not implemented.',
+          'Required when a draft has dedupeCandidates. This MVP only persists new_card; append evidence is reported as not implemented.',
       },
     },
     required: ['action'],
@@ -151,17 +133,17 @@ export class SourceCardTool extends BaseTool {
           this.sourceCards.validateDraft(requireDraft(parsed)),
           'Validated Source Card Draft',
         )
-      case 'create_candidate_from_draft':
+      case 'create_from_draft':
         return this.jsonResult(
-          this.sourceCards.createCandidateFromDraft(requireCandidateDraftRequest(parsed), {
+          this.sourceCards.createFromDraft(requireDraftCreateRequest(parsed), {
             sessionId: _ctx.sessionId,
           }),
-          'Created candidate Source Card from draft',
+          'Created Source Card from draft',
         )
-      case 'promote':
+      case 'activate':
         return this.jsonResult(
-          this.sourceCards.promote(requireSourceCardId(parsed), requirePromoteRequest(parsed)),
-          'Promoted Source Card',
+          this.sourceCards.activate(requireSourceCardId(parsed), requireActivateRequest(parsed)),
+          'Activated Source Card',
         )
       case 'retire':
         return this.jsonResult(
@@ -197,8 +179,8 @@ function parseSourceCardToolInput(input: unknown): SourceCardToolInput {
       'validate',
       'generate_draft',
       'validate_draft',
-      'create_candidate_from_draft',
-      'promote',
+      'create_from_draft',
+      'activate',
       'retire',
     ].includes(record.action)
   ) {
@@ -212,15 +194,6 @@ function parseSourceCardToolInput(input: unknown): SourceCardToolInput {
     useCurrentSession:
       typeof record.useCurrentSession === 'boolean' ? record.useCurrentSession : undefined,
     reason: typeof record.reason === 'string' ? record.reason : undefined,
-    reviewedCapabilityIds: Array.isArray(record.reviewedCapabilityIds)
-      ? record.reviewedCapabilityIds.filter((id): id is string => typeof id === 'string')
-      : undefined,
-    privateScopeConfirmation:
-      record.privateScopeConfirmation &&
-      typeof record.privateScopeConfirmation === 'object' &&
-      !Array.isArray(record.privateScopeConfirmation)
-        ? (record.privateScopeConfirmation as SourceCardToolInput['privateScopeConfirmation'])
-        : undefined,
     card: record.card as SourceCard | undefined,
     draft: record.draft as SourceCardDraft | undefined,
     confirm: typeof record.confirm === 'boolean' ? record.confirm : undefined,
@@ -241,11 +214,9 @@ function requireReason(input: SourceCardToolInput): string {
   return input.reason
 }
 
-function requirePromoteRequest(input: SourceCardToolInput): SourceCardPromoteRequest {
+function requireActivateRequest(input: SourceCardToolInput): SourceCardActivateRequest {
   return {
     reason: requireReason(input),
-    reviewedCapabilityIds: input.reviewedCapabilityIds ?? [],
-    privateScopeConfirmation: input.privateScopeConfirmation,
   }
 }
 
@@ -265,7 +236,7 @@ function requireDraft(input: SourceCardToolInput): SourceCardDraft {
   return input.draft
 }
 
-function requireCandidateDraftRequest(input: SourceCardToolInput): SourceCardDraftCandidateRequest {
+function requireDraftCreateRequest(input: SourceCardToolInput): SourceCardDraftCreateRequest {
   return {
     draft: requireDraft(input),
     confirm: input.confirm === true,

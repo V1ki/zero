@@ -180,15 +180,17 @@ describe('buildToolRulesBlock', () => {
     const result = buildToolRulesBlock(tools)
 
     expect(result).toContain('Source Card')
-    expect(result).toContain('优先调用 source_card list/get 做 preflight')
+    expect(result).toContain('优先调用 source_card list 做 preflight')
+    expect(result).toContain('必须再调用 source_card get 读取 sourceDoc')
+    expect(result).toContain('类似 SKILL.md 的 Markdown 使用说明')
     expect(result).toContain('股票行情、邮箱状态、系统数据、长期可复用数据源')
-    expect(result).toContain('可继续使用现有 fetch/bash/browser 等前台工具')
+    expect(result).toContain('可继续使用 fetch/bash/browser 等前台工具')
   })
 
-  test('blocks private restricted or candidate Source Cards from bypassed background reads', () => {
+  test('blocks private restricted or draft Source Cards from bypassed background reads', () => {
     const result = buildToolRulesBlock([makeTool('source_card')])
 
-    expect(result).toContain('private/restricted/candidate Source Card')
+    expect(result).toContain('private/restricted/draft Source Card')
     expect(result).toContain('说明阻塞原因')
     expect(result).toContain('不要绕过 Source Card 去后台读取')
   })
@@ -196,9 +198,9 @@ describe('buildToolRulesBlock', () => {
   test('frames Source Card as boundary and provenance, not executor', () => {
     const result = buildToolRulesBlock([makeTool('source_card')])
 
-    expect(result).toContain('只提供数据源边界、状态、隐私策略、禁止动作和出处')
     expect(result).toContain('不是执行器')
     expect(result).toContain('不代表已经能自动获取数据')
+    expect(result).toContain('若任务中发现了 sourceDoc 未记录但成功的新方法')
   })
 })
 

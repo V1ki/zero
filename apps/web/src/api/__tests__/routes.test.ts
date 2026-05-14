@@ -5,7 +5,7 @@ import { SessionManager } from '@zero-os/core'
 import { serializeChatGptOAuthSession, serializeClaudeOAuthSession } from '@zero-os/model'
 import type { ProviderAdapter } from '@zero-os/model'
 import { encryptSecrets } from '@zero-os/secrets'
-import type { Session as SessionData } from '@zero-os/shared'
+import type { Session as SessionData, SourceCard, TimelineCompactionBlock } from '@zero-os/shared'
 import { readYaml } from '@zero-os/shared/utils'
 import { createTestProjectRoot } from '../../../../../packages/core/src/session/__tests__/test-helpers'
 import { SessionDB } from '../../../../../packages/observe/src/session-db'
@@ -84,6 +84,26 @@ function expectNoSourceDraftSecretMaterial(value: unknown) {
   expect(text).not.toContain('credentialLeaseId')
   expect(text).not.toContain('sk-test-placeholder')
   expect(text).not.toMatch(/authorization|cookie|password|token/i)
+}
+
+function createApiSourceCard(id: string, overrides: Partial<SourceCard> = {}): SourceCard {
+  return {
+    schemaVersion: 1,
+    id,
+    title: 'Routes Source Card',
+    state: 'draft',
+    sensitivity: 'public',
+    tags: ['market-data'],
+    sourceDoc: {
+      format: 'markdown',
+      body: '# Routes Source Card\n\n## When to use\n- Use for public route tests.\n\n## How to use\n- Fetch https://example.invalid/source.',
+    },
+    source: {
+      sessionId: 'sess_routes_source_card',
+      summary: 'Created by API route tests.',
+    },
+    ...overrides,
+  }
 }
 
 function writeConfig(dataDir: string) {
@@ -230,6 +250,43 @@ describe('API Routes (Real)', () => {
       '{"name":"route-agent","agentInstruction":"route prompt"}',
       renderedSystemPrompt,
     )
+    const compactionBlocks: TimelineCompactionBlock[] = [
+      {
+        id: 'timeline_compaction_route',
+        sessionId,
+        status: 'active',
+        strategy: 'deterministic_contiguous_older_turns_v1',
+        strategyVersion: 'timeline_compaction_block_v1',
+        boundaryReason: 'route test boundary',
+        summary: '<timeline_compaction_block>route summary</timeline_compaction_block>',
+        workingStateSummary: '<working_state_compaction>route state</working_state_compaction>',
+        coveredMessageIds: ['msg_route_old'],
+        coveredRange: {
+          startMessageId: 'msg_route_old',
+          endMessageId: 'msg_route_old',
+          startCreatedAt: createdAt,
+          endCreatedAt: createdAt,
+        },
+        coveredMessageCount: 1,
+        toolUseIds: [],
+        evidence: [],
+        evidenceCount: 0,
+        evidenceChars: 0,
+        evidenceBytes: 0,
+        rawCharsMovedToEvidence: 0,
+        skippedUnfinishedToolUseIds: [],
+        episodeFullRetainTurns: 0,
+        promptCharsBefore: 100,
+        promptCharsAfter: 20,
+        tokensBefore: 25,
+        tokensAfter: 5,
+        createdAt,
+        updatedAt: createdAt,
+        generation: 1,
+        episodes: [],
+      },
+    ]
+    isolatedDb.saveCompactionBlocks(sessionId, compactionBlocks)
     isolatedDb.saveBinding('web', 'default', sessionId, 'web', createdAt)
     const isolatedManager = new SessionManager(
       zero.modelRouter,
@@ -248,6 +305,7 @@ describe('API Routes (Real)', () => {
 
       const responseData = await res.json()
       expect(responseData.systemPrompt).toBe(renderedSystemPrompt)
+      expect(responseData.timelineCompactionBlocks).toEqual(compactionBlocks)
     } finally {
       zero.sessionManager = originalManager
       isolatedDb.close()
@@ -290,102 +348,64 @@ describe('API Routes (Real)', () => {
     expect(types).toContain('preference')
   })
 
-  test('GET /api/source-cards returns public Source Card views', async () => {
+  test('GET /api/source-cards starts without built-in sample cards and lists user-created docs', async () => {
+    const emptyRes = await app.request('/api/source-cards')
+    expect(emptyRes.status).toBe(200)
+    const emptyData = (await emptyRes.json()) as { sourceCards: Array<Record<string, unknown>> }
+    const initialIds = emptyData.sourceCards.map((card) => card.id)
+    expect(initialIds).not.toContain('qq-mail-himalaya')
+    expect(initialIds).not.toContain('a-stock-market-data')
+
+    zero.sourceCardManager.create(
+      createApiSourceCard('routes-list-doc', {
+        title: 'Routes List Doc',
+        sourceDoc: {
+          format: 'markdown',
+          body: '# Routes List Doc\n\n## How to use\n- Fetch https://example.invalid/source.',
+        },
+      }),
+    )
+
     const res = await app.request('/api/source-cards')
     expect(res.status).toBe(200)
 
     const data = (await res.json()) as { sourceCards: Array<Record<string, unknown>> }
-    const ids = data.sourceCards.map((card) => card.id)
-    expect(ids).toContain('qq-mail-himalaya')
-    expect(ids).toContain('a-stock-market-data')
-
-    const qq = data.sourceCards.find((card) => card.id === 'qq-mail-himalaya')
-    const stock = data.sourceCards.find((card) => card.id === 'a-stock-market-data')
-    expect(qq?.state).toBe('candidate')
-    expect(qq?.sensitivity).toBe('private')
-    expect(stock?.state).toBe('active')
-    expect(stock?.sensitivity).toBe('public')
-    expect((qq?.credentialBindings as Array<Record<string, unknown>>)[0]).toMatchObject({
-      bindingType: 'externalStore',
-      hasReference: true,
-    })
-
+    const card = data.sourceCards.find((item) => item.id === 'routes-list-doc')
+    expect(card?.state).toBe('draft')
+    expect(card?.sensitivity).toBe('public')
+    expect(((card?.sourceDoc as Record<string, unknown>)?.body as string) ?? '').toContain(
+      'https://example.invalid/source',
+    )
+    expect(card).not.toHaveProperty('credentials')
+    expect(card).not.toHaveProperty('adapter')
+    expect(card).not.toHaveProperty('health')
     expectNoSourceCredentialMaterial(data)
     expectNoSourcePublicViewLeak(data)
   })
 
-  test('GET /api/source-cards/:id returns one public Source Card view', async () => {
-    const qqRes = await app.request('/api/source-cards/qq-mail-himalaya')
-    expect(qqRes.status).toBe(200)
-    const qqData = (await qqRes.json()) as { sourceCard: Record<string, unknown> }
-
-    expect(qqData.sourceCard.id).toBe('qq-mail-himalaya')
-    expect(qqData.sourceCard.kind).toBe('private_mailbox')
-    expect(qqData.sourceCard).not.toHaveProperty('credentials')
-    expectNoSourceCredentialMaterial(qqData)
-    expectNoSourcePublicViewLeak(qqData)
-
-    zero.sourceCardManager.recordHealthResult('a-stock-market-data', {
-      checkId: 'eastmoney_quote_health',
-      status: 'failed',
-      checkedAt: '2026-05-11T00:00:00.000Z',
-      failureClass: 'schema',
-      evidence: {
-        statusCode: 200,
-        message: 'do-not-return-health-message',
-        details: {
-          rawResponse: 'do-not-return-health-details',
+  test('GET /api/source-cards/:id returns one Markdown Source Card view', async () => {
+    zero.sourceCardManager.create(
+      createApiSourceCard('routes-detail-doc', {
+        title: 'Routes Detail Doc',
+        sensitivity: 'private',
+        tags: ['mail'],
+        sourceDoc: {
+          format: 'markdown',
+          body: '# Routes Detail Doc\n\n## How to use\n- Use metadata only.',
         },
-      },
-    })
-
-    const stockRes = await app.request('/api/source-cards/a-stock-market-data')
-    expect(stockRes.status).toBe(200)
-    const stockData = (await stockRes.json()) as { sourceCard: Record<string, unknown> }
-    expect(JSON.stringify(stockData)).toContain('place_order')
-    expect(JSON.stringify(stockData)).toContain('use_broker_account')
-    expect(JSON.stringify(stockData)).not.toContain('do-not-return-health-message')
-    expect(JSON.stringify(stockData)).not.toContain('do-not-return-health-details')
-    expectNoSourceCredentialMaterial(stockData)
-    expectNoSourcePublicViewLeak(stockData)
-  })
-
-  test('GET /api/source-cards/:id/observations returns summaries without raw data', async () => {
-    zero.sourceCardManager.recordObservation({
-      sourceCardId: 'a-stock-market-data',
-      capabilityId: 'fetch_quotes',
-      kind: 'data',
-      data: {
-        rawQuote: 'do-not-return-this-raw-quote',
-        symbol: 'SH000001',
-      },
-      evidence: {
-        statusCode: 200,
-        rowCount: 1,
-        schemaKeys: ['symbol', 'price'],
-        message: 'do-not-return-observation-message',
-        details: {
-          rawQuote: 'do-not-return-this-raw-quote',
-        },
-      },
-    })
-
-    const res = await app.request('/api/source-cards/a-stock-market-data/observations?summary=1')
-    expect(res.status).toBe(200)
-    const data = await res.json()
-    const text = JSON.stringify(data)
-
-    expect(data.sourceCardId).toBe('a-stock-market-data')
-    expect(data.summaryOnly).toBe(true)
-    expect(data.summary.total).toBeGreaterThan(0)
-    const dataObservation = data.observations.find(
-      (observation: { capabilityId?: string; kind?: string }) =>
-        observation.capabilityId === 'fetch_quotes' && observation.kind === 'data',
+      }),
     )
-    expect(dataObservation?.evidence.schemaKeys).toContain('symbol')
-    expect(text).not.toContain('do-not-return-this-raw-quote')
-    expect(text).not.toContain('do-not-return-observation-message')
-    expect(text).not.toContain('"rawQuote"')
+
+    const res = await app.request('/api/source-cards/routes-detail-doc')
+    expect(res.status).toBe(200)
+    const data = (await res.json()) as { sourceCard: Record<string, unknown> }
+
+    expect(data.sourceCard.id).toBe('routes-detail-doc')
+    expect(data.sourceCard.sensitivity).toBe('private')
+    expect(data.sourceCard).not.toHaveProperty('credentials')
+    expect(data.sourceCard).not.toHaveProperty('adapter')
+    expect(data.sourceCard).not.toHaveProperty('health')
+    expect(JSON.stringify(data)).toContain('Use metadata only')
     expectNoSourceCredentialMaterial(data)
     expectNoSourcePublicViewLeak(data)
   })
@@ -395,16 +415,20 @@ describe('API Routes (Real)', () => {
     expect(res.status).toBe(404)
   })
 
-  test('POST /api/source-cards/:id/promote promotes a verified public source with public view only', async () => {
-    zero.sourceCardManager.update('a-stock-market-data', (card) => ({ ...card, state: 'verified' }))
+  test('POST /api/source-cards/:id/activate activates a draft with a reason', async () => {
+    zero.sourceCardManager.create(createApiSourceCard('routes-activate-doc'))
 
-    const res = await app.request('/api/source-cards/a-stock-market-data/promote', {
+    const missingReason = await app.request('/api/source-cards/routes-activate-doc/activate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        reason: 'reviewed public read-only market data source',
-        reviewedCapabilityIds: ['fetch_quotes', 'fetch_rankings'],
-      }),
+      body: JSON.stringify({ reason: '' }),
+    })
+    expect(missingReason.status).toBe(400)
+
+    const res = await app.request('/api/source-cards/routes-activate-doc/activate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'reviewed markdown source guide' }),
     })
 
     expect(res.status).toBe(200)
@@ -415,71 +439,20 @@ describe('API Routes (Real)', () => {
     expectNoSourcePublicViewLeak(data)
   })
 
-  test('POST /api/source-cards/:id/promote rejects private source without metadata-only confirmation', async () => {
-    zero.sourceCardManager.update('qq-mail-himalaya', (card) => ({ ...card, state: 'verified' }))
-
-    const res = await app.request('/api/source-cards/qq-mail-himalaya/promote', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        reason: 'reviewed private metadata source',
-        reviewedCapabilityIds: ['list_envelopes'],
-      }),
-    })
-
-    expect(res.status).toBe(400)
-    const data = await res.json()
-    expect(JSON.stringify(data)).toContain('privateScopeConfirmation')
-    expectNoSourceCredentialMaterial(data)
-    expectNoSourcePublicViewLeak(data)
-  })
-
-  test('POST /api/source-cards/:id/promote rejects private body or attachment approval', async () => {
-    const withBody = await app.request('/api/source-cards/qq-mail-himalaya/promote', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        reason: 'attempt body approval',
-        reviewedCapabilityIds: ['list_envelopes'],
-        privateScopeConfirmation: {
-          metadataOnly: true,
-          bodyAccessApproved: true,
-          attachmentAccessApproved: false,
-        },
-      }),
-    })
-    const withAttachment = await app.request('/api/source-cards/qq-mail-himalaya/promote', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        reason: 'attempt attachment approval',
-        reviewedCapabilityIds: ['list_envelopes'],
-        privateScopeConfirmation: {
-          metadataOnly: true,
-          bodyAccessApproved: false,
-          attachmentAccessApproved: true,
-        },
-      }),
-    })
-
-    expect(withBody.status).toBe(400)
-    expect(withAttachment.status).toBe(400)
-    expect(JSON.stringify(await withBody.json())).toContain('body access')
-    expect(JSON.stringify(await withAttachment.json())).toContain('attachment access')
-  })
-
   test('POST /api/source-cards/:id/retire requires reason and returns public view only', async () => {
-    const missingReason = await app.request('/api/source-cards/a-stock-market-data/retire', {
+    zero.sourceCardManager.create(createApiSourceCard('routes-retire-doc', { state: 'active' }))
+
+    const missingReason = await app.request('/api/source-cards/routes-retire-doc/retire', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reason: '' }),
     })
     expect(missingReason.status).toBe(400)
 
-    const res = await app.request('/api/source-cards/a-stock-market-data/retire', {
+    const res = await app.request('/api/source-cards/routes-retire-doc/retire', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason: 'deprecating this public source card' }),
+      body: JSON.stringify({ reason: 'deprecating this source card' }),
     })
 
     expect(res.status).toBe(200)
@@ -490,7 +463,7 @@ describe('API Routes (Real)', () => {
     expectNoSourcePublicViewLeak(data)
   })
 
-  test('POST /api/source-card-drafts mines a draft and creates only candidate cards', async () => {
+  test('POST /api/source-card-drafts mines a draft and creates document cards', async () => {
     const createdAt = '2026-05-12T03:00:00.000Z'
     const sourceSessionId = 'sess_routes_source_miner'
     const sessionData: SessionData = {
@@ -563,8 +536,8 @@ describe('API Routes (Real)', () => {
     const draft = draftData.draft
 
     expect(draft.sourceSessionId).toBe(sourceSessionId)
-    expect((draft.proposedCard as Record<string, unknown>).state).toBe('candidate')
-    expect((draft.proposedCard as Record<string, unknown>).kind).toBe('public_market_data')
+    expect((draft.proposedCard as Record<string, unknown>).state).toBe('draft')
+    expect((draft.proposedCard as Record<string, unknown>).title).toBe('A-share market data')
     expect(Array.isArray(draft.evidenceRefs)).toBe(true)
     expect(JSON.stringify(draft.evidenceRefs)).toContain('push2.eastmoney.com')
     expect(JSON.stringify(draft.evidenceRefs)).toContain('schemaKeys')
@@ -578,30 +551,23 @@ describe('API Routes (Real)', () => {
     expect(validateRes.status).toBe(200)
     expect(((await validateRes.json()) as { validation: { ok: boolean } }).validation.ok).toBe(true)
 
-    const rejected = await app.request('/api/source-card-drafts/candidates', {
+    const rejected = await app.request('/api/source-card-drafts/cards', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ draft, confirm: false }),
     })
     expect(rejected.status).toBe(400)
 
-    const tamperedDedupe = await app.request('/api/source-card-drafts/candidates', {
+    const created = await app.request('/api/source-card-drafts/cards', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ draft: { ...draft, dedupeCandidates: [] }, confirm: true }),
-    })
-    expect(tamperedDedupe.status).toBe(400)
-    expect(JSON.stringify(await tamperedDedupe.json())).toContain('dedupeDecision')
-
-    const created = await app.request('/api/source-card-drafts/candidates', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ draft, confirm: true, dedupeDecision: 'new_card' }),
+      body: JSON.stringify({ draft, confirm: true }),
     })
     expect(created.status).toBe(200)
     const createdData = (await created.json()) as { sourceCard: Record<string, unknown> }
-    expect(createdData.sourceCard.state).toBe('candidate')
+    expect(createdData.sourceCard.state).toBe('draft')
     expect(createdData.sourceCard.state).not.toBe('active')
+    expect(createdData.sourceCard.sourceDoc).toBeDefined()
     expectNoSourceCredentialMaterial(createdData)
     expectNoSourcePublicViewLeak(createdData)
   })

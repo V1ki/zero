@@ -1,92 +1,22 @@
 import {
   type SourceCard,
-  type SourceCardAdapter,
-  type SourceCardAdapterRevision,
-  type SourceCardCredential,
-  type SourceCardHealth,
-  type SourceCardHealthEvidence,
-  type SourceCardHealthResult,
+  type SourceCardState,
   type SourceCardValidationResult,
-  type SourceObservation,
-  assertValidSourceCard,
-  canTransitionSourceCardState,
-  now,
   validateSourceCard,
 } from '@zero-os/shared'
 import {
   type SourceCardDraft,
-  type SourceCardDraftCandidateRequest,
+  type SourceCardDraftCreateRequest,
   type SourceCardDraftValidationResult,
   findSourceCardDraftDedupeCandidates,
   validateSourceCardDraft,
 } from './miner'
 import type { SourceCardAuditContext, SourceCardManager } from './store'
 
-export type SourceCardPublicView = Omit<SourceCard, 'credentials' | 'adapter' | 'health'> & {
-  adapter: SourceCardPublicAdapter
-  health: SourceCardPublicHealth
-  credentialBindings: SourceCredentialBindingView[]
-}
+export type SourceCardPublicView = SourceCard
 
-export interface SourceCardPublicAdapter {
-  mode: SourceCardAdapter['mode']
-  activeRevision: string
-  revisions: SourceCardPublicAdapterRevision[]
-}
-
-export interface SourceCardPublicAdapterRevision {
-  id: SourceCardAdapterRevision['id']
-  status: SourceCardAdapterRevision['status']
-  mode: SourceCardAdapterRevision['mode']
-  entrypointSummary: string
-  parser: SourceCardAdapterRevision['parser']
-  timeoutMs: number
-  rateLimit?: SourceCardAdapterRevision['rateLimit']
-  templateCounts: {
-    commands: number
-    endpoints: number
-    samples: number
-  }
-}
-
-export type SourceCardPublicHealthEvidence = Omit<
-  SourceCardHealthEvidence,
-  'credentialRef' | 'credentialLeaseId' | 'message' | 'details'
->
-
-export type SourceCardPublicHealthResult = Omit<SourceCardHealthResult, 'evidence'> & {
-  evidence: SourceCardPublicHealthEvidence
-}
-
-export type SourceCardPublicHealth = Omit<SourceCardHealth, 'lastResult'> & {
-  lastResult?: SourceCardPublicHealthResult
-}
-
-export interface SourceCredentialBindingView {
-  id: string
-  required: boolean
-  bindingType: SourceCardCredential['binding']['type']
-  injectAs: SourceCardCredential['injectAs']
-  scopes: string[]
-  hasReference: boolean
-}
-
-export interface SourceCardPrivateScopeConfirmation {
-  metadataOnly: boolean
-  bodyAccessApproved: boolean
-  attachmentAccessApproved: boolean
-}
-
-export interface SourceCardPromoteRequest {
+export interface SourceCardActivateRequest {
   reason: string
-  reviewedCapabilityIds: string[]
-  privateScopeConfirmation?: SourceCardPrivateScopeConfirmation
-}
-
-interface ValidatedPromoteRequest {
-  reason: string
-  reviewedCapabilityIds: string[]
-  privateScopeConfirmation?: SourceCard['promotion']['privateScopeConfirmation']
 }
 
 export class SourceCardService {
@@ -115,11 +45,11 @@ export class SourceCardService {
     return validateSourceCard(card)
   }
 
-  createCandidateFromDraft(
-    request: SourceCardDraftCandidateRequest,
+  createFromDraft(
+    request: SourceCardDraftCreateRequest,
     context: SourceCardAuditContext = {},
   ): SourceCardPublicView {
-    const payload = validateCandidateDraftRequest(request)
+    const payload = validateDraftCreateRequest(request)
     const existing = this.manager.get(payload.draft.proposedCard.id)
     if (existing) {
       throw new Error(`Source card "${payload.draft.proposedCard.id}" already exists`)
@@ -144,88 +74,57 @@ export class SourceCardService {
       this.manager.create(
         {
           ...payload.draft.proposedCard,
-          state: 'candidate',
-          adapter: {
-            ...payload.draft.proposedCard.adapter,
-            revisions: payload.draft.proposedCard.adapter.revisions.map((revision) => ({
-              ...revision,
-              status: revision.status === 'active' ? 'candidate' : revision.status,
-            })),
-          },
+          state: 'draft',
         },
         context,
       ),
     )
   }
 
-  promote(
+  activate(
     id: string,
-    request: SourceCardPromoteRequest,
+    request: SourceCardActivateRequest,
     context: SourceCardAuditContext = {},
   ): SourceCardPublicView {
-    const current = this.requireCard(id)
-    assertValidSourceCard(current)
-    if (current.state !== 'verified' && current.state !== 'degraded') {
-      throw new Error(`Source card "${id}" must be verified or degraded before promotion`)
-    }
-    if (!canTransitionSourceCardState(current.state, 'active')) {
-      throw new Error(`Invalid SourceCard state transition: ${current.state} -> active`)
-    }
-    const payload = validatePromoteRequest(current, request)
-
-    return toPublicSourceCard(
-      this.manager.update(
-        id,
-        (card) => ({
-          ...card,
-          state: 'active',
-          promotion: {
-            ...card.promotion,
-            reviewedCapabilityIds: payload.reviewedCapabilityIds,
-            privateScopeConfirmation: payload.privateScopeConfirmation,
-            lastDecisionAt: now(),
-            lastDecision: 'accepted',
-            decisionReason: payload.reason,
-          },
-        }),
-        context,
-      ),
-    )
+    const reason = typeof request.reason === 'string' ? request.reason.trim() : ''
+    if (!reason) throw new Error('Activation reason is required')
+    return this.transition(id, 'active', reason, context)
   }
 
   retire(id: string, reason: string, context: SourceCardAuditContext = {}): SourceCardPublicView {
     const trimmedReason = reason.trim()
     if (!trimmedReason) throw new Error('Retire reason is required')
-    return toPublicSourceCard(this.manager.transitionState(id, 'retired', trimmedReason, context))
+    return this.transition(id, 'retired', trimmedReason, context)
   }
 
-  recordHealthResult(
-    sourceCardId: string,
-    result: SourceCardHealthResult,
-    context: SourceCardAuditContext = {},
+  private transition(
+    id: string,
+    state: SourceCardState,
+    reason: string,
+    context: SourceCardAuditContext,
   ): SourceCardPublicView {
-    return toPublicSourceCard(this.manager.recordHealthResult(sourceCardId, result, context))
-  }
-
-  listObservations(sourceCardId: string): SourceObservation[] {
-    return this.manager.listObservations(sourceCardId)
-  }
-
-  private requireCard(id: string): SourceCard {
-    const card = this.manager.get(id)
-    if (!card) throw new Error(`Source card "${id}" not found`)
-    return card
+    return toPublicSourceCard(this.manager.transitionState(id, state, reason, context))
   }
 }
 
-function validateCandidateDraftRequest(
-  request: SourceCardDraftCandidateRequest,
-): SourceCardDraftCandidateRequest & { draft: SourceCardDraft } {
+export function toPublicSourceCard(card: SourceCard): SourceCardPublicView {
+  return {
+    ...card,
+    sourceDoc: {
+      format: 'markdown',
+      body: sanitizeSourceDocBody(card.sourceDoc.body),
+    },
+  }
+}
+
+function validateDraftCreateRequest(
+  request: SourceCardDraftCreateRequest,
+): SourceCardDraftCreateRequest & { draft: SourceCardDraft } {
   if (!request || typeof request !== 'object' || Array.isArray(request)) {
-    throw new Error('Source Card draft candidate request is required')
+    throw new Error('Source Card draft create request is required')
   }
   if (request.confirm !== true) {
-    throw new Error('Explicit confirm=true is required to create a candidate Source Card')
+    throw new Error('Explicit confirm=true is required to create a Source Card from draft')
   }
 
   const validation = validateSourceCardDraft(request.draft)
@@ -233,146 +132,15 @@ function validateCandidateDraftRequest(
     throw new Error(`Invalid SourceCardDraft: ${validation.errors.join('; ')}`)
   }
 
-  return request as SourceCardDraftCandidateRequest & { draft: SourceCardDraft }
+  return request as SourceCardDraftCreateRequest & { draft: SourceCardDraft }
 }
 
-function validatePromoteRequest(
-  card: SourceCard,
-  request: SourceCardPromoteRequest,
-): ValidatedPromoteRequest {
-  if (!request || typeof request !== 'object' || Array.isArray(request)) {
-    throw new Error('Promotion approval payload is required')
-  }
-
-  const reason = typeof request.reason === 'string' ? request.reason.trim() : ''
-  if (!reason) throw new Error('Promotion reason is required')
-
-  if (!Array.isArray(request.reviewedCapabilityIds)) {
-    throw new Error('reviewedCapabilityIds must be an array')
-  }
-  const knownCapabilityIds = new Set(card.capabilities.map((capability) => capability.id))
-  const reviewedCapabilityIds = Array.from(
-    new Set(
-      request.reviewedCapabilityIds
-        .filter((id): id is string => typeof id === 'string')
-        .map((id) => id.trim())
-        .filter(Boolean),
-    ),
-  )
-  if (reviewedCapabilityIds.length === 0) {
-    throw new Error('At least one capability must be reviewed before promotion')
-  }
-  const unknownCapability = reviewedCapabilityIds.find((id) => !knownCapabilityIds.has(id))
-  if (unknownCapability) {
-    throw new Error(`Reviewed capability "${unknownCapability}" is not declared by Source Card`)
-  }
-  const unreviewedWatchable = card.capabilities.find(
-    (capability) => capability.watchable && !reviewedCapabilityIds.includes(capability.id),
-  )
-  if (unreviewedWatchable) {
-    throw new Error(`Watchable capability "${unreviewedWatchable.id}" must be reviewed`)
-  }
-
-  const privateScopeConfirmation = validatePrivateScopeConfirmation(card, request)
-  return {
-    reason,
-    reviewedCapabilityIds,
-    privateScopeConfirmation,
-  }
-}
-
-function validatePrivateScopeConfirmation(
-  card: SourceCard,
-  request: SourceCardPromoteRequest,
-): SourceCard['promotion']['privateScopeConfirmation'] {
-  if (card.sensitivity !== 'private' && card.sensitivity !== 'restricted') return undefined
-
-  const confirmation = request.privateScopeConfirmation
-  if (!confirmation) {
-    throw new Error('privateScopeConfirmation is required for private or restricted Source Cards')
-  }
-  if (confirmation.metadataOnly !== true) {
-    throw new Error('Private Source Card promotion requires metadataOnly confirmation')
-  }
-  if (confirmation.bodyAccessApproved !== false) {
-    throw new Error('Private Source Card promotion cannot approve body access')
-  }
-  if (confirmation.attachmentAccessApproved !== false) {
-    throw new Error('Private Source Card promotion cannot approve attachment access')
-  }
-  return {
-    metadataOnly: true,
-    bodyAccessApproved: false,
-    attachmentAccessApproved: false,
-  }
-}
-
-export function toPublicSourceCard(card: SourceCard): SourceCardPublicView {
-  const { credentials: _credentials, ...rest } = card
-  return {
-    ...rest,
-    adapter: toPublicAdapter(rest.adapter),
-    health: toPublicHealth(rest.health),
-    credentialBindings: card.credentials.map((credential) => ({
-      id: credential.id,
-      required: credential.required,
-      bindingType: credential.binding.type,
-      injectAs: credential.injectAs,
-      scopes: [...credential.scopes],
-      hasReference: 'ref' in credential.binding,
-    })),
-  }
-}
-
-function toPublicAdapter(adapter: SourceCardAdapter): SourceCardPublicAdapter {
-  return {
-    mode: adapter.mode,
-    activeRevision: adapter.activeRevision,
-    revisions: adapter.revisions.map((revision) => ({
-      id: revision.id,
-      status: revision.status,
-      mode: revision.mode,
-      entrypointSummary: summarizeEntrypoint(revision.entrypoint),
-      parser: {
-        type: revision.parser.type,
-        schemaKeys: [...revision.parser.schemaKeys],
-      },
-      timeoutMs: revision.timeoutMs,
-      rateLimit: revision.rateLimit ? { ...revision.rateLimit } : undefined,
-      templateCounts: {
-        commands: revision.commandTemplate ? 1 : 0,
-        endpoints: revision.endpointTemplates?.length ?? 0,
-        samples: revision.validation.sampleQueries.length,
-      },
-    })),
-  }
-}
-
-function summarizeEntrypoint(entrypoint: string): string {
-  try {
-    const url = new URL(entrypoint)
-    return url.origin
-  } catch {
-    const normalized = entrypoint.replaceAll('\\', '/')
-    const parts = normalized.split('/').filter(Boolean)
-    return parts[parts.length - 1] ?? entrypoint
-  }
-}
-
-function toPublicHealth(cardHealth: SourceCardHealth): SourceCardPublicHealth {
-  if (!cardHealth.lastResult) return cardHealth
-  const {
-    credentialRef: _credentialRef,
-    credentialLeaseId: _credentialLeaseId,
-    message: _message,
-    details: _details,
-    ...evidence
-  } = cardHealth.lastResult.evidence
-  return {
-    ...cardHealth,
-    lastResult: {
-      ...cardHealth.lastResult,
-      evidence,
-    },
-  }
+function sanitizeSourceDocBody(body: string): string {
+  return body
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
+    .replace(/\b(?:vault:\/\/|external:)[^\s`"')]+/gi, '[REDACTED_REFERENCE]')
+    .replace(
+      /\b(?:authorization|cookie|password|secret|api[_-]?key|access[_-]?token|refresh[_-]?token)\s*[:=]\s*[^\s`"')]+/gi,
+      '[REDACTED_SECRET]',
+    )
 }

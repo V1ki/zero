@@ -1,195 +1,93 @@
 import { describe, expect, test } from 'bun:test'
 import {
   type SourceCard,
-  assertValidSourceWatchBinding,
   canTransitionSourceCardState,
   sanitizeSourceCardTraceEvidence,
   validateSourceCard,
-  validateSourceWatchBinding,
 } from '../types/source-card'
 
-function createActiveCard(): SourceCard {
+function createDraftCard(overrides: Partial<SourceCard> = {}): SourceCard {
   return {
     schemaVersion: 1,
     id: 'public-source',
     title: 'Public source',
-    state: 'active',
-    kind: 'web_api',
-    owner: {
-      scope: 'system',
-    },
+    state: 'draft',
     sensitivity: 'public',
-    discovery: {
-      firstSeenAt: '2026-05-11T00:00:00.000Z',
-      discoveredFrom: {
-        sessionId: 'sess_20260511_0000_web_abcd',
-        traceRefs: ['trace/run.log'],
-      },
-      learnedMethodSummary: 'Public API fetch.',
+    tags: ['market-data'],
+    sourceDoc: {
+      format: 'markdown',
+      body: '# Public source\n\n## When to use\n- Use for public rows.\n\n## How to use\n- Fetch https://example.invalid/data.',
     },
-    capabilities: [
-      {
-        id: 'fetch_rows',
-        operation: 'query',
-        inputSchema: {
-          type: 'object',
-        },
-        outputSchema: {
-          type: 'object',
-        },
-        watchable: true,
-        defaultPrivacyScope: 'public',
-        allowedActions: ['recordObservation'],
-        prohibitedActions: ['write'],
-      },
-    ],
-    adapter: {
-      mode: 'api',
-      activeRevision: 'api-v1',
-      revisions: [
-        {
-          id: 'api-v1',
-          status: 'active',
-          mode: 'api',
-          entrypoint: 'https://example.invalid',
-          endpointTemplates: ['https://example.invalid/data'],
-          parser: {
-            type: 'json',
-            schemaKeys: ['data'],
-          },
-          timeoutMs: 1000,
-          validation: {
-            sampleQueries: [{}],
-            expectedEvidence: ['HTTP 200'],
-          },
-        },
-      ],
+    source: {
+      sessionId: 'sess_20260511_0000_web_abcd',
+      traceRefs: ['trace:span_1'],
+      summary: 'Public API fetch.',
     },
-    credentials: [
-      {
-        id: 'none',
-        required: false,
-        binding: {
-          type: 'none',
-        },
-        scopes: ['public.read'],
-        injectAs: 'none',
-        leasePolicy: {
-          ttlSeconds: 0,
-          renewable: false,
-          reauthRequiredOn: [],
-        },
-      },
-    ],
-    privacy: {
-      dataClasses: ['public rows'],
-      bodyPolicy: 'approved_background_scope',
-      attachmentPolicy: 'blocked',
-      retention: {
-        card: 'until retired',
-        observations: '14 days',
-        artifacts: 'explicit artifacts only',
-      },
-    },
-    health: {
-      checks: [
-        {
-          id: 'api-health',
-          cadence: 'before_watch_tick',
-          method: 'Fetch public health.',
-          successCriteria: 'HTTP 200.',
-        },
-      ],
-    },
-    observations: {
-      observationSchemaRef: 'source-observation/public-v1',
-      cursorPolicy: 'watch-owned',
-      maxSamplePersisted: 1,
-      contentHashPolicy: 'hash rows',
-    },
-    promotion: {
-      requiredEvidence: ['public read-only endpoint'],
-    },
+    ...overrides,
   }
 }
 
 describe('Source Card types', () => {
-  test('defines the Source Card lifecycle transitions', () => {
-    expect(canTransitionSourceCardState('discovered', 'candidate')).toBe(true)
-    expect(canTransitionSourceCardState('candidate', 'verified')).toBe(true)
-    expect(canTransitionSourceCardState('verified', 'active')).toBe(true)
-    expect(canTransitionSourceCardState('active', 'degraded')).toBe(true)
-    expect(canTransitionSourceCardState('degraded', 'active')).toBe(true)
-    expect(canTransitionSourceCardState('active', 'discovered')).toBe(false)
+  test('defines the small document-card lifecycle', () => {
+    expect(canTransitionSourceCardState('draft', 'active')).toBe(true)
+    expect(canTransitionSourceCardState('draft', 'retired')).toBe(true)
+    expect(canTransitionSourceCardState('active', 'retired')).toBe(true)
+    expect(canTransitionSourceCardState('retired', 'active')).toBe(false)
   })
 
-  test('validates a complete active card', () => {
-    const result = validateSourceCard(createActiveCard())
+  test('validates a Markdown Source Card document', () => {
+    const result = validateSourceCard(createDraftCard())
 
     expect(result).toEqual({ ok: true, errors: [] })
   })
 
-  test('rejects invalid credential binding refs', () => {
-    const card = createActiveCard()
-    card.credentials = [
-      {
-        ...card.credentials[0],
-        binding: {
-          type: 'vaultRef',
-          ref: 'plain-secret-id',
+  test('rejects invalid ids and missing document bodies', () => {
+    const result = validateSourceCard(
+      createDraftCard({
+        id: '../public-source',
+        sourceDoc: {
+          format: 'markdown',
+          body: '',
         },
-      },
-    ]
-
-    const result = validateSourceCard(card)
-
-    expect(result.ok).toBe(false)
-    expect(result.errors.join('\n')).toContain('must start with vault://')
-  })
-
-  test('allows watch bindings to reference only source card capability and cadence', () => {
-    const card = createActiveCard()
-
-    expect(() =>
-      assertValidSourceWatchBinding(
-        {
-          sourceCardId: card.id,
-          capabilityId: 'fetch_rows',
-          query: {
-            symbol: 'SH000001',
-          },
-          cadence: {
-            type: 'interval',
-            minIntervalMs: 60_000,
-          },
-        },
-        card,
-      ),
-    ).not.toThrow()
-  })
-
-  test('rejects credentials embedded in watch bindings', () => {
-    const card = createActiveCard()
-    const result = validateSourceWatchBinding(
-      {
-        sourceCardId: card.id,
-        capabilityId: 'fetch_rows',
-        query: {
-          credentialRef: 'vault://example',
-        },
-        cadence: {
-          type: 'interval',
-          minIntervalMs: 60_000,
-        },
-      },
-      card,
+      }),
     )
 
     expect(result.ok).toBe(false)
-    expect(result.errors.join('\n')).toContain('must not contain credentials')
+    expect(result.errors.join('\n')).toContain('id must be a lowercase id')
+    expect(result.errors.join('\n')).toContain('sourceDoc.body')
   })
 
-  test('redacts trace evidence but preserves credential references', () => {
+  test('rejects source docs with credential references or secret material', () => {
+    const result = validateSourceCard(
+      createDraftCard({
+        sourceDoc: {
+          format: 'markdown',
+          body: 'Use external:himalaya/account/qq with authorization: Bearer secret-token.',
+        },
+      }),
+    )
+
+    expect(result.ok).toBe(false)
+    expect(result.errors.join('\n')).toContain('sourceDoc.body')
+  })
+
+  test('rejects source evidence metadata with credential references', () => {
+    const result = validateSourceCard(
+      createDraftCard({
+        source: {
+          sessionId: 'sess_20260511_0000_web_abcd',
+          traceRefs: ['external:himalaya/account/qq'],
+          summary: 'authorization=Bearer secret-token',
+        },
+      }),
+    )
+
+    expect(result.ok).toBe(false)
+    expect(result.errors.join('\n')).toContain('source.traceRefs[0]')
+    expect(result.errors.join('\n')).toContain('source.summary')
+  })
+
+  test('redacts trace evidence and credential references', () => {
     const evidence = sanitizeSourceCardTraceEvidence({
       credentialRef: 'external:himalaya/account/qq',
       authorization: 'Bearer secret-token',
@@ -200,7 +98,7 @@ describe('Source Card types', () => {
     })
 
     expect(evidence).toEqual({
-      credentialRef: 'external:himalaya/account/qq',
+      credentialRef: '[REDACTED]',
       authorization: '[REDACTED]',
       headers: {
         cookie: '[REDACTED]',

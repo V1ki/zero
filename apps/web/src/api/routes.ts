@@ -1,6 +1,5 @@
 import {
-  type SourceCardDraftCandidateRequest,
-  type SourceCardPromoteRequest,
+  type SourceCardDraftCreateRequest,
   buildSessionInfoReply,
   loadConfig,
   parseSessionArgs,
@@ -10,7 +9,6 @@ import {
   type MemoryStatus,
   type MemoryType,
   type ModelPricing,
-  type SourceObservation,
   toErrorMessage,
 } from '@zero-os/shared'
 import { readYaml, writeYaml } from '@zero-os/shared/utils'
@@ -231,69 +229,6 @@ export function createRoutes(zero: ZeroOS) {
     return {
       ...entry,
       classifierRequest: sanitizeClassifierRequestForClient(entry.classifierRequest),
-    }
-  }
-
-  function summarizeSourceObservations(observations: SourceObservation[]) {
-    const kindCounts: Record<string, number> = {}
-    const capabilityIds = new Set<string>()
-    let latestFailureClass: string | undefined
-
-    const rows = observations.map((observation) => {
-      kindCounts[observation.kind] = (kindCounts[observation.kind] ?? 0) + 1
-      capabilityIds.add(observation.capabilityId)
-      if (observation.evidence?.failureClass) {
-        latestFailureClass = observation.evidence.failureClass
-      }
-
-      return {
-        id: observation.id,
-        sourceCardId: observation.sourceCardId,
-        capabilityId: observation.capabilityId,
-        observedAt: observation.observedAt,
-        kind: observation.kind,
-        cursor: summarizeObservationCursor(observation.cursor),
-        evidence: summarizeObservationEvidence(observation.evidence),
-      }
-    })
-
-    const last = rows.length > 0 ? rows[rows.length - 1] : undefined
-    return {
-      summary: {
-        total: observations.length,
-        kindCounts,
-        capabilityIds: [...capabilityIds].sort(),
-        lastObservedAt: last?.observedAt,
-        latestFailureClass,
-      },
-      observations: rows,
-    }
-  }
-
-  function summarizeObservationCursor(cursor: SourceObservation['cursor']) {
-    if (!cursor) return undefined
-    if (typeof cursor === 'string') return cursor
-    return {
-      type: 'object',
-      keys: Object.keys(cursor).sort(),
-    }
-  }
-
-  function summarizeObservationEvidence(evidence: SourceObservation['evidence']) {
-    if (!evidence) return undefined
-    return {
-      sourceCardId: evidence.sourceCardId,
-      capabilityId: evidence.capabilityId,
-      adapterRevision: evidence.adapterRevision,
-      commandTemplateHash: evidence.commandTemplateHash,
-      endpointTemplateHash: evidence.endpointTemplateHash,
-      statusCode: evidence.statusCode,
-      exitCode: evidence.exitCode,
-      durationMs: evidence.durationMs,
-      rowCount: evidence.rowCount,
-      schemaKeys: evidence.schemaKeys,
-      artifactRefs: evidence.artifactRefs,
-      failureClass: evidence.failureClass,
     }
   }
 
@@ -554,6 +489,7 @@ export function createRoutes(zero: ZeroOS) {
           createdAt: session.data.createdAt,
           updatedAt: session.data.updatedAt,
           messages: session.getMessages(),
+          timelineCompactionBlocks: session.getTimelineCompactionBlocks(),
           tags: session.data.tags,
           summary: session.data.summary,
           modelHistory: session.data.modelHistory,
@@ -583,6 +519,7 @@ export function createRoutes(zero: ZeroOS) {
         return c.json({ error: 'Session not found' }, 404)
       }
       const messages = zero.sessionManager.getMessagesFromDB(id)
+      const timelineCompactionBlocks = zero.sessionManager.getCompactionBlocksFromDB(id)
       const stats = zero.metrics.sessionStats(id)
       const auxiliaryCost = zero.metrics.sessionAuxiliaryCost(id)
       const purposeBreakdown = zero.metrics.sessionUsageByPurpose(id)
@@ -599,6 +536,7 @@ export function createRoutes(zero: ZeroOS) {
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
         messages,
+        timelineCompactionBlocks,
         tags: row.tags,
         summary: row.summary,
         modelHistory: row.modelHistory,
@@ -942,12 +880,12 @@ export function createRoutes(zero: ZeroOS) {
       return c.json({ validation: zero.sourceCardService.validateDraft(body.draft) })
     })
 
-    .post('/api/source-card-drafts/candidates', async (c) => {
-      const body = await c.req.json<SourceCardDraftCandidateRequest>().catch(() => null)
-      if (!body) return c.json({ error: 'Source Card draft candidate request is required' }, 400)
+    .post('/api/source-card-drafts/cards', async (c) => {
+      const body = await c.req.json<SourceCardDraftCreateRequest>().catch(() => null)
+      if (!body) return c.json({ error: 'Source Card draft create request is required' }, 400)
 
       try {
-        const sourceCard = zero.sourceCardService.createCandidateFromDraft(body)
+        const sourceCard = zero.sourceCardService.createFromDraft(body)
         return c.json({ sourceCard })
       } catch (error) {
         return c.json({ error: toErrorMessage(error) }, 400)
@@ -959,19 +897,6 @@ export function createRoutes(zero: ZeroOS) {
       return c.json({ sourceCards: zero.sourceCardService.list() })
     })
 
-    .get('/api/source-cards/:id/observations', (c) => {
-      const id = c.req.param('id')
-      const sourceCard = zero.sourceCardService.get(id)
-      if (!sourceCard) return c.json({ error: 'Source Card not found' }, 404)
-
-      const observations = zero.sourceCardService.listObservations(id)
-      return c.json({
-        sourceCardId: id,
-        summaryOnly: true,
-        ...summarizeSourceObservations(observations),
-      })
-    })
-
     .get('/api/source-cards/:id', (c) => {
       const id = c.req.param('id')
       const sourceCard = zero.sourceCardService.get(id)
@@ -979,16 +904,17 @@ export function createRoutes(zero: ZeroOS) {
       return c.json({ sourceCard })
     })
 
-    .post('/api/source-cards/:id/promote', async (c) => {
+    .post('/api/source-cards/:id/activate', async (c) => {
       const id = c.req.param('id')
       const existing = zero.sourceCardService.get(id)
       if (!existing) return c.json({ error: 'Source Card not found' }, 404)
 
-      const body = await c.req.json<SourceCardPromoteRequest>().catch(() => null)
-      if (!body) return c.json({ error: 'Promotion approval payload is required' }, 400)
+      const body = await c.req.json<{ reason?: unknown }>().catch(() => null)
+      if (!body) return c.json({ error: 'Activation payload is required' }, 400)
+      const reason = typeof body.reason === 'string' ? body.reason : ''
 
       try {
-        const sourceCard = zero.sourceCardService.promote(id, body)
+        const sourceCard = zero.sourceCardService.activate(id, { reason })
         return c.json({ sourceCard })
       } catch (error) {
         return c.json({ error: toErrorMessage(error) }, 400)

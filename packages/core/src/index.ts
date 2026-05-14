@@ -72,19 +72,15 @@ export {
 // Source Cards
 export {
   SessionSourceMiner,
-  SourceCardHealthRunner,
   SourceCardManager,
   SourceCardService,
   SourceCardStore,
   containsSensitiveDraftMaterial,
-  createAStockMarketDataSourceCard,
-  createQqMailHimalayaSourceCard,
   findSourceCardDraftDedupeCandidates,
   redactSourceCardDraft,
   toPublicSourceCard,
 } from './source-card'
 export type {
-  ResolvedSourceWatch,
   SessionMinerSession,
   SessionSourceMinerArtifact,
   SessionSourceMinerDeps,
@@ -92,22 +88,18 @@ export type {
   SessionSourceMinerReader,
   SourceCardDedupeSource,
   SourceCardDraft,
-  SourceCardDraftCandidateRequest,
+  SourceCardDraftCreateRequest,
   SourceCardDraftDedupeCandidate,
   SourceCardDraftDedupeDecision,
   SourceCardDraftEvidenceRef,
   SourceCardDraftEvidenceSource,
   SourceCardDraftTriggerSnapshot,
   SourceCardDraftValidationResult,
+  SourceCardActivateRequest,
   SourceCardAuditContext,
   SourceCardAuditEvent,
-  SourceCardHealthRunInput,
-  SourceCardHealthRunSummary,
   SourceCardManagerOptions,
-  SourceCardPrivateScopeConfirmation,
-  SourceCardPromoteRequest,
   SourceCardPublicView,
-  SourceCredentialBindingView,
 } from './source-card'
 
 // Context Engineering

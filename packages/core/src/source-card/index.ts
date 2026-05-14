@@ -3,7 +3,6 @@ export {
   SourceCardStore,
 } from './store'
 export type {
-  ResolvedSourceWatch,
   SourceCardAuditContext,
   SourceCardAuditEvent,
   SourceCardManagerOptions,
@@ -13,10 +12,8 @@ export {
   toPublicSourceCard,
 } from './service'
 export type {
-  SourceCardPrivateScopeConfirmation,
-  SourceCardPromoteRequest,
+  SourceCardActivateRequest,
   SourceCardPublicView,
-  SourceCredentialBindingView,
 } from './service'
 export {
   SessionSourceMiner,
@@ -32,7 +29,7 @@ export type {
   SessionSourceMinerReader,
   SourceCardDedupeSource,
   SourceCardDraft,
-  SourceCardDraftCandidateRequest,
+  SourceCardDraftCreateRequest,
   SourceCardDraftDedupeCandidate,
   SourceCardDraftDedupeDecision,
   SourceCardDraftEvidenceRef,
@@ -40,12 +37,3 @@ export type {
   SourceCardDraftTriggerSnapshot,
   SourceCardDraftValidationResult,
 } from './miner'
-export { SourceCardHealthRunner } from './runner'
-export type {
-  SourceCardHealthRunInput,
-  SourceCardHealthRunSummary,
-} from './runner'
-export {
-  createAStockMarketDataSourceCard,
-  createQqMailHimalayaSourceCard,
-} from './samples'

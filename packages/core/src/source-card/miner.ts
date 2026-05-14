@@ -3,8 +3,6 @@ import {
   type Message,
   type SecretFilter,
   type SourceCard,
-  type SourceCardAdapterMode,
-  type SourceCardCapability,
   type SourceCardValidationResult,
   now,
   validateSourceCard,
@@ -12,7 +10,6 @@ import {
 
 const MAX_EVIDENCE_TEXT_CHARS = 4_000
 const MAX_EVIDENCE_REFS = 12
-const MAX_SCHEMA_KEYS = 12
 
 const SENSITIVE_KEY_RE =
   /(authorization|cookie|password|secret|token|api[_-]?key|access[_-]?token|refresh[_-]?token|oauth|auth[_-]?code|credentialRef|credentialLeaseId)/i
@@ -24,10 +21,7 @@ const PRIVATE_CONTENT_KEY_RE =
   /(body|bodyText|bodyHtml|mailBody|messageBody|emailBody|attachment|attachmentText|attachmentContent|raw|rawPayload|payload|mime|html|contentBody|fileBytes)/i
 
 export type SourceCardDraftEvidenceSource = 'trace' | 'run_log' | 'message' | 'artifact'
-export type SourceCardDraftDedupeDecision =
-  | 'new_card'
-  | 'append_adapter_revision'
-  | 'append_evidence'
+export type SourceCardDraftDedupeDecision = 'new_card' | 'append_evidence'
 
 export interface SourceCardDraftEvidenceRef {
   source: SourceCardDraftEvidenceSource
@@ -40,7 +34,6 @@ export interface SourceCardDraftDedupeCandidate {
   id: string
   title: string
   state: SourceCard['state']
-  kind: SourceCard['kind']
   sensitivity: SourceCard['sensitivity']
   score: number
   reason: string
@@ -68,7 +61,7 @@ export interface SourceCardDraft {
   triggerSnapshot: SourceCardDraftTriggerSnapshot
 }
 
-export interface SourceCardDraftCandidateRequest {
+export interface SourceCardDraftCreateRequest {
   draft: SourceCardDraft
   confirm: boolean
   dedupeDecision?: SourceCardDraftDedupeDecision
@@ -113,10 +106,8 @@ export interface SourceCardDedupeSource {
   id: string
   title: string
   state: SourceCard['state']
-  kind: SourceCard['kind']
   sensitivity: SourceCard['sensitivity']
-  capabilities?: Array<{ id: string }>
-  adapter?: { mode?: SourceCardAdapterMode }
+  tags?: string[]
 }
 
 export interface SessionSourceMinerDeps {
@@ -133,20 +124,13 @@ interface CollectedEvidence {
 }
 
 interface SourceAnalysis {
-  kind: SourceCard['kind']
   title: string
   sensitivity: SourceCard['sensitivity']
-  mode: SourceCardAdapterMode
-  entrypoint: string
-  parserType: SourceCard['adapter']['revisions'][number]['parser']['type']
-  schemaKeys: string[]
-  capabilities: SourceCardCapability[]
-  requiresCredential: boolean
-  privacy: SourceCard['privacy']
+  tags: string[]
+  sourceDocBody: string
   missingFields: string[]
   riskFlags: string[]
   confidence: number
-  learnedMethodSummary: string
 }
 
 export class SessionSourceMiner {
@@ -182,8 +166,8 @@ export class SessionSourceMiner {
     }
 
     const generatedAt = now()
-    const analysis = analyzeEvidence(evidence, session)
-    const proposedCard = buildProposedCard(sessionId, generatedAt, analysis, evidence)
+    const analysis = analyzeEvidence(evidence)
+    const proposedCard = buildProposedCard(sessionId, analysis)
     const evidenceRefs = buildEvidenceRefs(evidence, proposedCard.sensitivity)
     const dedupeCandidates = findSourceCardDraftDedupeCandidates(
       proposedCard,
@@ -191,9 +175,7 @@ export class SessionSourceMiner {
     )
     const riskFlags = [...analysis.riskFlags]
     if (dedupeCandidates.length > 0) {
-      riskFlags.push(
-        'Possible existing Source Card match; user must choose new card vs adapter revision/evidence append.',
-      )
+      riskFlags.push('Possible existing Source Card match; user must choose new card or skip.')
     }
     if (options.currentSession) {
       riskFlags.push('Draft is based on the current session snapshot captured at trigger time.')
@@ -281,6 +263,27 @@ export function containsSensitiveDraftMaterial(value: unknown): boolean {
   return /"(authorization|cookie|password|secret|token|api[_-]?key|access[_-]?token|refresh[_-]?token)"\s*:\s*"(?!\[REDACTED\])[^"]+"/i.test(
     text,
   )
+}
+
+export function findSourceCardDraftDedupeCandidates(
+  proposedCard: SourceCard,
+  existingCards: SourceCardDedupeSource[],
+): SourceCardDraftDedupeCandidate[] {
+  return existingCards
+    .map((card) => {
+      const score = scoreDedupe(proposedCard, card)
+      return {
+        id: card.id,
+        title: card.title,
+        state: card.state,
+        sensitivity: card.sensitivity,
+        score,
+        reason: buildDedupeReason(proposedCard, card, score),
+      }
+    })
+    .filter((candidate) => candidate.score >= 0.45)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 5)
 }
 
 function collectSessionEvidence(input: {
@@ -372,178 +375,98 @@ function artifactToEvidence(
   }
 }
 
-function analyzeEvidence(
-  evidence: CollectedEvidence[],
-  session: SessionRow | SessionMinerSession | null | undefined,
-): SourceAnalysis {
+function analyzeEvidence(evidence: CollectedEvidence[]): SourceAnalysis {
   const combined = evidence.map((item) => item.text).join('\n')
   const lower = combined.toLowerCase()
-  const schemaKeys = extractSchemaKeys(combined)
-  const mode = inferAdapterMode(lower)
-  const kind = inferKind(lower, mode)
-  const sensitivity = inferSensitivity(kind, lower)
-  const requiresCredential = hasCredentialSignals(lower) || sensitivity !== 'public'
-  const entrypoint = inferEntrypoint(combined, lower, mode, kind)
-  const parserType = inferParserType(combined, schemaKeys)
-  const capabilities = buildCapabilities(kind, schemaKeys)
-  const missingFields = buildMissingFields(schemaKeys, entrypoint, requiresCredential, lower)
-  const riskFlags = buildRiskFlags(kind, sensitivity, requiresCredential, lower)
-  const title = buildTitle(kind, lower)
-  const confidence = estimateConfidence({
-    evidence,
-    schemaKeys,
-    mode,
-    kind,
-    hasSession: Boolean(session),
-  })
+  const tags = inferTags(lower)
+  const sensitivity = inferSensitivity(tags, lower)
+  const urls = extractUrls(combined)
+  const title = buildTitle(tags, lower)
+  const riskFlags = [
+    'Draft only: no Source Card has been activated.',
+    'Session Source Miner only used existing session evidence.',
+    'Did not execute CLI/API/browser/fetch or read a new data source.',
+  ]
+  if (sensitivity === 'private' || sensitivity === 'restricted') {
+    riskFlags.push('Private/restricted source must stay explicit foreground and metadata-first.')
+  }
+  const missingFields = urls.length === 0 && !lower.includes('himalaya') ? ['document.method'] : []
 
   return {
-    kind,
     title,
     sensitivity,
-    mode,
-    entrypoint,
-    parserType,
-    schemaKeys,
-    capabilities,
-    requiresCredential,
-    privacy: buildPrivacy(kind, sensitivity),
+    tags,
+    sourceDocBody: buildSourceDocBody({ title, sensitivity, tags, urls, evidence }),
     missingFields,
     riskFlags,
-    confidence,
-    learnedMethodSummary: buildLearnedMethodSummary(kind, mode, evidence.length),
+    confidence: estimateConfidence(evidence, urls, tags),
   }
 }
 
-function buildProposedCard(
-  sessionId: string,
-  generatedAt: string,
-  analysis: SourceAnalysis,
-  evidence: CollectedEvidence[],
-): SourceCard {
-  const sourceId = buildSourceCardId(analysis.kind, analysis.title, sessionId)
-  const revisionId = `${sourceId}-session-v1`
-  const traceRefs = evidence
-    .filter((item) => item.source === 'trace' || item.source === 'run_log')
-    .slice(0, MAX_EVIDENCE_REFS)
-    .map((item) => item.ref)
-  const artifactRefs = evidence
-    .filter((item) => item.source === 'artifact')
-    .slice(0, MAX_EVIDENCE_REFS)
-    .map((item) => item.ref)
-
+function buildProposedCard(sessionId: string, analysis: SourceAnalysis): SourceCard {
   return {
     schemaVersion: 1,
-    id: sourceId,
+    id: buildSourceCardId(analysis.title, sessionId),
     title: analysis.title,
-    state: 'candidate',
-    kind: analysis.kind,
-    owner: {
-      scope:
-        analysis.sensitivity === 'private' || analysis.sensitivity === 'restricted'
-          ? 'user'
-          : 'workspace',
-    },
+    state: 'draft',
     sensitivity: analysis.sensitivity,
-    discovery: {
-      firstSeenAt: generatedAt,
-      discoveredFrom: {
-        sessionId,
-        traceRefs,
-        ...(artifactRefs.length > 0 ? { artifactRefs } : {}),
-      },
-      learnedMethodSummary: analysis.learnedMethodSummary,
+    tags: analysis.tags,
+    sourceDoc: {
+      format: 'markdown',
+      body: analysis.sourceDocBody,
     },
-    capabilities: analysis.capabilities,
-    adapter: {
-      mode: analysis.mode,
-      activeRevision: revisionId,
-      revisions: [
-        {
-          id: revisionId,
-          status: 'candidate',
-          mode: analysis.mode,
-          entrypoint: analysis.entrypoint,
-          parser: {
-            type: analysis.parserType,
-            schemaKeys: analysis.schemaKeys,
-          },
-          timeoutMs: analysis.mode === 'browser' ? 60_000 : 30_000,
-          validation: {
-            sampleQueries: [],
-            expectedEvidence: [
-              'Existing session trace/run.log/messages/artifacts support this draft.',
-              'No external source execution or health probe has been performed by the miner.',
-            ],
-          },
-        },
-      ],
-    },
-    credentials: analysis.requiresCredential
-      ? [
-          {
-            id: 'source-access',
-            required: true,
-            binding: {
-              type: 'none',
-            },
-            scopes: inferCredentialScopes(analysis.kind),
-            injectAs: analysis.mode === 'browser' ? 'profileSession' : 'none',
-            leasePolicy: {
-              ttlSeconds: 0,
-              renewable: false,
-              reauthRequiredOn: ['missing_binding'],
-            },
-          },
-        ]
-      : [
-          {
-            id: 'public-access',
-            required: false,
-            binding: {
-              type: 'none',
-            },
-            scopes: inferCredentialScopes(analysis.kind),
-            injectAs: 'none',
-            leasePolicy: {
-              ttlSeconds: 0,
-              renewable: false,
-              reauthRequiredOn: [],
-            },
-          },
-        ],
-    privacy: analysis.privacy,
-    health: {
-      checks: [
-        {
-          id: 'manual_source_review',
-          cadence: 'manual',
-          method:
-            'Manual review of the mined draft only; this MVP does not run a health probe or adapter.',
-          successCriteria:
-            'Reviewer confirms the session evidence, schema, privacy policy, and credential binding.',
-        },
-      ],
-    },
-    observations: {
-      observationSchemaRef: `source-observation/${sourceId}-v1`,
-      cursorPolicy:
-        'Not inferred by Session Source Miner MVP; future Watch/adapter must define cursor ownership.',
-      maxSamplePersisted: analysis.sensitivity === 'public' ? 3 : 0,
-      contentHashPolicy:
-        analysis.sensitivity === 'public'
-          ? 'hash normalized response samples and schema keys'
-          : 'metadata-only; hash identifiers and omit body or attachment content',
-    },
-    promotion: {
-      requiredEvidence: [
-        'User explicitly confirms candidate creation from this draft.',
-        'Reviewer validates the proposed capability and privacy boundary.',
-        'Credential binding is supplied outside the draft if required.',
-        'Any dedupe candidate is resolved as new card vs adapter revision/evidence append.',
-      ],
+    source: {
+      sessionId,
+      summary: `Draft mined from ${analysis.tags.join(', ') || 'session'} evidence.`,
     },
   }
+}
+
+function buildSourceDocBody(input: {
+  title: string
+  sensitivity: SourceCard['sensitivity']
+  tags: string[]
+  urls: string[]
+  evidence: CollectedEvidence[]
+}): string {
+  const methodLines = buildMethodLines(input)
+  return [
+    `# ${input.title}`,
+    '',
+    '## When to use',
+    `- Use when a future request matches: ${input.tags.join(', ') || 'this source'}.`,
+    '',
+    '## How to use',
+    ...methodLines,
+    '',
+    '## Safety boundary',
+    `- Sensitivity: ${input.sensitivity}.`,
+    input.sensitivity === 'public'
+      ? '- Use public read-only access only. Do not perform account, trading, sending, or write actions unless this document explicitly says so.'
+      : '- Treat as private/restricted. Prefer metadata. Do not read body content, attachments, or secrets without explicit foreground user approval.',
+    '',
+    '## Evidence',
+    ...input.evidence
+      .slice(0, 3)
+      .map((item) => `- ${item.ref}: ${summarizeEvidenceText(item.text)}`),
+  ].join('\n')
+}
+
+function buildMethodLines(input: {
+  tags: string[]
+  urls: string[]
+  evidence: CollectedEvidence[]
+}): string[] {
+  if (input.tags.includes('mail') && hasEvidence(input.evidence, 'himalaya')) {
+    return [
+      '- Use himalaya CLI metadata commands first.',
+      '- Start with account/folder discovery, then bounded envelope metadata reads.',
+    ]
+  }
+  if (input.urls.length > 0) {
+    return input.urls.slice(0, 6).map((url) => `- ${url}`)
+  }
+  return ['- Method needs human review; the miner did not find a stable command or URL.']
 }
 
 function buildEvidenceRefs(
@@ -564,481 +487,183 @@ function buildEvidenceRefs(
     }))
 }
 
-export function findSourceCardDraftDedupeCandidates(
-  proposedCard: SourceCard,
-  existingCards: SourceCardDedupeSource[],
-): SourceCardDraftDedupeCandidate[] {
-  return existingCards
-    .map((card) => {
-      const score = scoreDedupe(proposedCard, card)
-      return {
-        id: card.id,
-        title: card.title,
-        state: card.state,
-        kind: card.kind,
-        sensitivity: card.sensitivity,
-        score,
-        reason: buildDedupeReason(proposedCard, card, score),
-      }
-    })
-    .filter((candidate) => candidate.score >= 0.45)
-    .sort((left, right) => right.score - left.score)
-    .slice(0, 5)
-}
-
-function buildCapabilities(kind: SourceCard['kind'], schemaKeys: string[]): SourceCardCapability[] {
-  const outputProperties = Object.fromEntries(
-    schemaKeys.slice(0, MAX_SCHEMA_KEYS).map((key) => [key, { type: 'unknown' }]),
-  )
-
-  if (kind === 'private_mailbox') {
-    return [
-      {
-        id: 'list_metadata',
-        operation: 'list',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            folder: { type: 'string' },
-            query: { type: 'string' },
-            limit: { type: 'number' },
-          },
-        },
-        outputSchema: {
-          type: 'object',
-          properties: outputProperties,
-        },
-        watchable: true,
-        defaultPrivacyScope: 'metadata_only',
-        allowedActions: ['notify', 'recordObservation'],
-        prohibitedActions: ['read_mail_body', 'download_attachment', 'send_mail'],
-      },
-    ]
-  }
-
-  if (kind === 'public_market_data') {
-    return [
-      {
-        id: 'query_market_data',
-        operation: 'query',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            symbols: { type: 'array', items: { type: 'string' } },
-            fields: { type: 'array', items: { type: 'string' } },
-          },
-        },
-        outputSchema: {
-          type: 'object',
-          properties: outputProperties,
-        },
-        watchable: true,
-        defaultPrivacyScope: 'public_read_only',
-        allowedActions: ['notify', 'recordObservation', 'createArtifact'],
-        prohibitedActions: [
-          'place_order',
-          'trade',
-          'use_broker_account',
-          'send_financial_instruction',
-        ],
-      },
-    ]
-  }
-
-  return [
-    {
-      id: kind === 'local_file' ? 'read_local_metadata' : 'query_source',
-      operation: kind === 'local_file' ? 'read' : 'query',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          query: { type: 'string' },
-        },
-      },
-      outputSchema: {
-        type: 'object',
-        properties: outputProperties,
-      },
-      watchable: false,
-      defaultPrivacyScope: 'foreground_review_required',
-      allowedActions: ['recordObservation'],
-      prohibitedActions: ['background_read_without_user_confirmation', 'persist_raw_private_data'],
-    },
-  ]
-}
-
-function buildPrivacy(
-  kind: SourceCard['kind'],
-  sensitivity: SourceCard['sensitivity'],
-): SourceCard['privacy'] {
-  if (sensitivity === 'private' || sensitivity === 'restricted') {
-    return {
-      dataClasses:
-        kind === 'private_mailbox'
-          ? ['mailbox names', 'message ids', 'bounded message metadata']
-          : ['private source metadata'],
-      bodyPolicy: 'metadata_only',
-      attachmentPolicy: 'blocked',
-      retention: {
-        card: 'until user retires source',
-        observations: 'metadata-only observations; default retention follows workspace policy',
-        artifacts: 'explicit user-approved artifacts only',
-      },
-    }
-  }
-
-  if (kind === 'public_market_data') {
-    return {
-      dataClasses: ['public market data', 'public identifiers', 'public schema keys'],
-      bodyPolicy: 'approved_background_scope',
-      attachmentPolicy: 'blocked',
-      retention: {
-        card: 'until source revision is retired',
-        observations: 'bounded public observations only',
-        artifacts: 'user-visible reports or approved artifacts only',
-      },
-    }
-  }
-
-  return {
-    dataClasses: ['session-derived source metadata'],
-    bodyPolicy: 'explicit_foreground_only',
-    attachmentPolicy: 'blocked',
-    retention: {
-      card: 'until user retires source',
-      observations: 'summary observations only until reviewed',
-      artifacts: 'explicit user-approved artifacts only',
-    },
-  }
-}
-
-function inferKind(text: string, mode: SourceCardAdapterMode): SourceCard['kind'] {
+function inferTags(text: string): string[] {
+  const tags = new Set<string>()
   if (/(himalaya|imap|smtp|mailbox|email|e-mail|gmail|qq\s*mail|envelope)/i.test(text)) {
-    return 'private_mailbox'
+    tags.add('mail')
+    if (/qq/i.test(text)) tags.add('qq-mail')
+    if (/himalaya/i.test(text)) tags.add('himalaya')
   }
   if (/(stock|market|quote|eastmoney|akshare|tushare|ticker|symbol|证券|股票|行情)/i.test(text)) {
-    return 'public_market_data'
+    tags.add('market-data')
+    tags.add('a-share')
   }
-  if (mode === 'browser') return 'browser_session'
-  if (mode === 'direct') return 'local_file'
-  return 'web_api'
-}
-
-function inferAdapterMode(text: string): SourceCardAdapterMode {
-  if (/(browser|playwright|page\.|click|screenshot)/i.test(text)) return 'browser'
-  if (/(himalaya|bash|command|cli|bunx|npx|python|akshare|tushare)/i.test(text)) return 'cli'
-  if (/(fetch|http|api|endpoint|statuscode|status code)/i.test(text)) return 'api'
+  if (/(browser|playwright|page\.|click|screenshot)/i.test(text)) tags.add('browser')
   if (/(local_file|read tool|write tool|\.csv|\.json|\.xlsx|\.artifacts)/i.test(text)) {
-    return 'direct'
+    tags.add('local-file')
   }
-  return 'api'
+  return [...tags]
 }
 
-function inferSensitivity(kind: SourceCard['kind'], text: string): SourceCard['sensitivity'] {
-  if (kind === 'private_mailbox') return 'private'
-  if (/(authorization|cookie|password|token|secret|oauth|credential)/i.test(text)) {
+function inferSensitivity(tags: string[], text: string): SourceCard['sensitivity'] {
+  if (tags.includes('mail')) return 'private'
+  if (
+    /(authorization|cookie|password|token|secret|oauth|credential|api[_-]?key|vault:\/\/|external:)/i.test(
+      text,
+    )
+  ) {
     return 'restricted'
   }
-  if (kind === 'public_market_data') return 'public'
+  if (tags.includes('market-data')) return 'public'
   return 'internal'
 }
 
-function inferEntrypoint(
-  text: string,
-  lower: string,
-  mode: SourceCardAdapterMode,
-  kind: SourceCard['kind'],
-): string {
-  if (kind === 'private_mailbox' && /himalaya/i.test(lower)) return 'himalaya'
-  const urls = text.match(URL_RE)
-  if (urls?.[0]) {
+function buildTitle(tags: string[], text: string): string {
+  if (tags.includes('qq-mail')) return 'QQ Mail source'
+  if (tags.includes('mail')) return 'Mail source'
+  if (tags.includes('a-share')) return 'A-share market data'
+  if (tags.includes('browser')) return 'Browser session source'
+  if (tags.includes('local-file')) return 'Local file source'
+  const url = extractUrls(text)[0]
+  if (url) {
     try {
-      return new URL(urls[0]).origin
+      return `${new URL(url).hostname} source`
     } catch {
-      return urls[0]
+      return 'Web source'
     }
   }
-  if (mode === 'browser') return 'browser-session'
-  if (mode === 'direct') return 'local-session-artifact'
-  return `${kind}-session-evidence`
+  return 'Session source'
 }
 
-function inferParserType(
-  text: string,
-  schemaKeys: string[],
-): SourceCard['adapter']['revisions'][number]['parser']['type'] {
-  if (/<html|<!doctype/i.test(text)) return 'html'
-  if (schemaKeys.length > 0 || /[{[]/.test(text)) return 'json'
-  if (/^[^,\n]+,[^,\n]+/m.test(text)) return 'csv'
-  return 'text'
+function buildSourceCardId(title: string, sessionId: string): string {
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48)
+  const suffix = sessionId
+    .replace(/^sess_/, '')
+    .replace(/[^a-z0-9]+/gi, '')
+    .slice(-8)
+    .toLowerCase()
+  return `${slug || 'source'}-${suffix || 'draft'}`
 }
 
-function inferCredentialScopes(kind: SourceCard['kind']): string[] {
-  if (kind === 'private_mailbox') return ['mail.metadata.read']
-  if (kind === 'public_market_data') return ['market.public.read']
-  if (kind === 'browser_session') return ['browser.session.foreground']
-  if (kind === 'local_file') return ['local.file.read']
-  return ['source.metadata.read']
+function extractUrls(text: string): string[] {
+  return Array.from(new Set(text.match(URL_RE) ?? [])).slice(0, 12)
 }
 
-function hasCredentialSignals(text: string): boolean {
-  return /(authorization|cookie|password|token|secret|oauth|credential|api[_-]?key|vault:\/\/|external:)/i.test(
-    text,
-  )
+function hasEvidence(evidence: CollectedEvidence[], pattern: string): boolean {
+  return evidence.some((item) => item.text.toLowerCase().includes(pattern.toLowerCase()))
 }
 
-function buildMissingFields(
-  schemaKeys: string[],
-  entrypoint: string,
-  requiresCredential: boolean,
-  text: string,
-): string[] {
-  const missing = new Set<string>()
-  if (schemaKeys.length === 0) missing.add('schemaKeys')
-  if (/session-evidence$/.test(entrypoint)) missing.add('adapter.entrypoint')
-  if (requiresCredential) missing.add('credential.binding')
-  if (!/(timeout|duration|statuscode|exitcode|exit code|rowcount|schema)/i.test(text)) {
-    missing.add('validation.expectedEvidence')
+function estimateConfidence(evidence: CollectedEvidence[], urls: string[], tags: string[]): number {
+  let score = 0.35
+  if (evidence.length > 0) score += 0.2
+  if (urls.length > 0) score += 0.2
+  if (tags.length > 0) score += 0.15
+  if (evidence.some((item) => /status(code)?\s*200|exit(code)?\s*0|success/i.test(item.text))) {
+    score += 0.1
   }
-  return [...missing]
+  return Math.min(0.95, Number(score.toFixed(2)))
 }
 
-function buildRiskFlags(
-  kind: SourceCard['kind'],
-  sensitivity: SourceCard['sensitivity'],
-  requiresCredential: boolean,
-  text: string,
-): string[] {
-  const flags = new Set<string>([
-    'Draft only: no Source Card has been activated.',
-    'Session Source Miner MVP did not execute CLI/API/browser/fetch or health probes.',
-  ])
-  if (sensitivity === 'private' || sensitivity === 'restricted') {
-    flags.add('Private/restricted source defaults to metadata-only with attachments blocked.')
-  }
-  if (requiresCredential) {
-    flags.add(
-      'Credential binding was only inferred; no credential reference is stored in the draft.',
-    )
-  }
-  if (kind === 'public_market_data') {
-    flags.add('Market-data draft is read-only; trading or broker actions remain prohibited.')
-  }
-  if (/(authorization|cookie|password|token|secret|credentialRef|credentialLeaseId)/i.test(text)) {
-    flags.add('Sensitive evidence was redacted before draft output.')
-  }
-  return [...flags]
+function scoreDedupe(proposedCard: SourceCard, existingCard: SourceCardDedupeSource): number {
+  let score = 0
+  if (proposedCard.id === existingCard.id) score += 0.6
+  if (normalizeText(proposedCard.title) === normalizeText(existingCard.title)) score += 0.35
+  const proposedTags = new Set(proposedCard.tags ?? [])
+  const existingTags = existingCard.tags ?? []
+  const overlap = existingTags.filter((tag) => proposedTags.has(tag)).length
+  if (overlap > 0) score += Math.min(0.4, overlap * 0.15)
+  if (proposedCard.sensitivity === existingCard.sensitivity) score += 0.1
+  return Math.min(1, Number(score.toFixed(2)))
 }
 
-function buildTitle(kind: SourceCard['kind'], text: string): string {
-  if (kind === 'private_mailbox' && /himalaya/i.test(text)) return 'Mined QQ Mail via himalaya CLI'
-  if (kind === 'private_mailbox') return 'Mined Mailbox Metadata Source'
-  if (kind === 'public_market_data' && /eastmoney/i.test(text)) {
-    return 'Mined Eastmoney Market Data Source'
-  }
-  if (kind === 'public_market_data') return 'Mined Public Market Data Source'
-  if (kind === 'browser_session') return 'Mined Browser Session Source'
-  if (kind === 'local_file') return 'Mined Local File Source'
-  return 'Mined Web API Source'
-}
-
-function buildLearnedMethodSummary(
-  kind: SourceCard['kind'],
-  mode: SourceCardAdapterMode,
-  evidenceCount: number,
+function buildDedupeReason(
+  proposedCard: SourceCard,
+  existingCard: SourceCardDedupeSource,
+  score: number,
 ): string {
-  const source = kind.replaceAll('_', ' ')
-  return `Inferred ${source} access through ${mode} evidence from ${evidenceCount} existing session evidence item(s). No external source was re-read by the miner.`
-}
-
-function estimateConfidence(input: {
-  evidence: CollectedEvidence[]
-  schemaKeys: string[]
-  mode: SourceCardAdapterMode
-  kind: SourceCard['kind']
-  hasSession: boolean
-}): number {
-  let confidence = input.hasSession ? 0.24 : 0.12
-  confidence += Math.min(0.22, input.evidence.length * 0.025)
-  confidence += Math.min(0.18, input.schemaKeys.length * 0.025)
-  if (input.mode) confidence += 0.12
-  if (input.kind !== 'web_api') confidence += 0.14
-  return Math.min(0.92, Number(confidence.toFixed(2)))
-}
-
-function extractSchemaKeys(text: string): string[] {
-  const keys = new Set<string>()
-  const keyRe = /"([A-Za-z_][A-Za-z0-9_-]{1,48})"\s*:/g
-  let match = keyRe.exec(text)
-  while (match) {
-    const key = match[1]
-    match = keyRe.exec(text)
-    if (SENSITIVE_KEY_RE.test(key)) continue
-    if (PRIVATE_CONTENT_KEY_RE.test(key)) continue
-    if (COMMON_JSON_KEYS.has(key)) continue
-    keys.add(key)
+  if (proposedCard.id === existingCard.id) return 'same id'
+  if (normalizeText(proposedCard.title) === normalizeText(existingCard.title)) {
+    return `similar title; score ${score}`
   }
-  return [...keys].slice(0, MAX_SCHEMA_KEYS)
+  const overlap = (existingCard.tags ?? []).filter((tag) => proposedCard.tags?.includes(tag))
+  return overlap.length > 0 ? `tag overlap: ${overlap.join(', ')}` : `score ${score}`
+}
+
+function normalizeText(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '')
 }
 
 function extractArtifactRefs(text: string): string[] {
   const refs = new Set<string>()
-  let match = ARTIFACT_PATH_RE.exec(text)
-  while (match) {
-    refs.add(match[1])
-    match = ARTIFACT_PATH_RE.exec(text)
+  for (const match of text.matchAll(ARTIFACT_PATH_RE)) {
+    if (match[1]) refs.add(match[1])
   }
   return [...refs].slice(0, MAX_EVIDENCE_REFS)
 }
 
 function evidenceScore(text: string): number {
   let score = 0
-  if (/(tool_use|tool_call|tool_result)/i.test(text)) score += 2
-  if (/(himalaya|eastmoney|api|fetch|stock|mail|schema|statuscode|exitcode)/i.test(text)) {
-    score += 2
-  }
-  if (/(authorization|cookie|password|token|credential)/i.test(text)) score += 1
+  if (/https?:\/\//i.test(text)) score += 2
+  if (/(status(code)?\s*200|exit(code)?\s*0|success)/i.test(text)) score += 2
+  if (/(schema|field|json|csv|parser|himalaya|folder|envelope)/i.test(text)) score += 1
+  if (PRIVATE_CONTENT_KEY_RE.test(text)) score -= 2
   return score
 }
 
 function summarizeEvidenceText(text: string): string {
-  const normalized = text.replace(/\s+/g, ' ').trim()
-  if (normalized.length <= 180) return normalized
-  return `${normalized.slice(0, 177)}...`
+  return truncateEvidenceText(text.replace(/\s+/g, ' '), 600)
 }
 
 function summarizePrivateEvidenceMetadata(item: CollectedEvidence): string {
-  const text = item.text
-  const signals = new Set<string>()
-  if (/tool_use/i.test(text)) signals.add('tool use')
-  if (/tool_result|toolResult|raw_result/i.test(text)) signals.add('tool result')
-  if (/schemaKeys|"schemaKeys"|schema keys/i.test(text) || extractSchemaKeys(text).length > 0) {
-    signals.add('schema keys')
-  }
-  if (/https?:\/\//i.test(text)) signals.add('endpoint signal')
-  if (/himalaya/i.test(text)) signals.add('cli:himalaya')
-  if (/(bash|command|cli)/i.test(text)) signals.add('cli signal')
-  if (/\[REDACTED|REDACTED_SECRET|REDACTED_CREDENTIAL_REFERENCE/i.test(text)) {
-    signals.add('redaction applied')
-  }
-  if (/\[TRUNCATED]/i.test(text)) signals.add('truncated evidence')
-
-  const signalList = [...signals]
-  return `${item.source} evidence; metadata-only summary; signals: ${
-    signalList.length > 0 ? signalList.join(', ') : 'none'
-  }`
+  const hints = new Set<string>(['metadata-only summary'])
+  if (/himalaya/i.test(item.text)) hints.add('cli:himalaya')
+  if (/folder/i.test(item.text)) hints.add('folder signal')
+  if (/envelope/i.test(item.text)) hints.add('envelope metadata signal')
+  if (/https?:\/\//i.test(item.text)) hints.add('url signal')
+  if (/status(code)?/i.test(item.text)) hints.add('status signal')
+  if (PRIVATE_CONTENT_KEY_RE.test(item.text)) hints.add('private payload redacted')
+  return [...hints].join('; ')
 }
 
-function truncateEvidenceText(text: string): string {
-  if (text.length <= MAX_EVIDENCE_TEXT_CHARS) return text
-  return `${text.slice(0, MAX_EVIDENCE_TEXT_CHARS)} [TRUNCATED]`
+function truncateEvidenceText(text: string, max = MAX_EVIDENCE_TEXT_CHARS): string {
+  return text.length > max ? `${text.slice(0, max)}... [truncated]` : text
 }
 
-function buildSourceCardId(kind: SourceCard['kind'], title: string, sessionId: string): string {
-  const suffix = sessionId
-    .replace(/^sess_?/, '')
-    .replace(/[^a-zA-Z0-9]+/g, '-')
-    .toLowerCase()
-    .slice(-20)
-  const titleSlug = title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 36)
-  return `mined-${kind.replaceAll('_', '-')}-${titleSlug || 'source'}-${suffix || 'session'}`
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-}
-
-function scoreDedupe(proposedCard: SourceCard, existing: SourceCardDedupeSource): number {
-  let score = 0
-  if (proposedCard.kind === existing.kind) score += 0.34
-  if (proposedCard.sensitivity === existing.sensitivity) score += 0.08
-  if (proposedCard.adapter.mode === existing.adapter?.mode) score += 0.1
-
-  const proposedTokens = tokenSet(
-    `${proposedCard.title} ${proposedCard.kind} ${proposedCard.capabilities
-      .map((item) => item.id)
-      .join(' ')}`,
-  )
-  const existingTokens = tokenSet(
-    `${existing.title} ${existing.kind} ${(existing.capabilities ?? [])
-      .map((item) => item.id)
-      .join(' ')}`,
-  )
-  score += jaccard(proposedTokens, existingTokens) * 0.48
-  return Number(Math.min(0.99, score).toFixed(2))
-}
-
-function buildDedupeReason(
-  proposedCard: SourceCard,
-  existing: SourceCardDedupeSource,
-  score: number,
-): string {
-  const matches = [
-    proposedCard.kind === existing.kind ? 'kind' : undefined,
-    proposedCard.adapter.mode === existing.adapter?.mode ? 'adapter mode' : undefined,
-    proposedCard.sensitivity === existing.sensitivity ? 'sensitivity' : undefined,
-  ].filter(Boolean)
-  return `Potential match on ${matches.join(', ') || 'title/capability tokens'} (score ${score}).`
-}
-
-function tokenSet(text: string): Set<string> {
-  return new Set(
-    text
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .filter((token) => token.length > 2 && !STOP_WORDS.has(token)),
-  )
-}
-
-function jaccard(left: Set<string>, right: Set<string>): number {
-  if (left.size === 0 || right.size === 0) return 0
-  let intersection = 0
-  for (const token of left) {
-    if (right.has(token)) intersection += 1
-  }
-  return intersection / (left.size + right.size - intersection)
-}
-
-function redactStrict(value: unknown, secretFilter?: SecretFilter, key?: string): unknown {
-  if (typeof value === 'string') {
-    if (key && SENSITIVE_KEY_RE.test(key)) return '[REDACTED]'
-    return redactStrictText(value, secretFilter)
-  }
-
-  if (Array.isArray(value)) return value.map((item) => redactStrict(item, secretFilter, key))
-
+function redactStrict<T>(value: T, secretFilter?: SecretFilter): unknown {
+  if (typeof value === 'string') return redactStrictText(value, secretFilter)
+  if (Array.isArray(value)) return value.map((item) => redactStrict(item, secretFilter))
   const record = asRecord(value)
   if (!record) return value
-
   return Object.fromEntries(
-    Object.entries(record).map(([nestedKey, nestedValue]) => [
-      nestedKey,
-      redactStrict(nestedValue, secretFilter, nestedKey),
-    ]),
+    Object.entries(record).map(([key, nested]) =>
+      SENSITIVE_KEY_RE.test(key)
+        ? ['redacted_key', '[REDACTED]']
+        : [key, redactStrict(nested, secretFilter)],
+    ),
   )
 }
 
-function redactStrictText(value: string, secretFilter?: SecretFilter): string {
-  const filtered = secretFilter ? secretFilter.filter(value) : value
+function redactStrictText(text: string, secretFilter?: SecretFilter): string {
+  const filtered = secretFilter?.filter(text) ?? text
   return filtered
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
     .replace(
-      /(authorization|cookie|password|token|secret|api[_-]?key)=([^&\s]+)/gi,
-      '[REDACTED_SECRET]',
+      /("?)(credentialRef|credentialLeaseId)\1\s*:\s*("[^"]*"|[^\s,}]+)/gi,
+      '"redacted_key":"[REDACTED]"',
     )
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
+    .replace(/\b(?:vault:\/\/|external:)[^\s"',}]+/gi, '[REDACTED_REFERENCE]')
     .replace(
       /(authorization|cookie|password|token|secret|api[_-]?key):\s*([^\n]+)/gi,
-      '[REDACTED_SECRET]',
+      'redacted_key: [REDACTED]',
     )
     .replace(
-      /"(authorization|cookie|password|token|secret|api[_-]?key)"\s*:\s*"[^"]*"/gi,
-      '"[REDACTED_SECRET]"',
+      /(authorization|cookie|password|token|secret|api[_-]?key)=([^&\s]+)/gi,
+      'redacted_key=[REDACTED]',
     )
-    .replace(/"(credentialRef|credentialLeaseId)"\s*:\s*"[^"]*"/gi, '"[REDACTED_SECRET]"')
-    .replace(/\b(credentialRef|credentialLeaseId)\b/gi, '[REDACTED_CREDENTIAL_REFERENCE]')
-    .replace(/(vault:\/\/|external:)[^\s"',}]+/gi, '[REDACTED_SECRET]')
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -1046,36 +671,3 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     ? (value as Record<string, unknown>)
     : undefined
 }
-
-const COMMON_JSON_KEYS = new Set([
-  'data',
-  'metadata',
-  'input',
-  'output',
-  'result',
-  'status',
-  'success',
-  'error',
-  'message',
-  'content',
-  'type',
-  'tool',
-  'toolUseId',
-  'toolName',
-  'traceSpanId',
-  'requestId',
-  'spanData',
-])
-
-const STOP_WORDS = new Set([
-  'mined',
-  'source',
-  'data',
-  'card',
-  'via',
-  'the',
-  'and',
-  'from',
-  'with',
-  'for',
-])
