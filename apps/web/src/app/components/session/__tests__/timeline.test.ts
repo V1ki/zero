@@ -3,6 +3,7 @@ import {
   type Message,
   type SessionDecisionEvent,
   type SessionTaskClosureEvent,
+  type TimelineCompactionBlock,
   type TraceSpan,
   buildTimeline,
   extractFilesTouched,
@@ -1227,6 +1228,100 @@ test('does not infer tool duration without toolUseId metadata', () => {
   expect(toolCall).toBeDefined()
   if (toolCall?.type === 'tool-call') {
     expect(toolCall.durationMs).toBeUndefined()
+  }
+})
+
+test('projects timeline compaction blocks while hiding covered messages from the main lane', () => {
+  const messages: Message[] = [
+    {
+      id: 'old_user',
+      role: 'user',
+      messageType: 'message',
+      content: [{ type: 'text', text: 'old task' }],
+      createdAt: '2026-03-08T00:00:00.000Z',
+    },
+    {
+      id: 'old_assistant_tool',
+      role: 'assistant',
+      messageType: 'message',
+      content: [{ type: 'tool_use', id: 'tool_old', name: 'read', input: { path: '/tmp/a' } }],
+      createdAt: '2026-03-08T00:00:01.000Z',
+    },
+    {
+      id: 'old_result',
+      role: 'user',
+      messageType: 'message',
+      content: [
+        {
+          type: 'tool_result',
+          toolUseId: 'tool_old',
+          content: 'raw output',
+          outputSummary: 'read /tmp/a',
+        },
+      ],
+      createdAt: '2026-03-08T00:00:02.000Z',
+    },
+    {
+      id: 'old_assistant_text',
+      role: 'assistant',
+      messageType: 'message',
+      content: [{ type: 'text', text: 'old answer' }],
+      createdAt: '2026-03-08T00:00:03.000Z',
+    },
+    {
+      id: 'current_user',
+      role: 'user',
+      messageType: 'message',
+      content: [{ type: 'text', text: 'current task' }],
+      createdAt: '2026-03-08T00:01:00.000Z',
+    },
+  ]
+  const blocks: TimelineCompactionBlock[] = [
+    {
+      id: 'timeline_compaction_1',
+      sessionId: 'sess_timeline',
+      status: 'active',
+      strategy: 'deterministic_contiguous_older_turns_v1',
+      strategyVersion: 'timeline_compaction_block_v1',
+      boundaryReason: 'test boundary',
+      summary: '<timeline_compaction_block>summary</timeline_compaction_block>',
+      workingStateSummary: '<working_state_compaction>state</working_state_compaction>',
+      coveredMessageIds: ['old_user', 'old_assistant_tool', 'old_result', 'old_assistant_text'],
+      coveredRange: {
+        startMessageId: 'old_user',
+        endMessageId: 'old_assistant_text',
+        startCreatedAt: '2026-03-08T00:00:00.000Z',
+        endCreatedAt: '2026-03-08T00:00:03.000Z',
+      },
+      coveredMessageCount: 4,
+      toolUseIds: ['tool_old'],
+      evidence: [],
+      evidenceCount: 0,
+      evidenceChars: 0,
+      evidenceBytes: 0,
+      rawCharsMovedToEvidence: 0,
+      skippedUnfinishedToolUseIds: [],
+      episodeFullRetainTurns: 0,
+      createdAt: '2026-03-08T00:00:00.000Z',
+      updatedAt: '2026-03-08T00:00:04.000Z',
+      generation: 1,
+    },
+  ]
+
+  const items = buildTimeline(messages, [], [], [], [], blocks)
+
+  expect(items.map((item) => item.type)).toEqual(['compaction-block', 'user-message'])
+  const block = items[0]
+  expect(block.type).toBe('compaction-block')
+  if (block.type === 'compaction-block') {
+    expect(block.coveredMessageCount).toBe(4)
+    expect(block.coveredMessages.map((message) => message.id)).toEqual([
+      'old_user',
+      'old_assistant_tool',
+      'old_result',
+      'old_assistant_text',
+    ])
+    expect(block.summary).toContain('summary')
   }
 })
 

@@ -655,11 +655,12 @@ describe('Agent', () => {
 
       const compactionSpan = findSpanDeep(
         tracer.getSessionTraces('sess_agent_active_turn'),
-        'episode_compaction',
+        'timeline_compaction_block',
       )
       expect(compactionSpan?.kind).toBe('context_compaction')
       expect(compactionSpan?.data?.compaction).toMatchObject({
-        event: 'episode_compaction',
+        event: 'timeline_compaction_block',
+        lifecycle: 'created',
         episodesCreated: 1,
         evidenceCount: 2,
         toolUseIds: ['old_tool_1'],
@@ -674,7 +675,7 @@ describe('Agent', () => {
         .trim()
         .split('\n')
         .map((line) => JSON.parse(line) as Record<string, unknown>)
-      expect(runEntries.some((entry) => entry.event === 'context_compaction.episode')).toBe(true)
+      expect(runEntries.some((entry) => entry.event === 'context_compaction.block')).toBe(true)
       expect(runEntries.some((entry) => entry.event === 'trace.context_compaction.success')).toBe(
         true,
       )
@@ -684,13 +685,7 @@ describe('Agent', () => {
           entry.event === 'tool_evidence.persisted' &&
           (entry.data as { source?: string } | undefined)?.source === 'episode_compaction',
       )
-      expect(evidenceEntries.length).toBeGreaterThanOrEqual(2)
-      expect(
-        evidenceEntries.some((entry) => {
-          const evidence = (entry.data as { evidence?: { kind?: string } } | undefined)?.evidence
-          return evidence?.kind === 'tool_result_output'
-        }),
-      ).toBe(true)
+      expect(evidenceEntries).toHaveLength(0)
     } finally {
       rmSync(workDir, { recursive: true, force: true })
     }

@@ -8,6 +8,7 @@ import type {
   ScheduleConfig,
   Session as SessionData,
   SessionSource,
+  TimelineCompactionBlock,
 } from '@zero-os/shared'
 import { normalizeReasoningEffort } from '@zero-os/shared'
 
@@ -50,6 +51,13 @@ interface RawMessagesRow {
   session_id: string
   messages_json: string
   message_count: number
+  updated_at: string
+}
+
+interface RawCompactionBlocksRow {
+  session_id: string
+  blocks_json: string
+  block_count: number
   updated_at: string
 }
 
@@ -117,6 +125,15 @@ export class SessionDB {
         session_id TEXT PRIMARY KEY,
         messages_json TEXT NOT NULL DEFAULT '[]',
         message_count INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL
+      )
+    `)
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS session_compaction_blocks (
+        session_id TEXT PRIMARY KEY,
+        blocks_json TEXT NOT NULL DEFAULT '[]',
+        block_count INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL
       )
     `)
@@ -371,6 +388,17 @@ export class SessionDB {
     )
   }
 
+  /**
+   * Save or update a session's timeline compaction blocks without mutating canonical messages.
+   */
+  saveCompactionBlocks(sessionId: string, blocks: TimelineCompactionBlock[]): void {
+    this.db.run(
+      `INSERT OR REPLACE INTO session_compaction_blocks (session_id, blocks_json, block_count, updated_at)
+       VALUES (?, ?, ?, ?)`,
+      [sessionId, JSON.stringify(blocks), blocks.length, new Date().toISOString()],
+    )
+  }
+
   saveChannelModel(
     source: SessionSource,
     channelId: string,
@@ -499,6 +527,17 @@ export class SessionDB {
   }
 
   /**
+   * Load persisted timeline compaction blocks for a session.
+   */
+  loadSessionCompactionBlocks(sessionId: string): TimelineCompactionBlock[] {
+    const row = this.db
+      .query('SELECT blocks_json FROM session_compaction_blocks WHERE session_id = ?')
+      .get(sessionId) as RawCompactionBlocksRow | null
+    if (!row) return []
+    return JSON.parse(row.blocks_json) as TimelineCompactionBlock[]
+  }
+
+  /**
    * Load all sessions with optional filtering.
    */
   loadAllSessions(filter?: {
@@ -539,6 +578,7 @@ export class SessionDB {
    */
   deleteSession(sessionId: string): boolean {
     this.deleteBindingsForSession(sessionId)
+    this.db.run('DELETE FROM session_compaction_blocks WHERE session_id = ?', [sessionId])
     this.db.run('DELETE FROM session_messages WHERE session_id = ?', [sessionId])
     const result = this.db.run('DELETE FROM sessions WHERE id = ?', [sessionId])
     return result.changes > 0

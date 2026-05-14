@@ -738,6 +738,77 @@ describe('ObservabilityStore', () => {
     })
   })
 
+  test('readSessionDecisions projects timeline compaction block lifecycle spans', () => {
+    const store = new ObservabilityStore(testDir)
+    const sessionId = 'sess_20260514_timeline_compaction'
+
+    writeSessionTraceEntries(testDir, sessionId, [
+      {
+        spanId: 'span_timeline_compaction',
+        sessionId,
+        kind: 'context_compaction',
+        name: 'timeline_compaction_block',
+        startTime: '2026-05-14T01:00:00.000Z',
+        endTime: '2026-05-14T01:00:00.020Z',
+        durationMs: 20,
+        status: 'success',
+        data: {
+          compaction: {
+            event: 'timeline_compaction_block',
+            lifecycle: 'reused',
+            blockId: 'timeline_compaction_a',
+            blockGeneration: 2,
+            strategy: 'deterministic_contiguous_older_turns_v1',
+            strategyVersion: 'timeline_compaction_block_v1',
+            boundaryReason: 'Grouped older turns.',
+            turnIndex: 9,
+            messagesBefore: 30,
+            messagesAfter: 12,
+            compactedMessageCount: 18,
+            retainedMessageCount: 12,
+            coveredRange: {
+              startMessageId: 'msg_1',
+              endMessageId: 'msg_18',
+              startCreatedAt: '2026-05-14T00:00:00.000Z',
+              endCreatedAt: '2026-05-14T00:10:00.000Z',
+            },
+            coveredMessageIds: ['msg_1', 'msg_18'],
+            promptCharsBefore: 60000,
+            promptCharsAfter: 10000,
+            tokensBefore: 15000,
+            tokensAfter: 2500,
+            episodesCreated: 1,
+            workingStateId: 'timeline_compaction_a:working_state',
+            episodeFullRetainTurns: 0,
+            skippedUnfinishedToolUseIds: [],
+            toolUseIds: ['tool_a'],
+            evidenceCount: 2,
+            evidenceChars: 42000,
+            evidenceBytes: 43000,
+            rawCharsMovedToEvidence: 42000,
+            evidenceWriteStatusCounts: { created: 0, existing: 2 },
+          },
+        },
+      },
+    ])
+
+    const entries = store.readSessionDecisions(sessionId)
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({
+      decisionType: 'context_compression',
+      outcome: 'timeline_compaction_reused',
+      context: {
+        blockId: 'timeline_compaction_a',
+        lifecycle: 'reused',
+        strategyVersion: 'timeline_compaction_block_v1',
+      },
+      detail: {
+        coveredMessageIds: ['msg_1', 'msg_18'],
+        evidenceWriteStatusCounts: { created: 0, existing: 2 },
+      },
+    })
+  })
+
   test('readSessionDecisions prefers the closest compression span and consumes each span once', () => {
     const store = new ObservabilityStore(testDir)
     const sessionId = 'sess_20260316_0210_competition'

@@ -156,3 +156,45 @@ export interface WorkingStateCompaction {
   evidencePointers: import('./message').ToolEvidence[]
   sourceEpisodeIds: string[]
 }
+
+export type TimelineCompactionBlockStatus = 'active' | 'superseded'
+
+export type TimelineCompactionBlockLifecycle = 'created' | 'updated' | 'reused' | 'superseded'
+
+export interface TimelineCompactionBlockRange {
+  startMessageId: string
+  endMessageId: string
+  startCreatedAt: string
+  endCreatedAt: string
+}
+
+export interface TimelineCompactionBlock {
+  id: string
+  sessionId: string
+  status: TimelineCompactionBlockStatus
+  strategy: string
+  strategyVersion: string
+  boundaryReason: string
+  summary: string
+  workingStateSummary: string
+  coveredMessageIds: string[]
+  coveredRange: TimelineCompactionBlockRange
+  coveredMessageCount: number
+  toolUseIds: string[]
+  evidence: import('./message').ToolEvidence[]
+  evidenceCount: number
+  evidenceChars: number
+  evidenceBytes: number
+  rawCharsMovedToEvidence: number
+  skippedUnfinishedToolUseIds: string[]
+  episodeFullRetainTurns: number
+  promptCharsBefore: number
+  promptCharsAfter: number
+  tokensBefore: number
+  tokensAfter: number
+  createdAt: string
+  updatedAt: string
+  supersededAt?: string
+  generation: number
+  episodes: EpisodeCompaction[]
+}

@@ -15,6 +15,7 @@ import {
   type SessionDecisionEvent,
   type SessionTaskClosureEvent,
   type TaskClosureTimelineItem,
+  type TimelineCompactionBlock,
   type TraceSpan,
   buildTimeline,
   extractFilesTouched,
@@ -121,6 +122,7 @@ interface SessionDetail {
   createdAt: string
   updatedAt: string
   messages: Message[]
+  timelineCompactionBlocks?: TimelineCompactionBlock[]
   tags: string[]
   summary?: string
   systemPrompt?: string
@@ -352,7 +354,14 @@ export function SessionDetailScreen({
   const timelineItems = useMemo(
     () =>
       session
-        ? buildTimeline(session.messages, traces, taskClosureEvents, decisions, llmRequests)
+        ? buildTimeline(
+            session.messages,
+            traces,
+            taskClosureEvents,
+            decisions,
+            llmRequests,
+            session.timelineCompactionBlocks ?? [],
+          )
         : [],
     [session, traces, taskClosureEvents, decisions, llmRequests],
   )

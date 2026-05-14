@@ -22,6 +22,7 @@ import type {
   Message,
   ReasoningEffort,
   SecretFilter,
+  TimelineCompactionBlock,
   ToolContext,
   ToolDefinition,
   ToolEvidence,
@@ -103,6 +104,8 @@ export interface AgentContext {
   /** Session-scoped memory ids already injected in prior layer1/layer2 retrievals. */
   injectedMemoryIds?: Map<string, string>
   conversationHistory: Message[]
+  timelineCompactionBlocks?: TimelineCompactionBlock[]
+  onTimelineCompactionBlocksChanged?: (blocks: TimelineCompactionBlock[]) => void
   tools: ToolDefinition[]
   maxContext?: number
   maxOutput?: number
@@ -222,6 +225,8 @@ export class Agent {
       enableEpisodeCompaction: true,
       evidenceWorkDir: this.toolContext.workDir,
       sessionId: this.toolContext.sessionId,
+      timelineCompactionBlocks: context.timelineCompactionBlocks,
+      onTimelineCompactionBlocksChanged: context.onTimelineCompactionBlocksChanged,
       onEpisodeCompaction: (event) => episodeCompactionEvents.push(event),
     })
     let emittedMessageCount = 0
@@ -1347,7 +1352,7 @@ export class Agent {
     }) as Record<string, unknown>
     const span = this.obs.tracer?.startSpan(
       this.toolContext.sessionId,
-      'episode_compaction',
+      'timeline_compaction_block',
       parentSpanId,
       {
         kind: 'context_compaction',
@@ -1357,38 +1362,29 @@ export class Agent {
         },
         metadata: {
           turnIndex,
+          lifecycle: event.lifecycle,
+          blockId: event.blockId,
           strategy: event.strategy,
+          strategyVersion: event.strategyVersion,
           episodesCreated: event.episodesCreated,
           evidenceCount: event.evidenceCount,
           messagesBefore: event.messagesBefore,
           messagesAfter: event.messagesAfter,
+          compactedMessageCount: event.compactedMessageCount,
         },
       },
     )
 
-    this.obs.tracer?.logSession?.(
-      this.toolContext.sessionId,
-      'info',
-      'context_compaction.episode',
-      {
-        traceSpanId: span?.id,
-        ...payload,
-      },
-    )
-
-    for (const evidence of event.evidence) {
-      this.logToolEvidence(evidence, {
-        source: 'episode_compaction',
-        reason: 'replay_compaction',
-        turnIndex,
-        traceSpanId: span?.id,
-        compactionId: event.workingStateId,
-      })
-    }
+    this.obs.tracer?.logSession?.(this.toolContext.sessionId, 'info', 'context_compaction.block', {
+      traceSpanId: span?.id,
+      ...payload,
+    })
 
     if (span) {
       this.obs.tracer?.endSpan(span.id, 'success', {
         turnIndex,
+        lifecycle: event.lifecycle,
+        blockId: event.blockId,
         episodesCreated: event.episodesCreated,
         evidenceCount: event.evidenceCount,
       })

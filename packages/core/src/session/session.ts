@@ -21,6 +21,7 @@ import type {
   SecretFilter,
   Session as SessionData,
   SessionSource,
+  TimelineCompactionBlock,
   ToolDefinition,
   ToolLogger,
 } from '@zero-os/shared'
@@ -105,6 +106,7 @@ interface SnapshotContext {
 export class Session {
   readonly data: SessionData
   private messages: Message[] = []
+  private timelineCompactionBlocks: TimelineCompactionBlock[] = []
   private modelRouter: ModelRouter
   private toolRegistry: ToolRegistry
   private agent: Agent | null = null
@@ -681,6 +683,17 @@ export class Session {
       injectedMemoryIds: this.injectedMemoryIds,
       imageDelegationFiles,
       conversationHistory,
+      timelineCompactionBlocks: this.timelineCompactionBlocks,
+      onTimelineCompactionBlocksChanged: (blocks) => {
+        this.timelineCompactionBlocks = blocks
+        this.deps.sessionDb?.saveCompactionBlocks(this.data.id, this.timelineCompactionBlocks)
+        this.deps.bus?.emit('session:update', {
+          sessionId: this.data.id,
+          event: 'timeline_compaction_blocks_updated',
+          blockCount: this.timelineCompactionBlocks.filter((block) => block.status === 'active')
+            .length,
+        })
+      },
       tools,
       maxContext: currentModel?.modelConfig.maxContext,
       maxOutput: currentModel?.modelConfig.maxOutput,
@@ -938,6 +951,7 @@ export class Session {
 
   private persistState(): void {
     this.deps.sessionDb?.saveMessages(this.data.id, this.messages)
+    this.deps.sessionDb?.saveCompactionBlocks(this.data.id, this.timelineCompactionBlocks)
     const agentConfig = this.lastAgentConfig
     this.deps.sessionDb?.saveSession(
       this.data,
@@ -1021,6 +1035,7 @@ export class Session {
     toolRegistry: ToolRegistry,
     deps: SessionDeps = {},
     systemPrompt?: string,
+    timelineCompactionBlocks: TimelineCompactionBlock[] = [],
   ): Session {
     const normalizedCurrentModel =
       modelRouter.normalizeModelReference(data.currentModel) ?? data.currentModel
@@ -1051,6 +1066,7 @@ export class Session {
         reasoningEffort: data.reasoningEffort,
       },
       messages: restoredMessages,
+      timelineCompactionBlocks,
       modelRouter,
       toolRegistry,
       activeModel,
@@ -1090,6 +1106,10 @@ export class Session {
 
   getMessages(): Message[] {
     return [...this.messages]
+  }
+
+  getTimelineCompactionBlocks(): TimelineCompactionBlock[] {
+    return [...this.timelineCompactionBlocks]
   }
 
   abortRunningTool(toolUseId: string): RunningToolAbortRequestStatus {

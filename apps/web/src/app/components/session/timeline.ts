@@ -189,6 +189,57 @@ export interface ToolEvidencePointer {
   strategy?: string
 }
 
+export interface TimelineCompactionBlock {
+  id: string
+  sessionId: string
+  status: 'active' | 'superseded'
+  strategy: string
+  strategyVersion: string
+  boundaryReason: string
+  summary: string
+  workingStateSummary: string
+  coveredMessageIds: string[]
+  coveredRange: {
+    startMessageId: string
+    endMessageId: string
+    startCreatedAt: string
+    endCreatedAt: string
+  }
+  coveredMessageCount: number
+  toolUseIds: string[]
+  evidence: unknown[]
+  evidenceCount: number
+  evidenceChars: number
+  evidenceBytes: number
+  rawCharsMovedToEvidence: number
+  skippedUnfinishedToolUseIds: string[]
+  episodeFullRetainTurns: number
+  createdAt: string
+  updatedAt: string
+  generation: number
+}
+
+export interface CompactionBlockTimelineItem {
+  type: 'compaction-block'
+  id: string
+  summary: string
+  workingStateSummary: string
+  coveredMessageCount: number
+  coveredRange: TimelineCompactionBlock['coveredRange']
+  strategy: string
+  strategyVersion: string
+  boundaryReason: string
+  generation: number
+  evidence: ToolEvidencePointer[]
+  evidenceCount: number
+  evidenceChars: number
+  evidenceBytes: number
+  skippedUnfinishedToolUseIds: string[]
+  coveredMessages: Message[]
+  createdAt: string
+  updatedAt: string
+}
+
 export interface MemoryNudgeTimelineItem {
   type: 'memory-nudge'
   id: string
@@ -251,6 +302,7 @@ export type TimelineItem =
       tokenUsage?: TokenUsageSummary
       resultTokenUsage?: TokenUsageSummary
     }
+  | CompactionBlockTimelineItem
   | DecisionTimelineItem
   | TaskClosureTimelineItem
   | SystemEventTimelineItem
@@ -263,6 +315,7 @@ export function buildTimeline(
   taskClosureEvents: SessionTaskClosureEvent[] = [],
   decisions: SessionDecisionEvent[] = [],
   llmRequests: TimelineRequestLike[] = [],
+  timelineCompactionBlocks: TimelineCompactionBlock[] = [],
 ): TimelineItem[] {
   const items: TimelineItem[] = []
   const toolResults = buildToolResultMap(messages, traces, llmRequests)
@@ -275,8 +328,17 @@ export function buildTimeline(
   const memoryNudgeSpans = collectMemoryNudgeSpans(traces)
   const usedMemoryNudgeSpanIds = new Set<string>()
   const nestedMemoryNudgeToolUseIds = buildMemoryNudgeToolUseIdSet(memoryNudgeSpans, traces)
+  const compactionProjection = buildTimelineCompactionProjection(messages, timelineCompactionBlocks)
 
   for (const msg of messages) {
+    const compactionBlock = compactionProjection.blocksByFirstMessageId.get(msg.id)
+    if (compactionBlock) {
+      items.push(compactionBlock)
+    }
+    if (compactionProjection.coveredMessageIds.has(msg.id)) {
+      continue
+    }
+
     if (msg.messageType === 'control') {
       if (msg.controlKind === 'memory_nudge') {
         items.push(
@@ -493,6 +555,57 @@ export function buildTimeline(
     ),
   )
   return items.sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+}
+
+function buildTimelineCompactionProjection(
+  messages: Message[],
+  blocks: TimelineCompactionBlock[],
+): {
+  blocksByFirstMessageId: Map<string, CompactionBlockTimelineItem>
+  coveredMessageIds: Set<string>
+} {
+  const messageById = new Map(messages.map((message) => [message.id, message]))
+  const blocksByFirstMessageId = new Map<string, CompactionBlockTimelineItem>()
+  const coveredMessageIds = new Set<string>()
+
+  for (const block of blocks) {
+    if (block.status !== 'active') continue
+    const firstMessageId = block.coveredMessageIds[0]
+    if (!firstMessageId) continue
+
+    const coveredMessages = block.coveredMessageIds.flatMap((messageId) => {
+      const message = messageById.get(messageId)
+      return message ? [message] : []
+    })
+    if (coveredMessages.length === 0) continue
+
+    for (const messageId of block.coveredMessageIds) {
+      coveredMessageIds.add(messageId)
+    }
+
+    blocksByFirstMessageId.set(firstMessageId, {
+      type: 'compaction-block',
+      id: block.id,
+      summary: block.summary,
+      workingStateSummary: block.workingStateSummary,
+      coveredMessageCount: block.coveredMessageCount,
+      coveredRange: block.coveredRange,
+      strategy: block.strategy,
+      strategyVersion: block.strategyVersion,
+      boundaryReason: block.boundaryReason,
+      generation: block.generation,
+      evidence: normalizeEvidencePointers(block.evidence) ?? [],
+      evidenceCount: block.evidenceCount,
+      evidenceChars: block.evidenceChars,
+      evidenceBytes: block.evidenceBytes,
+      skippedUnfinishedToolUseIds: block.skippedUnfinishedToolUseIds,
+      coveredMessages,
+      createdAt: block.coveredRange.startCreatedAt,
+      updatedAt: block.updatedAt,
+    })
+  }
+
+  return { blocksByFirstMessageId, coveredMessageIds }
 }
 
 function createRequestTokenMatcher(llmRequests: TimelineRequestLike[]) {

@@ -510,14 +510,27 @@ export function projectSessionDecisionsFromTraceEntries(entries: TraceEntry[]): 
 
     if (entry.kind === 'context_compaction') {
       const compaction = asRecord(asRecord(entry.data)?.compaction)
-      if (!compaction || asString(compaction.event) !== 'episode_compaction') continue
+      const compactionEvent = asString(compaction?.event)
+      if (
+        !compaction ||
+        (compactionEvent !== 'episode_compaction' &&
+          compactionEvent !== 'timeline_compaction_block')
+      ) {
+        continue
+      }
 
       results.push({
         ...base,
         decisionType: 'context_compression',
-        outcome: 'episode_compaction',
+        outcome:
+          compactionEvent === 'timeline_compaction_block'
+            ? `timeline_compaction_${asString(compaction.lifecycle) ?? 'event'}`
+            : 'episode_compaction',
         context: compactRecord({
+          blockId: asString(compaction.blockId),
+          lifecycle: asString(compaction.lifecycle),
           strategy: asString(compaction.strategy),
+          strategyVersion: asString(compaction.strategyVersion),
           boundaryReason: asString(compaction.boundaryReason),
           turnIndex: asNumber(compaction.turnIndex),
           episodeFullRetainTurns: asNumber(compaction.episodeFullRetainTurns),
@@ -528,6 +541,8 @@ export function projectSessionDecisionsFromTraceEntries(entries: TraceEntry[]): 
           messagesAfter: asNumber(compaction.messagesAfter),
           compactedMessageCount: asNumber(compaction.compactedMessageCount),
           retainedMessageCount: asNumber(compaction.retainedMessageCount),
+          coveredRange: asRecord(compaction.coveredRange),
+          coveredMessageIds: asStringArray(compaction.coveredMessageIds),
           promptCharsBefore: asNumber(compaction.promptCharsBefore),
           promptCharsAfter: asNumber(compaction.promptCharsAfter),
           tokensBefore: asNumber(compaction.tokensBefore),
@@ -539,6 +554,7 @@ export function projectSessionDecisionsFromTraceEntries(entries: TraceEntry[]): 
           evidenceChars: asNumber(compaction.evidenceChars),
           evidenceBytes: asNumber(compaction.evidenceBytes),
           rawCharsMovedToEvidence: asNumber(compaction.rawCharsMovedToEvidence),
+          evidenceWriteStatusCounts: asRecord(compaction.evidenceWriteStatusCounts),
         }),
         rationale: asString(compaction.boundaryReason),
         ts: entry.endTime ?? entry.startTime,

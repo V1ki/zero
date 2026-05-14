@@ -103,6 +103,83 @@ describe('TimelineView', () => {
     expect(html).toContain('Result')
   })
 
+  test('renders compaction blocks with summary and expandable covered messages', () => {
+    const items: TimelineItem[] = [
+      {
+        type: 'compaction-block',
+        id: 'timeline_compaction_1',
+        summary: '<timeline_compaction_block>old summary</timeline_compaction_block>',
+        workingStateSummary: '<working_state_compaction>continue here</working_state_compaction>',
+        coveredMessageCount: 3,
+        coveredRange: {
+          startMessageId: 'old_user',
+          endMessageId: 'old_result',
+          startCreatedAt: '2026-04-19T10:31:00.000Z',
+          endCreatedAt: '2026-04-19T10:31:02.000Z',
+        },
+        strategy: 'deterministic_contiguous_older_turns_v1',
+        strategyVersion: 'timeline_compaction_block_v1',
+        boundaryReason: 'older tool turn',
+        generation: 1,
+        evidence: [],
+        evidenceCount: 0,
+        evidenceChars: 0,
+        evidenceBytes: 0,
+        skippedUnfinishedToolUseIds: [],
+        coveredMessages: [
+          {
+            id: 'old_user',
+            role: 'user',
+            messageType: 'message',
+            content: [{ type: 'text', text: 'old prompt' }],
+            createdAt: '2026-04-19T10:31:00.000Z',
+          },
+          {
+            id: 'old_tool',
+            role: 'assistant',
+            messageType: 'message',
+            content: [{ type: 'tool_use', id: 'tool_1', name: 'read', input: { path: '/tmp/a' } }],
+            createdAt: '2026-04-19T10:31:01.000Z',
+          },
+          {
+            id: 'old_result',
+            role: 'user',
+            messageType: 'message',
+            content: [{ type: 'tool_result', toolUseId: 'tool_1', content: 'raw output' }],
+            createdAt: '2026-04-19T10:31:02.000Z',
+          },
+        ],
+        createdAt: '2026-04-19T10:31:00.000Z',
+        updatedAt: '2026-04-19T10:31:03.000Z',
+      },
+    ]
+
+    const html = renderToStaticMarkup(
+      <TimelineView
+        items={items}
+        selectedToolId={null}
+        selectedDecisionId={null}
+        selectedTaskClosureId={null}
+        selectedMemoryNudgeId={null}
+        selectedSubAgentId={null}
+        highlightedAssistantMessageId={null}
+        highlightedSubAgentId={null}
+        onSelectTool={() => {}}
+        onSelectDecision={() => {}}
+        onSelectTaskClosure={() => {}}
+        onSelectMemoryNudge={() => {}}
+        onSelectSubAgent={() => {}}
+      />,
+    )
+
+    expect(html).toContain('Compaction Block')
+    expect(html).toContain('3 messages')
+    expect(html).toContain('old summary')
+    expect(html).toContain('continue here')
+    expect(html).toContain('Covered Messages (3)')
+    expect(html).toContain('tool_result id=tool_1')
+  })
+
   test('renders expandable memory nudge cards with nested memory tool details', () => {
     const items: TimelineItem[] = [
       {

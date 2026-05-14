@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { generateId, now } from '@zero-os/shared'
-import type { ContentBlock, Message } from '@zero-os/shared'
+import type { ContentBlock, Message, TimelineCompactionBlock } from '@zero-os/shared'
 import {
   type EpisodeCompactionTraceEvent,
   estimateConversationTokens,
@@ -535,6 +535,7 @@ describe('prepareConversationHistory', () => {
     const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-context-'))
     const messages = buildLongToolConversation()
     const compactionEvents: EpisodeCompactionTraceEvent[] = []
+    let timelineCompactionBlocks: TimelineCompactionBlock[] = []
     const originalJsonChars = JSON.stringify(messages).length
     const oldestResult = expectDefined(
       messages[2].content.find((block) => block.type === 'tool_result'),
@@ -546,6 +547,9 @@ describe('prepareConversationHistory', () => {
         enableEpisodeCompaction: true,
         evidenceWorkDir: workDir,
         sessionId: 'sess_20260512_1006_fei_8161_fixture',
+        onTimelineCompactionBlocksChanged: (blocks) => {
+          timelineCompactionBlocks = blocks
+        },
         onEpisodeCompaction: (event) => compactionEvents.push(event),
       })
       const compactedJsonChars = JSON.stringify(result).length
@@ -596,7 +600,9 @@ describe('prepareConversationHistory', () => {
       expect(readFileSync(outputEvidencePaths[0], 'utf-8')).toContain('AGENT_LOOP_RAW_')
       const compactionEvent = expectDefined(compactionEvents[0])
       expect(compactionEvents).toHaveLength(1)
-      expect(compactionEvent.event).toBe('episode_compaction')
+      expect(compactionEvent.event).toBe('timeline_compaction_block')
+      expect(compactionEvent.lifecycle).toBe('created')
+      expect(compactionEvent.blockId).toBe(timelineCompactionBlocks[0]?.id)
       expect(compactionEvent.messagesBefore).toBe(messages.length)
       expect(compactionEvent.messagesAfter).toBe(result.length)
       expect(compactionEvent.episodesCreated).toBeGreaterThan(0)
@@ -605,8 +611,105 @@ describe('prepareConversationHistory', () => {
       expect(compactionEvent.tokensAfter).toBeLessThan(compactionEvent.tokensBefore)
       expect(compactionEvent.evidenceCount).toBeGreaterThan(0)
       expect(compactionEvent.rawCharsMovedToEvidence).toBeGreaterThan(0)
-      expect(compactionEvent.workingStateId).toContain('working_state_')
+      expect(compactionEvent.workingStateId).toContain(':working_state')
       expect(compactionEvent.evidence.some((item) => item.writeStatus === 'created')).toBe(true)
+      expect(timelineCompactionBlocks).toHaveLength(1)
+      expect(timelineCompactionBlocks[0].coveredMessageCount).toBeGreaterThan(0)
+      expect(timelineCompactionBlocks[0].summary).toContain('<timeline_compaction_block')
+      expect(timelineCompactionBlocks[0].summary).toContain('<working_state_compaction>')
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
+
+  test('reuses an existing timeline compaction block for the same covered range', () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-reuse-'))
+    const messages = buildLongToolConversation('sess_reuse_fixture')
+    let timelineCompactionBlocks: TimelineCompactionBlock[] = []
+
+    try {
+      const firstEvents: EpisodeCompactionTraceEvent[] = []
+      const first = prepareConversationHistory(messages, {
+        enableEpisodeCompaction: true,
+        evidenceWorkDir: workDir,
+        sessionId: 'sess_reuse_fixture',
+        onTimelineCompactionBlocksChanged: (blocks) => {
+          timelineCompactionBlocks = blocks
+        },
+        onEpisodeCompaction: (event) => firstEvents.push(event),
+      })
+      const changedBlocks = timelineCompactionBlocks
+      const secondEvents: EpisodeCompactionTraceEvent[] = []
+      let changedAgain = false
+      const second = prepareConversationHistory(messages, {
+        enableEpisodeCompaction: true,
+        evidenceWorkDir: workDir,
+        sessionId: 'sess_reuse_fixture',
+        timelineCompactionBlocks: changedBlocks,
+        onTimelineCompactionBlocksChanged: () => {
+          changedAgain = true
+        },
+        onEpisodeCompaction: (event) => secondEvents.push(event),
+      })
+
+      expect(firstEvents[0]?.lifecycle).toBe('created')
+      expect(secondEvents).toHaveLength(1)
+      expect(secondEvents[0].lifecycle).toBe('reused')
+      expect(secondEvents[0].blockId).toBe(changedBlocks[0].id)
+      expect(changedAgain).toBe(false)
+      expect(second).toEqual(first)
+      expect(JSON.stringify(second)).not.toContain('AGENT_LOOP_RAW_')
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
+
+  test('updates an existing timeline compaction block when more messages age into range', () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-update-'))
+    const messages = buildLongToolConversation('sess_update_fixture')
+    let timelineCompactionBlocks: TimelineCompactionBlock[] = []
+
+    try {
+      prepareConversationHistory(messages, {
+        enableEpisodeCompaction: true,
+        evidenceWorkDir: workDir,
+        sessionId: 'sess_update_fixture',
+        onTimelineCompactionBlocksChanged: (blocks) => {
+          timelineCompactionBlocks = blocks
+        },
+      })
+      const originalBlock = expectDefined(timelineCompactionBlocks[0])
+      const extended = [
+        ...messages,
+        {
+          ...makeUserText('Next current task after prior recent tool turn'),
+          sessionId: 'sess_update_fixture',
+        },
+        {
+          ...makeAssistantText('New latest answer stays high fidelity'),
+          sessionId: 'sess_update_fixture',
+        },
+      ]
+      const events: EpisodeCompactionTraceEvent[] = []
+      prepareConversationHistory(extended, {
+        enableEpisodeCompaction: true,
+        evidenceWorkDir: workDir,
+        sessionId: 'sess_update_fixture',
+        timelineCompactionBlocks,
+        onTimelineCompactionBlocksChanged: (blocks) => {
+          timelineCompactionBlocks = blocks
+        },
+        onEpisodeCompaction: (event) => events.push(event),
+      })
+
+      const updatedBlock = expectDefined(
+        timelineCompactionBlocks.find((block) => block.status === 'active'),
+      )
+      expect(events[0]?.lifecycle).toBe('updated')
+      expect(updatedBlock.id).toBe(originalBlock.id)
+      expect(updatedBlock.generation).toBe(originalBlock.generation + 1)
+      expect(updatedBlock.coveredMessageCount).toBeGreaterThan(originalBlock.coveredMessageCount)
+      expect(updatedBlock.toolUseIds).toContain('fixture_recent_bash')
     } finally {
       rmSync(workDir, { recursive: true, force: true })
     }

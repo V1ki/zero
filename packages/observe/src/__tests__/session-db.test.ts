@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import type { Message, Session as SessionData } from '@zero-os/shared'
+import type { Message, Session as SessionData, TimelineCompactionBlock } from '@zero-os/shared'
 import { SessionDB } from '../session-db'
 
 function expectDefined<T>(value: T | null | undefined): NonNullable<T> {
@@ -188,6 +188,53 @@ describe('SessionDB', () => {
     expect(msgs).toEqual([])
   })
 
+  test('saveCompactionBlocks + loadSessionCompactionBlocks round-trip without rewriting messages', () => {
+    db = SessionDB.createInMemory()
+    const messages = makeMessages(2)
+    const blocks: TimelineCompactionBlock[] = [
+      {
+        id: 'timeline_compaction_db',
+        sessionId: 'sess_compaction',
+        status: 'active',
+        strategy: 'deterministic_contiguous_older_turns_v1',
+        strategyVersion: 'timeline_compaction_block_v1',
+        boundaryReason: 'db test boundary',
+        summary: '<timeline_compaction_block>db summary</timeline_compaction_block>',
+        workingStateSummary: '<working_state_compaction>db state</working_state_compaction>',
+        coveredMessageIds: ['msg_0'],
+        coveredRange: {
+          startMessageId: 'msg_0',
+          endMessageId: 'msg_0',
+          startCreatedAt: messages[0].createdAt,
+          endCreatedAt: messages[0].createdAt,
+        },
+        coveredMessageCount: 1,
+        toolUseIds: [],
+        evidence: [],
+        evidenceCount: 0,
+        evidenceChars: 0,
+        evidenceBytes: 0,
+        rawCharsMovedToEvidence: 0,
+        skippedUnfinishedToolUseIds: [],
+        episodeFullRetainTurns: 0,
+        promptCharsBefore: 100,
+        promptCharsAfter: 20,
+        tokensBefore: 25,
+        tokensAfter: 5,
+        createdAt: messages[0].createdAt,
+        updatedAt: messages[0].createdAt,
+        generation: 1,
+        episodes: [],
+      },
+    ]
+
+    db.saveMessages('sess_compaction', messages)
+    db.saveCompactionBlocks('sess_compaction', blocks)
+
+    expect(db.loadSessionMessages('sess_compaction')).toEqual(messages)
+    expect(db.loadSessionCompactionBlocks('sess_compaction')).toEqual(blocks)
+  })
+
   test('saveBinding + getBinding + loadBindings round-trip', () => {
     db = SessionDB.createInMemory()
     db.saveSession(
@@ -267,10 +314,47 @@ describe('SessionDB', () => {
       }),
     )
     db.saveBinding('telegram', 'tg_001', 'sess_delete_1', undefined, '2026-04-22T00:01:00.000Z')
+    db.saveCompactionBlocks('sess_delete_1', [
+      {
+        id: 'timeline_compaction_delete',
+        sessionId: 'sess_delete_1',
+        status: 'active',
+        strategy: 'deterministic_contiguous_older_turns_v1',
+        strategyVersion: 'timeline_compaction_block_v1',
+        boundaryReason: 'delete test',
+        summary: 'summary',
+        workingStateSummary: 'state',
+        coveredMessageIds: ['msg_delete'],
+        coveredRange: {
+          startMessageId: 'msg_delete',
+          endMessageId: 'msg_delete',
+          startCreatedAt: '2026-04-22T00:00:00.000Z',
+          endCreatedAt: '2026-04-22T00:00:00.000Z',
+        },
+        coveredMessageCount: 1,
+        toolUseIds: [],
+        evidence: [],
+        evidenceCount: 0,
+        evidenceChars: 0,
+        evidenceBytes: 0,
+        rawCharsMovedToEvidence: 0,
+        skippedUnfinishedToolUseIds: [],
+        episodeFullRetainTurns: 0,
+        promptCharsBefore: 10,
+        promptCharsAfter: 5,
+        tokensBefore: 3,
+        tokensAfter: 1,
+        createdAt: '2026-04-22T00:00:00.000Z',
+        updatedAt: '2026-04-22T00:00:00.000Z',
+        generation: 1,
+        episodes: [],
+      },
+    ])
 
     expect(db.deleteSession('sess_delete_1')).toBe(true)
     expect(db.getSession('sess_delete_1')).toBeNull()
     expect(db.getBinding('telegram', 'tg_001')).toBeNull()
+    expect(db.loadSessionCompactionBlocks('sess_delete_1')).toEqual([])
   })
 
   test('loadAllSessions orders by updatedAt and respects limit', () => {

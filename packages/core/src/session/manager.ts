@@ -310,6 +310,7 @@ export class SessionManager {
     }
 
     const messages = this.sessionDb?.loadSessionMessages(row.id) ?? []
+    const timelineCompactionBlocks = this.sessionDb?.loadSessionCompactionBlocks(row.id) ?? []
     const modelScope = this.getModelScope(
       data.source,
       data.channelId,
@@ -323,6 +324,7 @@ export class SessionManager {
       this.toolRegistry,
       this.createSessionDeps(data.source, modelScope),
       normalizedRow.systemPrompt,
+      timelineCompactionBlocks,
     )
 
     if (normalizedRow.agentConfigJson) {
@@ -711,6 +713,7 @@ export class SessionManager {
         session.getSystemPrompt() || undefined,
       )
       this.sessionDb.saveMessages(id, session.getMessages())
+      this.sessionDb.saveCompactionBlocks(id, session.getTimelineCompactionBlocks())
     }
   }
 
@@ -733,6 +736,10 @@ export class SessionManager {
 
   getMessagesFromDB(id: string): Message[] {
     return this.sessionDb?.loadSessionMessages(id) ?? []
+  }
+
+  getCompactionBlocksFromDB(id: string) {
+    return this.sessionDb?.loadSessionCompactionBlocks(id) ?? []
   }
 
   listAllFromDB(filter?: { limit?: number; offset?: number }): SessionRow[] {
