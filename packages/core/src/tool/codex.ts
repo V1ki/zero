@@ -43,7 +43,7 @@ interface CodexInput {
   instruction: string
   /** Working directory for the codex session. Defaults to projectRoot. */
   workingDirectory?: string
-  /** Model slug to use (e.g. "gpt-5.3-codex", "gpt-5.1-codex-mini"). Defaults to ~/.codex/config.toml setting. */
+  /** Model slug to use (e.g. "gpt-5.5"). Defaults to ~/.codex/config.toml setting. */
   model?: string
   /** Additional directories to allow codex to access beyond the working directory. */
   additionalDirectories?: string[]
@@ -81,7 +81,7 @@ export class CodexTool extends BaseTool {
       model: {
         type: 'string',
         description:
-          'Model slug to use (e.g. "gpt-5.3-codex", "gpt-5.1-codex-mini"). Defaults to the model configured in ~/.codex/config.toml. Only override when you need a specific model.',
+          'Model slug to use (e.g. "gpt-5.5"). Defaults to the model configured in ~/.codex/config.toml. Only override when you need a specific model.',
       },
       additionalDirectories: {
         type: 'array',
