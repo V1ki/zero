@@ -23,24 +23,22 @@ export function ChannelSessionSelector({
     `${getChannelSessionCandidateKey(candidate)}::${candidate.channelName ?? candidate.source}::${candidate.channelId}`
 
   return (
-    <div className="flex items-center gap-2 flex-wrap">
-      <span className="text-[10px] text-[var(--color-text-disabled)] uppercase tracking-wide">
+    <div className="flex min-w-0 flex-wrap items-center gap-1.5 lg:justify-end">
+      <span className="inline-flex h-7 items-center gap-1.5 rounded-full border border-white/8 bg-white/[0.03] px-2 text-[10px] text-[var(--color-text-disabled)] uppercase tracking-wide">
         Source
+        <span className="font-mono text-[var(--color-text-secondary)] normal-case tracking-normal">
+          {selectedCandidate?.source ?? activeSource ?? '—'}
+        </span>
       </span>
-      <span className="text-[11px] font-mono text-[var(--color-text-secondary)]">
-        {selectedCandidate?.source ?? activeSource ?? '—'}
-      </span>
-      <span className="text-[10px] text-[var(--color-text-disabled)] uppercase tracking-wide ml-2">
+      <span className="inline-flex h-7 items-center gap-1.5 rounded-full border border-white/8 bg-white/[0.03] px-2 text-[10px] text-[var(--color-text-disabled)] uppercase tracking-wide">
         Channel
-      </span>
-      <span className="text-[11px] font-mono text-[var(--color-text-secondary)]">
-        {selectedCandidate?.channelName ?? '—'}
-      </span>
-      <span className="text-[10px] text-[var(--color-text-disabled)] uppercase tracking-wide ml-2">
-        Channel ID
+        <span className="font-mono text-[var(--color-text-secondary)] normal-case tracking-normal">
+          {selectedCandidate?.channelName ?? '—'}
+        </span>
       </span>
       <select
-        className="input-field py-1.5 px-2.5 min-w-[220px]"
+        aria-label="Channel ID"
+        className="input-field h-8 min-w-[240px] max-w-full flex-1 px-2.5 py-1 text-[12px] lg:max-w-[640px] xl:flex-none xl:w-[520px]"
         value={selectedCandidate ? getOptionValue(selectedCandidate) : ''}
         disabled={loading || candidates.length === 0}
         onChange={(e) => {

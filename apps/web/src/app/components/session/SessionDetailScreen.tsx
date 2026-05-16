@@ -569,15 +569,15 @@ export function SessionDetailScreen({
   }, [handleKeyDown])
 
   const pageHeader = (
-    <div className="mb-5">
+    <div className="mb-3 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
       <button
         type="button"
         onClick={goBack}
-        className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-3 py-2 text-[13px] text-[var(--color-text-muted)] transition-colors hover:border-white/18 hover:text-[var(--color-accent)]"
+        className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-2.5 text-[12px] text-[var(--color-text-muted)] transition-colors hover:border-white/18 hover:text-[var(--color-accent)]"
       >
-        <ArrowLeft size={16} /> Sessions
+        <ArrowLeft size={14} /> Sessions
       </button>
-      {topContent ? <div className="mt-4">{topContent}</div> : null}
+      {topContent ? <div className="min-w-0 flex-1">{topContent}</div> : null}
     </div>
   )
 
@@ -642,16 +642,10 @@ export function SessionDetailScreen({
   }
 
   return (
-    <div className="relative mx-auto flex h-screen max-w-[1720px] flex-col overflow-hidden px-4 py-6 sm:px-6">
+    <div className="relative mx-auto flex h-screen max-w-[1720px] flex-col overflow-hidden px-4 py-4 sm:px-6 sm:py-5">
       <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[480px] bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.12),transparent_35%),radial-gradient(circle_at_top_right,rgba(245,158,11,0.1),transparent_28%)]" />
       <div data-testid="session-detail-header" className="shrink-0">
         {pageHeader}
-
-        <div className="flex items-center gap-2 mb-3 flex-wrap">
-          <span className="text-[11px] font-mono text-[var(--color-text-disabled)]">
-            {session.id}
-          </span>
-        </div>
 
         <MetadataBar
           sessionId={session.id}
@@ -689,7 +683,7 @@ export function SessionDetailScreen({
 
       <div
         data-testid="session-detail-layout"
-        className="mt-5 grid min-h-0 flex-1 grid-cols-1 gap-5 overflow-y-auto xl:grid-cols-[minmax(0,1fr)_340px] xl:items-stretch xl:overflow-hidden 2xl:grid-cols-[minmax(0,1fr)_360px]"
+        className="mt-3 grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-y-auto xl:grid-cols-[minmax(0,1fr)_340px] xl:items-stretch xl:overflow-hidden 2xl:grid-cols-[minmax(0,1fr)_360px]"
       >
         <section
           data-testid="session-timeline-stage"

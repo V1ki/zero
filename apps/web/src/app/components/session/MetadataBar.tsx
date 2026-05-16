@@ -86,6 +86,8 @@ export function MetadataBar({
   const [detailsExpanded, setDetailsExpanded] = useState(false)
   const { addToast } = useUIStore()
 
+  const displayTitle = summary || sessionId
+  const showSessionId = Boolean(summary && summary !== sessionId)
   const activePurposes = purposeBreakdown.filter((row) => row.totalCost > 0 || row.requestCount > 0)
   const compactPurposeSummary = activePurposes
     .slice(0, 2)
@@ -101,40 +103,48 @@ export function MetadataBar({
 
   return (
     <div data-testid="session-hero" className="card relative overflow-hidden p-0">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.12),transparent_36%),linear-gradient(180deg,rgba(13,18,26,0.97),rgba(9,11,16,0.94))]" />
-      <div className="relative p-4 sm:p-5">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+      <div className="absolute inset-0 bg-[linear-gradient(110deg,rgba(10,16,24,0.96),rgba(9,11,16,0.94)),radial-gradient(circle_at_top_left,rgba(34,211,238,0.1),transparent_34%)]" />
+      <div className="relative px-3 py-2.5 sm:px-4">
+        <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
           <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
               {placement && (
                 <span
-                  className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] ${getPlacementBadgeClass(placement)}`}
+                  className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.16em] ${getPlacementBadgeClass(placement)}`}
                 >
                   {placement}
                 </span>
               )}
               {typeof isCurrent === 'boolean' && (
-                <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-secondary)]">
+                <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--color-text-secondary)]">
                   {isCurrent ? 'bound' : 'history'}
                 </span>
               )}
-              <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-mono text-[var(--color-text-secondary)]">
+              <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[9px] font-mono text-[var(--color-text-secondary)]">
                 {source}
               </span>
               {channelName || channelId ? (
-                <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-mono text-[var(--color-text-secondary)]">
+                <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[9px] font-mono text-[var(--color-text-secondary)]">
                   {channelName ?? channelId}
                 </span>
               ) : null}
             </div>
 
-            <h2 className="mt-3 max-w-4xl text-[18px] font-semibold leading-tight text-[var(--color-text-primary)] sm:text-[22px]">
-              {summary || sessionId}
-            </h2>
+            <div className="mt-2 flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
+              <h2
+                className="min-w-0 max-w-4xl truncate text-[18px] font-semibold leading-tight text-[var(--color-text-primary)] sm:text-[20px]"
+                title={displayTitle}
+              >
+                {displayTitle}
+              </h2>
+              {showSessionId ? (
+                <span className="font-mono text-[11px] text-[var(--color-text-muted)]">
+                  {sessionId}
+                </span>
+              ) : null}
+            </div>
 
-            <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-[var(--color-text-muted)]">
-              <span className="font-mono text-[var(--color-text-secondary)]">{sessionId}</span>
-              <span className="text-[var(--color-text-disabled)]">·</span>
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-[var(--color-text-muted)]">
               <span className="inline-flex items-center gap-1">
                 <Clock size={12} className="shrink-0" />
                 {formatTimeRange(createdAt, updatedAt)}
@@ -142,7 +152,9 @@ export function MetadataBar({
               {currentModel && (
                 <>
                   <span className="text-[var(--color-text-disabled)]">·</span>
-                  <span className="font-mono text-[var(--color-text-secondary)]">{currentModel}</span>
+                  <span className="font-mono text-[var(--color-text-secondary)]">
+                    {currentModel}
+                  </span>
                 </>
               )}
             </div>
@@ -151,18 +163,25 @@ export function MetadataBar({
           <div className="flex flex-wrap items-center gap-2 xl:justify-end">
             <button
               type="button"
+              onClick={() => setDetailsExpanded((current) => !current)}
+              aria-expanded={detailsExpanded}
+              className="inline-flex h-8 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 text-[11px] font-medium text-[var(--color-text-secondary)] transition-colors hover:border-white/18 hover:text-[var(--color-text-primary)]"
+            >
+              {detailsExpanded ? <CaretDown size={12} /> : <CaretRight size={12} />}
+              Session Stats
+            </button>
+            <button
+              type="button"
               onClick={() => setShowDeleteConfirm(true)}
-              className="rounded-xl border border-red-400/25 bg-red-400/6 px-3 py-2 text-[11px] text-red-200 transition-colors hover:border-red-400/45 hover:bg-red-400/12"
-              >
-                <span className="inline-flex items-center gap-1.5">
-                  <Trash size={14} />
-                  Delete
-                </span>
-              </button>
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-red-400/25 bg-red-400/6 px-2.5 text-[11px] text-red-200 transition-colors hover:border-red-400/45 hover:bg-red-400/12"
+            >
+              <Trash size={13} />
+              Delete
+            </button>
           </div>
         </div>
 
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-white/8 pt-2">
           <MetricPill
             label="Requests"
             value={String(requestCount)}
@@ -176,7 +195,7 @@ export function MetadataBar({
           <MetricPill
             label="Cache"
             value={`${(cacheHitRate * 100).toFixed(0)}%`}
-            detail={`${formatNumber(cacheReadTokens)} read`}
+            detail={`${formatNumber(cacheReadTokens)} read · ${formatNumber(cacheWriteTokens)} write`}
           />
           <MetricPill
             label="Spend"
@@ -188,30 +207,25 @@ export function MetadataBar({
             value={formatNumber(timelineCount)}
             detail={`${taskClosureCount} closure · ${subAgentCount} sub-agent`}
           />
-        </div>
-
-        <div className="mt-4 flex flex-col gap-3 border-t border-white/8 pt-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[var(--color-text-muted)]">
-            <span>effective input {formatNumber(effectiveInputTokens)}</span>
-            <span>reasoning {formatNumber(reasoningTokens)}</span>
-            <span>aux {formatCost(auxiliaryCost)}</span>
-            {compactPurposeSummary ? <span>{compactPurposeSummary}</span> : null}
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setDetailsExpanded((current) => !current)}
-            aria-expanded={detailsExpanded}
-            className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)]"
-          >
-            {detailsExpanded ? <CaretDown size={12} /> : <CaretRight size={12} />}
-            More Session Stats
-          </button>
+          <span className="text-[10px] text-[var(--color-text-muted)]">
+            effective input {formatNumber(effectiveInputTokens)}
+          </span>
+          <span className="text-[10px] text-[var(--color-text-muted)]">
+            reasoning {formatNumber(reasoningTokens)}
+          </span>
+          <span className="text-[10px] text-[var(--color-text-muted)]">
+            aux {formatCost(auxiliaryCost)}
+          </span>
+          {compactPurposeSummary ? (
+            <span className="text-[10px] text-[var(--color-text-muted)]">
+              {compactPurposeSummary}
+            </span>
+          ) : null}
         </div>
 
         {detailsExpanded && (
-          <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
-            <div className="rounded-[20px] border border-white/8 bg-black/15 p-4">
+          <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
+            <div className="rounded-xl border border-white/8 bg-black/15 p-3">
               <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--color-text-disabled)]">
                 Model Route
               </p>
@@ -229,7 +243,7 @@ export function MetadataBar({
               </div>
             </div>
 
-            <div className="rounded-[20px] border border-white/8 bg-black/15 p-4">
+            <div className="rounded-xl border border-white/8 bg-black/15 p-3">
               <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--color-text-disabled)]">
                 Purpose Breakdown
               </p>
@@ -287,12 +301,16 @@ function MetricPill({
   detail: string
 }) {
   return (
-    <div className="min-w-[132px] rounded-[18px] border border-white/8 bg-black/15 px-3 py-2.5">
-      <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--color-text-disabled)]">
+    <div className="inline-flex min-w-fit items-baseline gap-1.5">
+      <span className="text-[9px] uppercase tracking-[0.16em] text-[var(--color-text-disabled)]">
         {label}
-      </p>
-      <p className="mt-1.5 text-[17px] font-semibold text-[var(--color-text-primary)]">{value}</p>
-      <p className="mt-0.5 text-[10px] leading-5 text-[var(--color-text-muted)]">{detail}</p>
+      </span>
+      <span className="text-[14px] font-semibold leading-none text-[var(--color-text-primary)]">
+        {value}
+      </span>
+      <span className="max-w-[120px] truncate text-[10px] leading-4 text-[var(--color-text-muted)]">
+        {detail}
+      </span>
     </div>
   )
 }

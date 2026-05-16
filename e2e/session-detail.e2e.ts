@@ -64,14 +64,17 @@ test.describe('Session Detail Page', () => {
 
     await expect(page.locator('[data-testid="session-signal-rail"]')).toHaveCount(0)
 
+    const headerBox = await page.locator('[data-testid="session-detail-header"]').boundingBox()
     const heroBox = await page.locator('[data-testid="session-hero"]').boundingBox()
     const timelineBox = await page.locator('[data-testid="session-timeline-stage"]').boundingBox()
     const contextBox = await page.locator('[data-testid="session-context-panel"]').boundingBox()
 
+    expect(headerBox).not.toBeNull()
     expect(heroBox).not.toBeNull()
     expect(timelineBox).not.toBeNull()
     expect(contextBox).not.toBeNull()
-    expect(heroBox?.height ?? 999).toBeLessThan(320)
+    expect(headerBox?.height ?? 999).toBeLessThan(230)
+    expect(heroBox?.height ?? 999).toBeLessThan(180)
     expect(timelineBox?.width ?? 0).toBeGreaterThan((contextBox?.width ?? 0) * 1.8)
   })
 
