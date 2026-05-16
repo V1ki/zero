@@ -50,8 +50,16 @@ export const CONTEXT_PARAMS = {
   history: {
     /** Turns 0..N: full tool output preserved */
     fullRetainTurns: 3,
-    /** Episode compaction keeps only the latest active/current turn fully expanded */
-    episodeFullRetainTurns: 0,
+    /** Episode compaction keeps the latest active/current turns fully expanded */
+    episodeFullRetainTurns: 3,
+    /** Do not compact tiny newly-aged tails; wait until a meaningful episode is formed. */
+    episodeMinCompactTurns: 3,
+    /** Large tool-heavy tails may compact earlier even when they have fewer turns. */
+    episodeMinCompactChars: 12000,
+    /** Prompt manifest cap; full evidence remains in artifact files and trace metadata. */
+    episodePromptEvidenceLimit: 12,
+    /** Prompt tool-observation cap; prevents deterministic fallback from becoming an IO dump. */
+    episodePromptObservationLimit: 16,
     /** Turns N+1..M: tool output truncated to summary */
     summaryRetainTurns: 8,
     /** Summary truncation length (chars) */

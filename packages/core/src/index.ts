@@ -117,7 +117,11 @@ export {
 } from './agent/prompt'
 export { allocateBudget, shouldCompress } from './agent/budget'
 export { truncateToolOutput } from './agent/truncate'
-export { prepareConversationHistory, estimateConversationTokens } from './agent/context'
+export {
+  prepareConversationHistory,
+  prepareConversationHistoryWithCompaction,
+  estimateConversationTokens,
+} from './agent/context'
 export { compressConversation } from './agent/compress'
 export { CONTEXT_PARAMS } from './agent/params'
 export {

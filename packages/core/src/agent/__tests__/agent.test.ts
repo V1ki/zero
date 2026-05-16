@@ -344,8 +344,31 @@ class LargeInputTool extends BaseTool {
 class ActiveTurnCaptureAdapter implements ProviderAdapter {
   readonly apiType = 'fake-active-turn'
   requests: CompletionRequest[] = []
+  compactionRequests: CompletionRequest[] = []
 
   async complete(req: CompletionRequest): Promise<CompletionResponse> {
+    if (req.meta?.purpose === 'compression') {
+      this.compactionRequests.push(req)
+      return {
+        id: 'resp_context_compaction',
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              summary: 'Old active-turn setup was semantically compacted.',
+              confirmedFacts: ['old tool results were captured as evidence'],
+              currentState: ['continue with the retained active turn'],
+              nextActions: ['run active_turn_tool for the current request'],
+              keyEvidence: ['bash:old_tool_0 path=evidence'],
+            }),
+          },
+        ],
+        stopReason: 'end_turn',
+        usage: { input: 10, output: 4 },
+        model: 'fake-compaction-model',
+      }
+    }
+
     this.requests.push(req)
     if (this.requests.length === 1) {
       return {
@@ -572,70 +595,54 @@ describe('Agent', () => {
       workDir,
     }
     const agent = new Agent(agentConfig, adapter, registry, localToolContext, { tracer })
-    const oldHistory: Message[] = [
+    const oldHistory: Message[] = Array.from({ length: 7 }).flatMap((_, index) => [
       {
-        id: 'old_user_1',
+        id: `old_user_${index}`,
         sessionId: 'sess_agent_active_turn',
-        role: 'user',
-        messageType: 'message',
-        content: [{ type: 'text', text: 'old investigation' }],
-        createdAt: '2026-05-12T00:00:00.000Z',
+        role: 'user' as const,
+        messageType: 'message' as const,
+        content: [{ type: 'text' as const, text: `old investigation ${index}` }],
+        createdAt: `2026-05-12T00:0${index}:00.000Z`,
       },
       {
-        id: 'old_assistant_1',
+        id: `old_assistant_tool_${index}`,
         sessionId: 'sess_agent_active_turn',
-        role: 'assistant',
-        messageType: 'message',
+        role: 'assistant' as const,
+        messageType: 'message' as const,
         content: [
           {
-            type: 'tool_use',
-            id: 'old_tool_1',
+            type: 'tool_use' as const,
+            id: `old_tool_${index}`,
             name: 'bash',
-            input: { command: 'printf old' },
+            input: { command: `printf old ${index}` },
           },
         ],
-        createdAt: '2026-05-12T00:00:01.000Z',
+        createdAt: `2026-05-12T00:0${index}:01.000Z`,
       },
       {
-        id: 'old_result_1',
+        id: `old_result_${index}`,
         sessionId: 'sess_agent_active_turn',
-        role: 'user',
-        messageType: 'message',
+        role: 'user' as const,
+        messageType: 'message' as const,
         content: [
           {
-            type: 'tool_result',
-            toolUseId: 'old_tool_1',
-            content: `OLD_RESULT_RAW_${'old inline '.repeat(500)}`,
-            outputSummary: 'old result summary',
+            type: 'tool_result' as const,
+            toolUseId: `old_tool_${index}`,
+            content: `OLD_RESULT_RAW_${index}_${'old inline '.repeat(500)}`,
+            outputSummary: `old result summary ${index}`,
           },
         ],
-        createdAt: '2026-05-12T00:00:02.000Z',
+        createdAt: `2026-05-12T00:0${index}:02.000Z`,
       },
       {
-        id: 'old_assistant_2',
+        id: `old_assistant_done_${index}`,
         sessionId: 'sess_agent_active_turn',
-        role: 'assistant',
-        messageType: 'message',
-        content: [{ type: 'text', text: 'old result handled' }],
-        createdAt: '2026-05-12T00:00:03.000Z',
+        role: 'assistant' as const,
+        messageType: 'message' as const,
+        content: [{ type: 'text' as const, text: `old result handled ${index}` }],
+        createdAt: `2026-05-12T00:0${index}:03.000Z`,
       },
-      {
-        id: 'latest_user',
-        sessionId: 'sess_agent_active_turn',
-        role: 'user',
-        messageType: 'message',
-        content: [{ type: 'text', text: 'latest retained turn' }],
-        createdAt: '2026-05-12T00:01:00.000Z',
-      },
-      {
-        id: 'latest_assistant',
-        sessionId: 'sess_agent_active_turn',
-        role: 'assistant',
-        messageType: 'message',
-        content: [{ type: 'text', text: 'latest retained answer' }],
-        createdAt: '2026-05-12T00:01:01.000Z',
-      },
-    ]
+    ])
     const context: AgentContext = {
       systemPrompt: 'Use active_turn_tool.',
       conversationHistory: oldHistory,
@@ -644,14 +651,29 @@ describe('Agent', () => {
 
     try {
       await agent.run(context, 'current active task')
+      expect(adapter.compactionRequests).toHaveLength(1)
       expect(adapter.requests.length).toBeGreaterThanOrEqual(2)
-      const firstRequestText = JSON.stringify(adapter.requests[0].messages)
-      const secondRequestText = JSON.stringify(adapter.requests[1].messages)
+      const requestText = (request: CompletionRequest) =>
+        request.messages
+          .flatMap((message) =>
+            message.content.map((block) => {
+              if (block.type === 'text') return block.text
+              if (block.type === 'tool_result') return block.content
+              if (block.type === 'tool_use') return JSON.stringify(block.input)
+              return ''
+            }),
+          )
+          .join('\n')
+      const firstRequestText = requestText(adapter.requests[0])
+      const secondRequestText = requestText(adapter.requests[1])
 
-      expect(firstRequestText).toContain('<episode_compaction')
-      expect(firstRequestText).not.toContain('OLD_RESULT_RAW_')
+      expect(firstRequestText).toContain('<context_compaction_summary source="model">')
+      expect(firstRequestText).not.toContain('OLD_RESULT_RAW_0_')
+      expect(firstRequestText).not.toContain('OLD_RESULT_RAW_1_')
+      expect(firstRequestText).not.toContain('OLD_RESULT_RAW_2_')
+      expect(firstRequestText).toContain('OLD_RESULT_RAW_6_')
       expect(secondRequestText).toContain('ACTIVE_RESULT_RAW_')
-      expect(secondRequestText).not.toContain('OLD_RESULT_RAW_')
+      expect(secondRequestText).not.toContain('OLD_RESULT_RAW_0_')
 
       const compactionSpan = findSpanDeep(
         tracer.getSessionTraces('sess_agent_active_turn'),
@@ -662,8 +684,8 @@ describe('Agent', () => {
         event: 'timeline_compaction_block',
         lifecycle: 'created',
         episodesCreated: 1,
-        evidenceCount: 2,
-        toolUseIds: ['old_tool_1'],
+        evidenceCount: 6,
+        toolUseIds: ['old_tool_0', 'old_tool_1', 'old_tool_2'],
       })
 
       const runLogPath = join(

@@ -5,10 +5,12 @@ import { join } from 'node:path'
 import { generateId, now } from '@zero-os/shared'
 import type { ContentBlock, Message, TimelineCompactionBlock } from '@zero-os/shared'
 import {
+  type ContextCompactionModelInput,
   type EpisodeCompactionTraceEvent,
   estimateConversationTokens,
   mergeInterleavedQueuedMessages,
   prepareConversationHistory,
+  prepareConversationHistoryWithCompaction,
   sanitizeConversationHistoryForSignedThinkingToolUse,
 } from '../context'
 
@@ -73,6 +75,25 @@ function expectDefined<T>(value: T | null | undefined): NonNullable<T> {
     throw new Error('Expected value to be defined')
   }
   return value
+}
+
+function semanticCompactor(label = 'semantic compact') {
+  return async (input: ContextCompactionModelInput) => ({
+    summary: `${label}: ${input.episode.goal}`,
+    confirmedFacts: [
+      `covered ${input.segment.length} messages`,
+      ...input.episode.confirmedFacts.slice(0, 2),
+    ],
+    userConstraints: ['preserve raw evidence through manifest paths'],
+    decisions: ['create immutable semantic compact block'],
+    currentState: [`current_goal=${input.currentGoal}`],
+    openQuestions: input.episode.blockers,
+    nextActions: ['continue from retained recent messages'],
+    doNotInfer: ['do not treat raw tool IO capture as business confirmation'],
+    keyEvidence: input.episode.evidence
+      .slice(0, 2)
+      .map((item) => `${item.toolName}:${item.toolUseId} path=${item.path}`),
+  })
 }
 
 /**
@@ -531,7 +552,7 @@ describe('prepareConversationHistory', () => {
     expect(result[4]).toBe(messages[4])
   })
 
-  test('compacts old tool-heavy turns into episode and working-state messages with evidence paths', () => {
+  test('compacts old tool-heavy turns into model-authored semantic block with evidence paths', async () => {
     const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-context-'))
     const messages = buildLongToolConversation()
     const compactionEvents: EpisodeCompactionTraceEvent[] = []
@@ -543,10 +564,11 @@ describe('prepareConversationHistory', () => {
     const oldestRawContent = oldestResult.content
 
     try {
-      const result = prepareConversationHistory(messages, {
+      const result = await prepareConversationHistoryWithCompaction(messages, {
         enableEpisodeCompaction: true,
         evidenceWorkDir: workDir,
         sessionId: 'sess_20260512_1006_fei_8161_fixture',
+        contextCompactor: semanticCompactor(),
         onTimelineCompactionBlocksChanged: (blocks) => {
           timelineCompactionBlocks = blocks
         },
@@ -561,25 +583,16 @@ describe('prepareConversationHistory', () => {
 
       expect(oldestResult.content).toBe(oldestRawContent)
       expect(result.length).toBeLessThan(messages.length)
-      expect(compactedJsonChars).toBeLessThan(originalJsonChars * 0.45)
-      expect(text).toContain('<episode_compaction')
+      expect(compactedJsonChars).toBeLessThan(originalJsonChars * 0.75)
+      expect(text).toContain('<context_compaction_summary source="model">')
       expect(text).toContain('<working_state_compaction>')
-      expect(text).toContain('boundary_strategy: deterministic_contiguous_older_turns_v1')
-      expect(text).toContain('why_tools_were_called')
-      expect(text).toContain('actual_scope_read_or_written')
-      expect(text).toContain('learned:')
-      expect(text).toContain('confirmed:')
-      expect(text).toContain('inferred:')
-      expect(text).toContain('blocked:')
+      expect(text).toContain('strategy: deterministic_contiguous_older_turns_v1')
+      expect(text).toContain('summary:')
+      expect(text).toContain('semantic compact:')
+      expect(text).toContain('confirmed_facts:')
+      expect(text).toContain('open_questions_or_blockers:')
       expect(text).toContain('confirms only the tool IO was captured')
-      expect(text).toContain('assistant text, not independently confirmed')
-      expect(text).toContain('full_evidence:')
-      expect(text).toContain('read /repo/packages/core/src/agent/agent-loop.ts')
-      expect(text).toContain('write /repo/tmp/design.md contentChars=')
-      expect(text).toContain('edit /repo/packages/core/src/agent/context.ts oldChars=')
-      expect(text).toContain('bash scan tool_result flow')
-      expect(text).toContain('memory_search query=episode compaction boundaries')
-      expect(text).toContain('memory_read /Users/v1ki/.codex/memories/MEMORY.md')
+      expect(text).toContain('evidence_manifest:')
       expect(text).toContain('.artifacts/sess_20260512_1006_fei_8161_fixture/tool-evidence')
       expect(JSON.stringify(result)).not.toContain('AGENT_LOOP_RAW_')
       expect(JSON.stringify(result)).toContain('RECENT_RAW_')
@@ -622,17 +635,18 @@ describe('prepareConversationHistory', () => {
     }
   })
 
-  test('reuses an existing timeline compaction block for the same covered range', () => {
+  test('reuses existing immutable timeline compaction blocks without rewriting them', async () => {
     const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-reuse-'))
     const messages = buildLongToolConversation('sess_reuse_fixture')
     let timelineCompactionBlocks: TimelineCompactionBlock[] = []
 
     try {
       const firstEvents: EpisodeCompactionTraceEvent[] = []
-      const first = prepareConversationHistory(messages, {
+      const first = await prepareConversationHistoryWithCompaction(messages, {
         enableEpisodeCompaction: true,
         evidenceWorkDir: workDir,
         sessionId: 'sess_reuse_fixture',
+        contextCompactor: semanticCompactor('first semantic compact'),
         onTimelineCompactionBlocksChanged: (blocks) => {
           timelineCompactionBlocks = blocks
         },
@@ -641,11 +655,12 @@ describe('prepareConversationHistory', () => {
       const changedBlocks = timelineCompactionBlocks
       const secondEvents: EpisodeCompactionTraceEvent[] = []
       let changedAgain = false
-      const second = prepareConversationHistory(messages, {
+      const second = await prepareConversationHistoryWithCompaction(messages, {
         enableEpisodeCompaction: true,
         evidenceWorkDir: workDir,
         sessionId: 'sess_reuse_fixture',
         timelineCompactionBlocks: changedBlocks,
+        contextCompactor: semanticCompactor('second semantic compact'),
         onTimelineCompactionBlocksChanged: () => {
           changedAgain = true
         },
@@ -653,9 +668,7 @@ describe('prepareConversationHistory', () => {
       })
 
       expect(firstEvents[0]?.lifecycle).toBe('created')
-      expect(secondEvents).toHaveLength(1)
-      expect(secondEvents[0].lifecycle).toBe('reused')
-      expect(secondEvents[0].blockId).toBe(changedBlocks[0].id)
+      expect(secondEvents).toHaveLength(0)
       expect(changedAgain).toBe(false)
       expect(second).toEqual(first)
       expect(JSON.stringify(second)).not.toContain('AGENT_LOOP_RAW_')
@@ -664,16 +677,17 @@ describe('prepareConversationHistory', () => {
     }
   })
 
-  test('updates an existing timeline compaction block when more messages age into range', () => {
+  test('creates a new immutable block instead of expanding an existing block', async () => {
     const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-update-'))
     const messages = buildLongToolConversation('sess_update_fixture')
     let timelineCompactionBlocks: TimelineCompactionBlock[] = []
 
     try {
-      prepareConversationHistory(messages, {
+      await prepareConversationHistoryWithCompaction(messages, {
         enableEpisodeCompaction: true,
         evidenceWorkDir: workDir,
         sessionId: 'sess_update_fixture',
+        contextCompactor: semanticCompactor('original semantic compact'),
         onTimelineCompactionBlocksChanged: (blocks) => {
           timelineCompactionBlocks = blocks
         },
@@ -681,35 +695,43 @@ describe('prepareConversationHistory', () => {
       const originalBlock = expectDefined(timelineCompactionBlocks[0])
       const extended = [
         ...messages,
+        ...buildConversation(4).map((message) => ({
+          ...message,
+          sessionId: 'sess_update_fixture',
+        })),
         {
-          ...makeUserText('Next current task after prior recent tool turn'),
+          ...makeUserText('Latest current task after second compactable group'),
           sessionId: 'sess_update_fixture',
         },
         {
-          ...makeAssistantText('New latest answer stays high fidelity'),
+          ...makeAssistantText('Latest answer stays high fidelity'),
           sessionId: 'sess_update_fixture',
         },
       ]
       const events: EpisodeCompactionTraceEvent[] = []
-      prepareConversationHistory(extended, {
+      await prepareConversationHistoryWithCompaction(extended, {
         enableEpisodeCompaction: true,
         evidenceWorkDir: workDir,
         sessionId: 'sess_update_fixture',
         timelineCompactionBlocks,
+        contextCompactor: semanticCompactor('second semantic compact'),
         onTimelineCompactionBlocksChanged: (blocks) => {
           timelineCompactionBlocks = blocks
         },
         onEpisodeCompaction: (event) => events.push(event),
       })
 
-      const updatedBlock = expectDefined(
-        timelineCompactionBlocks.find((block) => block.status === 'active'),
+      const activeBlocks = timelineCompactionBlocks.filter((block) => block.status === 'active')
+      const originalAfter = expectDefined(
+        activeBlocks.find((block) => block.id === originalBlock.id),
       )
-      expect(events[0]?.lifecycle).toBe('updated')
-      expect(updatedBlock.id).toBe(originalBlock.id)
-      expect(updatedBlock.generation).toBe(originalBlock.generation + 1)
-      expect(updatedBlock.coveredMessageCount).toBeGreaterThan(originalBlock.coveredMessageCount)
-      expect(updatedBlock.toolUseIds).toContain('fixture_recent_bash')
+      const newBlock = expectDefined(activeBlocks.find((block) => block.id !== originalBlock.id))
+      expect(events[0]?.lifecycle).toBe('created')
+      expect(activeBlocks).toHaveLength(2)
+      expect(originalAfter.generation).toBe(originalBlock.generation)
+      expect(originalAfter.coveredMessageIds).toEqual(originalBlock.coveredMessageIds)
+      expect(newBlock.generation).toBe(1)
+      expect(newBlock.coveredMessageIds).not.toEqual(originalBlock.coveredMessageIds)
     } finally {
       rmSync(workDir, { recursive: true, force: true })
     }
@@ -721,7 +743,7 @@ describe('prepareConversationHistory', () => {
     expect(gitignore.split(/\r?\n/)).toContain('.artifacts/')
   })
 
-  test('marks task-closure continuation episodes as blocked instead of finished work', () => {
+  test('marks task-closure continuation episodes as blocked instead of finished work', async () => {
     const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-blocked-'))
     const messages = [
       makeUserText('old blocked task'),
@@ -743,10 +765,11 @@ describe('prepareConversationHistory', () => {
     ]
 
     try {
-      const result = prepareConversationHistory(messages, {
+      const result = await prepareConversationHistoryWithCompaction(messages, {
         enableEpisodeCompaction: true,
         evidenceWorkDir: workDir,
         sessionId: 'sess_blocked_fixture',
+        contextCompactor: semanticCompactor('blocked semantic compact'),
       })
       const text = result
         .flatMap((message) =>
@@ -754,7 +777,7 @@ describe('prepareConversationHistory', () => {
         )
         .join('\n')
 
-      expect(text).toContain('<episode_compaction')
+      expect(text).toContain('<context_compaction_summary source="model">')
       expect(text).toContain('status="blocked"')
       expect(text).toContain('task_closure continuation occurred inside this episode')
       expect(text).toContain('缺少登录态')
@@ -763,7 +786,7 @@ describe('prepareConversationHistory', () => {
     }
   })
 
-  test('marks persisted task_closure=block assistant messages as blocked episodes', () => {
+  test('marks persisted task_closure=block assistant messages as blocked episodes', async () => {
     const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-task-block-'))
     const blockedAssistant = makeAssistantText('要继续线上核验，我需要你的账号登录态或截图授权。')
     blockedAssistant.taskClosure = { action: 'block', reason: '缺少登录态' }
@@ -778,10 +801,11 @@ describe('prepareConversationHistory', () => {
     ]
 
     try {
-      const result = prepareConversationHistory(messages, {
+      const result = await prepareConversationHistoryWithCompaction(messages, {
         enableEpisodeCompaction: true,
         evidenceWorkDir: workDir,
         sessionId: 'sess_task_block_fixture',
+        contextCompactor: semanticCompactor('task block semantic compact'),
       })
       const text = result
         .flatMap((message) =>
@@ -789,7 +813,7 @@ describe('prepareConversationHistory', () => {
         )
         .join('\n')
 
-      expect(text).toContain('<episode_compaction')
+      expect(text).toContain('<context_compaction_summary source="model">')
       expect(text).toContain('status="blocked"')
       expect(text).toContain('task_closure=block for this episode')
       expect(text).toContain('缺少登录态')

@@ -209,11 +209,7 @@ export function buildWorkingStateCompaction(params: {
   retainedMessages: Message[]
   episodes: EpisodeCompaction[]
 }): WorkingStateCompaction {
-  const confirmedFacts = uniqueStrings(
-    params.episodes.flatMap((episode) => episode.confirmedFacts).slice(-8),
-  )
   const blockers = uniqueStrings(params.episodes.flatMap((episode) => episode.blockers).slice(-6))
-  const evidencePointers = params.episodes.flatMap((episode) => episode.evidence).slice(-12)
   const recentScope = extractRecentScope(params.retainedMessages)
 
   return {
@@ -222,7 +218,7 @@ export function buildWorkingStateCompaction(params: {
       ...recentScope,
       ...params.episodes.flatMap((episode) => episode.scope),
     ]).slice(0, 12),
-    confirmedFacts,
+    confirmedFacts: [],
     nextAction:
       'Continue from the retained high-fidelity recent turn; read evidence paths only when exact raw IO is needed.',
     blockers,
@@ -231,7 +227,7 @@ export function buildWorkingStateCompaction(params: {
       'Do not replay full tool IO unless a raw evidence path is explicitly needed.',
       'Do not treat a blocked/latest turn as finished without a new user instruction.',
     ],
-    evidencePointers,
+    evidencePointers: [],
     sourceEpisodeIds: params.episodes.map((episode) => episode.id),
   }
 }
@@ -394,33 +390,35 @@ function formatEpisodeSummary(params: {
   needsRawReview: string[]
   evidence: ToolEvidence[]
 }): string {
+  const observationLimit = CONTEXT_PARAMS.history.episodePromptObservationLimit
+  const evidenceLimit = CONTEXT_PARAMS.history.episodePromptEvidenceLimit
+  const observations = params.observations.slice(0, observationLimit).map(formatToolReason)
+  const omittedObservations = params.observations.length - observations.length
+  if (omittedObservations > 0)
+    observations.push(`omitted_tool_observation_count=${omittedObservations}`)
+  const evidence = params.evidence
+    .slice(0, evidenceLimit)
+    .map(
+      (item) =>
+        `${item.toolName}:${item.toolUseId}:${item.kind} path=${item.path} chars=${item.chars} sha256=${item.sha256.slice(0, 12)}`,
+    )
+  const omittedEvidence = params.evidence.length - evidence.length
+  if (omittedEvidence > 0) evidence.push(`omitted_evidence_count=${omittedEvidence}`)
+
   return [
-    `<episode_compaction id="${params.id}" status="${params.status}">`,
+    `<episode_evidence_index id="${params.id}" status="${params.status}">`,
     `boundary_strategy: ${params.boundaryStrategy ?? episodeBoundaryStrategy}`,
     `boundary_reason: ${params.boundaryReason ?? episodeBoundaryReason}`,
     `goal: ${params.goal}`,
-    'why_tools_were_called:',
-    ...formatList(params.observations.map(formatToolReason)),
-    'actual_scope_read_or_written:',
-    ...formatList(params.scope),
-    'learned:',
-    ...formatList(buildLearnedFacts(params.confirmedFacts, params.inferredFacts, params.blockers)),
-    'confirmed:',
-    ...formatList(params.confirmedFacts),
-    'inferred:',
-    ...formatList(params.inferredFacts),
+    'scope:',
+    ...formatList(params.scope.slice(0, 12)),
+    'tool_observations:',
+    ...formatList(observations),
     'blocked:',
     ...formatList(params.blockers),
-    'must_review_raw_for:',
-    ...formatList(params.needsRawReview),
-    'full_evidence:',
-    ...formatList(
-      params.evidence.map(
-        (item) =>
-          `${item.toolName}:${item.toolUseId}:${item.kind} path=${item.path} chars=${item.chars} sha256=${item.sha256.slice(0, 12)}`,
-      ),
-    ),
-    '</episode_compaction>',
+    'evidence_manifest:',
+    ...formatList(evidence),
+    '</episode_evidence_index>',
   ].join('\n')
 }
 
@@ -489,18 +487,6 @@ function buildInferredFacts(messages: Message[], observations: ToolObservation[]
   }
 
   return uniqueStrings(inferred).slice(0, 8)
-}
-
-function buildLearnedFacts(
-  confirmedFacts: string[],
-  inferredFacts: string[],
-  blockers: string[],
-): string[] {
-  return uniqueStrings([
-    ...confirmedFacts,
-    ...inferredFacts.map((fact) => `inferred: ${fact}`),
-    ...blockers.map((blocker) => `blocked: ${blocker}`),
-  ]).slice(0, 12)
 }
 
 function buildBlockers(messages: Message[], observations: ToolObservation[]): string[] {
