@@ -13,11 +13,21 @@ interface BashInput {
   command: string
   description?: string
   timeout?: number
+  envSecrets?: Record<string, string>
+  stdinSecretRef?: string
+  stdinAppendNewline?: boolean
 }
 
 const PIPE_GRACE_MS = 1000
 const FORCE_KILL_GRACE_MS = 750
 const DEFAULT_ABORT_MESSAGE = 'Command aborted by user from Session Detail.'
+const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+interface ResolvedBashSecret {
+  ref: string
+  value: string
+  envName?: string
+}
 
 function formatExitCode(exitCode: number): string {
   return `Exit code: ${exitCode}`
@@ -105,6 +115,64 @@ function tryKillProcess(proc: ReturnType<typeof Bun.spawn>, signal?: NodeJS.Sign
   }
 }
 
+function hasSecretInput(input: BashInput): boolean {
+  return (
+    (input.envSecrets && Object.keys(input.envSecrets).length > 0) || Boolean(input.stdinSecretRef)
+  )
+}
+
+function commandLabel(command: string, usesSecretRefs: boolean): string {
+  return usesSecretRefs ? 'command with secret references' : command.slice(0, 80)
+}
+
+function isWebWritableStream(stream: unknown): stream is WritableStream<Uint8Array> {
+  return (
+    typeof stream === 'object' &&
+    stream !== null &&
+    'getWriter' in stream &&
+    typeof stream.getWriter === 'function'
+  )
+}
+
+function isFileSinkLike(
+  stream: unknown,
+): stream is { write(data: string): unknown; flush?: () => unknown; end(): unknown } {
+  return (
+    typeof stream === 'object' &&
+    stream !== null &&
+    'write' in stream &&
+    typeof stream.write === 'function' &&
+    'end' in stream &&
+    typeof stream.end === 'function'
+  )
+}
+
+async function writeProcessStdin(proc: ReturnType<typeof Bun.spawn>, text: string): Promise<void> {
+  const stdin: unknown = proc.stdin
+  if (!stdin || typeof stdin === 'number') {
+    throw new Error('Subprocess stdin is unavailable')
+  }
+
+  if (isWebWritableStream(stdin)) {
+    const writer = stdin.getWriter()
+    try {
+      await writer.write(new TextEncoder().encode(text))
+    } finally {
+      await writer.close()
+    }
+    return
+  }
+
+  if (isFileSinkLike(stdin)) {
+    stdin.write(text)
+    if (stdin.flush) await Promise.resolve(stdin.flush())
+    stdin.end()
+    return
+  }
+
+  throw new Error('Subprocess stdin does not support writing')
+}
+
 export class BashTool extends BaseTool {
   kind = 'built-in' as const
   name = 'bash'
@@ -115,6 +183,21 @@ export class BashTool extends BaseTool {
       command: { type: 'string', description: 'Shell command to execute' },
       description: { type: 'string', description: 'Brief description of what this command does' },
       timeout: { type: 'number', description: 'Timeout in milliseconds (default 120000)' },
+      envSecrets: {
+        type: 'object',
+        description:
+          'Map environment variable names to secret vault references. Values are resolved at runtime and are never placed in the command string.',
+        additionalProperties: { type: 'string' },
+      },
+      stdinSecretRef: {
+        type: 'string',
+        description:
+          'Secret vault reference to write once to subprocess stdin. The secret value is never logged.',
+      },
+      stdinAppendNewline: {
+        type: 'boolean',
+        description: 'Append a newline after stdinSecretRef when writing to stdin (default true).',
+      },
     },
     required: ['command'],
   }
@@ -131,8 +214,137 @@ export class BashTool extends BaseTool {
     this.fuseChecker.check(command)
   }
 
+  private resolveSecret(
+    ctx: ToolContext,
+    ref: string,
+  ): { success: true; value: string } | { success: false; result: ToolResult } {
+    const trimmedRef = ref.trim()
+    if (!trimmedRef) {
+      return {
+        success: false,
+        result: {
+          success: false,
+          output: 'Secret reference cannot be empty',
+          outputSummary: 'Empty secret reference',
+        },
+      }
+    }
+
+    const value = ctx.secretResolver?.(trimmedRef)
+    if (!value) {
+      return {
+        success: false,
+        result: {
+          success: false,
+          output: `Secret reference "${trimmedRef}" not found in vault`,
+          outputSummary: 'Secret reference not found',
+        },
+      }
+    }
+
+    ctx.secretFilter?.addSecret(trimmedRef, value)
+    return { success: true, value }
+  }
+
+  private resolveSecretInputs(
+    ctx: ToolContext,
+    input: BashInput,
+  ):
+    | { success: true; env: Record<string, string>; stdin?: string; secrets: ResolvedBashSecret[] }
+    | {
+        success: false
+        result: ToolResult
+      } {
+    if (!hasSecretInput(input)) {
+      return { success: true, env: {}, secrets: [] }
+    }
+
+    if (!ctx.secretResolver) {
+      return {
+        success: false,
+        result: {
+          success: false,
+          output: 'Secret references require a secretResolver in the tool context',
+          outputSummary: 'No secret resolver',
+        },
+      }
+    }
+
+    if (!ctx.secretFilter) {
+      return {
+        success: false,
+        result: {
+          success: false,
+          output: 'Secret references require a secretFilter in the tool context',
+          outputSummary: 'No secret filter',
+        },
+      }
+    }
+
+    const env: Record<string, string> = {}
+    const secrets: ResolvedBashSecret[] = []
+
+    for (const [envName, ref] of Object.entries(input.envSecrets ?? {})) {
+      if (!ENV_NAME_PATTERN.test(envName)) {
+        return {
+          success: false,
+          result: {
+            success: false,
+            output: `Invalid environment variable name for envSecrets: ${envName}`,
+            outputSummary: 'Invalid secret env name',
+          },
+        }
+      }
+      if (typeof ref !== 'string') {
+        return {
+          success: false,
+          result: {
+            success: false,
+            output: `Secret reference for ${envName} must be a string`,
+            outputSummary: 'Invalid secret reference',
+          },
+        }
+      }
+
+      const resolved = this.resolveSecret(ctx, ref)
+      if (!resolved.success) return resolved
+
+      env[envName] = resolved.value
+      secrets.push({ ref: ref.trim(), value: resolved.value, envName })
+    }
+
+    let stdin: string | undefined
+    if (input.stdinSecretRef) {
+      const resolved = this.resolveSecret(ctx, input.stdinSecretRef)
+      if (!resolved.success) return resolved
+
+      stdin = input.stdinAppendNewline === false ? resolved.value : `${resolved.value}\n`
+      secrets.push({ ref: input.stdinSecretRef.trim(), value: resolved.value })
+    }
+
+    return { success: true, env, stdin, secrets }
+  }
+
   protected async execute(ctx: ToolContext, input: unknown): Promise<ToolResult> {
-    const { command, timeout = 120_000 } = input as BashInput
+    const bashInput = input as BashInput
+    const { command, timeout = 120_000 } = bashInput
+    const resolvedSecrets = this.resolveSecretInputs(ctx, bashInput)
+    if (!resolvedSecrets.success) return resolvedSecrets.result
+
+    const usesSecretRefs = resolvedSecrets.secrets.length > 0
+    const summaryCommand = commandLabel(command, usesSecretRefs)
+    const leakedSecret = resolvedSecrets.secrets.find(
+      (secret) => secret.value.length >= 4 && command.includes(secret.value),
+    )
+    if (leakedSecret) {
+      return {
+        success: false,
+        output:
+          'Command contains a resolved secret value. Use envSecrets variables or stdinSecretRef instead.',
+        outputSummary: 'Command rejected: secret value in command',
+      }
+    }
+
     const toolUseId = ctx.currentToolUseId
     const runningHandle =
       toolUseId && ctx.runningToolRegistry ? ctx.runningToolRegistry.get(toolUseId) : undefined
@@ -141,9 +353,10 @@ export class BashTool extends BaseTool {
     try {
       proc = Bun.spawn(['bash', '-c', command], {
         cwd: ctx.workDir,
+        stdin: resolvedSecrets.stdin === undefined ? 'ignore' : 'pipe',
         stdout: 'pipe',
         stderr: 'pipe',
-        env: buildToolProcessEnv(ctx),
+        env: { ...buildToolProcessEnv(ctx), ...resolvedSecrets.env },
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -162,6 +375,14 @@ export class BashTool extends BaseTool {
 
     const stdoutCapture = createStreamCapture(proc.stdout)
     const stderrCapture = createStreamCapture(proc.stderr)
+    let stdinWriteError: string | undefined
+    const stdinWrite =
+      resolvedSecrets.stdin === undefined
+        ? undefined
+        : writeProcessStdin(proc, resolvedSecrets.stdin).catch((error) => {
+            stdinWriteError = error instanceof Error ? error.message : String(error)
+            tryKillProcess(proc, 'SIGTERM')
+          })
     let terminationCause: RunningToolTerminationCause | undefined
     let abortMessage: string | undefined
     let forceKillTimer: ReturnType<typeof setTimeout> | undefined
@@ -200,18 +421,19 @@ export class BashTool extends BaseTool {
 
     const timeoutId = setTimeout(() => {
       if (!latchTerminationCause('timeout')) return
-      markFinished('timeout', false, `Command timed out: ${command.slice(0, 80)}`)
+      markFinished('timeout', false, `Command timed out: ${summaryCommand}`)
       tryKillProcess(proc, 'SIGTERM')
       scheduleForceKill()
     }, timeout)
 
     const exitCode = await proc.exited
+    if (stdinWrite) await stdinWrite
     clearTimeout(timeoutId)
     if (forceKillTimer) clearTimeout(forceKillTimer)
 
     const finalCause = terminationCause ?? 'completed'
     if (finalCause === 'abort') {
-      markFinished('abort', false, `Command aborted: ${command.slice(0, 80)}`)
+      markFinished('abort', false, `Command aborted: ${summaryCommand}`)
     } else if (finalCause === 'completed') {
       markFinished('completed', exitCode === 0, undefined)
     }
@@ -228,14 +450,22 @@ export class BashTool extends BaseTool {
     const output = buildOutput(
       stdoutCapture.getText(),
       stderrCapture.getText(),
-      finalCause === 'abort' ? abortMessage ?? DEFAULT_ABORT_MESSAGE : undefined,
+      finalCause === 'abort' ? (abortMessage ?? DEFAULT_ABORT_MESSAGE) : undefined,
     )
 
     if (finalCause === 'abort') {
       return {
         success: false,
         output,
-        outputSummary: `Command aborted: ${command.slice(0, 80)}`,
+        outputSummary: `Command aborted: ${summaryCommand}`,
+      }
+    }
+
+    if (stdinWriteError) {
+      return {
+        success: false,
+        output: `Failed to write stdin secret: ${stdinWriteError}\n\n${output}`,
+        outputSummary: 'Failed to write stdin secret',
       }
     }
 
@@ -243,14 +473,14 @@ export class BashTool extends BaseTool {
       return {
         success: false,
         output: output || formatExitCode(exitCode),
-        outputSummary: `Command failed (exit ${exitCode}): ${command.slice(0, 80)}`,
+        outputSummary: `Command failed (exit ${exitCode}): ${summaryCommand}`,
       }
     }
 
     return {
       success: true,
       output,
-      outputSummary: `Executed: ${command.slice(0, 80)}`,
+      outputSummary: `Executed: ${summaryCommand}`,
     }
   }
 }

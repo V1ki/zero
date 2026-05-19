@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { type ProviderAdapter, TrackedAdapter } from '@zero-os/model'
 import { MetricsDB, Tracer } from '@zero-os/observe'
+import { OutputSecretFilter } from '@zero-os/secrets'
 import type {
   CompletionRequest,
   CompletionResponse,
@@ -224,6 +225,52 @@ class ReadToolCallAdapter implements ProviderAdapter {
     return {
       id: 'resp_read_final',
       content: [{ type: 'text', text: 'summary complete' }],
+      stopReason: 'end_turn',
+      usage: { input: 4, output: 2 },
+      model: 'fake-model',
+    }
+  }
+
+  async *stream(_req: CompletionRequest): AsyncIterable<StreamEvent> {
+    yield* []
+    throw new Error('stream not supported in test')
+  }
+
+  async healthCheck(): Promise<boolean> {
+    return true
+  }
+}
+
+class BashSecretEnvToolCallAdapter implements ProviderAdapter {
+  readonly apiType = 'fake-bash-secret-env-tool'
+  private completeCalls = 0
+
+  async complete(_req: CompletionRequest): Promise<CompletionResponse> {
+    this.completeCalls += 1
+
+    if (this.completeCalls === 1) {
+      return {
+        id: 'resp_bash_secret_env_tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_bash_secret_env_1',
+            name: 'bash',
+            input: {
+              command: 'printf "value=%s" "$SSH_PASSWORD"',
+              envSecrets: { SSH_PASSWORD: 'ssh_password' },
+            },
+          },
+        ],
+        stopReason: 'tool_use',
+        usage: { input: 5, output: 2 },
+        model: 'fake-model',
+      }
+    }
+
+    return {
+      id: 'resp_bash_secret_env_final',
+      content: [{ type: 'text', text: 'secret command complete' }],
       stopReason: 'end_turn',
       usage: { input: 4, output: 2 },
       model: 'fake-model',
@@ -1041,6 +1088,69 @@ describe('Agent', () => {
       )
       const responseData = responseEntry.data as Record<string, unknown>
       expect(responseData.response).toMatchObject({ id: 'resp_read_tool_use' })
+    } finally {
+      rmSync(logsDir, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  test('run: bash secret refs are traced by reference without resolved secret values', async () => {
+    const logsDir = mkdtempSync(join(tmpdir(), 'zero-agent-secret-log-'))
+    try {
+      const secretRef = 'ssh_password'
+      const secretValue = 'trace-secret-passphrase'
+      const tracer = new Tracer(logsDir)
+      const registry = createToolRegistry()
+      const secretFilter = new OutputSecretFilter()
+      const localToolContext: ToolContext = {
+        ...toolContext,
+        secretFilter,
+        secretResolver: (ref: string) => (ref === secretRef ? secretValue : undefined),
+      }
+      const agentConfig: AgentConfig = {
+        name: 'test-agent',
+        agentInstruction: 'You are a helpful assistant. Reply briefly.',
+        promptMode: 'minimal',
+      }
+      const agent = new Agent(
+        agentConfig,
+        new BashSecretEnvToolCallAdapter(),
+        registry,
+        localToolContext,
+        { tracer },
+      )
+      const context = createContext(registry)
+
+      await agent.run(context, 'Use the Bash tool with a secret reference.')
+
+      const runLogPath = join(logsDir, 'sessions', 'test-session', 'run.log')
+      const runLog = readFileSync(runLogPath, 'utf-8')
+      expect(runLog).toContain(secretRef)
+      expect(runLog).not.toContain(secretValue)
+
+      const entries = runLog
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+      const rawToolInputEntry = expectDefined(
+        entries.find((entry) => entry.event === 'tool_call.raw_input'),
+      )
+      const rawToolInputData = rawToolInputEntry.data as {
+        input?: { command?: string; envSecrets?: Record<string, string> }
+      }
+      expect(rawToolInputData.input?.envSecrets?.SSH_PASSWORD).toBe(secretRef)
+      expect(rawToolInputData.input?.command).not.toContain(secretValue)
+
+      const rawToolResultEntry = expectDefined(
+        entries.find((entry) => entry.event === 'tool_call.raw_result'),
+      )
+      const rawToolResultData = rawToolResultEntry.data as {
+        result?: { output?: string; outputSummary?: string }
+      }
+      expect(rawToolResultData.result?.output).toContain('[REDACTED]')
+      expect(rawToolResultData.result?.output).not.toContain(secretValue)
+      expect(rawToolResultData.result?.outputSummary).toBe(
+        'Executed: command with secret references',
+      )
     } finally {
       rmSync(logsDir, { recursive: true, force: true })
     }

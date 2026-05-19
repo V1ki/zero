@@ -146,6 +146,8 @@ describe('buildToolRulesBlock', () => {
     expect(result).toContain('Read：优先使用 Read 查看文件内容')
     expect(result).toContain('Read Image：用于读取本地 PNG/JPEG/WebP 图片')
     expect(result).toContain('Bash：命令在工作目录中执行')
+    expect(result).toContain('envSecrets')
+    expect(result).toContain('stdinSecretRef')
     expect(result).toContain('Memory Search：回答过往工作、决策、偏好前')
     expect(result).toContain('支持语义搜索')
     expect(result).toContain('Memory Read：根据 memory_search 返回的 path')
@@ -156,6 +158,13 @@ describe('buildToolRulesBlock', () => {
     expect(result).not.toContain('Edit：')
     expect(result).not.toContain('Fetch：')
     expect(result).not.toContain('Task：')
+  })
+
+  test('guides Fetch bearer tokens through credentialRef', () => {
+    const result = buildToolRulesBlock([makeTool('fetch')])
+
+    expect(result).toContain('credentialRef')
+    expect(result).toContain('不要把 token 写进 headers')
   })
 
   test('returns empty tag when no matching tools', () => {
@@ -210,7 +219,10 @@ describe('buildConstraintsBlock', () => {
 
     expect(result).toContain('<constraints>')
     expect(result).toContain('</constraints>')
+    expect(result).toContain('用户明确授权后，可以使用密钥完成认证动作')
     expect(result).toContain('不得包含密钥值')
+    expect(result).toContain('命令参数')
+    expect(result).toContain('Trace')
     expect(result).toContain('代码修改后必须通过至少一种验证')
     expect(result).toContain('docs/zero-cli.md')
     expect(result).toContain('不要主动建议或执行未列出的 Zero 命令')

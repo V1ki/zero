@@ -210,9 +210,9 @@ export function buildToolRulesBlock(tools: ToolDefinition[]): string {
     write:
       'Write：写入文件前先确认路径正确。临时文件和下载内容写入工作目录，修改源代码使用项目根目录的绝对路径。',
     edit: 'Edit：修改文件前先 Read 确认当前内容，避免基于过期认知做编辑。',
-    bash: 'Bash：命令在工作目录中执行，操作项目源码时使用绝对路径。命令执行前检查是否命中熔断名单。长时间运行的命令加 timeout。',
+    bash: 'Bash：命令在工作目录中执行，操作项目源码时使用绝对路径。命令执行前检查是否命中熔断名单。长时间运行的命令加 timeout。用户明确授权后可以使用密钥完成认证动作，但密钥值不得写进 command、文件、聊天或日志；对命令使用 envSecrets 将环境变量映射到 vault 引用，或使用 stdinSecretRef 一次性写入 stdin，Trace 只能记录引用名。',
     fetch:
-      'Fetch：用于读取网页内容、调用 API、下载文件。HTML 自动通过 readability 提取正文转为 Markdown。(适用于无 JavaScript 渲染以及登录状态的网页)',
+      'Fetch：用于读取网页内容、调用 API、下载文件。HTML 自动通过 readability 提取正文转为 Markdown。(适用于无 JavaScript 渲染以及登录状态的网页) 需要 Bearer token 时使用 credentialRef 引用 vault 密钥，不要把 token 写进 headers。',
     memory_search:
       'Memory Search：回答过往工作、决策、偏好前，先搜索 `.zero/memory/**`。查询要具体（项目名/技术名/日期），支持语义搜索。搜索无结果时明确告知用户。',
     memory_read:
@@ -251,7 +251,7 @@ export function buildToolRulesBlock(tools: ToolDefinition[]): string {
 }
 
 export function buildConstraintsBlock(): string {
-  const constraints = `所有输出（聊天回复、文件写入、日志）不得包含密钥值。如需引用密钥，使用引用名（如 anthropic_api_key）。
+  const constraints = `用户明确授权后，可以使用密钥完成认证动作；但所有输出（聊天回复、文件写入、命令参数、日志、Trace）不得包含密钥值。如需引用密钥，使用引用名（如 anthropic_api_key）。
 代码修改后必须通过至少一种验证（类型检查、单元测试、手动执行）再报告完成。
 涉及 \`bun zero\` 或 Zero 运维命令时，先读取仓库 \`docs/zero-cli.md\`；仅使用其中明确列出的命令，不要主动建议或执行未列出的 Zero 命令。
 单次回复不超过 2000 字，除非用户明确要求详细输出。`

@@ -1,18 +1,20 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { OutputSecretFilter } from '@zero-os/secrets'
+import type { ToolContext } from '@zero-os/shared'
+import { SessionRunningToolRegistry } from '../../session/running-tool-registry'
 import { BashTool } from '../bash'
 import { EditTool } from '../edit'
 import { ReadTool } from '../read'
 import { ReadImageTool } from '../read-image'
 import { ToolRegistry } from '../registry'
 import { WriteTool } from '../write'
-import { SessionRunningToolRegistry } from '../../session/running-tool-registry'
 
 const testDir = join(import.meta.dir, '__fixtures__')
 const tinyPngBase64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII='
-const ctx = {
+const ctx: ToolContext = {
   sessionId: 'test_session',
   workDir: process.cwd(),
   logger: {
@@ -20,6 +22,25 @@ const ctx = {
     warn: () => {},
     error: () => {},
   },
+}
+
+function createSecretContext(ref: string, secret: string) {
+  const infoLogs: Array<{ event: string; data?: Record<string, unknown> }> = []
+  const secretFilter = new OutputSecretFilter()
+  const secretCtx: ToolContext = {
+    ...ctx,
+    secretFilter,
+    secretResolver: (requestedRef: string) => (requestedRef === ref ? secret : undefined),
+    logger: {
+      info: (event: string, data?: Record<string, unknown>) => {
+        infoLogs.push({ event, data })
+      },
+      warn: () => {},
+      error: () => {},
+    },
+  }
+
+  return { ctx: secretCtx, infoLogs }
 }
 
 describe('ReadTool', () => {
@@ -205,6 +226,78 @@ describe('BashTool', () => {
     expect(result.output).toContain(
       `${ctx.workDir}|/tmp/project-root|test_session|telegram:ops|chat-42`,
     )
+  })
+
+  test('injects envSecrets from secret refs without exposing resolved values', async () => {
+    const tool = new BashTool([])
+    const secret = 'super-secret-passphrase'
+    const secretRef = 'ssh_password'
+    const secretInput = {
+      command: 'printf "value=%s" "$SSH_PASSWORD"',
+      envSecrets: { SSH_PASSWORD: secretRef },
+    }
+    const { ctx: secretCtx, infoLogs } = createSecretContext(secretRef, secret)
+
+    const result = await tool.run(secretCtx, secretInput)
+
+    expect(result.success).toBe(true)
+    expect(result.output).toContain('[REDACTED]')
+    expect(result.output).not.toContain(secret)
+    expect(result.outputSummary).toBe('Executed: command with secret references')
+    expect(JSON.stringify(secretInput)).toContain(secretRef)
+    expect(JSON.stringify(secretInput)).not.toContain(secret)
+    expect(JSON.stringify(infoLogs)).not.toContain(secret)
+  })
+
+  test('writes stdinSecretRef once without exposing resolved values', async () => {
+    const tool = new BashTool([])
+    const secret = 'stdin-secret-passphrase'
+    const secretRef = 'sudo_password'
+    const { ctx: secretCtx } = createSecretContext(secretRef, secret)
+
+    const result = await tool.run(secretCtx, {
+      command: 'IFS= read -r password; printf "stdin=%s" "$password"',
+      stdinSecretRef: secretRef,
+    })
+
+    expect(result.success).toBe(true)
+    expect(result.output).toContain('[REDACTED]')
+    expect(result.output).not.toContain(secret)
+    expect(result.outputSummary).toBe('Executed: command with secret references')
+  })
+
+  test('rejects secret refs without a secretFilter to avoid unredacted output', async () => {
+    const tool = new BashTool([])
+    const result = await tool.run(
+      {
+        ...ctx,
+        secretResolver: () => 'secret-value',
+      },
+      {
+        command: 'printf "%s" "$SSH_PASSWORD"',
+        envSecrets: { SSH_PASSWORD: 'ssh_password' },
+      },
+    )
+
+    expect(result.success).toBe(false)
+    expect(result.output).toContain('secretFilter')
+    expect(result.output).not.toContain('secret-value')
+  })
+
+  test('rejects commands that embed resolved secret values', async () => {
+    const tool = new BashTool([])
+    const secret = 'embedded-secret-passphrase'
+    const secretRef = 'ssh_password'
+    const { ctx: secretCtx } = createSecretContext(secretRef, secret)
+
+    const result = await tool.run(secretCtx, {
+      command: `printf "%s" "${secret}"`,
+      envSecrets: { SSH_PASSWORD: secretRef },
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.output).not.toContain(secret)
+    expect(result.outputSummary).toBe('Command rejected: secret value in command')
   })
 
   test('returns exit code on failure', async () => {
