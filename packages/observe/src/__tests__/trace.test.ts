@@ -137,6 +137,54 @@ describe('Tracer', () => {
     expect(entries[0].data).toEqual({ request: { model: 'fake-model', prompt: 'hello' } })
   })
 
+  test('externalizes image payloads from trace snapshots and raw request logs', () => {
+    const logsDir = mkdtempSync(join(tmpdir(), 'zero-trace-'))
+    tempDirs.push(logsDir)
+    const sessionId = 'sess_20260316_1520_web_a1b2'
+    const tracer = new Tracer(logsDir)
+    const imageData = Buffer.from('image-bytes').toString('base64')
+
+    const span = tracer.startSpan(sessionId, 'tool:read_image', undefined, {
+      kind: 'tool_call',
+      data: {
+        result: {
+          contentItems: [{ type: 'image', mediaType: 'image/png', data: imageData }],
+        },
+      },
+    })
+    tracer.logSession(sessionId, 'debug', 'llm_request.raw_request', {
+      request: {
+        image_url: `data:image/png;base64,${imageData}`,
+      },
+    })
+
+    const tracePath = join(logsDir, 'sessions', '2026-03-16', sessionId, 'trace.jsonl')
+    const runLogPath = join(logsDir, 'sessions', '2026-03-16', sessionId, 'run.log')
+    const traceRaw = readFileSync(tracePath, 'utf-8')
+    const runLogRaw = readFileSync(runLogPath, 'utf-8')
+
+    expect(traceRaw).not.toContain(imageData)
+    expect(runLogRaw).not.toContain(imageData)
+    expect(runLogRaw).not.toContain('data:image/png;base64')
+    expect(JSON.stringify(tracer.getSpan(span.id))).not.toContain(imageData)
+    const exportedRaw = JSON.stringify(tracer.exportSession(sessionId))
+    expect(exportedRaw).not.toContain(imageData)
+    expect(exportedRaw).toContain('"imageRef"')
+
+    const traceEntry = JSON.parse(traceRaw.trim().split('\n')[0]) as Record<string, unknown>
+    const imageItem = (
+      ((traceEntry.data as Record<string, unknown>).result as Record<string, unknown>)
+        .contentItems as Array<Record<string, unknown>>
+    )[0]
+    const imageRef = imageItem.imageRef as { path: string; relativePath: string; bytes: number }
+
+    expect(imageItem.data).toBeUndefined()
+    expect(imageRef.relativePath).toMatch(/^images\/[a-f0-9]+\.png$/)
+    expect(imageRef.bytes).toBe(Buffer.from('image-bytes').length)
+    expect(existsSync(imageRef.path)).toBe(true)
+    expect(readFileSync(imageRef.path, 'utf-8')).toBe('image-bytes')
+  })
+
   test('readSessionEntries collapses lifecycle snapshots to latest state', () => {
     const logsDir = mkdtempSync(join(tmpdir(), 'zero-trace-'))
     tempDirs.push(logsDir)

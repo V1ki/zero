@@ -189,6 +189,33 @@ describe('ToolCallDetail', () => {
     expect(html).toContain('alt="/tmp/screenshot.png"')
   })
 
+  test('renders read_image imageRef when inline data is not persisted', () => {
+    const html = renderToStaticMarkup(
+      <ToolCallDetail
+        name="read_image"
+        input={{ path: '/tmp/screenshot.png' }}
+        result="Read image /tmp/screenshot.png (image/png, 3 bytes)"
+        contentItems={[
+          {
+            type: 'image',
+            mediaType: 'image/png',
+            imageRef: {
+              path: '/tmp/session/images/hash.png',
+              relativePath: 'images/hash.png',
+              sha256: 'hash',
+              bytes: 3,
+            },
+          },
+        ]}
+        isError={false}
+      />,
+    )
+
+    expect(html).toContain('data-tool-renderer="read_image"')
+    expect(html).not.toContain('data:image/png;base64')
+    expect(html).toContain('images/hash.png')
+  })
+
   test('renders dedicated memory tool details for writes and searches', () => {
     const memoryHtml = renderToStaticMarkup(
       <ToolCallDetail

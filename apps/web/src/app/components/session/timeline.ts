@@ -174,7 +174,15 @@ export interface SubAgentChildToolCall {
 
 export type ToolResultContentItem =
   | { type: 'text'; text: string }
-  | { type: 'image'; mediaType: string; data: string }
+  | { type: 'image'; mediaType: string; data?: string; imageRef?: ImageRefPointer }
+
+export interface ImageRefPointer {
+  path?: string
+  relativePath?: string
+  sha256?: string
+  bytes?: number
+  error?: string
+}
 
 export interface ToolEvidencePointer {
   kind: 'tool_use_input' | 'tool_result_output'
@@ -274,7 +282,7 @@ export type TimelineItem =
       type: 'user-message'
       text: string
       queued: boolean
-      images?: Array<{ mediaType: string; data: string }>
+      images?: Array<{ mediaType: string; data?: string; imageRef?: ImageRefPointer }>
       createdAt: string
       tokenUsage?: TokenUsageSummary
     }
@@ -399,10 +407,7 @@ export function buildTimeline(
       const textBlocks = msg.content.filter((b) => b.type === 'text')
       const imageBlocks = msg.content
         .filter((b) => b.type === 'image')
-        .map((b) => ({
-          mediaType: b.mediaType as string,
-          data: b.data as string,
-        }))
+        .flatMap((b) => normalizeImageItem(b))
 
       if (textBlocks.length > 0 || imageBlocks.length > 0) {
         const text = textBlocks.map((b) => b.text as string).join('\n')
@@ -1338,17 +1343,42 @@ function normalizeToolResultContentItems(value: unknown): ToolResultContentItem[
     if (record.type === 'text' && typeof record.text === 'string') {
       return [{ type: 'text', text: record.text }]
     }
-    if (
-      record.type === 'image' &&
-      typeof record.mediaType === 'string' &&
-      typeof record.data === 'string'
-    ) {
-      return [{ type: 'image', mediaType: record.mediaType, data: record.data }]
+    if (record.type === 'image' && typeof record.mediaType === 'string') {
+      const data = typeof record.data === 'string' ? record.data : undefined
+      const imageRef = normalizeImageRef(record.imageRef)
+      if (data || imageRef) {
+        return [{ type: 'image', mediaType: record.mediaType, data, imageRef }]
+      }
     }
     return []
   })
 
   return items.length > 0 ? items : undefined
+}
+
+function normalizeImageItem(
+  value: unknown,
+): Array<Extract<ToolResultContentItem, { type: 'image' }>> {
+  if (!value || typeof value !== 'object') return []
+  const record = value as Record<string, unknown>
+  if (record.type !== 'image' || typeof record.mediaType !== 'string') return []
+
+  const data = typeof record.data === 'string' ? record.data : undefined
+  const imageRef = normalizeImageRef(record.imageRef)
+  if (!data && !imageRef) return []
+  return [{ type: 'image', mediaType: record.mediaType, data, imageRef }]
+}
+
+function normalizeImageRef(value: unknown): ImageRefPointer | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const record = value as Record<string, unknown>
+  return {
+    path: typeof record.path === 'string' ? record.path : undefined,
+    relativePath: typeof record.relativePath === 'string' ? record.relativePath : undefined,
+    sha256: typeof record.sha256 === 'string' ? record.sha256 : undefined,
+    bytes: typeof record.bytes === 'number' ? record.bytes : undefined,
+    error: typeof record.error === 'string' ? record.error : undefined,
+  }
 }
 
 function pickPreferredToolText(

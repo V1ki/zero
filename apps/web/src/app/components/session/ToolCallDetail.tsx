@@ -34,7 +34,15 @@ type DiffRow =
 
 export type ToolResultContentItem =
   | { type: 'text'; text: string }
-  | { type: 'image'; mediaType: string; data: string }
+  | { type: 'image'; mediaType: string; data?: string; imageRef?: ImageRefPointer }
+
+export interface ImageRefPointer {
+  path?: string
+  relativePath?: string
+  sha256?: string
+  bytes?: number
+  error?: string
+}
 
 export interface ToolEvidencePointer {
   kind: 'tool_use_input' | 'tool_result_output'
@@ -493,7 +501,7 @@ function ReadImageToolDetail({
         <div className="grid gap-2">
           {images.map((image, index) => (
             <div
-              key={`${image.mediaType}-${index}-${image.data.length}`}
+              key={`${image.mediaType}-${index}-${image.data?.length ?? image.imageRef?.sha256 ?? 'ref'}`}
               className="overflow-hidden rounded-2xl border border-white/8 bg-[rgba(10,14,20,0.7)]"
             >
               <div className="flex items-center justify-between gap-2 border-b border-white/8 px-3 py-2">
@@ -503,11 +511,17 @@ function ReadImageToolDetail({
                 </span>
               </div>
               <div className="max-h-[420px] overflow-auto bg-black/20 p-2">
-                <img
-                  src={`data:${image.mediaType};base64,${image.data}`}
-                  alt={path}
-                  className="mx-auto max-h-[400px] max-w-full rounded-xl object-contain"
-                />
+                {image.data ? (
+                  <img
+                    src={`data:${image.mediaType};base64,${image.data}`}
+                    alt={path}
+                    className="mx-auto max-h-[400px] max-w-full rounded-xl object-contain"
+                  />
+                ) : (
+                  <div className="rounded-xl border border-white/8 bg-black/20 px-3 py-2 font-mono text-[11px] text-[var(--color-text-muted)]">
+                    {image.imageRef?.relativePath ?? image.imageRef?.path ?? 'imageRef unavailable'}
+                  </div>
+                )}
               </div>
             </div>
           ))}

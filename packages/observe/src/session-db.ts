@@ -1,4 +1,5 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite'
+import { dirname } from 'node:path'
 import type {
   ChannelSessionBinding,
   Message,
@@ -11,6 +12,7 @@ import type {
   TimelineCompactionBlock,
 } from '@zero-os/shared'
 import { normalizeReasoningEffort } from '@zero-os/shared'
+import { externalizeImageData } from './image-ref'
 
 export interface SessionRow {
   id: string
@@ -85,8 +87,10 @@ interface RawBindingRow {
  */
 export class SessionDB {
   private db: Database
+  private logsBasePath?: string
 
   constructor(dbPath: string) {
+    this.logsBasePath = dbPath === ':memory:' ? undefined : dirname(dbPath)
     this.db = new Database(dbPath, { create: true })
     this.configureConnection()
     this.initSchema()
@@ -381,10 +385,14 @@ export class SessionDB {
    * Save or update a session's messages (full replace).
    */
   saveMessages(sessionId: string, messages: Message[]): void {
+    const persistedMessages = externalizeImageData(messages, {
+      logsBasePath: this.logsBasePath,
+      sessionId,
+    })
     this.db.run(
       `INSERT OR REPLACE INTO session_messages (session_id, messages_json, message_count, updated_at)
        VALUES (?, ?, ?, ?)`,
-      [sessionId, JSON.stringify(messages), messages.length, new Date().toISOString()],
+      [sessionId, JSON.stringify(persistedMessages), messages.length, new Date().toISOString()],
     )
   }
 

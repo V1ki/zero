@@ -9,6 +9,7 @@ import type {
 } from '@zero-os/shared'
 import OpenAI from 'openai'
 import type { AdapterConfig, ProviderAdapter } from './base'
+import { resolveImageBlock } from './image'
 
 function isImageBlock(block: ContentBlock): block is ImageBlock {
   return block.type === 'image'
@@ -205,13 +206,17 @@ export class OpenAIChatAdapter implements ProviderAdapter {
           .filter((result) => pairedCallIds.has(result.toolUseId))
           .flatMap(toolResultImages)
         const allImageParts = [...imageParts, ...toolImageParts]
+        const resolvedImages = allImageParts.flatMap((image) => {
+          const resolved = resolveImageBlock(image)
+          return resolved ? [resolved] : []
+        })
 
-        if (textParts || allImageParts.length > 0) {
-          if (allImageParts.length > 0) {
+        if (textParts || resolvedImages.length > 0) {
+          if (resolvedImages.length > 0) {
             // Multimodal: text + images
             const parts: OpenAI.ChatCompletionContentPart[] = []
             if (textParts) parts.push({ type: 'text', text: textParts })
-            for (const img of allImageParts) {
+            for (const img of resolvedImages) {
               const { mediaType, data } = img
               parts.push({
                 type: 'image_url',

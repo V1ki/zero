@@ -338,6 +338,65 @@ describe('buildTimeline', () => {
     })
   })
 
+  test('preserves read_image imageRef content items without inline data', () => {
+    const messages: Message[] = [
+      {
+        id: 'msg_tool_assistant',
+        role: 'assistant',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_image',
+            name: 'read_image',
+            input: { path: '/tmp/screenshot.png' },
+          },
+        ],
+        createdAt: '2026-03-08T00:00:01.000Z',
+      },
+      {
+        id: 'msg_tool_result',
+        role: 'user',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: 'call_image',
+            content: 'Read image /tmp/screenshot.png (image/png, 3 bytes)',
+            contentItems: [
+              {
+                type: 'image',
+                mediaType: 'image/png',
+                imageRef: {
+                  path: '/tmp/session/images/hash.png',
+                  relativePath: 'images/hash.png',
+                  sha256: 'hash',
+                  bytes: 3,
+                },
+              },
+            ],
+          },
+        ],
+        createdAt: '2026-03-08T00:00:01.100Z',
+      },
+    ]
+
+    const items = buildTimeline(messages)
+    const imageItem = items.find((item) => item.type === 'tool-call' && item.id === 'call_image')
+
+    expect(imageItem).toMatchObject({
+      type: 'tool-call',
+      name: 'read_image',
+      contentItems: [
+        {
+          type: 'image',
+          mediaType: 'image/png',
+          imageRef: { relativePath: 'images/hash.png', bytes: 3 },
+        },
+      ],
+    })
+  })
+
   test('prefers richer llm request tool results over generic success markers', () => {
     const messages: Message[] = [
       {

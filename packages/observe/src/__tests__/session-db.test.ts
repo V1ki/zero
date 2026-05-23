@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { Message, Session as SessionData, TimelineCompactionBlock } from '@zero-os/shared'
 import { SessionDB } from '../session-db'
 
@@ -41,6 +44,7 @@ function makeMessages(count: number): Message[] {
 type UnsafeSessionDb = {
   db: {
     run(sql: string, bindings?: unknown[]): unknown
+    query(sql: string): { get(...bindings: unknown[]): unknown }
   }
   backfillLegacyBindings(): void
 }
@@ -91,10 +95,14 @@ function insertLegacySession(
 
 describe('SessionDB', () => {
   let db: SessionDB | undefined
+  const tempDirs: string[] = []
 
   afterEach(() => {
     db?.close()
     db = undefined
+    for (const dir of tempDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   test('initializes schema and creates tables', () => {
@@ -180,6 +188,51 @@ describe('SessionDB', () => {
       name: 'read',
       input: { path: '/tmp/test' },
     })
+  })
+
+  test('saveMessages externalizes image contentItems to imageRef', () => {
+    const logsDir = mkdtempSync(join(tmpdir(), 'zero-session-db-'))
+    tempDirs.push(logsDir)
+    db = new SessionDB(join(logsDir, 'sessions.db'))
+    const imageData = Buffer.from('db-image-bytes').toString('base64')
+    const sessionId = 'sess_20260316_1530_web_a1b2'
+    const msgs: Message[] = [
+      {
+        id: 'msg_image_1',
+        sessionId,
+        role: 'user',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: 'call_read_image',
+            content: 'Read image',
+            contentItems: [{ type: 'image', mediaType: 'image/png', data: imageData }],
+          },
+        ],
+        createdAt: new Date().toISOString(),
+      },
+    ]
+
+    db.saveMessages(sessionId, msgs)
+
+    const rawRow = (db as unknown as UnsafeSessionDb).db
+      .query('SELECT messages_json FROM session_messages WHERE session_id = ?')
+      .get(sessionId) as { messages_json: string }
+    expect(rawRow.messages_json).not.toContain(imageData)
+
+    const loaded = db.loadSessionMessages(sessionId)
+    const block = loaded[0]?.content[0]
+    expect(block?.type).toBe('tool_result')
+    if (block?.type !== 'tool_result') throw new Error('Expected tool result block')
+    const image = block.contentItems?.[0] as
+      | { data?: string; imageRef?: { path: string; relativePath: string; bytes: number } }
+      | undefined
+    expect(image?.data).toBeUndefined()
+    expect(image?.imageRef?.relativePath).toMatch(/^images\/[a-f0-9]+\.png$/)
+    expect(image?.imageRef?.bytes).toBe(Buffer.from('db-image-bytes').length)
+    expect(existsSync(image?.imageRef?.path ?? '')).toBe(true)
+    expect(readFileSync(image?.imageRef?.path ?? '', 'utf-8')).toBe('db-image-bytes')
   })
 
   test('loadSessionMessages returns empty for non-existent session', () => {

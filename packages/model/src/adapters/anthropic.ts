@@ -16,6 +16,7 @@ import type {
   OAuthTokenRefresher,
   ProviderAdapter,
 } from './base'
+import { resolveImageBlock } from './image'
 
 const CLAUDE_PREEMPTIVE_REFRESH_WINDOW_MS = 5 * 60_000
 const CLAUDE_MIN_VALIDITY_MS = 60_000
@@ -248,12 +249,14 @@ export class AnthropicAdapter implements ProviderAdapter {
               parts.push({ type: 'text', text: block.text })
             }
           } else if (block.type === 'image') {
+            const image = resolveImageBlock(block)
+            if (!image) continue
             parts.push({
               type: 'image',
               source: {
                 type: 'base64',
-                media_type: block.mediaType as Anthropic.Base64ImageSource['media_type'],
-                data: block.data,
+                media_type: image.mediaType as Anthropic.Base64ImageSource['media_type'],
+                data: image.data,
               },
             })
           } else if (block.type === 'tool_result') {
@@ -348,7 +351,10 @@ export class AnthropicAdapter implements ProviderAdapter {
   private buildToolResultContent(
     block: ToolResultBlock,
   ): Anthropic.ToolResultBlockParam['content'] {
-    const images = toolResultImages(block)
+    const images = toolResultImages(block).flatMap((image) => {
+      const resolved = resolveImageBlock(image)
+      return resolved ? [resolved] : []
+    })
     if (images.length === 0) return block.content
 
     const content: Anthropic.ToolResultBlockParam['content'] = []

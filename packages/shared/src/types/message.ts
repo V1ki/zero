@@ -59,6 +59,15 @@ export interface ImageBlock {
   type: 'image'
   mediaType: string
   data: string
+  imageRef?: ImageRef
+}
+
+export interface ImageRef {
+  path: string
+  relativePath: string
+  sha256: string
+  bytes: number
+  error?: string
 }
 
 export interface ThinkingBlock {

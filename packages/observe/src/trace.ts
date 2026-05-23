@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { generatePrefixedId, getSessionLogRelativeDir, now } from '@zero-os/shared'
+import { externalizeImageData } from './image-ref'
 
 export type TraceStatus = 'running' | 'success' | 'error'
 
@@ -148,8 +149,10 @@ export class Tracer {
       agentName: options.agentName,
       startTime: now(),
       status: 'running',
-      data: options.data ? { ...options.data } : undefined,
-      metadata: options.metadata ? { ...options.metadata } : undefined,
+      data: options.data ? this.preparePersistedValue(sessionId, { ...options.data }) : undefined,
+      metadata: options.metadata
+        ? this.preparePersistedValue(sessionId, { ...options.metadata })
+        : undefined,
       children: [],
     }
 
@@ -182,10 +185,13 @@ export class Tracer {
     if (update.name) span.name = update.name
     if (update.agentName) span.agentName = update.agentName
     if (update.data) {
-      span.data = mergeRecords(span.data, update.data)
+      span.data = mergeRecords(span.data, this.preparePersistedValue(span.sessionId, update.data))
     }
     if (update.metadata) {
-      span.metadata = mergeRecords(span.metadata, update.metadata)
+      span.metadata = mergeRecords(
+        span.metadata,
+        this.preparePersistedValue(span.sessionId, update.metadata),
+      )
     }
 
     if (this.basePath) {
@@ -208,7 +214,10 @@ export class Tracer {
     span.durationMs = new Date(span.endTime).getTime() - new Date(span.startTime).getTime()
     span.status = status
     if (metadata) {
-      span.metadata = { ...span.metadata, ...metadata }
+      span.metadata = {
+        ...span.metadata,
+        ...this.preparePersistedValue(span.sessionId, metadata),
+      }
     }
 
     if (this.basePath) {
@@ -324,36 +333,50 @@ export class Tracer {
   private appendTraceEntry(entry: TraceEntry): void {
     if (!this.basePath) return
 
-    const filePath = join(this.basePath, getSessionLogRelativeDir(entry.sessionId), 'trace.jsonl')
+    const persistedEntry = this.preparePersistedValue(entry.sessionId, entry)
+    const filePath = join(
+      this.basePath,
+      getSessionLogRelativeDir(persistedEntry.sessionId),
+      'trace.jsonl',
+    )
     mkdirSync(dirname(filePath), { recursive: true })
-    appendFileSync(filePath, `${JSON.stringify(entry)}\n`, 'utf-8')
+    appendFileSync(filePath, `${JSON.stringify(persistedEntry)}\n`, 'utf-8')
     this.appendRunLogEntry({
       ts: now(),
-      level: entry.status === 'error' ? 'error' : 'debug',
-      event: `trace.${entry.kind}.${entry.status}`,
-      sessionId: entry.sessionId,
-      spanId: entry.spanId,
-      parentSpanId: entry.parentSpanId,
-      name: entry.name,
-      agentName: entry.agentName,
+      level: persistedEntry.status === 'error' ? 'error' : 'debug',
+      event: `trace.${persistedEntry.kind}.${persistedEntry.status}`,
+      sessionId: persistedEntry.sessionId,
+      spanId: persistedEntry.spanId,
+      parentSpanId: persistedEntry.parentSpanId,
+      name: persistedEntry.name,
+      agentName: persistedEntry.agentName,
       data: {
-        kind: entry.kind,
-        startTime: entry.startTime,
-        endTime: entry.endTime,
-        durationMs: entry.durationMs,
-        status: entry.status,
-        ...(entry.data ? { spanData: entry.data } : {}),
+        kind: persistedEntry.kind,
+        startTime: persistedEntry.startTime,
+        endTime: persistedEntry.endTime,
+        durationMs: persistedEntry.durationMs,
+        status: persistedEntry.status,
+        ...(persistedEntry.data ? { spanData: persistedEntry.data } : {}),
       },
-      metadata: entry.metadata,
+      metadata: persistedEntry.metadata,
     })
   }
 
   private appendRunLogEntry(entry: RunLogEntry): void {
     if (!this.basePath) return
 
-    const filePath = join(this.basePath, getSessionLogRelativeDir(entry.sessionId), 'run.log')
+    const persistedEntry = this.preparePersistedValue(entry.sessionId, entry)
+    const filePath = join(
+      this.basePath,
+      getSessionLogRelativeDir(persistedEntry.sessionId),
+      'run.log',
+    )
     mkdirSync(dirname(filePath), { recursive: true })
-    appendFileSync(filePath, `${JSON.stringify(entry)}\n`, 'utf-8')
+    appendFileSync(filePath, `${JSON.stringify(persistedEntry)}\n`, 'utf-8')
+  }
+
+  private preparePersistedValue<T>(sessionId: string, value: T): T {
+    return externalizeImageData(value, { logsBasePath: this.basePath, sessionId })
   }
 
   private readJsonlFile<T>(filePath: string): T[] {
@@ -410,7 +433,7 @@ export class Tracer {
   }
 
   private cloneSpanWithoutChildren(span: TraceSpan): TraceSpan {
-    return {
+    const cloned = {
       id: span.id,
       parentId: span.parentId,
       sessionId: span.sessionId,
@@ -425,6 +448,7 @@ export class Tracer {
       metadata: span.metadata ? { ...span.metadata } : undefined,
       children: [],
     }
+    return this.basePath ? this.preparePersistedValue(span.sessionId, cloned) : cloned
   }
 
   private sortTraceTree(spans: TraceSpan[]): void {

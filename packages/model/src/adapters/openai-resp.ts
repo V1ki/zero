@@ -16,6 +16,7 @@ import type {
   OAuthTokenRefresher,
   ProviderAdapter,
 } from './base'
+import { resolveImageBlock } from './image'
 
 type ResponseUsageLike = Partial<OpenAI.Responses.ResponseUsage> & {
   input_tokens?: number
@@ -406,12 +407,16 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
           .filter((result) => pairedCallIds.has(result.toolUseId))
           .flatMap(toolResultImages)
         const allImageParts = [...imageParts, ...toolImageParts]
+        const resolvedImages = allImageParts.flatMap((image) => {
+          const resolved = resolveImageBlock(image)
+          return resolved ? [resolved] : []
+        })
 
-        if (textParts || allImageParts.length > 0) {
-          if (allImageParts.length > 0) {
+        if (textParts || resolvedImages.length > 0) {
+          if (resolvedImages.length > 0) {
             const parts: OpenAI.Responses.ResponseInputContent[] = []
             if (textParts) parts.push({ type: 'input_text', text: textParts })
-            for (const img of allImageParts) {
+            for (const img of resolvedImages) {
               const { mediaType, data } = img
               parts.push({
                 type: 'input_image',

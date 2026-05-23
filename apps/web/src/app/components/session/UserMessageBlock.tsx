@@ -6,9 +6,16 @@ import type { TokenUsageSummary } from './context-tokens'
 interface Props {
   text: string
   queued?: boolean
-  images?: Array<{ mediaType: string; data: string }>
+  images?: Array<{ mediaType: string; data?: string; imageRef?: ImageRefPointer }>
   createdAt: string
   tokenUsage?: TokenUsageSummary
+}
+
+interface ImageRefPointer {
+  path?: string
+  relativePath?: string
+  sha256?: string
+  bytes?: number
 }
 
 export function UserMessageBlock({ text, queued = false, images, createdAt, tokenUsage }: Props) {
@@ -40,14 +47,23 @@ export function UserMessageBlock({ text, queued = false, images, createdAt, toke
               {displayText}
             </p>
           )}
-          {images?.map((image, index) => (
-            <img
-              key={`${image.mediaType}-${index}`}
-              src={`data:${image.mediaType};base64,${image.data}`}
-              alt={`User upload ${index + 1}`}
-              className="max-h-72 rounded-md border border-white/10 object-contain bg-black/20"
-            />
-          ))}
+          {images?.map((image, index) =>
+            image.data ? (
+              <img
+                key={`${image.mediaType}-${index}`}
+                src={`data:${image.mediaType};base64,${image.data}`}
+                alt={`User upload ${index + 1}`}
+                className="max-h-72 rounded-md border border-white/10 object-contain bg-black/20"
+              />
+            ) : (
+              <div
+                key={`${image.mediaType}-${index}-${image.imageRef?.sha256 ?? 'ref'}`}
+                className="rounded-md border border-white/10 bg-black/20 px-3 py-2 font-mono text-[11px] text-cyan-100/65"
+              >
+                {image.imageRef?.relativePath ?? image.imageRef?.path ?? image.mediaType}
+              </div>
+            ),
+          )}
         </div>
       </div>
     </div>
