@@ -39,6 +39,7 @@ import {
   ToolRegistry,
   WaitAgentTool,
   WriteTool,
+  XSearchTool,
 } from '@zero-os/core'
 import { SessionManager } from '@zero-os/core'
 import {
@@ -50,7 +51,13 @@ import {
   VectorIndex,
 } from '@zero-os/memory'
 import type { MemoryRepository } from '@zero-os/memory'
-import { LiteLLMPricing, ModelRouter, type UsageRecorder, computeCost } from '@zero-os/model'
+import {
+  LiteLLMPricing,
+  ModelRouter,
+  type UsageRecorder,
+  computeCost,
+  getXPremiumAuthorizationScheme,
+} from '@zero-os/model'
 import { MetricsDB, ObservabilityStore, SessionDB, Tracer, isUsagePurpose } from '@zero-os/observe'
 import { CronScheduler } from '@zero-os/scheduler'
 import { Vault, generateMasterKey, getMasterKey, setMasterKey } from '@zero-os/secrets'
@@ -85,6 +92,8 @@ import { TelegramAdapter } from './telegram-adapter'
 import { syncTelegramCommandMenu } from './telegram-menu'
 import { rebuildWebBundle } from './web-build'
 import { WeixinAdapter } from './weixin-adapter'
+import { XPremiumTokenManager } from './x-premium-oauth'
+import { getXPremiumBaseUrl, getXPremiumOAuthSessionRef } from './x-premium-provider'
 
 export interface StartOptions {
   dataDir?: string
@@ -352,6 +361,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
   const secrets = new Map(vault.entries())
   const chatgptTokenManager = new ChatGptTokenManager(vault)
   const claudeTokenManager = new ClaudeTokenManager(vault)
+  const xPremiumTokenManager = new XPremiumTokenManager(vault)
   const usageRecorder = createUsageRecorder(metrics)
   const modelRouter = new ModelRouter(config, secrets, {
     secretGetter: (ref) => vault.get(ref) ?? undefined,
@@ -370,6 +380,13 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
           return
         }
         await claudeTokenManager.refreshSession(reason)
+      },
+      'x-premium': async (reason) => {
+        if (reason === 'expiring') {
+          await xPremiumTokenManager.ensureFreshSession()
+          return
+        }
+        await xPremiumTokenManager.refreshSession(reason)
       },
     },
   })
@@ -412,6 +429,32 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
   toolRegistry.register(new ScheduleTool())
   toolRegistry.register(new SourceCardTool(sourceCardService, sourceCardMiner))
   toolRegistry.register(new CodexTool())
+  if (vault.get(getXPremiumOAuthSessionRef())?.trim() || vault.get('xai_api_key')?.trim()) {
+    toolRegistry.register(
+      new XSearchTool({
+        credentialProvider: async () => {
+          if (vault.get(getXPremiumOAuthSessionRef())?.trim()) {
+            const session = await xPremiumTokenManager.ensureFreshSession()
+            return {
+              bearerToken: session.accessToken,
+              authorizationScheme: getXPremiumAuthorizationScheme(session.tokenType),
+              baseUrl: getXPremiumBaseUrl(),
+              source: 'x-premium-oauth',
+            }
+          }
+
+          const apiKey = vault.get('xai_api_key')?.trim()
+          if (!apiKey) return undefined
+          return {
+            bearerToken: apiKey,
+            authorizationScheme: 'Bearer',
+            baseUrl: getXPremiumBaseUrl(),
+            source: 'xai-api-key',
+          }
+        },
+      }),
+    )
+  }
   toolRegistry.register(new SpawnAgentTool(modelRouter, toolRegistry, metrics))
   toolRegistry.register(new WaitAgentTool())
   toolRegistry.register(new CloseAgentTool())

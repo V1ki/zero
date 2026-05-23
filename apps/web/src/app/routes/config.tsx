@@ -104,7 +104,7 @@ const TABS: { key: Tab; label: string }[] = [
 
 export function ConfigPage() {
   const [config, setConfig] = useState<ConfigData | null>(null)
-  const [chatgptConnecting, setChatgptConnecting] = useState(false)
+  const [oauthConnecting, setOauthConnecting] = useState<string | null>(null)
   const [chatgptUsage, setChatgptUsage] = useState<ChatGptUsageSnapshot | null>(null)
   const [chatgptUsageState, setChatgptUsageState] = useState<
     'idle' | 'loading' | 'ready' | 'error'
@@ -273,10 +273,10 @@ export function ConfigPage() {
     }
   }
 
-  async function handleConnectChatgpt() {
-    setChatgptConnecting(true)
+  async function handleConnectOAuthProvider(provider: 'chatgpt' | 'x-premium', label: string) {
+    setOauthConnecting(provider)
     try {
-      const start = await apiPost<{ url: string }>('/api/providers/chatgpt/oauth/start', {})
+      const start = await apiPost<{ url: string }>(`/api/providers/${provider}/oauth/start`, {})
       window.open(start.url, '_blank', 'noopener,noreferrer')
 
       for (let attempt = 0; attempt < 120; attempt++) {
@@ -286,25 +286,25 @@ export function ConfigPage() {
           error?: string
           authorized: boolean
           requiresRestart: boolean
-        }>('/api/providers/chatgpt/oauth/status')
+        }>(`/api/providers/${provider}/oauth/status`)
         if (status.state === 'connected' && status.authorized) {
           await loadConfig()
           addToast(
             'success',
-            status.requiresRestart ? 'ChatGPT 已授权，重启 ZeRo 后可使用。' : 'ChatGPT 已授权。',
+            status.requiresRestart ? `${label} 已授权，重启 ZeRo 后可使用。` : `${label} 已授权。`,
           )
           return
         }
         if (status.state === 'error') {
-          throw new Error(status.error ?? 'ChatGPT OAuth failed')
+          throw new Error(status.error ?? `${label} OAuth failed`)
         }
       }
 
-      addToast('error', '等待 ChatGPT OAuth 回调超时，请重试或使用 CLI。')
+      addToast('error', `等待 ${label} OAuth 回调超时，请重试或使用 CLI。`)
     } catch (error) {
-      addToast('error', error instanceof Error ? error.message : 'ChatGPT OAuth failed')
+      addToast('error', error instanceof Error ? error.message : `${label} OAuth failed`)
     } finally {
-      setChatgptConnecting(false)
+      setOauthConnecting(null)
     }
   }
 
@@ -369,6 +369,7 @@ export function ConfigPage() {
 
   const providers = config?.providers ?? {}
   const chatgptProvider = providers.chatgpt
+  const xPremiumProvider = providers['x-premium']
   const models = Object.entries(providers).flatMap(([provName, prov]) =>
     Object.entries(prov.models).map(([mName, model]) => ({ provName, mName, ...model })),
   )
@@ -415,7 +416,10 @@ export function ConfigPage() {
                   {Object.entries(providers).map(([name, prov]) => {
                     const badge = getProviderBadge(prov)
                     const isChatgpt = name === 'chatgpt'
+                    const isXPremium = name === 'x-premium'
                     const isClaude = name === 'anthropic'
+                    const oauthLabel = isXPremium ? 'X Premium' : 'ChatGPT'
+                    const canConnectOAuth = isChatgpt || isXPremium
                     return (
                       <div
                         key={name}
@@ -426,7 +430,7 @@ export function ConfigPage() {
                           <p className="text-[11px] font-mono text-[var(--color-text-muted)]">
                             {prov.apiType} · {prov.authType ?? 'unknown'}
                           </p>
-                          {isChatgpt && prov.requiresRestart && (
+                          {canConnectOAuth && prov.requiresRestart && (
                             <p className="text-[11px] text-amber-400 mt-1">
                               Authorized. Restart ZeRo to use new models.
                             </p>
@@ -523,7 +527,9 @@ export function ConfigPage() {
                                 {claudeUsage.seven_day_oauth_apps && (
                                   <p className="text-[11px] text-[var(--color-text-muted)]">
                                     7d OAuth apps:{' '}
-                                    {formatUsagePercent(claudeUsage.seven_day_oauth_apps.utilization)}
+                                    {formatUsagePercent(
+                                      claudeUsage.seven_day_oauth_apps.utilization,
+                                    )}
                                     {' · '}resets{' '}
                                     {formatUsageResetAt(claudeUsage.seven_day_oauth_apps.resets_at)}
                                   </p>
@@ -542,14 +548,19 @@ export function ConfigPage() {
                           <span className={`text-[11px] px-2 py-0.5 rounded-md ${badge.className}`}>
                             {badge.label}
                           </span>
-                          {isChatgpt && (
+                          {canConnectOAuth && (
                             <button
                               type="button"
-                              onClick={handleConnectChatgpt}
-                              disabled={chatgptConnecting}
+                              onClick={() =>
+                                handleConnectOAuthProvider(
+                                  isXPremium ? 'x-premium' : 'chatgpt',
+                                  oauthLabel,
+                                )
+                              }
+                              disabled={oauthConnecting === name}
                               className="text-[11px] px-2 py-1 rounded-md bg-[var(--color-accent-glow)] text-[var(--color-accent)] hover:opacity-90 disabled:opacity-50"
                             >
-                              {chatgptConnecting
+                              {oauthConnecting === name
                                 ? 'Connecting...'
                                 : prov.authorized
                                   ? 'Reconnect'
@@ -573,15 +584,36 @@ export function ConfigPage() {
                       </div>
                       <button
                         type="button"
-                        onClick={handleConnectChatgpt}
-                        disabled={chatgptConnecting}
+                        onClick={() => handleConnectOAuthProvider('chatgpt', 'ChatGPT')}
+                        disabled={oauthConnecting === 'chatgpt'}
                         className="text-[11px] px-2 py-1 rounded-md bg-[var(--color-accent-glow)] text-[var(--color-accent)] hover:opacity-90 disabled:opacity-50"
                       >
-                        {chatgptConnecting ? 'Connecting...' : 'Connect ChatGPT'}
+                        {oauthConnecting === 'chatgpt' ? 'Connecting...' : 'Connect ChatGPT'}
                       </button>
                     </div>
                   )}
-                  {Object.keys(providers).length === 0 && !chatgptProvider && (
+                  {!xPremiumProvider && (
+                    <div className="flex items-center justify-between py-2 border-b border-[var(--color-border)] gap-3">
+                      <div>
+                        <p className="text-[13px] text-[var(--color-text-primary)]">x-premium</p>
+                        <p className="text-[11px] font-mono text-[var(--color-text-muted)]">
+                          x_responses · oauth2
+                        </p>
+                        <p className="text-[11px] text-[var(--color-text-disabled)] mt-1">
+                          Connect X Premium OAuth to add Grok models.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleConnectOAuthProvider('x-premium', 'X Premium')}
+                        disabled={oauthConnecting === 'x-premium'}
+                        className="text-[11px] px-2 py-1 rounded-md bg-[var(--color-accent-glow)] text-[var(--color-accent)] hover:opacity-90 disabled:opacity-50"
+                      >
+                        {oauthConnecting === 'x-premium' ? 'Connecting...' : 'Connect X Premium'}
+                      </button>
+                    </div>
+                  )}
+                  {Object.keys(providers).length === 0 && !chatgptProvider && !xPremiumProvider && (
                     <p className="text-[13px] text-[var(--color-text-muted)]">
                       No providers configured
                     </p>

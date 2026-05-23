@@ -79,7 +79,7 @@ bun zero restart
 - `.zero/secrets.enc` 是否存在
 - macOS Keychain 主密钥是否可读
 - `openai_codex_api_key` 是否已配置
-- ChatGPT / Claude OAuth 凭证是否已存在于 vault
+- ChatGPT / Claude / X Premium OAuth 凭证是否已存在于 vault
 - `.zero/logs` 是否存在
 - `apps/web/dist` 是否已构建
 - macOS 下的 LaunchAgent 安装和加载状态

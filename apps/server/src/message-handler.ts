@@ -19,6 +19,8 @@ import {
 } from '@zero-os/shared'
 import type { ChannelAdapter, StreamAdapter, TypingHandle } from './channel-adapter'
 
+const TYPING_INDICATOR_TIMEOUT_MS = 3000
+
 export interface MessageHandlerDeps {
   channelType: SessionSource
   channelName: string
@@ -150,7 +152,7 @@ export async function handleChannelMessage(
       return
     }
 
-    typingHandle = await deps.channelAdapter.showTyping(chatId, messageId)
+    typingHandle = await showTypingBestEffort(deps, chatId, messageId)
 
     if (deps.channelAdapter.createStreaming) {
       try {
@@ -435,6 +437,41 @@ function ensureSessionReady(session: Session, isNew: boolean, deps: MessageHandl
 function isSessionTurnInProgress(session: Session): boolean {
   const maybeSession = session as Session & { isTurnInProgress?: () => boolean }
   return typeof maybeSession.isTurnInProgress === 'function' ? maybeSession.isTurnInProgress() : false
+}
+
+async function showTypingBestEffort(
+  deps: MessageHandlerDeps,
+  chatId: string,
+  messageId: string | number | undefined,
+): Promise<TypingHandle | null> {
+  let settled = false
+  let timeout: ReturnType<typeof setTimeout> | undefined
+
+  const typing = deps.channelAdapter.showTyping(chatId, messageId).catch((err) => {
+    if (!settled) {
+      console.warn(
+        `[ZeRo OS] ${deps.channelName} typing indicator failed; continuing message handling:`,
+        describeError(err),
+      )
+    }
+    return null
+  })
+
+  const timeoutGuard = new Promise<TypingHandle | null>((resolve) => {
+    timeout = setTimeout(() => {
+      if (!settled) {
+        console.warn(
+          `[ZeRo OS] ${deps.channelName} typing indicator timed out after ${TYPING_INDICATOR_TIMEOUT_MS}ms; continuing message handling`,
+        )
+      }
+      resolve(null)
+    }, TYPING_INDICATOR_TIMEOUT_MS)
+  })
+
+  const handle = await Promise.race([typing, timeoutGuard])
+  settled = true
+  if (timeout) clearTimeout(timeout)
+  return handle
 }
 
 function normalizeChatId(msg: IncomingMessage): string {

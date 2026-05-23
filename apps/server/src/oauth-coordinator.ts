@@ -7,7 +7,7 @@ import { toErrorMessage } from '@zero-os/shared'
 
 export const DEFAULT_OAUTH_REDIRECT_URI = 'http://localhost:1455/auth/callback'
 
-export type ManagedOAuthProvider = 'chatgpt' | 'anthropic'
+export type ManagedOAuthProvider = 'chatgpt' | 'anthropic' | 'x-premium'
 
 export type ManagedOAuthState =
   | 'idle'
@@ -47,7 +47,7 @@ export interface ManagedOAuthDriver<Session = unknown> {
     redirectUri: string
     codeVerifier: string
     codeChallenge: string
-  }): string
+  }): string | Promise<string>
   exchangeCode(params: {
     code: string
     state: string
@@ -206,7 +206,7 @@ export class ManagedOAuthCoordinator {
     try {
       return {
         attemptId,
-        url: driver.buildAuthorizationUrl({
+        url: await driver.buildAuthorizationUrl({
           state,
           redirectUri: attempt.redirectUri,
           codeVerifier,

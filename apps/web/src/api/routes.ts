@@ -1192,6 +1192,9 @@ export function createRoutes(zero: ZeroOS) {
             const usage = await claudeUsage.fetchUsage()
             return c.json({ provider: 'anthropic', usage })
           }
+          case 'x-premium': {
+            return c.json({ provider: 'x-premium', usage: null })
+          }
         }
       } catch (error) {
         return c.json({ error: toErrorMessage(error) }, 500)

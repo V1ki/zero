@@ -6,6 +6,7 @@ export { OpenAIChatAdapter } from './adapters/openai-chat'
 export { AnthropicAdapter } from './adapters/anthropic'
 export { AnthropicDeepSeekAdapter } from './adapters/anthropic-deepseek'
 export { OpenAIResponsesAdapter } from './adapters/openai-resp'
+export { XResponsesAdapter } from './adapters/x-resp'
 export type { ProviderAdapter, AdapterConfig } from './adapters/base'
 export { TrackedAdapter } from './adapters/tracked'
 export type { UsageRecorder } from './adapters/tracked'
@@ -26,6 +27,14 @@ export {
   serializeClaudeOAuthSession,
 } from './auth/claude'
 export type { ClaudeOAuthAccount, ClaudeOAuthSession } from './auth/claude'
+export {
+  decodeXPremiumAccount,
+  decodeXPremiumTokenExpiry,
+  getXPremiumAuthorizationScheme,
+  parseXPremiumOAuthSession,
+  serializeXPremiumOAuthSession,
+} from './auth/x-premium'
+export type { XPremiumOAuthAccount, XPremiumOAuthSession } from './auth/x-premium'
 export { createApiKeyAuth } from './auth/api-key'
 export { computeCost } from './cost'
 export { LiteLLMPricing } from './pricing'

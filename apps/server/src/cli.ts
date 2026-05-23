@@ -21,6 +21,7 @@ import {
 import { writeRestartTrigger } from './restart-trigger'
 import { rebuildWebBundle } from './web-build'
 import { weixinCli } from './weixin-cli'
+import { getXPremiumOAuthSessionRef } from './x-premium-provider'
 
 const ZERO_DIR = join(process.cwd(), '.zero')
 const SECRETS_PATH = join(ZERO_DIR, 'secrets.enc')
@@ -219,7 +220,7 @@ async function provider() {
   const target = process.argv[4]
 
   if (action !== 'login' || !target || !isManagedOAuthProvider(target)) {
-    console.error('Usage: bun zero provider login <chatgpt|anthropic>')
+    console.error('Usage: bun zero provider login <chatgpt|anthropic|x-premium>')
     process.exit(1)
   }
 
@@ -329,9 +330,11 @@ async function status() {
       const hasApiKey = vault.get('openai_codex_api_key')
       const hasChatGptOauth = vault.get(getChatgptOAuthTokenRef())
       const hasClaudeOauth = vault.get(getClaudeOAuthSessionRef())
+      const hasXPremiumOauth = vault.get(getXPremiumOAuthSessionRef())
       console.log(`  API Key:   ${hasApiKey ? '✓ configured' : '✗ not set'}`)
       console.log(`  ChatGPT:   ${hasChatGptOauth ? '✓ OAuth configured' : '✗ not set'}`)
       console.log(`  Claude:    ${hasClaudeOauth ? '✓ OAuth configured' : '✗ not set'}`)
+      console.log(`  X Premium: ${hasXPremiumOauth ? '✓ OAuth configured' : '✗ not set'}`)
       console.log(`  Keys:      ${vault.keys().length} total`)
     } catch {
       console.log('  API Key:   ? cannot read vault')
@@ -542,7 +545,7 @@ Commands:
   secret list        List all stored secret keys
   secret delete <k>  Delete a secret
   weixin login       Authenticate a Weixin channel via QR login
-  provider login <provider> Authenticate managed OAuth (chatgpt | anthropic)
+  provider login <provider> Authenticate managed OAuth (chatgpt | anthropic | x-premium)
   status             Show system status
 
 Examples:
@@ -555,6 +558,7 @@ Examples:
   bun zero weixin login
   bun zero provider login chatgpt
   bun zero provider login anthropic
+  bun zero provider login x-premium
   bun zero status
 `)
 }

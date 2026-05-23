@@ -200,6 +200,58 @@ describe('handleChannelMessage', () => {
     expect(calls).toEqual(['handleMessage', 'markDone'])
   })
 
+  test('continues processing when typing indicator fails', async () => {
+    const calls: string[] = []
+    const replies: string[] = []
+
+    const session = {
+      data: { id: 'sess_test' },
+      isAgentInitialized: () => true,
+      setChannelCapabilities: () => {},
+      initAgent: () => {},
+      handleMessage: async (content: string): Promise<Message[]> => {
+        calls.push(`handleMessage:${content}`)
+        return [
+          {
+            id: 'msg_assistant',
+            sessionId: 'sess_test',
+            role: 'assistant',
+            messageType: 'message',
+            content: [{ type: 'text', text: 'handled' }],
+            createdAt: new Date('2026-03-29T00:00:00.000Z').toISOString(),
+          },
+        ]
+      },
+    }
+
+    const channelAdapter: ChannelAdapter = {
+      reply: async (_chatId, text) => {
+        replies.push(text)
+      },
+      showTyping: async () => {
+        calls.push('showTyping')
+        throw new Error('reaction failed')
+      },
+    }
+
+    await handleChannelMessage(
+      {
+        channelType: 'feishu' as const,
+        senderId: 'user_test',
+        content: 'hello after typing failure',
+        timestamp: new Date('2026-03-29T00:00:00.000Z').toISOString(),
+        metadata: {
+          chatId: 'chat_test',
+          messageId: 'msg_test',
+        },
+      },
+      createDefaultDeps(session, channelAdapter),
+    )
+
+    expect(calls).toEqual(['showTyping', 'handleMessage:hello after typing failure'])
+    expect(replies).toEqual(['handled'])
+  })
+
   test('scopes Feishu sessions by sender while replying to the real chat id', async () => {
     const managerCalls: Array<{
       source: string

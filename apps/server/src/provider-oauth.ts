@@ -8,15 +8,29 @@ import {
   getClaudeProviderLabel,
 } from './claude-provider'
 import { ManagedOAuthCoordinator, type ManagedOAuthProvider } from './oauth-coordinator'
+import { XPremiumOAuthDriver } from './x-premium-oauth'
+import {
+  ensureXPremiumProviderConfig,
+  getXPremiumOAuthSessionRef,
+  getXPremiumProviderLabel,
+} from './x-premium-provider'
 
-const MANAGED_OAUTH_TOKEN_REFS = new Set([getChatgptOAuthTokenRef(), getClaudeOAuthSessionRef()])
+const MANAGED_OAUTH_TOKEN_REFS = new Set([
+  getChatgptOAuthTokenRef(),
+  getClaudeOAuthSessionRef(),
+  getXPremiumOAuthSessionRef(),
+])
 
 export function isManagedOAuthProvider(provider: string): provider is ManagedOAuthProvider {
-  return provider === 'chatgpt' || provider === 'anthropic'
+  return provider === 'chatgpt' || provider === 'anthropic' || provider === 'x-premium'
 }
 
 export function createManagedOAuthCoordinator(vault: Vault) {
-  return new ManagedOAuthCoordinator(vault, [new ChatGptOAuthDriver(), new ClaudeOAuthDriver()])
+  return new ManagedOAuthCoordinator(vault, [
+    new ChatGptOAuthDriver(),
+    new ClaudeOAuthDriver(),
+    new XPremiumOAuthDriver(),
+  ])
 }
 
 export function prepareManagedOAuthProvider(provider: ManagedOAuthProvider) {
@@ -25,6 +39,8 @@ export function prepareManagedOAuthProvider(provider: ManagedOAuthProvider) {
       return ensureChatgptProviderConfig()
     case 'anthropic':
       return ensureClaudeProviderConfig()
+    case 'x-premium':
+      return ensureXPremiumProviderConfig()
   }
 }
 
@@ -38,5 +54,7 @@ export function getManagedOAuthProviderLabel(provider: ManagedOAuthProvider) {
       return 'ChatGPT'
     case 'anthropic':
       return getClaudeProviderLabel()
+    case 'x-premium':
+      return getXPremiumProviderLabel()
   }
 }

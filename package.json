@@ -13,7 +13,8 @@
     "lint:fix": "biome check --write .",
     "build:web": "cd apps/web && bun run build",
     "dev:web": "cd apps/web && bun run dev",
-    "zero": "bun run apps/server/src/cli.ts"
+    "zero": "bun run apps/server/src/cli.ts",
+    "x-search:probe": "bun run benchmarks/x-search-usage-probe/run.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "1.9.4",

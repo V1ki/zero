@@ -230,6 +230,10 @@ ChatGPT OAuth sessions now refresh on demand before expiry and after a single 40
 
 Claude browser OAuth is also available through the same managed callback flow. ZeRo OS stores the Claude credential in the vault as session JSON, resolves the access token at runtime, and refreshes the session automatically until the refresh grant is no longer valid. Re-run `bun zero provider login anthropic` only when Claude asks for re-authentication.
 
+X Premium / xAI OAuth can be connected with `bun zero provider login x-premium`. This adds an `x-premium` `x_responses` provider backed by `https://api.x.ai/v1`, stores the OAuth session in the vault, refreshes it before expiry, and retries once after a 401. If xAI returns a 403 during token exchange or refresh, the account likely lacks API OAuth entitlement for the current plan; use an API-key xAI provider instead when available.
+
+When X Premium OAuth is available at startup, ZeRo also registers `x_search`, a built-in tool that searches X posts through xAI's hosted `x_search` Responses tool. As a fallback, the tool can use a vault secret named `xai_api_key`.
+
 ## Development Workflow
 
 ### Day-to-day commands

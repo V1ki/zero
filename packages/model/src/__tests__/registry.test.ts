@@ -155,6 +155,59 @@ describe('ModelRegistry', () => {
     expect(adapter?.oauthTokenRefresher).toBe(refresher)
   })
 
+  test('injects oauth refresher for x-premium providers using the provider name key', () => {
+    const oauthConfig: SystemConfig = {
+      providers: {
+        'x-premium': {
+          apiType: 'x_responses',
+          baseUrl: 'https://api.x.ai/v1',
+          auth: { type: 'oauth2', oauthTokenRef: 'x_premium_oauth_session' },
+          models: {
+            'grok-4.3': {
+              modelId: 'grok-4.3',
+              maxContext: 256000,
+              maxOutput: 8192,
+              capabilities: ['tools', 'reasoning'],
+              tags: ['grok'],
+            },
+          },
+        },
+      },
+      defaultModel: 'x-premium/grok-4.3',
+      fallbackChain: ['x-premium/grok-4.3'],
+      schedules: [],
+      fuseList: [],
+    }
+    const oauthSecrets = new Map([
+      [
+        'x_premium_oauth_session',
+        JSON.stringify({
+          accessToken: 'test-access-token',
+          refreshToken: 'test-refresh-token',
+          expiresAt: Date.now() + 3600_000,
+          tokenType: 'Bearer',
+          scopes: ['openid', 'profile'],
+        }),
+      ],
+    ])
+    const refresher = async () => {}
+    const registry = new ModelRegistry(oauthConfig, oauthSecrets, {
+      oauthRefreshers: {
+        'x-premium': refresher,
+      },
+    })
+
+    const resolved = registry.resolve('x-premium/grok-4.3')
+    const adapter = resolved?.adapter as
+      | {
+          oauthTokenRefresher?: unknown
+        }
+      | undefined
+
+    expect(adapter?.oauthTokenRefresher).toBe(refresher)
+    expect(resolved?.adapter.apiType).toBe('x_responses')
+  })
+
   test('creates AnthropicDeepSeekAdapter for anthropic-deepseek providers', () => {
     const deepseekConfig: SystemConfig = {
       providers: {

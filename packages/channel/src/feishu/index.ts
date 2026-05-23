@@ -156,8 +156,11 @@ export class FeishuChannel implements Channel {
           }
 
           console.log(
-            '[FeishuChannel] im.message.receive_v1 from',
-            event?.sender?.sender_id?.open_id ?? 'unknown',
+            `[FeishuChannel:${this.name}] im.message.receive_v1 from ${
+              event?.sender?.sender_id?.open_id ?? 'unknown'
+            } chat=${msg.chat_id ?? 'unknown'} message=${messageId ?? 'unknown'} type=${
+              msg.message_type ?? 'unknown'
+            }`,
           )
           const incoming = await this.buildIncomingMessage(data)
           if (!incoming) return

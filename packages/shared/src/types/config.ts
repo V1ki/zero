@@ -6,6 +6,7 @@ export type ApiType =
   | 'anthropic-deepseek'
   | 'openai_chat_completions'
   | 'openai_responses'
+  | 'x_responses'
 
 export type AuthType = 'api_key' | 'oauth2'
 

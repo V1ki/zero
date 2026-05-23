@@ -5,6 +5,7 @@ import type { AdapterConfig, OAuthTokenRefresher, ProviderAdapter } from './adap
 import { OpenAIChatAdapter } from './adapters/openai-chat'
 import { OpenAIResponsesAdapter } from './adapters/openai-resp'
 import { TrackedAdapter, type UsageRecorder } from './adapters/tracked'
+import { XResponsesAdapter } from './adapters/x-resp'
 import { LiteLLMPricing } from './pricing'
 
 export interface ResolvedModel {
@@ -196,6 +197,8 @@ export class ModelRegistry {
         return new AnthropicDeepSeekAdapter(config)
       case 'openai_responses':
         return new OpenAIResponsesAdapter(config)
+      case 'x_responses':
+        return new XResponsesAdapter(config)
       default:
         throw new Error(`Unsupported API type: ${apiType}`)
     }
