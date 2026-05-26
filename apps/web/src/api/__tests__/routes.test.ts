@@ -5,7 +5,7 @@ import { SessionManager } from '@zero-os/core'
 import { serializeChatGptOAuthSession, serializeClaudeOAuthSession } from '@zero-os/model'
 import type { ProviderAdapter } from '@zero-os/model'
 import { encryptSecrets } from '@zero-os/secrets'
-import type { Session as SessionData, SourceCard, TimelineCompactionBlock } from '@zero-os/shared'
+import type { Session as SessionData, TimelineCompactionBlock } from '@zero-os/shared'
 import { readYaml } from '@zero-os/shared/utils'
 import { createTestProjectRoot } from '../../../../../packages/core/src/session/__tests__/test-helpers'
 import { SessionDB } from '../../../../../packages/observe/src/session-db'
@@ -56,54 +56,6 @@ function recordAgentLoopUsage(
     durationMs: entry.durationMs,
     createdAt: entry.createdAt,
   })
-}
-
-function expectNoSourceCredentialMaterial(value: unknown) {
-  const text = JSON.stringify(value)
-  expect(text).not.toContain('external:himalaya/account/qq')
-  expect(text).not.toContain('"credentials"')
-  expect(text).not.toContain('"credentialRef"')
-  expect(text).not.toContain('"credentialLeaseId"')
-  expect(text).not.toMatch(/"ref"\s*:/)
-  expect(text).not.toMatch(/token|cookie|password|authorization/i)
-}
-
-function expectNoSourcePublicViewLeak(value: unknown) {
-  const text = JSON.stringify(value)
-  expect(text).not.toContain('commandTemplate')
-  expect(text).not.toContain('endpointTemplates')
-  expect(text).not.toContain('sampleQueries')
-  expect(text).not.toMatch(/"message"\s*:/)
-  expect(text).not.toMatch(/"details"\s*:/)
-}
-
-function expectNoSourceDraftSecretMaterial(value: unknown) {
-  const text = JSON.stringify(value)
-  expect(text).not.toContain('external:himalaya/account/qq')
-  expect(text).not.toContain('credentialRef')
-  expect(text).not.toContain('credentialLeaseId')
-  expect(text).not.toContain('sk-test-placeholder')
-  expect(text).not.toMatch(/authorization|cookie|password|token/i)
-}
-
-function createApiSourceCard(id: string, overrides: Partial<SourceCard> = {}): SourceCard {
-  return {
-    schemaVersion: 1,
-    id,
-    title: 'Routes Source Card',
-    state: 'draft',
-    sensitivity: 'public',
-    tags: ['market-data'],
-    sourceDoc: {
-      format: 'markdown',
-      body: '# Routes Source Card\n\n## When to use\n- Use for public route tests.\n\n## How to use\n- Fetch https://example.invalid/source.',
-    },
-    source: {
-      sessionId: 'sess_routes_source_card',
-      summary: 'Created by API route tests.',
-    },
-    ...overrides,
-  }
 }
 
 function writeConfig(dataDir: string) {
@@ -346,230 +298,6 @@ describe('API Routes (Real)', () => {
     const types = data.memories.map((memory) => memory.type)
     expect(types).toContain('inbox')
     expect(types).toContain('preference')
-  })
-
-  test('GET /api/source-cards starts without built-in sample cards and lists user-created docs', async () => {
-    const emptyRes = await app.request('/api/source-cards')
-    expect(emptyRes.status).toBe(200)
-    const emptyData = (await emptyRes.json()) as { sourceCards: Array<Record<string, unknown>> }
-    const initialIds = emptyData.sourceCards.map((card) => card.id)
-    expect(initialIds).not.toContain('qq-mail-himalaya')
-    expect(initialIds).not.toContain('a-stock-market-data')
-
-    zero.sourceCardManager.create(
-      createApiSourceCard('routes-list-doc', {
-        title: 'Routes List Doc',
-        sourceDoc: {
-          format: 'markdown',
-          body: '# Routes List Doc\n\n## How to use\n- Fetch https://example.invalid/source.',
-        },
-      }),
-    )
-
-    const res = await app.request('/api/source-cards')
-    expect(res.status).toBe(200)
-
-    const data = (await res.json()) as { sourceCards: Array<Record<string, unknown>> }
-    const card = data.sourceCards.find((item) => item.id === 'routes-list-doc')
-    expect(card?.state).toBe('draft')
-    expect(card?.sensitivity).toBe('public')
-    expect(((card?.sourceDoc as Record<string, unknown>)?.body as string) ?? '').toContain(
-      'https://example.invalid/source',
-    )
-    expect(card).not.toHaveProperty('credentials')
-    expect(card).not.toHaveProperty('adapter')
-    expect(card).not.toHaveProperty('health')
-    expectNoSourceCredentialMaterial(data)
-    expectNoSourcePublicViewLeak(data)
-  })
-
-  test('GET /api/source-cards/:id returns one Markdown Source Card view', async () => {
-    zero.sourceCardManager.create(
-      createApiSourceCard('routes-detail-doc', {
-        title: 'Routes Detail Doc',
-        sensitivity: 'private',
-        tags: ['mail'],
-        sourceDoc: {
-          format: 'markdown',
-          body: '# Routes Detail Doc\n\n## How to use\n- Use metadata only.',
-        },
-      }),
-    )
-
-    const res = await app.request('/api/source-cards/routes-detail-doc')
-    expect(res.status).toBe(200)
-    const data = (await res.json()) as { sourceCard: Record<string, unknown> }
-
-    expect(data.sourceCard.id).toBe('routes-detail-doc')
-    expect(data.sourceCard.sensitivity).toBe('private')
-    expect(data.sourceCard).not.toHaveProperty('credentials')
-    expect(data.sourceCard).not.toHaveProperty('adapter')
-    expect(data.sourceCard).not.toHaveProperty('health')
-    expect(JSON.stringify(data)).toContain('Use metadata only')
-    expectNoSourceCredentialMaterial(data)
-    expectNoSourcePublicViewLeak(data)
-  })
-
-  test('GET /api/source-cards/:id returns 404 for missing Source Card', async () => {
-    const res = await app.request('/api/source-cards/missing-source-card')
-    expect(res.status).toBe(404)
-  })
-
-  test('POST /api/source-cards/:id/activate activates a draft with a reason', async () => {
-    zero.sourceCardManager.create(createApiSourceCard('routes-activate-doc'))
-
-    const missingReason = await app.request('/api/source-cards/routes-activate-doc/activate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason: '' }),
-    })
-    expect(missingReason.status).toBe(400)
-
-    const res = await app.request('/api/source-cards/routes-activate-doc/activate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason: 'reviewed markdown source guide' }),
-    })
-
-    expect(res.status).toBe(200)
-    const data = (await res.json()) as { sourceCard: Record<string, unknown> }
-    expect(data.sourceCard.state).toBe('active')
-    expect(data.sourceCard).not.toHaveProperty('credentials')
-    expectNoSourceCredentialMaterial(data)
-    expectNoSourcePublicViewLeak(data)
-  })
-
-  test('POST /api/source-cards/:id/retire requires reason and returns public view only', async () => {
-    zero.sourceCardManager.create(createApiSourceCard('routes-retire-doc', { state: 'active' }))
-
-    const missingReason = await app.request('/api/source-cards/routes-retire-doc/retire', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason: '' }),
-    })
-    expect(missingReason.status).toBe(400)
-
-    const res = await app.request('/api/source-cards/routes-retire-doc/retire', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason: 'deprecating this source card' }),
-    })
-
-    expect(res.status).toBe(200)
-    const data = (await res.json()) as { sourceCard: Record<string, unknown> }
-    expect(data.sourceCard.state).toBe('retired')
-    expect(data.sourceCard).not.toHaveProperty('credentials')
-    expectNoSourceCredentialMaterial(data)
-    expectNoSourcePublicViewLeak(data)
-  })
-
-  test('POST /api/source-card-drafts mines a draft and creates document cards', async () => {
-    const createdAt = '2026-05-12T03:00:00.000Z'
-    const sourceSessionId = 'sess_routes_source_miner'
-    const sessionData: SessionData = {
-      id: sourceSessionId,
-      createdAt,
-      updatedAt: createdAt,
-      source: 'web',
-      currentModel: 'openai-codex/gpt-5.4-medium',
-      modelHistory: [{ model: 'openai-codex/gpt-5.4-medium', from: createdAt, to: null }],
-      tags: [],
-      channelId: 'default',
-      channelName: 'web',
-    }
-    zero.sessionDb.saveSession(sessionData)
-    zero.sessionDb.saveMessages(sourceSessionId, [
-      {
-        id: 'msg_source_miner_user',
-        sessionId: sourceSessionId,
-        role: 'user',
-        messageType: 'message',
-        createdAt,
-        content: [
-          {
-            type: 'text',
-            text: '把 Eastmoney public stock quote API 的已有 session evidence 做成 Source Card draft',
-          },
-        ],
-      },
-      {
-        id: 'msg_source_miner_assistant',
-        sessionId: sourceSessionId,
-        role: 'assistant',
-        messageType: 'message',
-        createdAt,
-        content: [
-          {
-            type: 'tool_result',
-            toolUseId: 'tool_eastmoney',
-            outputSummary: 'public quote metadata',
-            content:
-              'GET https://push2.eastmoney.com/api/qt/stock/get statusCode 200 schemaKeys data diff f43 f57 f58',
-          },
-        ],
-      },
-    ])
-    const span = zero.tracer.startSpan(
-      sourceSessionId,
-      'fetch eastmoney quote evidence',
-      undefined,
-      {
-        kind: 'tool_call',
-        data: {
-          input: { url: 'https://push2.eastmoney.com/api/qt/stock/get' },
-          toolResult: {
-            outputSummary: 'HTTP 200 with quote schema',
-            schemaKeys: ['data', 'diff', 'f43', 'f57', 'f58'],
-          },
-        },
-      },
-    )
-    zero.tracer.endSpan(span.id, 'success')
-
-    const draftRes = await app.request('/api/source-card-drafts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: sourceSessionId }),
-    })
-    expect(draftRes.status).toBe(200)
-    const draftData = (await draftRes.json()) as { draft: Record<string, unknown> }
-    const draft = draftData.draft
-
-    expect(draft.sourceSessionId).toBe(sourceSessionId)
-    expect((draft.proposedCard as Record<string, unknown>).state).toBe('draft')
-    expect((draft.proposedCard as Record<string, unknown>).title).toBe('A-share market data')
-    expect(Array.isArray(draft.evidenceRefs)).toBe(true)
-    expect(JSON.stringify(draft.evidenceRefs)).toContain('push2.eastmoney.com')
-    expect(JSON.stringify(draft.evidenceRefs)).toContain('schemaKeys')
-    expectNoSourceDraftSecretMaterial(draftData)
-
-    const validateRes = await app.request('/api/source-card-drafts/validate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ draft }),
-    })
-    expect(validateRes.status).toBe(200)
-    expect(((await validateRes.json()) as { validation: { ok: boolean } }).validation.ok).toBe(true)
-
-    const rejected = await app.request('/api/source-card-drafts/cards', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ draft, confirm: false }),
-    })
-    expect(rejected.status).toBe(400)
-
-    const created = await app.request('/api/source-card-drafts/cards', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ draft, confirm: true }),
-    })
-    expect(created.status).toBe(200)
-    const createdData = (await created.json()) as { sourceCard: Record<string, unknown> }
-    expect(createdData.sourceCard.state).toBe('draft')
-    expect(createdData.sourceCard.state).not.toBe('active')
-    expect(createdData.sourceCard.sourceDoc).toBeDefined()
-    expectNoSourceCredentialMaterial(createdData)
-    expectNoSourcePublicViewLeak(createdData)
   })
 
   test('PUT /api/memo updates memo', async () => {
@@ -901,7 +629,7 @@ describe('API Routes (Real)', () => {
     const res = await app.request('/api/tools')
     expect(res.status).toBe(200)
     const data = await res.json()
-    expect(data.tools.length).toBe(16)
+    expect(data.tools.length).toBe(15)
     const names = data.tools.map((t: { name: string }) => t.name)
     expect(names).toContain('read')
     expect(names).toContain('read_image')
@@ -913,7 +641,6 @@ describe('API Routes (Real)', () => {
     expect(names).toContain('memory_search')
     expect(names).toContain('memory_read')
     expect(names).toContain('schedule')
-    expect(names).toContain('source_card')
     expect(names).toContain('codex')
     expect(names).toContain('spawn_agent')
     expect(names).toContain('wait_agent')

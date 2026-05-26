@@ -366,9 +366,9 @@ describe('startZeroOS Integration', () => {
     }
   })
 
-  test('toolRegistry has 16 registered tools', () => {
+  test('toolRegistry has 15 registered tools', () => {
     const tools = zero.toolRegistry.list()
-    expect(tools.length).toBe(16)
+    expect(tools.length).toBe(15)
     const names = tools.map((t) => t.name)
     expect(names).toContain('read')
     expect(names).toContain('read_image')
@@ -380,7 +380,6 @@ describe('startZeroOS Integration', () => {
     expect(names).toContain('memory_read')
     expect(names).toContain('memory')
     expect(names).toContain('schedule')
-    expect(names).toContain('source_card')
     expect(names).toContain('codex')
     expect(names).toContain('spawn_agent')
     expect(names).toContain('wait_agent')

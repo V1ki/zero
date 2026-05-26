@@ -14,7 +14,6 @@ export { MemoryTool } from './tool/memory'
 export { MemorySearchTool } from './tool/memory-search'
 export { MemoryReadTool } from './tool/memory-read'
 export { ScheduleTool } from './tool/schedule'
-export { SourceCardTool } from './tool/source-card'
 export { CodexTool } from './tool/codex'
 export { XSearchTool } from './tool/x-search'
 export type { XSearchCredential, XSearchCredentialProvider } from './tool/x-search'
@@ -70,39 +69,6 @@ export {
   MINIMAL_BOOTSTRAP_ALLOWLIST,
   DEFAULT_TEMPLATES,
 } from './bootstrap/templates'
-
-// Source Cards
-export {
-  SessionSourceMiner,
-  SourceCardManager,
-  SourceCardService,
-  SourceCardStore,
-  containsSensitiveDraftMaterial,
-  findSourceCardDraftDedupeCandidates,
-  redactSourceCardDraft,
-  toPublicSourceCard,
-} from './source-card'
-export type {
-  SessionMinerSession,
-  SessionSourceMinerArtifact,
-  SessionSourceMinerDeps,
-  SessionSourceMinerOptions,
-  SessionSourceMinerReader,
-  SourceCardDedupeSource,
-  SourceCardDraft,
-  SourceCardDraftCreateRequest,
-  SourceCardDraftDedupeCandidate,
-  SourceCardDraftDedupeDecision,
-  SourceCardDraftEvidenceRef,
-  SourceCardDraftEvidenceSource,
-  SourceCardDraftTriggerSnapshot,
-  SourceCardDraftValidationResult,
-  SourceCardActivateRequest,
-  SourceCardAuditContext,
-  SourceCardAuditEvent,
-  SourceCardManagerOptions,
-  SourceCardPublicView,
-} from './source-card'
 
 // Context Engineering
 export {

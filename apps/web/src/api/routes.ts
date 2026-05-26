@@ -1,5 +1,4 @@
 import {
-  type SourceCardDraftCreateRequest,
   buildSessionInfoReply,
   loadConfig,
   parseSessionArgs,
@@ -840,101 +839,6 @@ export function createRoutes(zero: ZeroOS) {
       const deleted = await zero.memoryStore.delete(type, id)
       if (!deleted) return c.json({ error: 'Memory not found' }, 404)
       return c.json({ ok: true })
-    })
-
-    // Source Card Drafts
-    .post('/api/source-card-drafts', async (c) => {
-      const body = (await c.req
-        .json<{ sessionId?: unknown; current?: unknown }>()
-        .catch(() => ({}))) as { sessionId?: unknown; current?: unknown }
-      const useCurrentSession = body.current === true
-      const sessionId =
-        typeof body.sessionId === 'string' && body.sessionId.trim()
-          ? body.sessionId
-          : useCurrentSession
-            ? getCurrentWebSession()?.data.id
-            : undefined
-
-      if (!sessionId) {
-        return c.json(
-          { error: 'sessionId is required unless current=true resolves a session' },
-          400,
-        )
-      }
-
-      try {
-        const draft = zero.sourceCardMiner.generateDraft(sessionId, {
-          currentSession: useCurrentSession && !body.sessionId,
-        })
-        return c.json({ draft })
-      } catch (error) {
-        const message = toErrorMessage(error)
-        return c.json({ error: message }, message.includes('not found') ? 404 : 400)
-      }
-    })
-
-    .post('/api/source-card-drafts/validate', async (c) => {
-      const body = (await c.req.json<{ draft?: unknown }>().catch(() => ({}))) as {
-        draft?: unknown
-      }
-      return c.json({ validation: zero.sourceCardService.validateDraft(body.draft) })
-    })
-
-    .post('/api/source-card-drafts/cards', async (c) => {
-      const body = await c.req.json<SourceCardDraftCreateRequest>().catch(() => null)
-      if (!body) return c.json({ error: 'Source Card draft create request is required' }, 400)
-
-      try {
-        const sourceCard = zero.sourceCardService.createFromDraft(body)
-        return c.json({ sourceCard })
-      } catch (error) {
-        return c.json({ error: toErrorMessage(error) }, 400)
-      }
-    })
-
-    // Source Cards
-    .get('/api/source-cards', (c) => {
-      return c.json({ sourceCards: zero.sourceCardService.list() })
-    })
-
-    .get('/api/source-cards/:id', (c) => {
-      const id = c.req.param('id')
-      const sourceCard = zero.sourceCardService.get(id)
-      if (!sourceCard) return c.json({ error: 'Source Card not found' }, 404)
-      return c.json({ sourceCard })
-    })
-
-    .post('/api/source-cards/:id/activate', async (c) => {
-      const id = c.req.param('id')
-      const existing = zero.sourceCardService.get(id)
-      if (!existing) return c.json({ error: 'Source Card not found' }, 404)
-
-      const body = await c.req.json<{ reason?: unknown }>().catch(() => null)
-      if (!body) return c.json({ error: 'Activation payload is required' }, 400)
-      const reason = typeof body.reason === 'string' ? body.reason : ''
-
-      try {
-        const sourceCard = zero.sourceCardService.activate(id, { reason })
-        return c.json({ sourceCard })
-      } catch (error) {
-        return c.json({ error: toErrorMessage(error) }, 400)
-      }
-    })
-
-    .post('/api/source-cards/:id/retire', async (c) => {
-      const id = c.req.param('id')
-      const existing = zero.sourceCardService.get(id)
-      if (!existing) return c.json({ error: 'Source Card not found' }, 404)
-
-      const body = await c.req.json<{ reason?: unknown }>().catch(() => null)
-      const reason = typeof body?.reason === 'string' ? body.reason : ''
-
-      try {
-        const sourceCard = zero.sourceCardService.retire(id, reason)
-        return c.json({ sourceCard })
-      } catch (error) {
-        return c.json({ error: toErrorMessage(error) }, 400)
-      }
     })
 
     // Memo
