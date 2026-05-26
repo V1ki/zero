@@ -152,7 +152,7 @@ export class XSearchTool extends BaseTool {
 
     const response = await this.postWithRetries(credential, payload)
     if (!response.ok) {
-      const error = await readErrorMessage(response)
+      const error = await this.readErrorMessage(response)
       return {
         success: false,
         output: JSON.stringify(
@@ -170,7 +170,7 @@ export class XSearchTool extends BaseTool {
       }
     }
 
-    const data = (await response.json()) as Record<string, unknown>
+    const data = (await this.readJson(response)) as Record<string, unknown>
     const answer = extractResponseText(data)
     const citations = Array.isArray(data.citations) ? data.citations : []
     const inlineCitations = extractInlineCitations(data)
@@ -238,18 +238,67 @@ export class XSearchTool extends BaseTool {
     const baseUrl = (credential.baseUrl ?? this.defaultBaseUrl).replace(/\/+$/, '')
     const endpoint = baseUrl.endsWith('/v1') ? `${baseUrl}/responses` : `${baseUrl}/v1/responses`
     const authorizationScheme = credential.authorizationScheme ?? 'Bearer'
+    const controller = new AbortController()
 
-    return this.fetchFn(endpoint, {
-      method: 'POST',
-      headers: {
-        Authorization: `${authorizationScheme} ${credential.bearerToken}`,
-        'Content-Type': 'application/json',
-        'User-Agent': 'Zero-OS/x-search',
-      },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(this.timeoutMs),
-    })
+    return withTimeout(
+      this.fetchFn(endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `${authorizationScheme} ${credential.bearerToken}`,
+          'Content-Type': 'application/json',
+          'User-Agent': 'Zero-OS/x-search',
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      }),
+      this.timeoutMs,
+      'x_search request',
+      () => controller.abort(),
+    )
   }
+
+  private readJson(response: Response): Promise<unknown> {
+    return withTimeout(response.json(), this.timeoutMs, 'x_search response body')
+  }
+
+  private async readErrorMessage(response: Response): Promise<string> {
+    const text = await withTimeout(response.text(), this.timeoutMs, 'x_search error body')
+    if (!text.trim()) return response.statusText
+
+    try {
+      const payload = JSON.parse(text) as Record<string, unknown>
+      const code = typeof payload.code === 'string' ? payload.code.trim() : ''
+      const error =
+        typeof payload.error === 'string'
+          ? payload.error.trim()
+          : typeof payload.message === 'string'
+            ? payload.message.trim()
+            : ''
+      if (code && error && !error.includes(code)) return `${code}: ${error}`
+      return error || code || text.slice(0, 500)
+    } catch {
+      return text.slice(0, 500)
+    }
+  }
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+  onTimeout?: () => void,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      onTimeout?.()
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`))
+    }, timeoutMs)
+  })
+
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
 }
 
 function normalizeHandles(value: unknown, fieldName: string): string[] {
@@ -311,26 +360,6 @@ function extractInlineCitations(payload: Record<string, unknown>): Array<Record<
     }
   }
   return citations
-}
-
-async function readErrorMessage(response: Response): Promise<string> {
-  const text = await response.text()
-  if (!text.trim()) return response.statusText
-
-  try {
-    const payload = JSON.parse(text) as Record<string, unknown>
-    const code = typeof payload.code === 'string' ? payload.code.trim() : ''
-    const error =
-      typeof payload.error === 'string'
-        ? payload.error.trim()
-        : typeof payload.message === 'string'
-          ? payload.message.trim()
-          : ''
-    if (code && error && !error.includes(code)) return `${code}: ${error}`
-    return error || code || text.slice(0, 500)
-  } catch {
-    return text.slice(0, 500)
-  }
 }
 
 function summarizeXSearchResult(answer: string, citationCount: number): string {

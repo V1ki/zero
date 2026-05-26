@@ -143,4 +143,18 @@ describe('XSearchTool', () => {
     expect(result.success).toBe(false)
     expect(result.output).toContain('No xAI credentials available')
   })
+
+  test('times out when the xAI request never settles', async () => {
+    const tool = new XSearchTool({
+      credentialProvider: () => ({ bearerToken: 'token' }),
+      fetchFn: (async () => new Promise<Response>(() => {})) as unknown as typeof fetch,
+      maxRetries: 0,
+      timeoutMs: 10,
+    })
+
+    const result = await tool.run(createContext(), { query: 'xai' })
+
+    expect(result.success).toBe(false)
+    expect(result.output).toContain('x_search request timed out after 10ms')
+  })
 })
