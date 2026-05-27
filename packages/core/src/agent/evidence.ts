@@ -523,7 +523,11 @@ function buildBlockers(messages: Message[], observations: ToolObservation[]): st
 
 function summarizeToolResult(toolName: string, content: string, outputSummary?: string): string {
   const normalized = toolName.toLowerCase()
-  const source = outputSummary?.trim() || firstUsefulLines(content, normalized === 'bash' ? 4 : 3)
+  const source =
+    outputSummary?.trim() ||
+    (content.length > CONTEXT_PARAMS.history.summaryMaxChars
+      ? `raw output captured in evidence file; chars=${content.length}`
+      : firstUsefulLines(content, normalized === 'bash' ? 4 : 3))
 
   switch (normalized) {
     case 'write':

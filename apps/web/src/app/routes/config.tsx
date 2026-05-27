@@ -80,6 +80,7 @@ interface ConfigData {
   schedules: { name: string; cron: string; task: string }[]
   fuseList: { pattern: string; description: string }[]
   taskClosureModel: string | null
+  contextCompactionModel: string | null
   secrets?: { key: string; masked: string; configured: boolean }[]
 }
 
@@ -267,6 +268,19 @@ export function ConfigPage() {
       addToast(
         'success',
         model ? `Task closure model set to ${model}` : 'Task closure model cleared',
+      )
+    } catch {
+      // Error toast handled by api layer
+    }
+  }
+
+  async function handleSetContextCompactionModel(model: string | null) {
+    try {
+      await apiPut('/api/config', { contextCompactionModel: model })
+      setConfig((prev) => (prev ? { ...prev, contextCompactionModel: model } : prev))
+      addToast(
+        'success',
+        model ? `Context compaction model set to ${model}` : 'Context compaction model cleared',
       )
     } catch {
       // Error toast handled by api layer
@@ -689,6 +703,37 @@ export function ConfigPage() {
                     </option>
                   ))}
                 </select>
+              </div>
+
+              <div
+                className="card p-5 animate-fade-up lg:col-span-2"
+                style={{ animationDelay: '160ms' }}
+              >
+                <h3 className="text-[14px] font-semibold mb-1 text-[var(--color-text-secondary)]">
+                  Context Compaction Model
+                </h3>
+                <p className="text-[11px] text-[var(--color-text-muted)] mb-3">
+                  用于 working-state compaction 的专用模型。未设置时沿用任务收尾模型或主 agent
+                  模型。
+                </p>
+                <div>
+                  <select
+                    aria-label="Context Compaction Model"
+                    value={config?.contextCompactionModel ?? ''}
+                    onChange={(e) => handleSetContextCompactionModel(e.target.value || null)}
+                    className="w-full px-3 py-2 rounded-lg bg-[var(--color-bg-secondary)] border border-[var(--color-border)] text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent)]"
+                  >
+                    <option value="">Default（与 task closure / agent 主模型相同）</option>
+                    {models.map((m) => (
+                      <option
+                        key={`${m.provName}/${m.mName}:compact`}
+                        value={`${m.provName}/${m.mName}`}
+                      >
+                        {m.provName}/{m.mName}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
             </div>
           )}

@@ -10,6 +10,7 @@ import type {
   CompletionResponse,
   Message,
   StreamEvent,
+  TimelineCompactionBlock,
   ToolContext,
 } from '@zero-os/shared'
 import { getSessionLogRelativeDir } from '@zero-os/shared'
@@ -453,6 +454,36 @@ class ActiveTurnCaptureAdapter implements ProviderAdapter {
   }
 }
 
+class InvalidCompactionAdapter implements ProviderAdapter {
+  readonly apiType = 'fake-invalid-compaction'
+  requests: CompletionRequest[] = []
+
+  async complete(req: CompletionRequest): Promise<CompletionResponse> {
+    this.requests.push(req)
+    return {
+      id: `resp_invalid_compaction_${this.requests.length}`,
+      content: [
+        {
+          type: 'text',
+          text: '<context_compaction><block_summary>invalid</block_summary></context_compaction>',
+        },
+      ],
+      stopReason: 'end_turn',
+      usage: { input: 12, output: 3 },
+      model: 'fake-flash',
+    }
+  }
+
+  async *stream(_req: CompletionRequest): AsyncIterable<StreamEvent> {
+    yield* []
+    throw new Error('stream not supported in test')
+  }
+
+  async healthCheck(): Promise<boolean> {
+    return true
+  }
+}
+
 class LargeInputToolAdapter implements ProviderAdapter {
   readonly apiType = 'fake-large-input'
   private completeCalls = 0
@@ -733,6 +764,10 @@ describe('Agent', () => {
         episodesCreated: 1,
         evidenceCount: 6,
         toolUseIds: ['old_tool_0', 'old_tool_1', 'old_tool_2'],
+        validationStatus: 'legacy',
+        model: 'fake-compaction-model',
+        promptVersion: 'context_compaction_zh_xml_n10_n08_n02_n09_v1',
+        modelAttempts: 1,
       })
 
       const runLogPath = join(
@@ -755,6 +790,108 @@ describe('Agent', () => {
           (entry.data as { source?: string } | undefined)?.source === 'episode_compaction',
       )
       expect(evidenceEntries).toHaveLength(0)
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
+
+  test('run: rejects invalid context compaction without retrying', async () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'zero-agent-compaction-invalid-'))
+    const registry = new ToolRegistry()
+    registry.register(new ActiveTurnTool())
+    const mainAdapter = new ActiveTurnCaptureAdapter()
+    const invalidCompaction = new InvalidCompactionAdapter()
+    const tracer = new Tracer(workDir)
+    const agentConfig: AgentConfig = {
+      name: 'test-agent',
+      agentInstruction: 'Use active_turn_tool.',
+    }
+    const agent = new Agent(
+      agentConfig,
+      mainAdapter,
+      registry,
+      {
+        ...toolContext,
+        sessionId: 'sess_agent_compaction_invalid',
+        workDir,
+        tracer,
+      },
+      {
+        tracer,
+        contextCompactionModelLabel: 'deepseek/deepseek-v4-flash',
+      },
+      undefined,
+      invalidCompaction,
+    )
+    const timelineCompactionBlocks: TimelineCompactionBlock[] = []
+    const oldHistory: Message[] = []
+    for (let index = 0; index < 7; index++) {
+      oldHistory.push(
+        {
+          id: `invalid_old_user_${index}`,
+          sessionId: 'sess_agent_compaction_invalid',
+          role: 'user',
+          messageType: 'message',
+          content: [{ type: 'text', text: `old task ${index}` }],
+          createdAt: `2026-05-12T01:0${index}:00.000Z`,
+        },
+        {
+          id: `invalid_old_tool_${index}`,
+          sessionId: 'sess_agent_compaction_invalid',
+          role: 'assistant',
+          messageType: 'message',
+          content: [
+            { type: 'text', text: 'checking old task' },
+            {
+              type: 'tool_use',
+              id: `invalid_tool_${index}`,
+              name: 'bash',
+              input: { command: `echo ${index}` },
+            },
+          ],
+          createdAt: `2026-05-12T01:0${index}:01.000Z`,
+        },
+        {
+          id: `invalid_result_${index}`,
+          sessionId: 'sess_agent_compaction_invalid',
+          role: 'user',
+          messageType: 'message',
+          content: [
+            {
+              type: 'tool_result',
+              toolUseId: `invalid_tool_${index}`,
+              content: `INVALID_OLD_RESULT_${index}_${'old inline '.repeat(500)}`,
+              outputSummary: `old result summary ${index}`,
+            },
+          ],
+          createdAt: `2026-05-12T01:0${index}:02.000Z`,
+        },
+        {
+          id: `invalid_old_done_${index}`,
+          sessionId: 'sess_agent_compaction_invalid',
+          role: 'assistant',
+          messageType: 'message',
+          content: [{ type: 'text', text: `old result handled ${index}` }],
+          createdAt: `2026-05-12T01:0${index}:03.000Z`,
+        },
+      )
+    }
+
+    try {
+      await agent.run(
+        {
+          systemPrompt: 'Use active_turn_tool.',
+          conversationHistory: oldHistory,
+          tools: registry.getDefinitions(),
+          onTimelineCompactionBlocksChanged: (blocks) => {
+            timelineCompactionBlocks.splice(0, timelineCompactionBlocks.length, ...blocks)
+          },
+        },
+        'current active task',
+      )
+
+      expect(invalidCompaction.requests).toHaveLength(1)
+      expect(timelineCompactionBlocks).toHaveLength(0)
     } finally {
       rmSync(workDir, { recursive: true, force: true })
     }

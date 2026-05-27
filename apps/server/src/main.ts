@@ -532,6 +532,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
       schedulerHandle,
       scheduleStore,
       taskClosureModel: config.taskClosureModel,
+      contextCompactionModel: config.contextCompactionModel,
       projectRoot: options?.projectRoot ?? process.cwd(),
     },
     sessionDb,

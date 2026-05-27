@@ -56,10 +56,20 @@ export const CONTEXT_PARAMS = {
     episodeMinCompactTurns: 3,
     /** Large tool-heavy tails may compact earlier even when they have fewer turns. */
     episodeMinCompactChars: 12000,
+    /** Single-turn tails compact only when they are too large to keep waiting for a batch. */
+    episodeUrgentCompactChars: 65536,
+    /** Recompact many existing blocks from raw messages when the prompt lane becomes block-heavy. */
+    timelineRecompactBlockCountThreshold: 8,
+    /** Recompact existing blocks from raw messages when projected history remains large. */
+    timelineRecompactCharsThreshold: 140000,
     /** Prompt manifest cap; full evidence remains in artifact files and trace metadata. */
     episodePromptEvidenceLimit: 12,
     /** Prompt tool-observation cap; prevents deterministic fallback from becoming an IO dump. */
     episodePromptObservationLimit: 16,
+    /** Max raw tool_result chars included per tool in the compaction model prompt. */
+    compactionPromptToolResultMaxChars: 24000,
+    /** Max covered_messages chars sent to the compaction model. */
+    compactionPromptTranscriptMaxChars: 180000,
     /** Turns N+1..M: tool output truncated to summary */
     summaryRetainTurns: 8,
     /** Summary truncation length (chars) */

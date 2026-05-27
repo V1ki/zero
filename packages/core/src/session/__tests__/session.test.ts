@@ -365,6 +365,36 @@ describe('Session', () => {
     expect(agent?.obs?.closureProviderName).toBe('openai-codex')
   })
 
+  test('initAgent resolves dedicated context compaction adapter when configured', () => {
+    const router = createRouter()
+    const registry = createToolRegistry()
+    const session = new Session('web', router, registry, {
+      contextCompactionModel: 'openai-codex/gpt-5.4-medium',
+      projectRoot: testProject.projectRoot,
+    })
+
+    session.initAgent({
+      name: 'test-agent',
+      agentInstruction: 'You are a helpful assistant. Reply briefly.',
+    })
+
+    const agent = (
+      session as unknown as {
+        agent: {
+          contextCompactionAdapter: unknown
+          obs?: {
+            contextCompactionModelLabel?: string
+          }
+        } | null
+      }
+    ).agent
+    expect(agent).toBeDefined()
+    expect(agent?.contextCompactionAdapter).toBe(
+      router.resolveModel('openai-codex/gpt-5.4-medium')?.adapter,
+    )
+    expect(agent?.obs?.contextCompactionModelLabel).toBe('openai-codex/gpt-5.4-medium')
+  })
+
   test('uses injected projectRoot for workspace and prompt paths', () => {
     const router = createRouter()
     const registry = createToolRegistry()

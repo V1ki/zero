@@ -31,6 +31,44 @@ bun run benchmarks/zero-runtime/src/cli.ts run \
   --models chatgpt/gpt-5.5,qwen-local/qwen3.6-27b,dashscope-token-plan/qwen3.6-plus
 ```
 
+Run the offline compaction quality harness against the longest persisted sessions:
+
+```bash
+bun run compaction:quality --limit 10 --checkpoints 3
+```
+
+This reads `.zero/logs/sessions.db` in readonly mode, samples 3-5 checkpoints per long
+session, projects the current compaction history into a temporary artifact directory, and
+writes `summary.json` plus `report.md` under `benchmarks/zero-runtime/results/`. The score is
+a model-free proxy: it compares exact paths, URLs, tool arguments, and other terms reused by
+the next historical turn against the compacted prompt projection. It is meant to catch
+context-loss risk before paying for full model replay.
+
+Run the prompt-variant benchmark with official DeepSeek v4 flash:
+
+```bash
+bun run compaction:prompt-bench --limit 10 --reps 3 --concurrency 3
+```
+
+This selects one handle-heavy sample from each long session, then runs 10 Chinese prompt
+variants three times per session. The report ranks variants by exact handle recall, future
+tool-argument recall, compact score, and stability. By default it reads `deepseek_api_key`
+from the local Zero vault; use `--secret-source env` to read `ZERO_BENCH_SECRET_DEEPSEEK_API_KEY`
+instead.
+
+Run the tool IO digest benchmark with official DeepSeek v4 flash:
+
+```bash
+bun run compaction:tool-io-digest --limit 10 --samples 6 --concurrency 3
+```
+
+This extracts large real `tool_use` + `tool_result` pairs from long sessions, then compares
+single-tool versus consecutive-tool-group environment digest prompts. The benchmark is for
+testing whether a pre-compaction digest can replace raw tool IO in the main prompt while
+preserving exact paths, URLs, IDs, filenames, command flags, and other handles. The digest
+prompt intentionally omits full conversation context and does not ask the model to explain why
+a tool was called; at this layer the digest only summarizes local environment observations.
+
 For local vLLM artifact-heavy runs, use a larger timeout such as
 `--timeout-ms 360000`.
 

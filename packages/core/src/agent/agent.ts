@@ -31,18 +31,12 @@ import { generateId, now, toErrorMessage } from '@zero-os/shared'
 import type { ToolRegistry } from '../tool/registry'
 import { AgentLoop, type AgentLoopHooks, type ToolExecutor } from './agent-loop'
 import { allocateBudget, shouldCompress } from './budget'
+import { generateContextCompaction } from './compress'
 import {
-  type ContextCompactionModelInput,
-  type ContextCompactionModelOutput,
   type EpisodeCompactionTraceEvent,
   estimateConversationTokens,
   prepareConversationHistoryWithCompaction,
 } from './context'
-import {
-  CONTEXT_COMPACTION_SYSTEM_PROMPT,
-  buildContextCompactionPrompt,
-  parseContextCompactionModelOutput,
-} from './context-compaction-model'
 import { attachLargeToolUseEvidence } from './evidence'
 import { retrieveMemoriesWithDecision } from './memory-retrieval'
 import { CONTEXT_PARAMS } from './params'
@@ -140,6 +134,9 @@ export interface AgentObservability {
   closurePricing?: import('@zero-os/shared').ModelPricing
   closureProviderName?: string
   closureModelLabel?: string
+  contextCompactionPricing?: import('@zero-os/shared').ModelPricing
+  contextCompactionProviderName?: string
+  contextCompactionModelLabel?: string
   usagePurpose?: UsagePurpose
   parentSessionId?: string
   getCurrentSnapshotId?: () => string | undefined
@@ -192,6 +189,7 @@ export class Agent {
   private config: AgentConfig
   private adapter: ProviderAdapter
   private closureAdapter: ProviderAdapter
+  private contextCompactionAdapter: ProviderAdapter
   private toolRegistry: ToolRegistry
   private toolContext: ToolContext
   private obs: AgentObservability
@@ -203,10 +201,12 @@ export class Agent {
     toolContext: ToolContext,
     obs: AgentObservability = {},
     closureAdapter?: ProviderAdapter,
+    contextCompactionAdapter?: ProviderAdapter,
   ) {
     this.config = config
     this.adapter = adapter
     this.closureAdapter = closureAdapter ?? adapter
+    this.contextCompactionAdapter = contextCompactionAdapter ?? closureAdapter ?? adapter
     this.toolRegistry = toolRegistry
     this.toolContext = toolContext
     this.obs = obs
@@ -248,7 +248,24 @@ export class Agent {
       onTimelineCompactionBlocksChanged: context.onTimelineCompactionBlocksChanged,
       onEpisodeCompaction: (event) => episodeCompactionEvents.push(event),
       contextCompactor: (input) =>
-        this.generateContextCompaction(input, rootSpan?.id, turnIndex, context.reasoningEffort),
+        generateContextCompaction(input, {
+          adapter: this.contextCompactionAdapter,
+          sessionId: this.toolContext.sessionId,
+          agentName: this.config.name,
+          parentSpanId: rootSpan?.id,
+          turnIndex,
+          reasoningEffort: context.reasoningEffort,
+          parentSessionId: this.obs.parentSessionId,
+          modelLabel: this.obs.contextCompactionModelLabel ?? this.obs.closureModelLabel,
+          providerName:
+            this.obs.contextCompactionProviderName ??
+            this.obs.closureProviderName ??
+            this.obs.providerName,
+          pricing: this.obs.contextCompactionPricing ?? this.obs.closurePricing ?? this.obs.pricing,
+          tracer: this.obs.tracer,
+          secretFilter: this.obs.secretFilter,
+          logger: this.toolContext.logger,
+        }),
     })
 
     for (const event of episodeCompactionEvents) {
@@ -1343,150 +1360,6 @@ export class Agent {
         traceSpanId: taskClosureSpan?.id,
         traceSpanStatus: 'error',
       }
-    }
-  }
-
-  private async generateContextCompaction(
-    input: ContextCompactionModelInput,
-    parentSpanId: string | undefined,
-    turnIndex: number,
-    reasoningEffort: ReasoningEffort | undefined,
-  ): Promise<ContextCompactionModelOutput | undefined> {
-    const prompt = buildContextCompactionPrompt(input)
-    const span = this.obs.tracer?.startSpan(
-      this.toolContext.sessionId,
-      'context_compaction_model',
-      parentSpanId,
-      {
-        kind: 'llm_request',
-        agentName: this.config.name,
-        data: {
-          contextCompactionModel: {
-            blockId: input.blockId,
-            coveredMessageCount: input.segment.length,
-            evidenceCount: input.episode.evidence.length,
-            promptChars: prompt.length,
-          },
-        },
-        metadata: {
-          turnIndex,
-          purpose: 'compression',
-          blockId: input.blockId,
-          strategyVersion: input.strategyVersion,
-        },
-      },
-    )
-
-    const request: CompletionRequest = {
-      messages: [
-        {
-          id: generateId(),
-          sessionId: this.toolContext.sessionId,
-          role: 'user',
-          messageType: 'message',
-          content: [{ type: 'text', text: prompt }],
-          createdAt: now(),
-        },
-      ],
-      system: CONTEXT_COMPACTION_SYSTEM_PROMPT,
-      stream: false,
-      maxTokens: 2048,
-      reasoningEffort,
-      meta: {
-        sessionId: this.toolContext.sessionId,
-        purpose: 'compression',
-        ...(this.obs.parentSessionId ? { parentSessionId: this.obs.parentSessionId } : {}),
-      },
-    }
-
-    this.obs.tracer?.logSession?.(
-      this.toolContext.sessionId,
-      'debug',
-      'context_compaction.model_request',
-      {
-        traceSpanId: span?.id,
-        turnIndex,
-        blockId: input.blockId,
-        request: this.filterTraceValue(request),
-      },
-    )
-
-    const startedAt = Date.now()
-    try {
-      const response = await this.closureAdapter.complete(request)
-      const durationMs = Date.now() - startedAt
-      const text = extractAssistantText(response.content)
-      const parsed = parseContextCompactionModelOutput(text)
-      const cost = computeCost(response.usage, this.obs.closurePricing ?? this.obs.pricing)
-
-      this.obs.tracer?.logSession?.(
-        this.toolContext.sessionId,
-        parsed ? 'debug' : 'warn',
-        parsed ? 'context_compaction.model_response' : 'context_compaction.model_invalid',
-        {
-          traceSpanId: span?.id,
-          turnIndex,
-          blockId: input.blockId,
-          durationMs,
-          response: this.filterTraceValue(response),
-          parsed: this.filterTraceValue(parsed),
-        },
-      )
-
-      if (span) {
-        this.obs.tracer?.updateSpan(span.id, {
-          data: {
-            contextCompactionModel: {
-              blockId: input.blockId,
-              coveredMessageCount: input.segment.length,
-              evidenceCount: input.episode.evidence.length,
-              promptChars: prompt.length,
-              responseChars: text.length,
-              parsed: Boolean(parsed),
-              tokens: response.usage,
-              cost,
-              model: this.obs.closureModelLabel ?? response.model,
-              provider: this.obs.closureProviderName ?? this.obs.providerName ?? 'unknown',
-            },
-          },
-          metadata: {
-            turnIndex,
-            blockId: input.blockId,
-            parsed: Boolean(parsed),
-            model: this.obs.closureModelLabel ?? response.model,
-          },
-        })
-        this.obs.tracer?.endSpan(span.id, parsed ? 'success' : 'error', {
-          durationMs,
-          parsed: Boolean(parsed),
-        })
-      }
-
-      return parsed
-    } catch (error) {
-      const errorMessage = toErrorMessage(error)
-      this.toolContext.logger.warn('context_compaction_model_failed', {
-        sessionId: this.toolContext.sessionId,
-        blockId: input.blockId,
-        error: errorMessage,
-      })
-      this.obs.tracer?.logSession?.(
-        this.toolContext.sessionId,
-        'warn',
-        'context_compaction.model_failed',
-        {
-          traceSpanId: span?.id,
-          turnIndex,
-          blockId: input.blockId,
-          error: errorMessage,
-        },
-      )
-      if (span) {
-        this.obs.tracer?.endSpan(span.id, 'error', {
-          error: errorMessage,
-        })
-      }
-      return undefined
     }
   }
 

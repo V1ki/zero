@@ -225,6 +225,48 @@ export interface TimelineCompactionBlock {
   createdAt: string
   updatedAt: string
   generation: number
+  topics?: TimelineCompactionTopic[]
+  validation?: TimelineCompactionValidation
+  model?: TimelineCompactionModelInfo
+  supersedesBlockIds?: string[]
+  supersededByBlockId?: string
+}
+
+export interface TimelineCompactionTopic {
+  id: string
+  title: string
+  status: 'completed' | 'in_progress' | 'blocked' | 'unknown'
+  summary: string
+  sourceMessageRefs: string[]
+  sourceMessageIds: string[]
+  toolRefs: string[]
+  toolUseIds: string[]
+  confirmedFacts?: string[]
+  decisions?: string[]
+  currentState?: string[]
+  openQuestions?: string[]
+  nextActions?: string[]
+  evidence?: string[]
+  needsRawReview?: boolean
+}
+
+export interface TimelineCompactionValidation {
+  status: 'passed' | 'failed' | 'legacy'
+  promptVersion?: string
+  topicCount: number
+  expectedToolRefs: string[]
+  coveredToolRefs: string[]
+  invalidToolRefs: string[]
+  missingToolRefs: string[]
+  errors: string[]
+  warnings: string[]
+}
+
+export interface TimelineCompactionModelInfo {
+  promptVersion: string
+  primaryModel?: string
+  usedModel?: string
+  attempts: number
 }
 
 export interface CompactionBlockTimelineItem {
@@ -246,6 +288,11 @@ export interface CompactionBlockTimelineItem {
   coveredMessages: Message[]
   createdAt: string
   updatedAt: string
+  topics?: TimelineCompactionTopic[]
+  validation?: TimelineCompactionValidation
+  model?: TimelineCompactionModelInfo
+  supersedesBlockIds?: string[]
+  supersededByBlockId?: string
 }
 
 export interface MemoryNudgeTimelineItem {
@@ -607,6 +654,11 @@ function buildTimelineCompactionProjection(
       coveredMessages,
       createdAt: block.coveredRange.startCreatedAt,
       updatedAt: block.updatedAt,
+      topics: block.topics ?? [],
+      validation: block.validation,
+      model: block.model,
+      supersedesBlockIds: block.supersedesBlockIds,
+      supersededByBlockId: block.supersededByBlockId,
     })
   }
 

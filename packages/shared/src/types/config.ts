@@ -144,6 +144,7 @@ export interface SystemConfig {
   fuseList: FuseRule[]
   channels?: ChannelInstanceConfig[]
   taskClosureModel?: string
+  contextCompactionModel?: string
   embedding?: EmbeddingModelConfig
 }
 

@@ -71,6 +71,7 @@ export interface SessionDeps {
   schedulerHandle?: import('@zero-os/shared').ToolContext['schedulerHandle']
   scheduleStore?: import('@zero-os/shared').ToolContext['scheduleStore']
   taskClosureModel?: string
+  contextCompactionModel?: string
   projectRoot?: string
 }
 
@@ -238,6 +239,10 @@ export class Session {
       ? this.modelRouter.resolveModel(this.deps.taskClosureModel)
       : undefined
     const closureAdapter = closureResolved?.adapter
+    const contextCompactionResolved = this.deps.contextCompactionModel
+      ? this.modelRouter.resolveModel(this.deps.contextCompactionModel)
+      : undefined
+    const contextCompactionAdapter = contextCompactionResolved?.adapter
 
     const projectRoot = this.deps.projectRoot ?? process.cwd()
     const workspacePath = join(projectRoot, '.zero', 'workspace', config.name)
@@ -295,6 +300,11 @@ export class Session {
         ? this.modelRouter.getModelLabel(closureResolved)
         : undefined,
       closurePricing: closureResolved?.modelConfig.pricing,
+      contextCompactionProviderName: contextCompactionResolved?.providerName,
+      contextCompactionModelLabel: contextCompactionResolved
+        ? this.modelRouter.getModelLabel(contextCompactionResolved)
+        : undefined,
+      contextCompactionPricing: contextCompactionResolved?.modelConfig.pricing,
       getCurrentSnapshotId: () => this.currentSnapshotId,
       onContextCompressed: (event) => {
         this.logCompressionSnapshot(event.summary, event.stats, event.decisionContext)
@@ -308,6 +318,7 @@ export class Session {
       toolContext,
       agentObs,
       closureAdapter,
+      contextCompactionAdapter,
     )
     this.pendingAgentRefresh = false
 
@@ -941,6 +952,18 @@ export class Session {
 
   setTaskClosureModel(taskClosureModel?: string): void {
     this.deps.taskClosureModel = taskClosureModel
+    if (!this.agent || !this.lastAgentConfig) return
+    if (this.isTurnInProgress()) {
+      this.pendingAgentRefresh = true
+      return
+    }
+    this.reinitializeAgent()
+  }
+
+  setContextCompactionModels(models: {
+    contextCompactionModel?: string
+  }): void {
+    this.deps.contextCompactionModel = models.contextCompactionModel
     if (!this.agent || !this.lastAgentConfig) return
     if (this.isTurnInProgress()) {
       this.pendingAgentRefresh = true

@@ -96,6 +96,47 @@ function semanticCompactor(label = 'semantic compact') {
   })
 }
 
+function makeTimelineBlock(
+  id: string,
+  segment: Message[],
+  generation = 1,
+): TimelineCompactionBlock {
+  return {
+    id,
+    sessionId: segment[0]?.sessionId ?? 'test-session',
+    status: 'active',
+    strategy: 'deterministic_contiguous_older_turns_v1',
+    strategyVersion: 'timeline_compaction_block_v2',
+    boundaryReason: 'fixture existing block',
+    summary: `<timeline_compaction_block id="${id}">fixture summary</timeline_compaction_block>`,
+    workingStateSummary: '<working_state_compaction>fixture</working_state_compaction>',
+    coveredMessageIds: segment.map((message) => message.id),
+    coveredRange: {
+      startMessageId: segment[0]?.id ?? id,
+      endMessageId: segment.at(-1)?.id ?? id,
+      startCreatedAt: segment[0]?.createdAt ?? '2026-05-16T00:00:00.000Z',
+      endCreatedAt: segment.at(-1)?.createdAt ?? '2026-05-16T00:00:00.000Z',
+    },
+    coveredMessageCount: segment.length,
+    toolUseIds: [],
+    evidence: [],
+    evidenceCount: 0,
+    evidenceChars: 0,
+    evidenceBytes: 0,
+    rawCharsMovedToEvidence: 0,
+    skippedUnfinishedToolUseIds: [],
+    episodeFullRetainTurns: 3,
+    promptCharsBefore: 1000,
+    promptCharsAfter: 100,
+    tokensBefore: 100,
+    tokensAfter: 10,
+    createdAt: segment[0]?.createdAt ?? '2026-05-16T00:00:00.000Z',
+    updatedAt: segment.at(-1)?.createdAt ?? '2026-05-16T00:00:00.000Z',
+    generation,
+    episodes: [],
+  }
+}
+
 /**
  * Build a conversation with N turns.
  * Each turn consists of:
@@ -732,6 +773,88 @@ describe('prepareConversationHistory', () => {
       expect(originalAfter.coveredMessageIds).toEqual(originalBlock.coveredMessageIds)
       expect(newBlock.generation).toBe(1)
       expect(newBlock.coveredMessageIds).not.toEqual(originalBlock.coveredMessageIds)
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
+
+  test('waits to batch a single large non-urgent tail instead of compacting every turn', async () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-watermark-'))
+    const messages = [
+      makeUserText('old single large turn'),
+      makeAssistantToolUseWithInput('bash', 'single_large_tool', { command: 'generate-large' }),
+      makeToolResult('single_large_tool', 'SINGLE_LARGE_RAW_'.repeat(1400)),
+      makeAssistantText('old single large turn done'),
+      ...buildConversation(4),
+    ].map((message) => ({ ...message, sessionId: 'sess_watermark_fixture' }))
+    let changed = false
+
+    try {
+      const result = await prepareConversationHistoryWithCompaction(messages, {
+        enableEpisodeCompaction: true,
+        evidenceWorkDir: workDir,
+        sessionId: 'sess_watermark_fixture',
+        contextCompactor: semanticCompactor('should not run'),
+        onTimelineCompactionBlocksChanged: () => {
+          changed = true
+        },
+      })
+
+      expect(changed).toBe(false)
+      expect(result).toEqual(messages)
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
+
+  test('recompacts many existing blocks from original raw messages when no new tail exists', async () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-recompact-'))
+    const messages = buildConversation(12).map((message) => ({
+      ...message,
+      sessionId: 'sess_recompact_fixture',
+    }))
+    const existingBlocks = Array.from({ length: 9 }, (_, index) => {
+      const start = index * 4
+      return makeTimelineBlock(
+        `timeline_compaction_existing_${index}`,
+        messages.slice(start, start + 4),
+      )
+    })
+    let timelineCompactionBlocks: TimelineCompactionBlock[] = existingBlocks
+    const events: EpisodeCompactionTraceEvent[] = []
+
+    try {
+      const result = await prepareConversationHistoryWithCompaction(messages, {
+        enableEpisodeCompaction: true,
+        evidenceWorkDir: workDir,
+        sessionId: 'sess_recompact_fixture',
+        timelineCompactionBlocks,
+        contextCompactor: semanticCompactor('raw recompact'),
+        onTimelineCompactionBlocksChanged: (blocks) => {
+          timelineCompactionBlocks = blocks
+        },
+        onEpisodeCompaction: (event) => events.push(event),
+      })
+      const activeBlocks = timelineCompactionBlocks.filter((block) => block.status === 'active')
+      const supersededBlocks = timelineCompactionBlocks.filter(
+        (block) => block.status === 'superseded',
+      )
+      const activeBlock = expectDefined(activeBlocks[0])
+
+      expect(activeBlocks).toHaveLength(1)
+      expect(supersededBlocks).toHaveLength(existingBlocks.length)
+      expect(activeBlock.generation).toBe(2)
+      expect(activeBlock.strategy).toBe('semantic_recompact_raw_history_v1')
+      expect(activeBlock.supersedesBlockIds).toEqual(existingBlocks.map((block) => block.id))
+      expect(supersededBlocks.every((block) => block.supersededByBlockId === activeBlock.id)).toBe(
+        true,
+      )
+      expect(events.filter((event) => event.lifecycle === 'superseded')).toHaveLength(
+        existingBlocks.length,
+      )
+      expect(events.some((event) => event.lifecycle === 'created')).toBe(true)
+      expect(JSON.stringify(result)).toContain('raw recompact')
+      expect(JSON.stringify(result)).not.toContain('Full output of tool execution for turn 0')
     } finally {
       rmSync(workDir, { recursive: true, force: true })
     }

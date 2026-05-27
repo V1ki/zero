@@ -246,6 +246,16 @@ function CompactionBlock({ item }: { item: Extract<TimelineItem, { type: 'compac
         <span className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] font-mono text-[var(--color-text-disabled)]">
           gen {item.generation}
         </span>
+        {(item.topics?.length ?? 0) > 0 && (
+          <span className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] font-mono text-[var(--color-text-disabled)]">
+            {item.topics?.length ?? 0} topics
+          </span>
+        )}
+        {item.validation && (
+          <span className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] font-mono text-[var(--color-text-disabled)]">
+            {item.validation.status}
+          </span>
+        )}
         <span className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] font-mono text-[var(--color-text-disabled)]">
           {formatTime(item.updatedAt)}
         </span>
@@ -259,7 +269,35 @@ function CompactionBlock({ item }: { item: Extract<TimelineItem, { type: 'compac
         <div>
           evidence {item.evidenceCount} refs / {item.evidenceChars.toLocaleString()} chars
         </div>
+        {item.model?.usedModel && <div>model {item.model.usedModel}</div>}
       </div>
+      {(item.topics?.length ?? 0) > 0 && (
+        <details className="mt-3 rounded-lg border border-white/10 bg-black/10 p-3" open>
+          <summary className="cursor-pointer text-[11px] font-semibold text-[var(--color-text-secondary)]">
+            Topics ({item.topics?.length ?? 0})
+          </summary>
+          <div className="mt-3 space-y-2">
+            {(item.topics ?? []).map((topic) => (
+              <div key={topic.id} className="rounded-lg border border-white/10 bg-white/[0.03] p-2">
+                <div className="flex flex-wrap items-center gap-2 text-[10px] font-mono text-[var(--color-text-disabled)]">
+                  <span>{topic.id}</span>
+                  <span>{topic.status}</span>
+                  <span>
+                    messages {topic.sourceMessageRefs.join(',') || topic.sourceMessageIds.length}
+                  </span>
+                  <span>tools {topic.toolRefs.join(',') || topic.toolUseIds.length}</span>
+                </div>
+                <div className="mt-1 text-[11px] font-semibold text-[var(--color-text-secondary)]">
+                  {topic.title}
+                </div>
+                <div className="mt-1 text-[11px] leading-5 text-[var(--color-text-muted)]">
+                  {topic.summary}
+                </div>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
       <div className="mt-3 rounded-lg border border-white/10 bg-black/15 p-3">
         <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--color-text-disabled)]">
           Summary

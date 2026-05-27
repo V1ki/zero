@@ -537,6 +537,23 @@ describe('API Routes (Real)', () => {
     expect(raw.task_closure_model).toBeUndefined()
   })
 
+  test('PUT /api/config updates context compaction model in config.yaml', async () => {
+    const res = await app.request('/api/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contextCompactionModel: 'openai-codex/gpt-5.4-medium',
+      }),
+    })
+    expect(res.status).toBe(200)
+    const data = await res.json()
+    expect(data.ok).toBe(true)
+    expect(data.contextCompactionModel).toBe('openai-codex/gpt-5.4-medium')
+
+    const raw = readYaml<Record<string, unknown>>(join(testDataDir, 'config.yaml'))
+    expect(raw.context_compaction_model).toBe('openai-codex/gpt-5.4-medium')
+  })
+
   test('PUT /api/config updates runtime task closure model for active and future sessions', async () => {
     const session = zero.sessionManager.create('web')
     session.initAgent({
@@ -579,6 +596,34 @@ describe('API Routes (Real)', () => {
     ).agent
     expect(futureAgent?.closureAdapter).toBe(
       zero.modelRouter.resolveModel('openai-codex/gpt-5.3-codex-medium')?.adapter,
+    )
+  })
+
+  test('PUT /api/config updates runtime context compaction model', async () => {
+    const session = zero.sessionManager.create('web')
+    session.initAgent({
+      name: 'runtime-context-compaction-agent',
+      agentInstruction: 'Test context compaction config updates.',
+    })
+
+    const res = await app.request('/api/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contextCompactionModel: 'openai-codex/gpt-5.4-medium',
+      }),
+    })
+    expect(res.status).toBe(200)
+
+    const refreshedAgent = (
+      session as unknown as {
+        agent: {
+          contextCompactionAdapter: ProviderAdapter
+        } | null
+      }
+    ).agent
+    expect(refreshedAgent?.contextCompactionAdapter).toBe(
+      zero.modelRouter.resolveModel('openai-codex/gpt-5.4-medium')?.adapter,
     )
   })
 

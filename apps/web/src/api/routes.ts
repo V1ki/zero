@@ -1019,6 +1019,7 @@ export function createRoutes(zero: ZeroOS) {
         schedules: config.schedules,
         fuseList: config.fuseList,
         taskClosureModel: config.taskClosureModel ?? null,
+        contextCompactionModel: config.contextCompactionModel ?? null,
         secrets: zero.vault.keys().map((key) => ({
           key,
           masked: isManagedOAuthTokenRef(key) ? 'oauth:configured' : 'configured',
@@ -1034,6 +1035,7 @@ export function createRoutes(zero: ZeroOS) {
 
       const keyMap: Record<string, string> = {
         taskClosureModel: 'task_closure_model',
+        contextCompactionModel: 'context_compaction_model',
       }
 
       for (const [key, value] of Object.entries(body)) {
@@ -1048,7 +1050,14 @@ export function createRoutes(zero: ZeroOS) {
       writeYaml(configPath, raw)
       const updated = readCurrentConfig()
       zero.sessionManager.setTaskClosureModel(updated.taskClosureModel)
-      return c.json({ ok: true, taskClosureModel: updated.taskClosureModel ?? null })
+      zero.sessionManager.setContextCompactionModels({
+        contextCompactionModel: updated.contextCompactionModel,
+      })
+      return c.json({
+        ok: true,
+        taskClosureModel: updated.taskClosureModel ?? null,
+        contextCompactionModel: updated.contextCompactionModel ?? null,
+      })
     })
 
     .post('/api/providers/:provider/oauth/start', async (c) => {

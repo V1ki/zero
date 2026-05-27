@@ -90,6 +90,10 @@ export {
   prepareConversationHistoryWithCompaction,
   estimateConversationTokens,
 } from './agent/context'
+export type {
+  ContextCompactionModelInput,
+  ContextCompactionModelOutput,
+} from './agent/context'
 export { compressConversation } from './agent/compress'
 export { CONTEXT_PARAMS } from './agent/params'
 export {

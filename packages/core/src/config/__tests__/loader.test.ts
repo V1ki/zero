@@ -274,6 +274,42 @@ task_closure_model: closure
     expect(config.defaultModel).toBe('openai/primary')
     expect(config.taskClosureModel).toBe('openai/closure')
   })
+
+  test('normalizes context compaction model from snake_case config', () => {
+    const configPath = join(tmpDir, 'context-compaction.yaml')
+    writeFileSync(
+      configPath,
+      `
+providers:
+  deepseek:
+    api_type: anthropic-deepseek
+    base_url: https://api.deepseek.com/anthropic
+    auth:
+      type: api_key
+      api_key_ref: deepseek-key
+    models:
+      deepseek-v4-flash:
+        model_id: deepseek-v4-flash
+        max_context: 1000000
+        max_output: 128000
+        capabilities: []
+        tags: []
+      deepseek-v4-pro:
+        model_id: deepseek-v4-pro
+        max_context: 1000000
+        max_output: 384000
+        capabilities: []
+        tags: []
+default_model: deepseek-v4-pro
+context_compaction_model: deepseek-v4-flash
+`,
+    )
+
+    const config = loadConfig(configPath)
+
+    expect(config.defaultModel).toBe('deepseek/deepseek-v4-pro')
+    expect(config.contextCompactionModel).toBe('deepseek/deepseek-v4-flash')
+  })
 })
 
 describe('loadFuseList', () => {

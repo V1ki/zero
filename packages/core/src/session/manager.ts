@@ -199,6 +199,15 @@ export class SessionManager {
     }
   }
 
+  setContextCompactionModels(models: {
+    contextCompactionModel?: string
+  }): void {
+    this.deps.contextCompactionModel = models.contextCompactionModel
+    for (const session of this.sessions.values()) {
+      session.setContextCompactionModels(models)
+    }
+  }
+
   private createSessionDeps(
     source: SessionSource,
     modelScope?: { channelId: string; channelName?: string; participantId?: string },

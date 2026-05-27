@@ -229,6 +229,13 @@ describe('ModelRegistry', () => {
                 cacheRead: 0.145,
               },
             },
+            'deepseek-v4-flash': {
+              modelId: 'deepseek-v4-flash',
+              maxContext: 1000000,
+              maxOutput: 128000,
+              capabilities: ['tools'],
+              tags: ['deepseek', 'fast', 'compaction'],
+            },
           },
         },
       },
@@ -253,5 +260,9 @@ describe('ModelRegistry', () => {
       cacheWrite: 1.74,
       cacheRead: 0.145,
     })
+
+    const flash = registry.resolve('deepseek/deepseek-v4-flash')
+    expect(flash?.adapter.apiType).toBe('anthropic-deepseek')
+    expect(flash?.modelConfig.tags).toContain('compaction')
   })
 })

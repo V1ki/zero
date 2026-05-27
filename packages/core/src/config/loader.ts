@@ -67,6 +67,9 @@ function normalizeConfig(raw: Record<string, unknown>): SystemConfig {
   const taskClosureModel = raw.task_closure_model
     ? normalizeModelReference(raw.task_closure_model as string, providers)
     : undefined
+  const contextCompactionModel = raw.context_compaction_model
+    ? normalizeModelReference(raw.context_compaction_model as string, providers)
+    : undefined
 
   return {
     providers,
@@ -76,6 +79,7 @@ function normalizeConfig(raw: Record<string, unknown>): SystemConfig {
     fuseList: (raw.fuse_list as FuseRule[]) ?? [],
     ...(raw.channels !== undefined ? { channels } : {}),
     ...(taskClosureModel ? { taskClosureModel } : {}),
+    ...(contextCompactionModel ? { contextCompactionModel } : {}),
     ...(raw.embedding !== undefined
       ? { embedding: normalizeEmbeddingConfig(raw.embedding as Record<string, unknown>) }
       : {}),

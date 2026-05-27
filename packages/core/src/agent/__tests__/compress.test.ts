@@ -1,8 +1,13 @@
 import { describe, expect, test } from 'bun:test'
 import type { ProviderAdapter } from '@zero-os/model'
 import type { TraceSpan as ObserveTraceSpan } from '@zero-os/observe'
-import { generateId, now, type Message, type SecretFilter } from '@zero-os/shared'
-import { compressConversation } from '../compress'
+import { type Message, type SecretFilter, generateId, now } from '@zero-os/shared'
+import {
+  CONTEXT_COMPACTION_PROMPT_VERSION,
+  compressConversation,
+  generateContextCompaction,
+} from '../compress'
+import type { ContextCompactionModelInput } from '../context'
 
 function makeMessage(role: 'user' | 'assistant', text: string): Message {
   return {
@@ -42,6 +47,12 @@ function makeTraceRecorder() {
   const updateCalls: Array<{ spanId: string; update: Record<string, unknown> }> = []
   const endCalls: Array<{ spanId: string; status?: string; metadata?: Record<string, unknown> }> =
     []
+  const logSessionCalls: Array<{
+    sessionId: string
+    level: string
+    event: string
+    data?: Record<string, unknown>
+  }> = []
   const spans = new Map<string, ObserveTraceSpan>()
 
   return {
@@ -80,10 +91,14 @@ function makeTraceRecorder() {
       getSpan(spanId: string) {
         return spans.get(spanId)
       },
+      logSession(sessionId: string, level: string, event: string, data?: Record<string, unknown>) {
+        logSessionCalls.push({ sessionId, level, event, data })
+      },
     },
     startCalls,
     updateCalls,
     endCalls,
+    logSessionCalls,
   }
 }
 
@@ -93,6 +108,77 @@ const secretFilter: SecretFilter = {
   },
   addSecret() {},
   removeSecret() {},
+}
+
+function makeContextCompactionInput(): ContextCompactionModelInput {
+  const messages: Message[] = [
+    {
+      id: 'msg_user_context',
+      sessionId: 'sess_context_runner',
+      role: 'user',
+      messageType: 'message',
+      content: [{ type: 'text', text: '检查 context compaction runner' }],
+      createdAt: '2026-05-26T00:00:00.000Z',
+    },
+    {
+      id: 'msg_tool_context',
+      sessionId: 'sess_context_runner',
+      role: 'assistant',
+      messageType: 'message',
+      content: [
+        { type: 'text', text: '读取 runner 文件。' },
+        {
+          type: 'tool_use',
+          id: 'tool_read_runner',
+          name: 'read',
+          input: { path: '/repo/packages/core/src/agent/compress.ts' },
+        },
+      ],
+      createdAt: '2026-05-26T00:00:01.000Z',
+    },
+    {
+      id: 'msg_result_context',
+      sessionId: 'sess_context_runner',
+      role: 'user',
+      messageType: 'message',
+      content: [
+        {
+          type: 'tool_result',
+          toolUseId: 'tool_read_runner',
+          content: 'compress.ts now owns the context compaction model request runner.',
+          outputSummary: 'Read context compaction runner.',
+        },
+      ],
+      createdAt: '2026-05-26T00:00:02.000Z',
+    },
+  ]
+
+  return {
+    sessionId: 'sess_context_runner',
+    blockId: 'block_context_runner',
+    strategyVersion: 'timeline_compaction_block_v3',
+    currentGoal: '瘦身 agent.ts',
+    segment: messages,
+    retainedMessages: [],
+    workingStateSummary: '<working_state_compaction>continue</working_state_compaction>',
+    episode: {
+      id: 'episode_context_runner',
+      sessionId: 'sess_context_runner',
+      status: 'confirmed',
+      boundaryStrategy: 'test',
+      boundaryReason: 'fixture',
+      goal: '瘦身 agent.ts',
+      scope: ['/repo/packages/core/src/agent/compress.ts'],
+      toolUseIds: ['tool_read_runner'],
+      confirmedFacts: ['runner moved to compress.ts'],
+      inferredFacts: [],
+      blockers: [],
+      needsRawReview: [],
+      evidence: [],
+      summary: 'fixture episode',
+      messageIds: messages.map((message) => message.id),
+    },
+  }
 }
 
 describe('compressConversation', () => {
@@ -299,16 +385,13 @@ describe('compressConversation', () => {
     expect(typeof compressionData?.durationMs).toBe('number')
     expect((compressionData?.cost as number | undefined) ?? 0).toBeCloseTo(0.000325, 8)
     expect(
-      (
-        trace.updateCalls[0]?.update.metadata as { compressedMessageCount?: number } | undefined
-      )?.compressedMessageCount,
+      (trace.updateCalls[0]?.update.metadata as { compressedMessageCount?: number } | undefined)
+        ?.compressedMessageCount,
     ).toBe(compressionData?.compressedMessageCount as number | undefined)
     expect((compressionData?.prompt as string | undefined)?.includes('[REDACTED]')).toBe(true)
     expect((compressionData?.response as string | undefined)?.includes('[REDACTED]')).toBe(true)
     expect((compressionData?.prompt as string | undefined)?.includes('secret-token')).toBe(false)
-    expect((compressionData?.response as string | undefined)?.includes('secret-token')).toBe(
-      false,
-    )
+    expect((compressionData?.response as string | undefined)?.includes('secret-token')).toBe(false)
     expect((compressionData?.prompt as string | undefined)?.length).toBeLessThanOrEqual(500)
     expect((compressionData?.response as string | undefined)?.length).toBeLessThanOrEqual(500)
     expect(trace.endCalls).toEqual([{ spanId: 'span_compression', status: 'success' }])
@@ -409,5 +492,109 @@ describe('compressConversation', () => {
 
     expect(result.summary).toBe('Summary of conversation')
     expect(result.retainedMessages[0]?.sessionId).toBe('test-session')
+  })
+})
+
+describe('generateContextCompaction', () => {
+  test('runs context compaction model request with trace, cost, and model metadata', async () => {
+    const input = makeContextCompactionInput()
+    const trace = makeTraceRecorder()
+    let seenRequest: import('@zero-os/shared').CompletionRequest | undefined
+    const adapter = {
+      ...mockAdapter,
+      async complete(request) {
+        seenRequest = request
+        return {
+          id: 'resp_context_compaction',
+          content: [
+            {
+              type: 'text' as const,
+              text: `<context_compaction prompt_version="${CONTEXT_COMPACTION_PROMPT_VERSION}">
+  <block_summary>context compaction runner 已从 agent.ts 移到 compress.ts。</block_summary>
+  <topics>
+    <topic id="T1" status="completed" message_refs="E1,E2,E3" tool_refs="K1" needs_raw_review="false">
+      <title>runner 边界收敛</title>
+      <summary>用户要求瘦身 agent.ts，工具读取 compress.ts 后确认 runner 现在由 compress.ts 承担。</summary>
+      <confirmed_facts><item>K1 结果说明 compress.ts now owns the context compaction model request runner.</item></confirmed_facts>
+      <current_state><item>agent.ts 只需要传入 compaction runtime。</item></current_state>
+      <evidence><item>K1 result Read context compaction runner.</item></evidence>
+    </topic>
+  </topics>
+  <user_constraints><item>agent.ts 不承载 context compaction 执行细节。</item></user_constraints>
+  <do_not_infer><item>不能把测试 fixture 当成线上验证。</item></do_not_infer>
+</context_compaction>`,
+            },
+          ],
+          stopReason: 'end_turn' as const,
+          usage: { input: 200, output: 100, reasoning: 10 },
+          model: 'provider/raw-context-model',
+        }
+      },
+    } satisfies ProviderAdapter
+
+    const output = await generateContextCompaction(input, {
+      adapter,
+      sessionId: 'sess_context_runner',
+      agentName: 'agent-test',
+      parentSpanId: 'parent-span',
+      turnIndex: 7,
+      parentSessionId: 'parent-session',
+      modelLabel: 'provider/context-model',
+      providerName: 'provider',
+      pricing: { input: 1, output: 2 },
+      tracer: trace.tracer,
+      secretFilter,
+    })
+
+    expect(output?.validation?.status).toBe('passed')
+    expect(output?.model).toMatchObject({
+      promptVersion: CONTEXT_COMPACTION_PROMPT_VERSION,
+      primaryModel: 'provider/context-model',
+      primaryProvider: 'provider',
+      usedModel: 'provider/context-model',
+      usedProvider: 'provider',
+      attempts: 1,
+    })
+    expect(seenRequest?.meta).toEqual({
+      sessionId: 'sess_context_runner',
+      purpose: 'compression',
+      parentSessionId: 'parent-session',
+    })
+    expect(seenRequest?.system).toContain('Context Compaction Model')
+    expect(trace.startCalls[0]).toMatchObject({
+      sessionId: 'sess_context_runner',
+      name: 'context_compaction_model',
+      parentId: 'parent-span',
+    })
+    expect(trace.logSessionCalls.map((call) => call.event)).toEqual([
+      'context_compaction.model_request',
+      'context_compaction.model_response',
+    ])
+    const responseLog = trace.logSessionCalls.find(
+      (call) => call.event === 'context_compaction.model_response',
+    )
+    expect((responseLog?.data?.cost as number | undefined) ?? 0).toBeCloseTo(0.00042, 8)
+    expect(trace.updateCalls[0]?.update).toMatchObject({
+      data: {
+        contextCompactionModel: {
+          blockId: 'block_context_runner',
+          promptVersion: CONTEXT_COMPACTION_PROMPT_VERSION,
+          parsed: true,
+          validation: { status: 'passed' },
+          topicCount: 1,
+          model: 'provider/context-model',
+          provider: 'provider',
+          attempts: 1,
+        },
+      },
+    })
+    expect(trace.endCalls[0]).toMatchObject({
+      spanId: 'span_compression',
+      status: 'success',
+      metadata: {
+        parsed: true,
+        validationStatus: 'passed',
+      },
+    })
   })
 })

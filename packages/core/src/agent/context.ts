@@ -5,6 +5,9 @@ import type {
   Message,
   TimelineCompactionBlock,
   TimelineCompactionBlockLifecycle,
+  TimelineCompactionModelInfo,
+  TimelineCompactionTopic,
+  TimelineCompactionValidation,
   ToolEvidence,
   ToolResultBlock,
 } from '@zero-os/shared'
@@ -36,6 +39,9 @@ export interface ContextCompactionModelInput {
 
 export interface ContextCompactionModelOutput {
   summary: string
+  topics?: TimelineCompactionTopic[]
+  validation?: TimelineCompactionValidation
+  model?: TimelineCompactionModelInfo
   confirmedFacts?: string[]
   userConstraints?: string[]
   decisions?: string[]
@@ -49,6 +55,11 @@ export interface ContextCompactionModelOutput {
 export type ContextCompactor = (
   input: ContextCompactionModelInput,
 ) => Promise<ContextCompactionModelOutput | undefined>
+
+const timelineCompactionStrategyVersion = 'timeline_compaction_block_v3'
+const timelineRecompactStrategy = 'semantic_recompact_raw_history_v1'
+const timelineRecompactBoundaryReason =
+  'Recompacted active timeline blocks from original raw messages and tool evidence because the projected prompt was still block-heavy or oversized.'
 
 export interface EpisodeCompactionTraceEpisode {
   id: string
@@ -100,6 +111,16 @@ export interface EpisodeCompactionTraceEvent {
   }
   evidence: ToolEvidence[]
   episodes: EpisodeCompactionTraceEpisode[]
+  topicCount?: number
+  validationStatus?: string
+  validationErrors?: string[]
+  validationWarnings?: string[]
+  model?: string
+  provider?: string
+  promptVersion?: string
+  modelAttempts?: number
+  supersedesBlockIds?: string[]
+  supersededByBlockId?: string
 }
 
 export function sanitizeConversationHistoryForSignedThinkingToolUse(
@@ -400,6 +421,35 @@ async function compactEpisodeHistoryAsync(
 ): Promise<Message[]> {
   const plan = planEpisodeCompaction(messages, turnBoundaries, options)
   if (plan.candidateSegments.length === 0) {
+    const recompactPlan = planTimelineRecompaction(messages, plan.activeExistingBlocks)
+    if (recompactPlan && options.contextCompactor) {
+      const recompactBlock = await buildTimelineCompactionBlockAsync({
+        messages,
+        segment: recompactPlan.segment,
+        options,
+        skippedUnfinishedToolUseIds: plan.skippedUnfinishedToolUseIds,
+        generation: recompactPlan.generation,
+        supersedesBlockIds: plan.activeExistingBlocks.map((block) => block.id),
+        strategyOverride: timelineRecompactStrategy,
+        boundaryReasonOverride: recompactPlan.reason,
+      })
+      if (recompactBlock) {
+        const supersededBlocks = plan.activeExistingBlocks.map((block) => ({
+          ...block,
+          status: 'superseded' as const,
+          supersededAt: recompactBlock.createdAt,
+          updatedAt: recompactBlock.createdAt,
+          supersededByBlockId: recompactBlock.id,
+        }))
+        return finalizeEpisodeCompaction(
+          messages,
+          options,
+          plan.activeExistingBlocks,
+          [recompactBlock],
+          supersededBlocks,
+        )
+      }
+    }
     return projectTimelineCompactionBlocks(messages, plan.activeExistingBlocks, options.sessionId)
   }
   if (!options.contextCompactor) {
@@ -417,7 +467,40 @@ async function compactEpisodeHistoryAsync(
     if (block) createdBlocks.push(block)
   }
 
-  return finalizeEpisodeCompaction(messages, options, plan.activeExistingBlocks, createdBlocks)
+  const recompactPlan = planTimelineRecompaction(messages, [
+    ...plan.activeExistingBlocks,
+    ...createdBlocks,
+  ])
+  if (recompactPlan) {
+    const recompactBlock = await buildTimelineCompactionBlockAsync({
+      messages,
+      segment: recompactPlan.segment,
+      options,
+      skippedUnfinishedToolUseIds: plan.skippedUnfinishedToolUseIds,
+      generation: recompactPlan.generation,
+      supersedesBlockIds: plan.activeExistingBlocks.map((block) => block.id),
+      strategyOverride: timelineRecompactStrategy,
+      boundaryReasonOverride: recompactPlan.reason,
+    })
+    if (recompactBlock) {
+      const supersededBlocks = plan.activeExistingBlocks.map((block) => ({
+        ...block,
+        status: 'superseded' as const,
+        supersededAt: recompactBlock.createdAt,
+        updatedAt: recompactBlock.createdAt,
+        supersededByBlockId: recompactBlock.id,
+      }))
+      return finalizeEpisodeCompaction(
+        messages,
+        options,
+        plan.activeExistingBlocks,
+        [recompactBlock],
+        supersededBlocks,
+      )
+    }
+  }
+
+  return finalizeEpisodeCompaction(messages, options, plan.activeExistingBlocks, createdBlocks, [])
 }
 
 function planEpisodeCompaction(
@@ -471,23 +554,46 @@ function finalizeEpisodeCompaction(
   },
   activeExistingBlocks: TimelineCompactionBlock[],
   createdBlocks: TimelineCompactionBlock[],
+  supersededBlocks: TimelineCompactionBlock[] = [],
 ): Message[] {
-  const activeBlocks = sortTimelineCompactionBlocks([...activeExistingBlocks, ...createdBlocks])
+  const supersededBlockIds = new Set(supersededBlocks.map((block) => block.id))
+  const activeBlocks = sortTimelineCompactionBlocks(
+    [...activeExistingBlocks, ...createdBlocks].filter(
+      (block) => !supersededBlockIds.has(block.id),
+    ),
+  )
   const projectedMessages = projectTimelineCompactionBlocks(
     messages,
     activeBlocks,
     options.sessionId,
   )
-  const activeExistingBlockIds = new Set(activeExistingBlocks.map((block) => block.id))
+  const replacementBlockIds = new Set([
+    ...activeExistingBlocks.map((block) => block.id),
+    ...createdBlocks.map((block) => block.id),
+    ...supersededBlocks.map((block) => block.id),
+  ])
   const nextBlocks = sortTimelineCompactionBlocks([
     ...(options.timelineCompactionBlocks ?? []).filter(
-      (block) => !activeExistingBlockIds.has(block.id),
+      (block) => !replacementBlockIds.has(block.id),
     ),
+    ...supersededBlocks,
     ...activeBlocks,
   ])
 
-  if (createdBlocks.length > 0) {
+  if (createdBlocks.length > 0 || supersededBlocks.length > 0) {
     options.onTimelineCompactionBlocksChanged?.(nextBlocks)
+  }
+
+  for (const block of supersededBlocks) {
+    options.onEpisodeCompaction?.(
+      buildEpisodeCompactionTraceEvent({
+        sessionId: options.sessionId,
+        lifecycle: 'superseded',
+        block,
+        messagesBefore: messages,
+        messagesAfter: projectedMessages,
+      }),
+    )
   }
 
   for (const block of createdBlocks) {
@@ -503,6 +609,48 @@ function finalizeEpisodeCompaction(
   }
 
   return projectedMessages
+}
+
+function planTimelineRecompaction(
+  messages: Message[],
+  activeBlocks: TimelineCompactionBlock[],
+):
+  | {
+      segment: Message[]
+      generation: number
+      reason: string
+    }
+  | undefined {
+  const sortedBlocks = sortTimelineCompactionBlocks(activeBlocks)
+  if (sortedBlocks.length <= 1) return undefined
+
+  const projectedMessages = projectTimelineCompactionBlocks(
+    messages,
+    sortedBlocks,
+    messages[0]?.sessionId ?? 'session',
+  )
+  const projectedChars = stableJsonLength(projectedMessages)
+  const blockHeavy =
+    sortedBlocks.length >= CONTEXT_PARAMS.history.timelineRecompactBlockCountThreshold
+  const stillOversized =
+    projectedChars >= CONTEXT_PARAMS.history.timelineRecompactCharsThreshold &&
+    sortedBlocks.length >= 2
+  if (!blockHeavy && !stillOversized) return undefined
+
+  const messageIds = new Set(sortedBlocks.flatMap((block) => block.coveredMessageIds))
+  const segment = messages.filter((message) => messageIds.has(message.id))
+  if (!shouldCompactSegment(segment)) return undefined
+
+  const generation = Math.max(...sortedBlocks.map((block) => block.generation ?? 1)) + 1
+  const reason = [
+    timelineRecompactBoundaryReason,
+    `active_block_count=${sortedBlocks.length}`,
+    `projected_chars=${projectedChars}`,
+    `threshold_blocks=${CONTEXT_PARAMS.history.timelineRecompactBlockCountThreshold}`,
+    `threshold_chars=${CONTEXT_PARAMS.history.timelineRecompactCharsThreshold}`,
+  ].join(' ')
+
+  return { segment, generation, reason }
 }
 
 function collectCompactableSegments(messages: Message[], compactable: Set<number>): Message[][] {
@@ -530,10 +678,12 @@ function collectCompactableSegments(messages: Message[], compactable: Set<number
 
 function shouldCompactSegment(segment: Message[]): boolean {
   const turnCount = segment.filter(startsTopLevelTurn).length
+  const chars = stableJsonLength(segment)
   return (
     segment.some(hasBlockingSignal) ||
     turnCount >= CONTEXT_PARAMS.history.episodeMinCompactTurns ||
-    stableJsonLength(segment) >= CONTEXT_PARAMS.history.episodeMinCompactChars
+    (turnCount >= 2 && chars >= CONTEXT_PARAMS.history.episodeMinCompactChars) ||
+    chars >= CONTEXT_PARAMS.history.episodeUrgentCompactChars
   )
 }
 
@@ -563,6 +713,10 @@ async function buildTimelineCompactionBlockAsync(params: {
     contextCompactor?: ContextCompactor
   }
   skippedUnfinishedToolUseIds: string[]
+  generation?: number
+  supersedesBlockIds?: string[]
+  strategyOverride?: string
+  boundaryReasonOverride?: string
 }): Promise<TimelineCompactionBlock | undefined> {
   const episode = buildEpisodeCompaction(params.segment, params.options)
   const coveredMessageIds = params.segment.map((message) => message.id)
@@ -575,11 +729,12 @@ async function buildTimelineCompactionBlockAsync(params: {
     episodes: [episode],
   })
   const workingStateSummary = formatWorkingState(workingState)
-  const strategyVersion = 'timeline_compaction_block_v2'
+  const strategyVersion = timelineCompactionStrategyVersion
   const blockId = buildTimelineCompactionBlockId(
     params.options.sessionId,
     coveredMessageIds[0],
     strategyVersion,
+    params.generation,
   )
   const modelOutput = await params.options.contextCompactor?.({
     sessionId: params.options.sessionId,
@@ -611,6 +766,10 @@ function buildTimelineCompactionBlockFromEpisode(params: {
     sessionId: string
   }
   skippedUnfinishedToolUseIds: string[]
+  generation?: number
+  supersedesBlockIds?: string[]
+  strategyOverride?: string
+  boundaryReasonOverride?: string
   episode: EpisodeCompaction
   retainedMessages: Message[]
   currentGoal: string
@@ -621,11 +780,12 @@ function buildTimelineCompactionBlockFromEpisode(params: {
   const coveredMessageIds = params.segment.map((message) => message.id)
   const createdAt = now()
   const updatedAt = now()
-  const strategyVersion = 'timeline_compaction_block_v2'
+  const strategyVersion = timelineCompactionStrategyVersion
   const blockId = buildTimelineCompactionBlockId(
     params.options.sessionId,
     coveredMessageIds[0],
     strategyVersion,
+    params.generation,
   )
   const evidence = episode.evidence
   const evidenceChars = evidence.reduce((total, item) => total + item.chars, 0)
@@ -640,15 +800,17 @@ function buildTimelineCompactionBlockFromEpisode(params: {
     updatedAt,
     strategyVersion,
     params.modelOutput,
+    params.strategyOverride ?? episode.boundaryStrategy,
+    params.boundaryReasonOverride ?? episode.boundaryReason,
   )
 
   return {
     id: blockId,
     sessionId: params.options.sessionId,
     status: 'active',
-    strategy: episode.boundaryStrategy,
+    strategy: params.strategyOverride ?? episode.boundaryStrategy,
     strategyVersion,
-    boundaryReason: episode.boundaryReason,
+    boundaryReason: params.boundaryReasonOverride ?? episode.boundaryReason,
     summary: promptMessages[0].content
       .flatMap((block) => (block.type === 'text' ? [block.text] : []))
       .join('\n'),
@@ -675,8 +837,12 @@ function buildTimelineCompactionBlockFromEpisode(params: {
     tokensAfter: estimateConversationTokens(promptMessages),
     createdAt,
     updatedAt,
-    generation: 1,
+    generation: params.generation ?? 1,
     episodes: [episode],
+    topics: params.modelOutput.topics,
+    validation: params.modelOutput.validation,
+    model: params.modelOutput.model,
+    supersedesBlockIds: params.supersedesBlockIds,
   }
 }
 
@@ -684,9 +850,10 @@ function buildTimelineCompactionBlockId(
   sessionId: string,
   firstMessageId: string | undefined,
   strategyVersion: string,
+  generation = 1,
 ): string {
   return `timeline_compaction_${hashText(
-    `${sessionId}:${firstMessageId ?? 'empty'}:${strategyVersion}`,
+    `${sessionId}:${firstMessageId ?? 'empty'}:${strategyVersion}:${generation}`,
   ).slice(0, 16)}`
 }
 
@@ -700,6 +867,8 @@ function buildTimelineCompactionPromptMessages(
   updatedAt: string,
   strategyVersion: string,
   modelOutput: ContextCompactionModelOutput,
+  strategy: string,
+  boundaryReason: string,
 ): Message[] {
   const summary = [
     `<timeline_compaction_block id="${blockId}" status="${episode.status}">`,
@@ -707,9 +876,12 @@ function buildTimelineCompactionPromptMessages(
     `covered_range: ${segment[0]?.id ?? 'unknown'}..${segment.at(-1)?.id ?? 'unknown'}`,
     `covered_created_at: ${segment[0]?.createdAt ?? 'unknown'}..${segment.at(-1)?.createdAt ?? 'unknown'}`,
     `generated_at: ${updatedAt}`,
-    `strategy: ${episode.boundaryStrategy}`,
+    `strategy: ${strategy}`,
     `strategy_version: ${strategyVersion}`,
-    `boundary_reason: ${episode.boundaryReason}`,
+    `boundary_reason: ${boundaryReason}`,
+    modelOutput.model?.promptVersion ? `prompt_version: ${modelOutput.model.promptVersion}` : '',
+    modelOutput.validation ? `validation_status: ${modelOutput.validation.status}` : '',
+    modelOutput.topics ? `topic_count: ${modelOutput.topics.length}` : '',
     'trace: context_compaction timeline_compaction_block',
     formatContextCompactionSummary(episode, modelOutput),
     'working_state:',
@@ -739,6 +911,8 @@ function formatContextCompactionSummary(
     '<context_compaction_summary source="model">',
     'summary:',
     modelOutput.summary.trim(),
+    'topics:',
+    ...formatTopicPromptList(modelOutput.topics ?? []),
     'confirmed_facts:',
     ...formatPromptList(facts, 8),
     'user_constraints:',
@@ -759,6 +933,18 @@ function formatContextCompactionSummary(
     ...formatEvidenceManifest(episode),
     '</context_compaction_summary>',
   ].join('\n')
+}
+
+function formatTopicPromptList(topics: TimelineCompactionTopic[]): string[] {
+  if (topics.length === 0) return ['- none']
+  return topics.slice(0, 10).map((topic) => {
+    const refs = topic.sourceMessageRefs.join(',') || topic.sourceMessageIds.join(',') || 'none'
+    const tools = topic.toolRefs.join(',') || topic.toolUseIds.join(',') || 'none'
+    return `- ${topic.id} status=${topic.status} messages=${refs} tools=${tools} title=${truncateOneLine(
+      topic.title,
+      100,
+    )}: ${truncateOneLine(topic.summary, 260)}`
+  })
 }
 
 function formatEvidenceManifest(episode: EpisodeCompaction): string[] {
@@ -925,6 +1111,16 @@ function buildEpisodeCompactionTraceEvent(params: {
       evidenceBytes: episode.evidence.reduce((total, item) => total + item.bytes, 0),
       blockerCount: episode.blockers.length,
     })),
+    topicCount: params.block.topics?.length,
+    validationStatus: params.block.validation?.status,
+    validationErrors: params.block.validation?.errors,
+    validationWarnings: params.block.validation?.warnings,
+    model: params.block.model?.usedModel,
+    provider: params.block.model?.usedProvider,
+    promptVersion: params.block.model?.promptVersion,
+    modelAttempts: params.block.model?.attempts,
+    supersedesBlockIds: params.block.supersedesBlockIds,
+    supersededByBlockId: params.block.supersededByBlockId,
   }
 }
 
