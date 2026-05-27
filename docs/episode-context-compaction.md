@@ -1,88 +1,99 @@
-# Episode-Level Context Compaction
+# 片段级上下文压缩
 
-## Current Data Flow And Risks
+## 当前数据流与风险
 
-- `Session.processMessage()` builds `conversationHistory` from persisted session messages, then `Agent.run()` prepares that history for provider replay.
-- `AgentLoop` keeps the active turn in memory and appends fresh `tool_use` / `tool_result` messages before the next model call.
-- `Agent.processToolResults()` already artifactizes very large tool outputs, but old `prepareConversationHistory()` also mutated historical `tool_result` blocks in place. That made replay smaller, but risked losing raw evidence from the session DB.
-- Provider adapters require valid `tool_use` / `tool_result` pairing. Any compaction must either keep a valid pair or remove both sides into text summary.
-- `task_closure=block` is not a finished-work signal. The latest/current turn stays high fidelity; unpaired tool-use turns are explicitly excluded from episode compaction.
+- `Session.processMessage()` 会从已持久化的 session 消息构造 `conversationHistory`，随后由 `Agent.run()` 准备这段历史并发送给模型提供方。
+- `AgentLoop` 会把当前活跃 turn 保留在内存中，并在下一次模型调用前追加新的 `tool_use` / `tool_result` 消息。
+- `Agent.processToolResults()` 已经会把特别大的工具输出转成 artifact；旧版 `prepareConversationHistory()` 还会原地修改历史 `tool_result` block。这样能减少 replay 体积，但有丢失 session DB 中原始证据的风险。
+- Provider adapter 要求 `tool_use` / `tool_result` 必须合法配对。任何压缩方案都必须保留合法配对，或者把两侧一起移出并替换成文本摘要。
+- `task_closure=block` 不是任务完成信号。最新/当前 turn 仍保持高保真；没有配对结果的 `tool_use` turn 会被明确排除在 episode 压缩之外。
 
-## Schema
+## 数据结构
 
 `ToolEvidence`
 
-- Layer: message metadata, trace request entries, artifact path, UI tool detail.
-- Shape: `kind`, `sessionId`, `toolUseId`, `toolName`, `path`, `chars`, `bytes`, `sha256`, optional `summary`, `strategy`, and `writeStatus`.
-- Purpose: point to exact raw tool input/output without replaying it inline forever.
+- 所在层：消息元数据、trace 请求记录、artifact 路径、UI 工具详情。
+- 字段：`kind`、`sessionId`、`toolUseId`、`toolName`、`path`、`chars`、`bytes`、`sha256`，以及可选的 `summary`、`strategy`、`writeStatus`。
+- 用途：指向精确的原始工具输入/输出，避免永远把完整 IO 内联 replay。
 
 `TimelineCompactionBlock`
 
-- Layer: persisted session projection, API response, prompt replay, trace lifecycle, and UI timeline.
-- Shape: `id`, `status`, `strategy`, `strategyVersion`, `boundaryReason`, `summary`, `workingStateSummary`, `coveredMessageIds`, `coveredRange`, `coveredMessageCount`, `toolUseIds`, `evidence`, `createdAt`, `updatedAt`, `generation`, nested `episodes`, optional semantic `topics`, optional parser `validation`, optional compaction `model`, and supersede links.
-- Purpose: make compaction a first-class timeline item instead of a hidden prompt-time cache. The canonical session messages remain unchanged; the block only covers a range of message ids and projects over them in prompt/UI views.
-- Lifecycle: `created` is emitted the first time a covered range is compacted, `reused` when the exact same range is projected on a later turn, and `superseded` when an older active block is replaced by a recompact block. New messages age into new immutable blocks instead of expanding an existing block in place.
+- 所在层：持久化 session 投影、API 响应、prompt replay、trace 生命周期、UI timeline。
+- 字段：`id`、`status`、`strategy`、`strategyVersion`、`boundaryReason`、`summary`、`workingStateSummary`、`coveredMessageIds`、`coveredRange`、`coveredMessageCount`、`toolUseIds`、`evidence`、`createdAt`、`updatedAt`、`generation`、嵌套 `episodes`、可选语义 `topics`、可选解析器 `validation`、可选压缩 `model`，以及 supersede 关联。
+- 用途：让压缩成为 timeline 上的一等对象，而不是隐藏在 prompt-time 的缓存里。规范 session 消息保持不变；block 只覆盖一段 message id，并在 prompt/UI 视图中投影覆盖这些消息。
+- 生命周期：首次压缩某个 covered range 时发出 `created`；后续 turn 投影同一段 range 时为 `reused`；旧的 active block 被 recompact block 替代时为 `superseded`。新消息会老化成新的不可变 block，而不是原地扩展已有 block。
 
 `TimelineCompactionTopic`
 
-- Layer: nested semantic structure inside a `TimelineCompactionBlock`, rendered by the UI and consumed by prompt replay.
-- Shape: `id`, `title`, `status`, `summary`, `sourceMessageRefs`, `sourceMessageIds`, `toolRefs`, `toolUseIds`, optional facts/decisions/current state/open questions/next actions/evidence, and `needsRawReview`.
-- Purpose: let the compaction model group work by problem/component state instead of by raw turn order. A topic can cite non-contiguous message refs within the covered window when a later turn returns to an earlier topic.
+- 所在层：`TimelineCompactionBlock` 内部的嵌套语义结构，由 UI 渲染，并被 prompt replay 消费。
+- 字段：`id`、`title`、`status`、`summary`、`sourceMessageRefs`、`sourceMessageIds`、`toolRefs`、`toolUseIds`，以及可选的事实、决策、当前状态、开放问题、下一步、证据和 `needsRawReview`。
+- 用途：让压缩模型按问题/组件状态组织工作，而不是按原始 turn 顺序机械分组。当后续 turn 又回到早前话题时，一个 topic 可以引用 covered window 内非连续的 message refs。
 
 `EpisodeCompaction`
 
-- Layer: nested summary inside a `TimelineCompactionBlock`, backed by `ToolEvidence` artifact files.
-- Shape: `boundaryStrategy`, `boundaryReason`, `goal`, `scope`, `toolUseIds`, `confirmedFacts`, `inferredFacts`, `blockers`, `needsRawReview`, `evidence`, `messageIds`, `summary`.
-- Purpose: replace old paired tool-heavy turns with a semantic segment explaining why tools were called, what was inspected or changed, what was learned, what is confirmed/inferred/blocked, and where raw evidence lives.
-- Boundary note: v1 uses deterministic contiguous older-turn grouping. The schema names that strategy explicitly so a future semantic classifier can replace only the boundary selection layer while preserving the same evidence pointers.
+- 所在层：`TimelineCompactionBlock` 内部的嵌套摘要，由 `ToolEvidence` artifact 文件支撑。
+- 字段：`boundaryStrategy`、`boundaryReason`、`goal`、`scope`、`toolUseIds`、`confirmedFacts`、`inferredFacts`、`blockers`、`needsRawReview`、`evidence`、`messageIds`、`summary`。
+- 用途：把旧的工具密集配对 turn 替换成语义片段，说明工具为什么被调用、实际检查或修改了什么、学到了什么、哪些内容是已确认/推断/阻塞，以及原始证据在哪里。
+- 边界说明：v1 使用确定性的连续旧 turn 分组。schema 会显式记录该策略，这样未来的语义分类器可以只替换边界选择层，同时保留相同的证据指针。
+
+`ToolEnvironmentDigest`
+
+- 所在层：上下文压缩模型的前置输入处理层，由同一批原始 `ToolEvidence` 支撑。它是一次 compaction 请求里的中间输入和 trace/log 观测对象，不作为 `TimelineCompactionBlock` 的独立持久化子结构保存。
+- 字段：`id`、`scope`（`single` 或 `group`）、`toolUseIds`、`messageIds`、`rawChars`、`digestChars`、`summary`，以及可选模型元数据。
+- 用途：在压缩 prompt 中，用自然语言环境观察替代较大的局部 `tool_use` + `tool_result` 原始 IO。它只总结工具实际运行了什么、看到了什么、产出了什么，以及哪些 exact handle 必须保留。它不解释工具为什么被调用，也不推断更大的用户意图。
+- 回退：如果 digest 模型调用失败、输出不可用，或该工具 IO 没有达到 digest 阈值，主 compaction 仍会使用原始 `tool_result_raw` 或 evidence-backed raw payload。
 
 `WorkingStateCompaction`
 
-- Layer: `workingStateSummary` inside the timeline compaction block.
-- Shape: `currentGoal`, `scope`, `confirmedFacts`, `nextAction`, `blockers`, `doNot`, `evidencePointers`, `sourceEpisodeIds`.
-- Purpose: keep the current task control surface small and explicit after older episodes are compacted.
+- 所在层：timeline compaction block 中的 `workingStateSummary`。
+- 字段：`currentGoal`、`scope`、`confirmedFacts`、`nextAction`、`blockers`、`doNot`、`evidencePointers`、`sourceEpisodeIds`。
+- 用途：在旧 episode 被压缩后，保留一个小而明确的当前任务控制面。
 
-## Model Chain And Prompt Contract
+## 模型链路与 Prompt 契约
 
-- `task_closure_model` remains dedicated to task closure. Context compaction has its own optional config key: `context_compaction_model`.
-- The compaction model is expected to be a fast, large-context model such as official DeepSeek v4 flash.
-- Example config:
+- `task_closure_model` 仍只负责任务闭合判断。上下文压缩有自己的可选配置 key：`context_compaction_model`。
+- 压缩模型预期使用速度快、大上下文的模型，例如官方 DeepSeek v4 flash。
+- 配置示例：
 
 ```yaml
 context_compaction_model: deepseek/deepseek-v4-flash
 ```
 
-- The prompt version is `context_compaction_zh_xml_n10_n08_n02_n09_v1`. It is Chinese, XML-only, and combines the tested directions: strict self-check, component/topic boundary first, parent-child state structure, and future-context usefulness.
-- The model receives stable message refs (`E1`, `E2`, ...) and tool refs (`K1`, `K2`, ...). Tool refs include tool name, tool use id, paired message refs, result status, evidence paths, hashes, and bounded previews.
-- Tool results are included in `covered_messages` for the compaction model to analyze directly. Evidence files remain the audit/source layer, and are used to recover raw tool output when the session message only carries an artifact reference.
-- Extremely large tool results are bounded with head/tail raw excerpts plus explicit omitted-char metadata and the evidence path; they are not replaced by a prose-only summary.
-- Parser validation rejects missing topics, invalid `K` refs, `E` refs inside `tool_refs`, missing tool coverage, and missing message refs. Invalid output is not accepted as a prompt block.
+- prompt 版本是 `context_compaction_zh_xml_n10_n08_n02_n09_v1`。它使用中文、只接受 XML 输出，并组合了已验证的方向：严格自检、组件/topic 边界优先、父子状态结构，以及面向未来上下文的可用性。
+- 模型会收到稳定的 message refs（`E1`、`E2` 等）和 tool refs（`K1`、`K2` 等）。tool refs 包含工具名、tool use id、配对 message refs、结果状态、evidence 路径、hash 和有界预览。
+- 小型工具结果会直接进入 `covered_messages`，供压缩模型分析。较大的局部 tool IO 会先送入工具环境摘要模型；随后 `covered_messages` 携带摘要引用和原始 evidence 指针，而不是完整 raw payload。
+- Evidence 文件仍是审计/来源层。当 session 消息只携带 artifact 引用、digest 文本提示仍需回看原文，或主 compaction topic/episode 标记 `needs_raw_review` 时，可以用 evidence 文件恢复原始工具输出。
+- 解析器校验会拒绝缺失 topics、非法 `K` 引用、`tool_refs` 中出现 `E` 引用、工具覆盖缺失，以及 message refs 缺失的输出。非法输出不会被接受为 prompt block。
 
-## Compression Boundary
+## 压缩边界
 
-- Active/latest turn: preserved with full tool history except oversized outputs that are represented by an artifact reference plus `ToolEvidence`.
-- Older paired tool turns: compacted into an episode summary in prompt replay. Raw tool inputs and outputs are written under `.artifacts/<sessionId>/tool-evidence/`.
-- Single-turn tails are not compacted merely because they exceed the normal compact char watermark. They wait for another stable turn unless they cross the urgent char watermark, which avoids producing one new block per aging turn.
-- Medium active-turn tool outputs that exceed the per-tool prompt budget but remain below the 64KB artifact threshold keep their full content for the next model request and also write raw `ToolEvidence` first, so later replay compaction can reference the original IO instead of a truncated carrier.
-- Unfinished turns: if a `tool_use` has no paired `tool_result`, its containing turn is not compacted.
-- Blocked turns: assistant messages finalized with `task_closure=block` carry compact metadata with the classifier reason, so old replay can mark a blocked episode instead of flattening it into finished work.
-- Provider legality: compacted old turns remove both `tool_use` and `tool_result` from replay; retained turns keep valid pairs.
-- Conservative facts: `confirmed` only means the tool IO was captured or an explicit blocker is present. Assistant prose and success-result interpretation stay in `inferred` unless separately verified by evidence.
-- Prompt replay consumes the same block projection as the UI: active blocks are inserted at the first covered message id, all covered canonical messages are skipped, and uncovered recent messages remain high fidelity.
-- If projected history remains block-heavy or oversized after existing blocks are reused, the agent can build a new generation block from the original raw messages and tool evidence, then mark the older blocks as `superseded`. This avoids summary-of-summary compaction.
+- 活跃/最新 turn：保留完整工具历史；超大输出会用 artifact 引用加 `ToolEvidence` 表示。
+- 较旧的配对工具 turn：在 prompt replay 中压缩为 episode summary。原始工具输入和输出写入 `.artifacts/<sessionId>/tool-evidence/`。
+- 单 turn 尾部不会仅因为超过普通压缩字符水位就被压缩。它会等待另一个稳定 turn，除非超过 urgent 字符水位；这能避免每个老化 turn 都产生一个新 block。
+- 中等大小的活跃 turn 工具输出如果超过单工具 prompt budget，但仍低于 64KB artifact 阈值，会在下一次模型请求中保留完整内容，并先写入原始 `ToolEvidence`，这样后续 replay 压缩可以引用原始 IO，而不是引用被截断的载体。
+- 稳定的旧工具密集 turn 可以在主 context compaction 请求前先做 digest。digest 模型只接收局部 tool IO，输出自然语言环境摘要，并保留原始证据用于审计/回看。
+- Tool digest 触发受当前参数控制：单个工具 raw IO 达到 `toolDigestMinRawChars` 时可单独摘要；多个相邻工具 pair 的 raw IO 合计达到 `toolDigestGroupMinRawChars` 时可分组摘要；每个 digest 请求最多包含 `toolDigestMaxPairs` 个 tool pair；每个工具进入 digest 请求的 raw 输出会受 `toolDigestMaxRawCharsPerTool` 限制。当前分组是基于待压缩 segment 内的 tool pair 顺序切块，不是语义聚类，也不会自己重新判断 turn 是否稳定。
+- Tool digest 是机会性优化，而不是强依赖。任何 digest 失败、输出过短或未触发阈值的工具 IO，都会回落到主 compaction 原有的 raw/evidence 输入路径，保证压缩链路不会因为前置摘要失败而丢失上下文。
+- 未完成 turn：如果某个 `tool_use` 没有配对的 `tool_result`，它所在的 turn 不会被压缩。
+- 阻塞 turn：以 `task_closure=block` 结束的 assistant 消息会携带 compact 元数据和分类原因，因此旧 replay 可以把该 episode 标记为 blocked，而不是压平成已完成工作。
+- Provider 合法性：被压缩的旧 turn 会同时从 replay 中移除 `tool_use` 和 `tool_result`；保留的 turn 仍保持合法配对。
+- 保守事实：`confirmed` 只表示工具 IO 已被捕获，或存在明确 blocker。assistant 文本和 success-result 的解释会保持在 `inferred` 中，除非有独立证据验证。
+- Prompt 重放使用与 UI 相同的 block 投影：active block 插入在第一个 covered message id 的位置，所有 covered canonical messages 被跳过，未覆盖的近期消息保持高保真。
+- 如果复用已有 block 后，投影历史仍然 block 过多或体积过大，agent 可以从原始 raw messages 和 tool evidence 构造新 generation block，并把旧 block 标记为 `superseded`。这避免了摘要的摘要继续被压缩。
 
-## Observability
+## 可观测性
 
-- `tool_result` blocks can carry `evidence`.
-- request trace `toolCalls` / `toolResults` preserve evidence pointers.
-- When timeline compaction happens, Agent emits a `context_compaction` trace span named `timeline_compaction_block` plus a `context_compaction.block` run.log entry. The payload includes lifecycle, block id, generation, covered range, before/after message counts, prompt chars/tokens, compacted/retained message ids, episode count, boundary strategy, skipped unfinished tool ids, aggregate evidence totals, topic count, validation status/errors, model/provider, prompt version, attempt count, and supersede links.
-- The model call logs `context_compaction.model_request` plus `context_compaction.model_response` or `context_compaction.model_invalid`. Request failures log `context_compaction.model_failed`. The logs include prompt version, phase, model/provider, response size, validation details, usage/cost where available, and filtered request/response payloads.
-- Active-turn tool input/output evidence writes still log `tool_evidence.persisted`. Reused compaction evidence is aggregated on the block trace event instead of re-emitting one `tool_evidence.persisted` entry per evidence pointer on every prompt replay.
-- Session detail tool cards render evidence path, chars, and hash when available.
-- Session detail timeline renders active compaction blocks on the main lane. Covered canonical messages are hidden from the main lane by default but remain available inside the block's expandable covered-message list.
+- `tool_result` block 可以携带 `evidence`。
+- 请求 trace 中的 `toolCalls` / `toolResults` 会保留 evidence 指针。
+- timeline compaction 发生时，Agent 会发出一个名为 `timeline_compaction_block` 的 `context_compaction` trace span，并写入 `context_compaction.block` run.log 事件。payload 包含 lifecycle、block id、generation、covered range、压缩前后 message 数、prompt chars/tokens、被压缩/保留的 message ids、episode 数、边界策略、跳过的未完成工具 id、聚合 evidence 统计、topic 数、validation 状态/错误、model/provider、prompt version、attempt count 和 supersede 关联。
+- 模型调用会记录 `context_compaction.model_request`，以及 `context_compaction.model_response` 或 `context_compaction.model_invalid`。请求失败会记录 `context_compaction.model_failed`。日志包含 prompt version、phase、model/provider、response size、validation details、可用时的 usage/cost，以及过滤后的 request/response payload。
+- 工具环境摘要调用会记录 `tool_environment_digest.model_request`，以及 `tool_environment_digest.model_response` 或 `tool_environment_digest.model_invalid`；请求失败会记录 `tool_environment_digest.failed`。主 context compaction 完成时，父级 span 会记录 digest count、raw chars、digest chars 和 digest prompt version。
+- 活跃 turn 的工具输入/输出 evidence 写入仍会记录 `tool_evidence.persisted`。复用 compaction evidence 时，会把聚合信息写入 block trace event，而不是在每次 prompt replay 时为每个 evidence 指针重复发出 `tool_evidence.persisted`。
+- Session detail 工具卡片会在可用时渲染 evidence path、chars 和 hash。
+- Session detail timeline 会在主线中渲染 active compaction block。covered canonical messages 默认从主线隐藏，但仍可以在 block 的可展开 covered-message 列表中查看。
 
-## Known Risks And Extensions
+## 已知风险与扩展方向
 
-- Physical block boundaries still start from stable older prompt windows, but semantic topics are model-authored and can merge non-contiguous refs within the covered window. A future selector can improve which raw messages enter a recompact window without changing evidence or topic schema.
-- Existing sessions without `ToolEvidence` will gain evidence files when their old tool turns are first compacted into a block. Later reuse of the same block does not rewrite those evidence logs.
-- Raw artifacts may contain sensitive local data. `.artifacts/` is runtime-only and gitignored; do not move evidence files into tracked source paths.
+- 物理 block 边界目前仍从稳定的旧 prompt window 开始；语义 topics 由模型生成，并且可以在 covered window 内合并非连续 refs。未来可以改进 selector，优化哪些 raw messages 进入 recompact window，同时不改变 evidence 或 topic schema。
+- 没有 `ToolEvidence` 的既有 session，在其旧工具 turn 首次被压缩成 block 时会生成 evidence 文件。后续复用同一个 block 不会重复写这些 evidence 日志。
+- Raw artifacts 可能包含敏感本地数据。`.artifacts/` 只属于运行时数据，并且已被 gitignore；不要把 evidence 文件移动到 tracked source 路径中。
