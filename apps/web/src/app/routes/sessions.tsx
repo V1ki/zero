@@ -43,7 +43,7 @@ function canOpenChannelDetail(session: SessionInfo) {
   return Boolean(session.channelId && session.placement === 'current')
 }
 
-const SOURCE_FILTERS = ['all', 'web', 'feishu', 'telegram', 'scheduler'] as const
+const SOURCE_FILTERS = ['all', 'web', 'feishu', 'telegram', 'weixin', 'scheduler'] as const
 
 export function SessionsPage() {
   const [filter, setFilter] = useState('all')
@@ -98,9 +98,9 @@ export function SessionsPage() {
   function openChannelDetail(session: SessionInfo) {
     if (!session.channelId) return
     navigate({
-      to: '/sessions/channel/$channel/detail',
-      params: { channel: session.channelId },
-      search: { source: session.source, channelName: session.channelName },
+      to: '/sessions/source/$source/detail',
+      params: { source: session.source },
+      search: { id: session.channelId, channelName: session.channelName },
     })
   }
 

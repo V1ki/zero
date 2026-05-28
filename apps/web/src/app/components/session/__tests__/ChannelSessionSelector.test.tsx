@@ -6,6 +6,7 @@ describe('ChannelSessionSelector', () => {
   test('renders channel session metadata and options', () => {
     const html = renderToStaticMarkup(
       <ChannelSessionSelector
+        sources={['feishu', 'telegram']}
         candidates={[
           {
             id: 'sess_1',
@@ -37,14 +38,19 @@ describe('ChannelSessionSelector', () => {
         }}
         activeSource="feishu"
         loading={false}
+        sourceLoading={false}
+        onSourceSelect={() => {}}
         onSelect={() => {}}
       />,
     )
 
     expect(html).toContain('Source')
     expect(html).toContain('Channel')
-    expect(html).toContain('Channel ID')
-    expect(html).toContain('oc_room_1')
-    expect(html).toContain('feishu · oc_room_2 · current')
+    expect(html).toContain('telegram')
+    expect(html).toContain('feishu ·')
+    expect(html).toContain('ago')
+    expect(html).not.toContain('Channel ID')
+    expect(html).not.toContain('oc_room_1')
+    expect(html).not.toContain('oc_room_2')
   })
 })

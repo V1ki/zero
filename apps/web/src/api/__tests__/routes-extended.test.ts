@@ -1824,6 +1824,42 @@ describe('API Routes Extended', () => {
     expect(data.sessions).toEqual([])
   })
 
+  test('GET /api/sessions/sources/current returns current channel sources', async () => {
+    const newest = zero.sessionManager.getOrCreateForChannel(
+      'weixin',
+      'wx_source_room_2',
+      'v1ki-bot',
+    ).session
+    newest.data.updatedAt = '2026-12-31T00:00:03.000Z'
+
+    const older = zero.sessionManager.getOrCreateForChannel(
+      'weixin',
+      'wx_source_room_1',
+      'v1ki-bot-legacy',
+    ).session
+    older.data.updatedAt = '2026-12-31T00:00:02.000Z'
+
+    const telegram = zero.sessionManager.getOrCreateForChannel('telegram', 'tg_source_room').session
+    telegram.data.updatedAt = '2026-12-31T00:00:01.000Z'
+
+    const res = await app.request('/api/sessions/sources/current')
+    expect(res.status).toBe(200)
+    const data = await res.json()
+    const sources = data.sources as Array<{
+      source: string
+      channelCount: number
+      updatedAt: string | null
+    }>
+    const weixinSource = sources.find((entry) => entry.source === 'weixin')
+
+    expect(sources[0].source).toBe('weixin')
+    expect(sources.find((entry) => entry.source === 'telegram')).toBeTruthy()
+    expect(weixinSource?.source).toBe('weixin')
+    expect(typeof weixinSource?.channelCount).toBe('number')
+    expect(weixinSource?.updatedAt).toBe('2026-12-31T00:00:03.000Z')
+    expect(weixinSource?.channelCount ?? 0).toBeGreaterThanOrEqual(2)
+  })
+
   test('GET /api/sessions/source/:source/current returns source-scoped current channels', async () => {
     const newest = zero.sessionManager.getOrCreateForChannel('scheduler', 'sched_room_2').session
     newest.data.updatedAt = '2026-03-09T00:00:03.000Z'

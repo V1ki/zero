@@ -9,69 +9,64 @@ import {
   resolveChannelSessionCandidate,
 } from './session-detail-helpers'
 
-export function SessionChannelDetailPage() {
+interface ChannelSessionSource {
+  source: string
+  channelCount: number
+  updatedAt: string | null
+}
+
+function buildCandidateSearch(candidate: ChannelSessionCandidate) {
+  return {
+    id: candidate.channelId,
+    channelName: candidate.channelName,
+  }
+}
+
+export function SessionSourceDetailPage() {
   const navigate = useNavigate()
-  const { channel } = useParams({ from: '/sessions/channel/$channel/detail' })
-  const search = useSearch({ from: '/sessions/channel/$channel/detail' }) as {
-    source?: string
+  const { source } = useParams({ from: '/sessions/source/$source/detail' })
+  const search = useSearch({ from: '/sessions/source/$source/detail' }) as {
+    id?: string
     channelName?: string
   }
 
-  const [currentCandidates, setCurrentCandidates] = useState<ChannelSessionCandidate[]>([])
   const [selectorCandidates, setSelectorCandidates] = useState<ChannelSessionCandidate[]>([])
-  const [currentLoading, setCurrentLoading] = useState(true)
+  const [sourceOptions, setSourceOptions] = useState<ChannelSessionSource[]>([])
+  const [sourceLoading, setSourceLoading] = useState(true)
   const [selectorLoading, setSelectorLoading] = useState(false)
-  const [inferredSource, setInferredSource] = useState<string | null>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
-  const currentAbortRef = useRef<AbortController | null>(null)
+  const sourceAbortRef = useRef<AbortController | null>(null)
   const selectorAbortRef = useRef<AbortController | null>(null)
-  const currentRequestIdRef = useRef(0)
+  const sourceRequestIdRef = useRef(0)
   const selectorRequestIdRef = useRef(0)
 
-  const activeSource = search.source ?? inferredSource
+  const fetchSourceOptions = useCallback((showLoading = true) => {
+    const requestId = ++sourceRequestIdRef.current
+    sourceAbortRef.current?.abort()
+    const controller = new AbortController()
+    sourceAbortRef.current = controller
 
-  const fetchCurrentCandidates = useCallback(
-    (showLoading = true) => {
-      const requestId = ++currentRequestIdRef.current
-      currentAbortRef.current?.abort()
-      const controller = new AbortController()
-      currentAbortRef.current = controller
+    if (showLoading) setSourceLoading(true)
 
-      if (showLoading) setCurrentLoading(true)
+    return apiFetch<{ sources: ChannelSessionSource[] }>('/api/sessions/sources/current', {
+      signal: controller.signal,
+    })
+      .then((res) => {
+        if (requestId !== sourceRequestIdRef.current) return
+        setSourceOptions(res.sources ?? [])
+      })
+      .catch((error) => {
+        if (requestId !== sourceRequestIdRef.current || isAbortError(error)) return
+        setSourceOptions([])
+      })
+      .finally(() => {
+        if (requestId === sourceRequestIdRef.current) {
+          setSourceLoading(false)
+        }
+      })
+  }, [])
 
-      return apiFetch<{ sessions: ChannelSessionCandidate[] }>(
-        `/api/sessions/channel/${encodeURIComponent(channel)}/current`,
-        { signal: controller.signal },
-      )
-        .then((res) => {
-          if (requestId !== currentRequestIdRef.current) return
-
-          const sessions = res.sessions ?? []
-          setCurrentCandidates(sessions)
-
-          if (search.source) return
-
-          const preferred = resolveChannelSessionCandidate(sessions, channel, search.channelName)
-          setInferredSource(preferred?.source ?? sessions[0]?.source ?? null)
-        })
-        .catch((error) => {
-          if (requestId !== currentRequestIdRef.current || isAbortError(error)) return
-
-          setCurrentCandidates([])
-          if (!search.source) {
-            setInferredSource(null)
-          }
-        })
-        .finally(() => {
-          if (requestId === currentRequestIdRef.current) {
-            setCurrentLoading(false)
-          }
-        })
-    },
-    [channel, search.channelName, search.source],
-  )
-
-  const fetchSelectorCandidates = useCallback((source: string, showLoading = true) => {
+  const fetchSelectorCandidates = useCallback((activeSource: string, showLoading = true) => {
     const requestId = ++selectorRequestIdRef.current
     selectorAbortRef.current?.abort()
     const controller = new AbortController()
@@ -80,7 +75,7 @@ export function SessionChannelDetailPage() {
     if (showLoading) setSelectorLoading(true)
 
     return apiFetch<{ sessions: ChannelSessionCandidate[] }>(
-      `/api/sessions/source/${encodeURIComponent(source)}/current`,
+      `/api/sessions/source/${encodeURIComponent(activeSource)}/current`,
       { signal: controller.signal },
     )
       .then((res) => {
@@ -99,30 +94,17 @@ export function SessionChannelDetailPage() {
   }, [])
 
   useEffect(() => {
-    void fetchCurrentCandidates()
-  }, [fetchCurrentCandidates])
+    void fetchSourceOptions()
+  }, [fetchSourceOptions])
 
   useEffect(() => {
-    if (search.source) {
-      setInferredSource(null)
-    }
-  }, [search.source])
-
-  useEffect(() => {
-    if (!activeSource) {
-      selectorAbortRef.current?.abort()
-      setSelectorCandidates([])
-      setSelectorLoading(false)
-      return
-    }
-
-    void fetchSelectorCandidates(activeSource)
-  }, [activeSource, fetchSelectorCandidates])
+    void fetchSelectorCandidates(source)
+  }, [fetchSelectorCandidates, source])
 
   useEffect(
     () => () => {
       clearTimeout(debounceRef.current)
-      currentAbortRef.current?.abort()
+      sourceAbortRef.current?.abort()
       selectorAbortRef.current?.abort()
     },
     [],
@@ -131,12 +113,10 @@ export function SessionChannelDetailPage() {
   const onSessionEvent = useCallback(() => {
     clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => {
-      void fetchCurrentCandidates(false)
-      if (activeSource) {
-        void fetchSelectorCandidates(activeSource, false)
-      }
+      void fetchSourceOptions(false)
+      void fetchSelectorCandidates(source, false)
     }, 300)
-  }, [activeSource, fetchCurrentCandidates, fetchSelectorCandidates])
+  }, [fetchSelectorCandidates, fetchSourceOptions, source])
 
   useWebSocket({
     url: `ws://${window.location.host}/ws`,
@@ -145,93 +125,58 @@ export function SessionChannelDetailPage() {
   })
 
   const selectedCandidate = useMemo(
-    () =>
-      resolveChannelSessionCandidate(
-        currentCandidates,
-        channel,
-        search.channelName,
-        activeSource ?? undefined,
-      ),
-    [activeSource, channel, currentCandidates, search.channelName],
+    () => resolveChannelSessionCandidate(selectorCandidates, search.id, search.channelName, source),
+    [search.channelName, search.id, selectorCandidates, source],
   )
 
-  const candidates = useMemo(() => {
-    const merged = [
-      ...currentCandidates.filter((candidate) =>
-        activeSource ? candidate.source === activeSource : true,
-      ),
-      ...selectorCandidates.filter((candidate) =>
-        activeSource ? candidate.source === activeSource : true,
-      ),
-    ]
-
-    const uniqueCandidates: ChannelSessionCandidate[] = []
-    const seen = new Set<string>()
-    for (const candidate of merged) {
-      if (seen.has(candidate.id)) continue
-      seen.add(candidate.id)
-      uniqueCandidates.push(candidate)
-    }
-
-    return uniqueCandidates
-  }, [activeSource, currentCandidates, selectorCandidates])
-
-  const loading = currentLoading || (activeSource ? selectorLoading : false)
-
-  const hasRouteMatch = useMemo(
-    () =>
-      currentCandidates.some(
-        (candidate) =>
-          candidate.id === selectedCandidate?.id &&
-          (!activeSource || candidate.source === activeSource),
-      ),
-    [activeSource, currentCandidates, selectedCandidate],
-  )
+  const sources = useMemo(() => {
+    const names = new Set<string>([source])
+    for (const option of sourceOptions) names.add(option.source)
+    for (const candidate of selectorCandidates) names.add(candidate.source)
+    return Array.from(names)
+  }, [selectorCandidates, source, sourceOptions])
 
   useEffect(() => {
-    if (currentLoading || !selectedCandidate || !hasRouteMatch) return
+    if (selectorLoading || !selectedCandidate) return
 
     if (
-      search.source !== selectedCandidate.source ||
       search.channelName !== selectedCandidate.channelName ||
-      channel !== selectedCandidate.channelId
+      search.id !== selectedCandidate.channelId ||
+      source !== selectedCandidate.source
     ) {
       navigate({
-        to: '/sessions/channel/$channel/detail',
-        params: { channel: selectedCandidate.channelId },
-        search: {
-          source: selectedCandidate.source,
-          channelName: selectedCandidate.channelName,
-        },
+        to: '/sessions/source/$source/detail',
+        params: { source: selectedCandidate.source },
+        search: buildCandidateSearch(selectedCandidate),
         replace: true,
       })
     }
-  }, [
-    channel,
-    currentLoading,
-    hasRouteMatch,
-    navigate,
-    search.channelName,
-    search.source,
-    selectedCandidate,
-  ])
+  }, [navigate, search.channelName, search.id, selectedCandidate, selectorLoading, source])
 
   const selector = (
     <ChannelSessionSelector
-      candidates={candidates}
+      sources={sources}
+      candidates={selectorCandidates}
       selectedCandidate={selectedCandidate}
-      activeSource={activeSource}
-      loading={loading}
+      activeSource={source}
+      loading={selectorLoading}
+      sourceLoading={sourceLoading}
+      onSourceSelect={(nextSource) => {
+        if (nextSource === source) return
+
+        navigate({
+          to: '/sessions/source/$source/detail',
+          params: { source: nextSource },
+          search: { id: undefined, channelName: undefined },
+        })
+      }}
       onSelect={(next) => {
         if (!next) return
 
         navigate({
-          to: '/sessions/channel/$channel/detail',
-          params: { channel: next.channelId },
-          search: {
-            source: next.source,
-            channelName: next.channelName,
-          },
+          to: '/sessions/source/$source/detail',
+          params: { source: next.source },
+          search: buildCandidateSearch(next),
         })
       }}
     />
@@ -243,9 +188,81 @@ export function SessionChannelDetailPage() {
       topContent={selector}
       emptyState={
         <div className="card p-8 text-center text-[13px] text-[var(--color-text-muted)]">
-          {loading
+          {selectorLoading
             ? 'Loading active channel session...'
-            : `No active or idle session found for this channel${activeSource ? ` in source ${activeSource}` : ''}.`}
+            : `No active or idle channel session found in source ${source}.`}
+        </div>
+      }
+    />
+  )
+}
+
+export function SessionChannelDetailRedirectPage() {
+  const navigate = useNavigate()
+  const { channel } = useParams({ from: '/sessions/channel/$channel/detail' })
+  const search = useSearch({ from: '/sessions/channel/$channel/detail' }) as {
+    source?: string
+    channelName?: string
+  }
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let canceled = false
+
+    async function redirect() {
+      if (search.source) {
+        await navigate({
+          to: '/sessions/source/$source/detail',
+          params: { source: search.source },
+          search: { id: channel, channelName: search.channelName },
+          replace: true,
+        })
+        return
+      }
+
+      try {
+        const res = await apiFetch<{ sessions: ChannelSessionCandidate[] }>(
+          `/api/sessions/channel/${encodeURIComponent(channel)}/current`,
+        )
+        if (canceled) return
+
+        const candidate = resolveChannelSessionCandidate(
+          res.sessions ?? [],
+          channel,
+          search.channelName,
+        )
+        if (!candidate) {
+          setFailed(true)
+          return
+        }
+
+        await navigate({
+          to: '/sessions/source/$source/detail',
+          params: { source: candidate.source },
+          search: buildCandidateSearch(candidate),
+          replace: true,
+        })
+      } catch (error) {
+        if (!canceled && !isAbortError(error)) {
+          setFailed(true)
+        }
+      }
+    }
+
+    void redirect()
+
+    return () => {
+      canceled = true
+    }
+  }, [channel, navigate, search.channelName, search.source])
+
+  return (
+    <SessionDetailScreen
+      emptyState={
+        <div className="card p-8 text-center text-[13px] text-[var(--color-text-muted)]">
+          {failed
+            ? 'No active channel session found for this legacy channel URL.'
+            : 'Opening source channel detail...'}
         </div>
       }
     />

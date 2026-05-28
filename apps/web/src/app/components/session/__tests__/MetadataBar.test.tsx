@@ -9,6 +9,8 @@ describe('MetadataBar', () => {
         sessionId="sess_meta_001"
         summary="Deploy fix follow-up"
         source="web"
+        channelName="web"
+        channelId="default"
         createdAt="2026-04-01T08:00:00.000Z"
         updatedAt="2026-04-01T08:30:00.000Z"
         modelHistory={[{ model: 'chatgpt/gpt-5.4', from: '2026-04-01T08:00:00.000Z', to: null }]}
@@ -45,5 +47,7 @@ describe('MetadataBar', () => {
     expect(html).toContain('reasoning 42')
     expect(html).toContain('aux 0.120')
     expect(html).toContain('task_closure: 0.120')
+    expect(html).toContain('id default')
+    expect(html).toContain('session sess_meta_001')
   })
 })

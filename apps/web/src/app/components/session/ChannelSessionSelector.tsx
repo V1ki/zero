@@ -5,54 +5,74 @@ import {
 } from '../../routes/session-detail-helpers'
 
 interface ChannelSessionSelectorProps {
+  sources: string[]
   candidates: ChannelSessionCandidate[]
   selectedCandidate: ChannelSessionCandidate | null
   activeSource?: string | null
   loading: boolean
+  sourceLoading?: boolean
+  onSourceSelect: (source: string) => void
   onSelect: (candidate: ChannelSessionCandidate | null) => void
 }
 
 export function ChannelSessionSelector({
+  sources,
   candidates,
   selectedCandidate,
   activeSource,
   loading,
+  sourceLoading = false,
+  onSourceSelect,
   onSelect,
 }: ChannelSessionSelectorProps) {
-  const getOptionValue = (candidate: ChannelSessionCandidate) =>
-    `${getChannelSessionCandidateKey(candidate)}::${candidate.channelName ?? candidate.source}::${candidate.channelId}`
+  const getChannelLabel = (candidate: ChannelSessionCandidate) =>
+    candidate.channelName ?? `${candidate.source} channel`
+
+  const selectedSource = activeSource ?? selectedCandidate?.source ?? ''
 
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-1.5 lg:justify-end">
-      <span className="inline-flex h-7 items-center gap-1.5 rounded-full border border-white/8 bg-white/[0.03] px-2 text-[10px] text-[var(--color-text-disabled)] uppercase tracking-wide">
+    <div className="flex min-w-0 flex-wrap items-center gap-2 lg:justify-end">
+      <label className="flex min-w-[132px] items-center gap-1.5 text-[10px] uppercase tracking-wide text-[var(--color-text-disabled)]">
         Source
-        <span className="font-mono text-[var(--color-text-secondary)] normal-case tracking-normal">
-          {selectedCandidate?.source ?? activeSource ?? '—'}
-        </span>
-      </span>
-      <span className="inline-flex h-7 items-center gap-1.5 rounded-full border border-white/8 bg-white/[0.03] px-2 text-[10px] text-[var(--color-text-disabled)] uppercase tracking-wide">
+        <select
+          aria-label="Source"
+          className="input-field h-8 min-w-[104px] px-2.5 py-1 text-[12px] normal-case tracking-normal"
+          value={selectedSource}
+          disabled={sourceLoading || sources.length === 0}
+          onChange={(e) => onSourceSelect(e.target.value)}
+        >
+          {sources.map((source) => (
+            <option key={source} value={source}>
+              {source}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label className="flex min-w-0 flex-1 items-center gap-1.5 text-[10px] uppercase tracking-wide text-[var(--color-text-disabled)] lg:max-w-[640px] xl:flex-none xl:w-[520px]">
         Channel
-        <span className="font-mono text-[var(--color-text-secondary)] normal-case tracking-normal">
-          {selectedCandidate?.channelName ?? '—'}
-        </span>
-      </span>
-      <select
-        aria-label="Channel ID"
-        className="input-field h-8 min-w-[240px] max-w-full flex-1 px-2.5 py-1 text-[12px] lg:max-w-[640px] xl:flex-none xl:w-[520px]"
-        value={selectedCandidate ? getOptionValue(selectedCandidate) : ''}
-        disabled={loading || candidates.length === 0}
-        onChange={(e) => {
-          const next = candidates.find((candidate) => getOptionValue(candidate) === e.target.value)
-          onSelect(next ?? null)
-        }}
-      >
-        {candidates.map((candidate) => (
-          <option key={getChannelSessionCandidateKey(candidate)} value={getOptionValue(candidate)}>
-            {candidate.channelName ?? candidate.source} · {candidate.channelId} ·{' '}
-            {candidate.placement} · {formatTimeAgo(candidate.updatedAt)}
-          </option>
-        ))}
-      </select>
+        <select
+          aria-label="Channel"
+          className="input-field h-8 min-w-[220px] max-w-full flex-1 px-2.5 py-1 text-[12px] normal-case tracking-normal"
+          value={selectedCandidate ? getChannelSessionCandidateKey(selectedCandidate) : ''}
+          disabled={loading || candidates.length === 0}
+          onChange={(e) => {
+            const next = candidates.find(
+              (candidate) => getChannelSessionCandidateKey(candidate) === e.target.value,
+            )
+            onSelect(next ?? null)
+          }}
+        >
+          {candidates.map((candidate) => (
+            <option
+              key={getChannelSessionCandidateKey(candidate)}
+              value={getChannelSessionCandidateKey(candidate)}
+            >
+              {getChannelLabel(candidate)} · {formatTimeAgo(candidate.updatedAt)}
+            </option>
+          ))}
+        </select>
+      </label>
     </div>
   )
 }

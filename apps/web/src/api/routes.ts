@@ -443,6 +443,40 @@ export function createRoutes(zero: ZeroOS) {
       return c.json({ sessions })
     })
 
+    .get('/api/sessions/sources/current', (c) => {
+      const sources = new Map<
+        string,
+        { source: string; channelCount: number; updatedAt: string | null }
+      >()
+
+      for (const binding of zero.sessionManager.listCurrentBindings()) {
+        const session = zero.sessionManager.get(binding.sessionId)
+        const row = session ? null : zero.sessionManager.getFromDB(binding.sessionId)
+        const updatedAt = session?.data.updatedAt ?? row?.updatedAt ?? binding.updatedAt
+        const existing = sources.get(binding.source)
+
+        if (!existing) {
+          sources.set(binding.source, {
+            source: binding.source,
+            channelCount: 1,
+            updatedAt,
+          })
+          continue
+        }
+
+        existing.channelCount += 1
+        if (!existing.updatedAt || updatedAt.localeCompare(existing.updatedAt) > 0) {
+          existing.updatedAt = updatedAt
+        }
+      }
+
+      return c.json({
+        sources: Array.from(sources.values()).sort((left, right) =>
+          (right.updatedAt ?? '').localeCompare(left.updatedAt ?? ''),
+        ),
+      })
+    })
+
     .get('/api/sessions/source/:source/current', (c) => {
       const source = c.req.param('source')
 

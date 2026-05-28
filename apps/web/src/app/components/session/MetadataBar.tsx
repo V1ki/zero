@@ -123,9 +123,17 @@ export function MetadataBar({
               <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[9px] font-mono text-[var(--color-text-secondary)]">
                 {source}
               </span>
-              {channelName || channelId ? (
+              {channelName ? (
                 <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[9px] font-mono text-[var(--color-text-secondary)]">
-                  {channelName ?? channelId}
+                  {channelName}
+                </span>
+              ) : null}
+              {channelId ? (
+                <span
+                  className="max-w-[280px] truncate rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[9px] font-mono text-[var(--color-text-secondary)]"
+                  title={`Channel ID ${channelId}`}
+                >
+                  id {channelId}
                 </span>
               ) : null}
             </div>
@@ -138,8 +146,8 @@ export function MetadataBar({
                 {displayTitle}
               </h2>
               {showSessionId ? (
-                <span className="font-mono text-[11px] text-[var(--color-text-muted)]">
-                  {sessionId}
+                <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-[10px] text-[var(--color-text-muted)]">
+                  session {sessionId}
                 </span>
               ) : null}
             </div>

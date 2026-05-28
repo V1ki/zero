@@ -6,7 +6,10 @@ import { LogsPage } from './routes/logs'
 import { MemoPage } from './routes/memo'
 import { MemoryPage } from './routes/memory'
 import { MetricsPage } from './routes/metrics'
-import { SessionChannelDetailPage } from './routes/session-channel-detail'
+import {
+  SessionChannelDetailRedirectPage,
+  SessionSourceDetailPage,
+} from './routes/session-channel-detail'
 import { SessionDetailPage } from './routes/session-detail'
 import { SessionRunLogPage } from './routes/session-run-log'
 import { SessionsPage } from './routes/sessions'
@@ -41,7 +44,17 @@ const sessionChannelDetailRoute = createRoute({
     source: typeof search.source === 'string' ? search.source : undefined,
     channelName: typeof search.channelName === 'string' ? search.channelName : undefined,
   }),
-  component: SessionChannelDetailPage,
+  component: SessionChannelDetailRedirectPage,
+})
+
+const sessionSourceDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/sessions/source/$source/detail',
+  validateSearch: (search: Record<string, unknown>) => ({
+    id: typeof search.id === 'string' ? search.id : undefined,
+    channelName: typeof search.channelName === 'string' ? search.channelName : undefined,
+  }),
+  component: SessionSourceDetailPage,
 })
 
 const memoryRoute = createRoute({
@@ -90,6 +103,7 @@ const routeTree = rootRoute.addChildren([
   indexRoute,
   sessionsRoute,
   sessionDetailRoute,
+  sessionSourceDetailRoute,
   sessionChannelDetailRoute,
   memoryRoute,
   memoRoute,
