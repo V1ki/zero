@@ -491,6 +491,19 @@ describe('MetricsDB', () => {
       createdAt,
     })
     usageDb.recordUsage({
+      id: 'usage_tool_digest_001',
+      sessionId: 'sess_usage_001',
+      category: 'completion',
+      purpose: 'tool_io_digest',
+      model: 'chatgpt/gpt-5.5',
+      provider: 'chatgpt',
+      inputTokens: 30,
+      outputTokens: 12,
+      cost: 0.03,
+      durationMs: 30,
+      createdAt,
+    })
+    usageDb.recordUsage({
       id: 'usage_embedding_001',
       sessionId: null,
       category: 'embedding',
@@ -505,8 +518,8 @@ describe('MetricsDB', () => {
       createdAt,
     })
 
-    expect(usageDb.sessionFullCost('sess_usage_001')).toBeCloseTo(0.22, 6)
-    expect(usageDb.sessionAuxiliaryCost('sess_usage_001')).toBeCloseTo(0.04, 6)
+    expect(usageDb.sessionFullCost('sess_usage_001')).toBeCloseTo(0.25, 6)
+    expect(usageDb.sessionAuxiliaryCost('sess_usage_001')).toBeCloseTo(0.07, 6)
 
     const usageSummary = usageDb.usageSummaryByPurpose('1d')
     expect(usageSummary).toEqual(
@@ -518,6 +531,10 @@ describe('MetricsDB', () => {
         expect.objectContaining({
           purpose: 'embedding',
           totalCost: 0.02,
+        }),
+        expect.objectContaining({
+          purpose: 'tool_io_digest',
+          totalCost: 0.03,
         }),
       ]),
     )

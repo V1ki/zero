@@ -112,6 +112,7 @@ export const USAGE_PURPOSES = [
   'sub_agent',
   'task_closure',
   'compression',
+  'tool_io_digest',
   'memory_retrieval',
   'session_judge',
   'embedding',
@@ -612,7 +613,10 @@ export class MetricsDB {
         avgScore: value.count > 0 ? value.total / value.count : 0,
         count: value.count,
       }))
-      .sort((left, right) => right.count - left.count || left.dimensionKey.localeCompare(right.dimensionKey))
+      .sort(
+        (left, right) =>
+          right.count - left.count || left.dimensionKey.localeCompare(right.dimensionKey),
+      )
   }
 
   topFindings(range = '30d', limit = 10): TopFindingRow[] {

@@ -236,6 +236,42 @@ describe('startZeroOS Integration', () => {
     metrics.close()
   })
 
+  test('createUsageRecorder accepts tool IO digest usage records', () => {
+    const metrics = MetricsDB.createInMemory()
+    const usageRecorder = createUsageRecorder(metrics)
+    const warnings: unknown[][] = []
+    const originalWarn = console.warn
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args)
+    }
+
+    try {
+      usageRecorder.record({
+        sessionId: 'sess_tool_digest_usage_001',
+        purpose: 'tool_io_digest',
+        model: 'chatgpt/gpt-5.5',
+        provider: 'chatgpt',
+        usage: { input: 120, output: 40 },
+        cost: 0.03,
+        durationMs: 75,
+      })
+    } finally {
+      console.warn = originalWarn
+    }
+
+    expect(warnings).toHaveLength(0)
+    expect(metrics.summary('1d').requestCount).toBe(1)
+    expect(metrics.sessionUsageByPurpose('sess_tool_digest_usage_001')).toEqual([
+      expect.objectContaining({
+        purpose: 'tool_io_digest',
+        requestCount: 1,
+        totalCost: 0.03,
+      }),
+    ])
+
+    metrics.close()
+  })
+
   test('runs core-ready hook before external channels start', async () => {
     const observed = {
       webRegistered: false,
