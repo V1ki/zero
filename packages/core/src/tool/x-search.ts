@@ -142,7 +142,7 @@ export class XSearchTool extends BaseTool {
     if (parsed.enable_image_understanding) toolDef.enable_image_understanding = true
     if (parsed.enable_video_understanding) toolDef.enable_video_understanding = true
 
-    const model = parsed.model?.trim() || this.defaultModel
+    const model = normalizeModelName(parsed.model?.trim() || this.defaultModel)
     const payload = {
       model,
       input: [{ role: 'user', content: query }],
@@ -318,6 +318,10 @@ function normalizeHandles(value: unknown, fieldName: string): string[] {
     throw new Error(`${fieldName} supports at most ${MAX_HANDLES} handles`)
   }
   return handles
+}
+
+function normalizeModelName(model: string): string {
+  return model.startsWith('x-premium/') ? model.slice('x-premium/'.length) : model
 }
 
 function extractResponseText(payload: Record<string, unknown>): string {

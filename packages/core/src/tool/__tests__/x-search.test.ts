@@ -135,6 +135,29 @@ describe('XSearchTool', () => {
     })
   })
 
+  test('strips provider prefix from x-premium model names', async () => {
+    let requestBody: Record<string, unknown> | undefined
+    const tool = new XSearchTool({
+      credentialProvider: () => ({ bearerToken: 'token' }),
+      fetchFn: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        requestBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+        return new Response(JSON.stringify({ output_text: 'Found.' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }) as unknown as typeof fetch,
+      maxRetries: 0,
+    })
+
+    const result = await tool.run(createContext(), {
+      query: 'saving money',
+      model: 'x-premium/grok-4.3',
+    })
+
+    expect(result.success).toBe(true)
+    expect(requestBody?.model).toBe('grok-4.3')
+  })
+
   test('returns a structured error when no xAI credential is available', async () => {
     const tool = new XSearchTool()
 
