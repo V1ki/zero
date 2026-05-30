@@ -7,7 +7,8 @@ import { toErrorMessage } from '@zero-os/shared'
 
 export const DEFAULT_OAUTH_REDIRECT_URI = 'http://localhost:1455/auth/callback'
 
-export type ManagedOAuthProvider = 'chatgpt' | 'anthropic' | 'x-premium'
+export type ManagedOAuthProviderKind = 'chatgpt' | 'anthropic' | 'x-premium'
+export type ManagedOAuthProvider = string
 
 export type ManagedOAuthState =
   | 'idle'
@@ -41,6 +42,7 @@ export interface ManagedOAuthCallbackConfig {
 
 export interface ManagedOAuthDriver<Session = unknown> {
   readonly provider: ManagedOAuthProvider
+  readonly kind?: ManagedOAuthProviderKind
   getCallbackConfig?(): ManagedOAuthCallbackConfig
   buildAuthorizationUrl(params: {
     state: string
@@ -108,8 +110,12 @@ export class ManagedOAuthCoordinator {
     this.defaultCallbackConfig = this.parseDefaultCallbackConfig(options)
 
     for (const driver of drivers) {
-      this.drivers.set(driver.provider, driver)
+      this.registerDriver(driver)
     }
+  }
+
+  registerDriver(driver: ManagedOAuthDriver): void {
+    this.drivers.set(driver.provider, driver)
   }
 
   supportsProvider(provider: string): provider is ManagedOAuthProvider {

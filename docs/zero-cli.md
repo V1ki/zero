@@ -148,6 +148,35 @@ bun zero logs out -f
 bun zero secret set openai_codex_api_key <value>
 ```
 
+## Provider OAuth
+
+### `bun zero provider login <provider> [--name <name>]`
+
+用途：通过托管 OAuth 流程连接 ChatGPT、Claude 或 X Premium provider。
+
+支持的 provider：
+
+- `chatgpt`
+- `anthropic`
+- `x-premium`
+
+真实行为：
+
+- 不带 `--name` 时保持旧行为，例如写入 `chatgpt` / `chatgpt_oauth_token`
+- 带 `--name` 时创建独立 provider 实例，例如 `chatgpt-work` 和 `chatgpt_oauth_work`
+- 如果本地 Web server 正在运行，登录成功后会尝试热重载 model provider 配置
+- 如果热重载不可达，配置和 vault 仍会保存；下次启动或重启后生效
+
+示例：
+
+```bash
+bun zero provider login chatgpt
+bun zero provider login chatgpt --name work
+bun zero provider login anthropic --name max
+```
+
+多个同类 OAuth 账号可以通过 `.zero/config.yaml` 的 `model_pools` 聚合为一个逻辑模型，并使用 `sticky_quota_aware_failover` 在单个 session 内尽量固定实际 provider，只有遇到额度或限流问题时才自动切换。
+
 ### `bun zero secret list`
 
 用途：列出当前 vault 中已保存的 secret key 名称。

@@ -1,12 +1,20 @@
-import type { ApiType, ModelConfig, ProviderConfig, SystemConfig } from '@zero-os/shared'
+import type {
+  ApiType,
+  ModelConfig,
+  ModelPoolConfig,
+  ProviderConfig,
+  SystemConfig,
+} from '@zero-os/shared'
 import { AnthropicAdapter } from './adapters/anthropic'
 import { AnthropicDeepSeekAdapter } from './adapters/anthropic-deepseek'
 import type { AdapterConfig, OAuthTokenRefresher, ProviderAdapter } from './adapters/base'
+import { ModelPoolAdapter, type ModelPoolAdapterMember } from './adapters/model-pool'
 import { OpenAIChatAdapter } from './adapters/openai-chat'
 import { OpenAIResponsesAdapter } from './adapters/openai-resp'
 import { TrackedAdapter, type UsageRecorder } from './adapters/tracked'
 import { XResponsesAdapter } from './adapters/x-resp'
 import { LiteLLMPricing } from './pricing'
+import { ProviderHealthRegistry, type ProviderRecoveryResolver } from './provider-health'
 
 export interface ResolvedModel {
   providerName: string
@@ -22,6 +30,8 @@ export interface ModelRegistryOptions {
   secretGetter?: SecretGetter
   oauthRefreshers?: Record<string, OAuthTokenRefresher | undefined>
   usageRecorder?: UsageRecorder
+  providerHealth?: ProviderHealthRegistry
+  providerRecoveryResolver?: ProviderRecoveryResolver
 }
 
 /**
@@ -29,11 +39,14 @@ export interface ModelRegistryOptions {
  */
 export class ModelRegistry {
   private providers: Map<string, ProviderConfig> = new Map()
+  private modelPools: Map<string, ModelPoolConfig> = new Map()
   private adapters: Map<string, ProviderAdapter> = new Map()
+  private poolAdapters: Map<string, ProviderAdapter> = new Map()
   private secrets: Map<string, string>
   private secretGetter: SecretGetter
   private oauthRefreshers: Record<string, OAuthTokenRefresher | undefined>
   private usageRecorder?: UsageRecorder
+  private providerHealth: ProviderHealthRegistry
 
   constructor(
     config: SystemConfig,
@@ -44,8 +57,14 @@ export class ModelRegistry {
     this.secretGetter = options.secretGetter ?? ((ref) => this.secrets.get(ref))
     this.oauthRefreshers = options.oauthRefreshers ?? {}
     this.usageRecorder = options.usageRecorder
+    this.providerHealth =
+      options.providerHealth ??
+      new ProviderHealthRegistry({ recoveryResolver: options.providerRecoveryResolver })
     for (const [name, provider] of Object.entries(config.providers)) {
       this.providers.set(name, provider)
+    }
+    for (const [name, pool] of Object.entries(config.modelPools ?? {})) {
+      this.modelPools.set(name, pool)
     }
   }
 
@@ -54,6 +73,12 @@ export class ModelRegistry {
    * Searches across all providers.
    */
   resolve(modelName: string): ResolvedModel | undefined {
+    const pool = this.resolveModelPool(modelName)
+    if (pool) return pool
+    return this.resolvePhysicalModel(modelName)
+  }
+
+  private resolvePhysicalModel(modelName: string): ResolvedModel | undefined {
     for (const [providerName, provider] of this.providers) {
       for (const [name, model] of Object.entries(provider.models)) {
         const qualifiedName = `${providerName}/${name}`
@@ -115,6 +140,17 @@ export class ModelRegistry {
   listModels(): { providerName: string; modelName: string; modelId: string; tags: string[] }[] {
     const models: { providerName: string; modelName: string; modelId: string; tags: string[] }[] =
       []
+    for (const [poolName] of this.modelPools) {
+      const [providerName, ...modelParts] = poolName.split('/')
+      const modelName = modelParts.join('/')
+      if (!providerName || !modelName) continue
+      models.push({
+        providerName,
+        modelName,
+        modelId: modelName,
+        tags: ['pool'],
+      })
+    }
     for (const [providerName, provider] of this.providers) {
       for (const [name, model] of Object.entries(provider.models)) {
         models.push({
@@ -126,6 +162,86 @@ export class ModelRegistry {
       }
     }
     return models
+  }
+
+  getProviderHealth(): ProviderHealthRegistry {
+    return this.providerHealth
+  }
+
+  private resolveModelPool(modelName: string): ResolvedModel | undefined {
+    const exactPool = this.modelPools.get(modelName)
+    if (exactPool) {
+      return this.buildResolvedPool(modelName, exactPool)
+    }
+
+    if (modelName.includes('/')) {
+      return undefined
+    }
+
+    const matches = Array.from(this.modelPools.entries()).filter(([poolName]) => {
+      return poolName.split('/').at(-1) === modelName
+    })
+    if (matches.length !== 1) return undefined
+    return this.buildResolvedPool(matches[0][0], matches[0][1])
+  }
+
+  private buildResolvedPool(poolName: string, pool: ModelPoolConfig): ResolvedModel | undefined {
+    const members = this.resolvePoolMembers(pool)
+    const first = members[0]
+    if (!first) return undefined
+
+    const [providerName, ...modelParts] = poolName.split('/')
+    const modelName = modelParts.join('/')
+    if (!providerName || !modelName) return undefined
+
+    return {
+      providerName,
+      modelName,
+      modelConfig: first.modelConfig,
+      providerConfig: first.providerConfig,
+      adapter: this.getOrCreatePoolAdapter(poolName, pool, members),
+    }
+  }
+
+  private resolvePoolMembers(
+    pool: ModelPoolConfig,
+  ): Array<ResolvedModel & { label: string; priority: number }> {
+    return pool.members
+      .map((member, index) => {
+        const resolved = this.resolvePhysicalModel(member.model)
+        if (!resolved) return null
+        return {
+          ...resolved,
+          label: this.formatModelLabel(resolved.providerName, resolved.modelName),
+          priority: member.priority ?? index,
+        }
+      })
+      .filter(
+        (member): member is ResolvedModel & { label: string; priority: number } => member !== null,
+      )
+  }
+
+  private getOrCreatePoolAdapter(
+    poolName: string,
+    pool: ModelPoolConfig,
+    members: Array<ResolvedModel & { label: string; priority: number }>,
+  ): ProviderAdapter {
+    const adapter = this.poolAdapters.get(poolName)
+    if (adapter) return adapter
+
+    const poolMembers: ModelPoolAdapterMember[] = members.map((member) => ({
+      label: member.label,
+      providerName: member.providerName,
+      modelName: member.modelName,
+      adapter: member.adapter,
+      priority: member.priority,
+    }))
+    const next = new ModelPoolAdapter(poolName, poolMembers, this.providerHealth, {
+      sticky: pool.strategy !== 'priority_failover',
+      quotaAware: pool.strategy === 'sticky_quota_aware_failover',
+    })
+    this.poolAdapters.set(poolName, next)
+    return next
   }
 
   private getOrCreateAdapter(
@@ -146,6 +262,7 @@ export class ModelRegistry {
     const modelConfig = this.enrichPricing(model)
     const config: AdapterConfig = {
       providerName,
+      managedOAuthProvider: provider.auth.managedOAuthProvider,
       baseUrl: provider.baseUrl,
       auth: provider.auth,
       modelConfig,
@@ -202,5 +319,9 @@ export class ModelRegistry {
       default:
         throw new Error(`Unsupported API type: ${apiType}`)
     }
+  }
+
+  private formatModelLabel(providerName: string, modelName: string): string {
+    return `${providerName}/${modelName}`
   }
 }

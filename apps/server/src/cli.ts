@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { DEFAULT_TEMPLATES } from '@zero-os/core'
+import { DEFAULT_TEMPLATES, loadConfig } from '@zero-os/core'
 import { Vault, generateMasterKey, getMasterKey, setMasterKey } from '@zero-os/secrets'
 import { installConsoleTimestamping, toErrorMessage } from '@zero-os/shared'
 import { getChatgptOAuthTokenRef } from './chatgpt-provider'
@@ -15,8 +15,9 @@ import { startZeroOS } from './main'
 import {
   createManagedOAuthCoordinator,
   getManagedOAuthProviderLabel,
-  isManagedOAuthProvider,
+  isManagedOAuthProviderKind,
   prepareManagedOAuthProvider,
+  syncManagedOAuthCoordinator,
 } from './provider-oauth'
 import { writeRestartTrigger } from './restart-trigger'
 import { rebuildWebBundle } from './web-build'
@@ -218,9 +219,10 @@ async function secret() {
 async function provider() {
   const action = process.argv[3]
   const target = process.argv[4]
+  const options = parseProviderLoginOptions(process.argv.slice(5))
 
-  if (action !== 'login' || !target || !isManagedOAuthProvider(target)) {
-    console.error('Usage: bun zero provider login <chatgpt|anthropic|x-premium>')
+  if (action !== 'login' || !target || !isManagedOAuthProviderKind(target)) {
+    console.error('Usage: bun zero provider login <chatgpt|anthropic|x-premium> [--name <name>]')
     process.exit(1)
   }
 
@@ -235,8 +237,10 @@ async function provider() {
   const vault = new Vault(masterKey, SECRETS_PATH)
   vault.load()
 
+  let providerName: string = target
   try {
-    prepareManagedOAuthProvider(target)
+    const prepared = prepareManagedOAuthProvider(target, { name: options.name })
+    providerName = prepared.providerName
   } catch (error) {
     console.error(
       `[ZeRo OS] Failed to prepare ${getManagedOAuthProviderLabel(target)} provider config:`,
@@ -245,21 +249,25 @@ async function provider() {
     process.exit(1)
   }
 
-  const oauth = createManagedOAuthCoordinator(vault)
-  const label = getManagedOAuthProviderLabel(target)
+  const config = loadConfig(CONFIG_PATH)
+  const oauth = createManagedOAuthCoordinator(vault, config)
+  syncManagedOAuthCoordinator(oauth, config)
+  const label =
+    providerName === target
+      ? getManagedOAuthProviderLabel(target)
+      : `${getManagedOAuthProviderLabel(target)} (${providerName})`
 
   try {
-    const { url } = await oauth.start(target)
+    const { url } = await oauth.start(providerName)
     console.log(`[ZeRo OS] Starting ${label} OAuth login...`)
     console.log(`  URL: ${url}`)
 
     tryOpenBrowser(url)
 
-    const status = await oauth.waitForCompletion(target, 120_000)
+    const status = await oauth.waitForCompletion(providerName, 120_000)
     if (status.state === 'connected') {
-      console.log(
-        `[ZeRo OS] ${label} OAuth configured. Run \`bun zero restart\` to use the new provider.`,
-      )
+      await tryReloadRunningServer()
+      console.log(`[ZeRo OS] ${label} OAuth configured.`)
       return
     }
   } catch (error) {
@@ -276,16 +284,45 @@ async function provider() {
   }
 
   try {
-    const status = await oauth.completeFromInput(target, pasted)
+    const status = await oauth.completeFromInput(providerName, pasted)
     if (status.state !== 'connected') {
       throw new Error(status.error ?? 'Authentication failed')
     }
-    console.log(
-      `[ZeRo OS] ${label} OAuth configured. Run \`bun zero restart\` to use the new provider.`,
-    )
+    await tryReloadRunningServer()
+    console.log(`[ZeRo OS] ${label} OAuth configured.`)
   } catch (error) {
     console.error(`[ZeRo OS] ${label} OAuth login failed:`, toErrorMessage(error))
     process.exit(1)
+  }
+}
+
+function parseProviderLoginOptions(args: string[]) {
+  let name: string | undefined
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]
+    if (arg === '--name' || arg === '-n') {
+      name = args[index + 1]
+      index++
+    } else if (arg.startsWith('--name=')) {
+      name = arg.slice('--name='.length)
+    }
+  }
+  return { name }
+}
+
+async function tryReloadRunningServer() {
+  const port = Number(process.env.PORT ?? 3001)
+  try {
+    const response = await fetch(`http://localhost:${port}/api/runtime/model-providers/reload`, {
+      method: 'POST',
+    })
+    if (response.ok) {
+      console.log('[ZeRo OS] Running server reloaded provider config.')
+      return
+    }
+    console.log('[ZeRo OS] Provider saved. Restart ZeRo if the running server does not pick it up.')
+  } catch {
+    console.log('[ZeRo OS] Provider saved. Start or restart ZeRo to use it.')
   }
 }
 
@@ -545,7 +582,7 @@ Commands:
   secret list        List all stored secret keys
   secret delete <k>  Delete a secret
   weixin login       Authenticate a Weixin channel via QR login
-  provider login <provider> Authenticate managed OAuth (chatgpt | anthropic | x-premium)
+  provider login <provider> [--name name] Authenticate managed OAuth
   status             Show system status
 
 Examples:
@@ -557,6 +594,7 @@ Examples:
   bun zero secret set openai_codex_api_key sk-xxx
   bun zero weixin login
   bun zero provider login chatgpt
+  bun zero provider login chatgpt --name work
   bun zero provider login anthropic
   bun zero provider login x-premium
   bun zero status

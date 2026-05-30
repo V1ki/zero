@@ -10,6 +10,7 @@ export type BusEvent =
   | 'notification'
   | 'metrics:cost'
   | 'heartbeat'
+  | 'config:update'
   | 'repair:start'
   | 'repair:end'
   | 'fuse:trigger'

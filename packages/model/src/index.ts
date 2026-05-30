@@ -7,6 +7,7 @@ export { AnthropicAdapter } from './adapters/anthropic'
 export { AnthropicDeepSeekAdapter } from './adapters/anthropic-deepseek'
 export { OpenAIResponsesAdapter } from './adapters/openai-resp'
 export { XResponsesAdapter } from './adapters/x-resp'
+export { ModelPoolAdapter } from './adapters/model-pool'
 export type { ProviderAdapter, AdapterConfig } from './adapters/base'
 export { TrackedAdapter } from './adapters/tracked'
 export type { UsageRecorder } from './adapters/tracked'
@@ -38,3 +39,10 @@ export type { XPremiumOAuthAccount, XPremiumOAuthSession } from './auth/x-premiu
 export { createApiKeyAuth } from './auth/api-key'
 export { computeCost } from './cost'
 export { LiteLLMPricing } from './pricing'
+export { ProviderHealthRegistry } from './provider-health'
+export type {
+  ProviderHealthRecord,
+  ProviderHealthState,
+  ProviderRecoveryHint,
+  ProviderRecoveryResolver,
+} from './provider-health'

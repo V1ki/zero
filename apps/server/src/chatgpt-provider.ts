@@ -16,6 +16,46 @@ function getZeroDir() {
   return process.env.ZERO_DATA_DIR ?? join(process.cwd(), '.zero')
 }
 
+export interface ChatgptProviderInstanceOptions {
+  name?: string
+  providerName?: string
+  oauthTokenRef?: string
+}
+
+function toInstanceSlug(value: string): string {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  if (!slug) {
+    throw new Error('OAuth provider instance name must contain at least one letter or number.')
+  }
+  return slug
+}
+
+export function resolveChatgptProviderInstance(options: ChatgptProviderInstanceOptions = {}) {
+  if (options.providerName || options.oauthTokenRef) {
+    return {
+      providerName: options.providerName ?? CHATGPT_PROVIDER,
+      oauthTokenRef: options.oauthTokenRef ?? CHATGPT_OAUTH_TOKEN_REF,
+    }
+  }
+
+  if (!options.name) {
+    return {
+      providerName: CHATGPT_PROVIDER,
+      oauthTokenRef: CHATGPT_OAUTH_TOKEN_REF,
+    }
+  }
+
+  const slug = toInstanceSlug(options.name)
+  return {
+    providerName: `${CHATGPT_PROVIDER}-${slug}`,
+    oauthTokenRef: `chatgpt_oauth_${slug.replace(/-/g, '_')}`,
+  }
+}
+
 function loadRawConfig(): Record<string, unknown> {
   const configPath = getConfigPath()
   if (!existsSync(configPath)) {
@@ -23,6 +63,10 @@ function loadRawConfig(): Record<string, unknown> {
   }
 
   return readYaml<Record<string, unknown>>(configPath)
+}
+
+function cloneRecord(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? JSON.parse(JSON.stringify(value)) : {}
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -103,7 +147,13 @@ export function getConfigPath() {
   return join(getZeroDir(), 'config.yaml')
 }
 
-export function ensureChatgptProviderConfig(): { changed: boolean; config: SystemConfig } {
+export function ensureChatgptProviderConfig(options: ChatgptProviderInstanceOptions = {}): {
+  changed: boolean
+  config: SystemConfig
+  providerName: string
+  oauthTokenRef: string
+} {
+  const instance = resolveChatgptProviderInstance(options)
   const configPath = getConfigPath()
   const raw = loadRawConfig()
   let changed = false
@@ -113,11 +163,11 @@ export function ensureChatgptProviderConfig(): { changed: boolean; config: Syste
   }
   const providers = raw.providers as Record<string, unknown>
 
-  if (!providers[CHATGPT_PROVIDER] || typeof providers[CHATGPT_PROVIDER] !== 'object') {
-    providers[CHATGPT_PROVIDER] = {}
+  if (!providers[instance.providerName] || typeof providers[instance.providerName] !== 'object') {
+    providers[instance.providerName] = {}
     changed = true
   }
-  const provider = providers[CHATGPT_PROVIDER] as Record<string, unknown>
+  const provider = providers[instance.providerName] as Record<string, unknown>
 
   if (provider.api_type !== 'openai_responses') {
     provider.api_type = 'openai_responses'
@@ -139,8 +189,16 @@ export function ensureChatgptProviderConfig(): { changed: boolean; config: Syste
     changed = true
   }
 
-  if (auth.oauth_token_ref !== CHATGPT_OAUTH_TOKEN_REF) {
-    auth.oauth_token_ref = CHATGPT_OAUTH_TOKEN_REF
+  if (auth.oauth_token_ref !== instance.oauthTokenRef) {
+    auth.oauth_token_ref = instance.oauthTokenRef
+    changed = true
+  }
+
+  if (
+    instance.providerName !== CHATGPT_PROVIDER &&
+    auth.managed_oauth_provider !== CHATGPT_PROVIDER
+  ) {
+    auth.managed_oauth_provider = CHATGPT_PROVIDER
     changed = true
   }
 
@@ -151,7 +209,11 @@ export function ensureChatgptProviderConfig(): { changed: boolean; config: Syste
   }
 
   if (!provider.models || typeof provider.models !== 'object') {
-    provider.models = {}
+    const defaultChatgptProvider = providers[CHATGPT_PROVIDER]
+    provider.models =
+      instance.providerName === CHATGPT_PROVIDER || !isRecord(defaultChatgptProvider)
+        ? {}
+        : cloneRecord(defaultChatgptProvider.models)
     changed = true
   }
   const models = provider.models as Record<string, unknown>
@@ -193,5 +255,7 @@ export function ensureChatgptProviderConfig(): { changed: boolean; config: Syste
   return {
     changed,
     config: loadConfig(configPath),
+    providerName: instance.providerName,
+    oauthTokenRef: instance.oauthTokenRef,
   }
 }

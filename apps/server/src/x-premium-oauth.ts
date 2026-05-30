@@ -46,11 +46,16 @@ export type XPremiumOAuthState =
   | 'error'
 
 export interface XPremiumOAuthStatus extends ManagedOAuthStatus {
-  provider: 'x-premium'
+  provider: string
   state: XPremiumOAuthState
 }
 
 type XPremiumRefreshReason = 'expiring' | 'unauthorized'
+
+interface XPremiumOAuthInstanceOptions {
+  providerName?: string
+  tokenRef?: string
+}
 
 interface XPremiumDiscovery {
   authorizationEndpoint: string
@@ -66,8 +71,11 @@ interface XPremiumTokenResponse {
   id_token?: string
 }
 
-function readSessionFromVault(vault: Vault): XPremiumOAuthSession | null {
-  return parseXPremiumOAuthSession(vault.get(getXPremiumOAuthSessionRef()))
+function readSessionFromVault(
+  vault: Vault,
+  tokenRef = getXPremiumOAuthSessionRef(),
+): XPremiumOAuthSession | null {
+  return parseXPremiumOAuthSession(vault.get(tokenRef))
 }
 
 function isSessionExpiring(
@@ -256,7 +264,14 @@ function buildSession(
 }
 
 export class XPremiumOAuthDriver implements ManagedOAuthDriver<XPremiumOAuthSession> {
-  readonly provider = 'x-premium' as const
+  readonly provider: string
+  readonly kind = 'x-premium' as const
+  private tokenRef: string
+
+  constructor(options: XPremiumOAuthInstanceOptions = {}) {
+    this.provider = options.providerName ?? 'x-premium'
+    this.tokenRef = options.tokenRef ?? getXPremiumOAuthSessionRef()
+  }
 
   getCallbackConfig() {
     return {
@@ -328,11 +343,11 @@ export class XPremiumOAuthDriver implements ManagedOAuthDriver<XPremiumOAuthSess
   }
 
   readSession(vault: Vault): XPremiumOAuthSession | null {
-    return readSessionFromVault(vault)
+    return readSessionFromVault(vault, this.tokenRef)
   }
 
   writeSession(vault: Vault, session: XPremiumOAuthSession) {
-    vault.set(getXPremiumOAuthSessionRef(), serializeXPremiumOAuthSession(session))
+    vault.set(this.tokenRef, serializeXPremiumOAuthSession(session))
   }
 
   isSessionExpired(session: XPremiumOAuthSession): boolean {
@@ -345,7 +360,7 @@ export class XPremiumOAuthDriver implements ManagedOAuthDriver<XPremiumOAuthSess
   ): XPremiumOAuthStatus {
     const expired = this.isSessionExpired(session)
     return {
-      provider: 'x-premium',
+      provider: this.provider,
       state: expired ? 'expired' : 'connected',
       authorized: !expired,
       expiresAt: session.expiresAt,
@@ -358,7 +373,10 @@ export class XPremiumOAuthDriver implements ManagedOAuthDriver<XPremiumOAuthSess
   }
 
   async refreshStatus(vault: Vault): Promise<void> {
-    await new XPremiumTokenManager(vault).ensureFreshSession()
+    await new XPremiumTokenManager(vault, {
+      providerName: this.provider,
+      tokenRef: this.tokenRef,
+    }).ensureFreshSession()
   }
 
   getCallbackSuccessHtml(): string {
@@ -393,13 +411,17 @@ export class XPremiumOAuthBroker {
 export class XPremiumTokenManager {
   private refreshPromise: Promise<XPremiumOAuthSession> | null = null
   private vault: Vault
+  private providerName: string
+  private tokenRef: string
 
-  constructor(vault: Vault) {
+  constructor(vault: Vault, options: XPremiumOAuthInstanceOptions = {}) {
     this.vault = vault
+    this.providerName = options.providerName ?? 'x-premium'
+    this.tokenRef = options.tokenRef ?? getXPremiumOAuthSessionRef()
   }
 
   readSession(): XPremiumOAuthSession | null {
-    return readSessionFromVault(this.vault)
+    return readSessionFromVault(this.vault, this.tokenRef)
   }
 
   async ensureFreshSession(
@@ -408,7 +430,7 @@ export class XPremiumTokenManager {
     const session = this.readSession()
     if (!session) {
       throw new Error(
-        'X Premium OAuth credentials not found. Please run `bun zero provider login x-premium`.',
+        `X Premium OAuth credentials not found for ${this.providerName}. Please run \`bun zero provider login x-premium\`.`,
       )
     }
 
@@ -428,7 +450,7 @@ export class XPremiumTokenManager {
     const currentSession = this.readSession()
     if (!currentSession) {
       throw new Error(
-        'X Premium OAuth credentials not found. Please run `bun zero provider login x-premium`.',
+        `X Premium OAuth credentials not found for ${this.providerName}. Please run \`bun zero provider login x-premium\`.`,
       )
     }
 
@@ -490,7 +512,7 @@ export class XPremiumTokenManager {
       throw new Error(X_PREMIUM_REAUTH_MESSAGE)
     }
 
-    this.vault.set(getXPremiumOAuthSessionRef(), serializeXPremiumOAuthSession(refreshedSession))
+    this.vault.set(this.tokenRef, serializeXPremiumOAuthSession(refreshedSession))
     return refreshedSession
   }
 }

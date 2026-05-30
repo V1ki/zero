@@ -40,6 +40,7 @@ export interface ProviderAdapter {
  */
 export interface AdapterConfig {
   providerName?: string
+  managedOAuthProvider?: string
   baseUrl: string
   auth: AuthConfig
   modelConfig: ModelConfig

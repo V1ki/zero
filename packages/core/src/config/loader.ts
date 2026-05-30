@@ -1,6 +1,14 @@
 import { existsSync } from 'node:fs'
 import { normalizeReasoningEffort, readYaml, readYamlOrDefault } from '@zero-os/shared'
-import type { ChannelInstanceConfig, FuseRule, ModelPricing, SystemConfig } from '@zero-os/shared'
+import type {
+  ChannelInstanceConfig,
+  FuseRule,
+  ManagedOAuthProviderKind,
+  ModelPoolConfig,
+  ModelPoolStrategy,
+  ModelPricing,
+  SystemConfig,
+} from '@zero-os/shared'
 import { readString } from '../utils/yaml'
 
 /**
@@ -48,10 +56,15 @@ function normalizeConfig(raw: Record<string, unknown>): SystemConfig {
         type: rawAuth.type as string as 'api_key' | 'oauth2',
         apiKeyRef: rawAuth.api_key_ref as string | undefined,
         oauthTokenRef: rawAuth.oauth_token_ref as string | undefined,
+        ...(normalizeManagedOAuthProvider(rawAuth.managed_oauth_provider)
+          ? { managedOAuthProvider: normalizeManagedOAuthProvider(rawAuth.managed_oauth_provider) }
+          : {}),
       },
       models,
     }
   }
+
+  const modelPools = normalizeModelPools(raw.model_pools as Record<string, unknown> | undefined)
 
   const rawChannels = Array.isArray(raw.channels)
     ? (raw.channels as Array<Record<string, unknown>>)
@@ -60,19 +73,24 @@ function normalizeConfig(raw: Record<string, unknown>): SystemConfig {
     .map(normalizeChannelConfig)
     .filter((channel): channel is ChannelInstanceConfig => channel !== null)
 
-  const defaultModel = normalizeModelReference((raw.default_model as string) ?? '', providers)
+  const defaultModel = normalizeModelReference(
+    (raw.default_model as string) ?? '',
+    providers,
+    modelPools,
+  )
   const fallbackChain = ((raw.fallback_chain as string[]) ?? []).map((model) =>
-    normalizeModelReference(model, providers),
+    normalizeModelReference(model, providers, modelPools),
   )
   const taskClosureModel = raw.task_closure_model
-    ? normalizeModelReference(raw.task_closure_model as string, providers)
+    ? normalizeModelReference(raw.task_closure_model as string, providers, modelPools)
     : undefined
   const contextCompactionModel = raw.context_compaction_model
-    ? normalizeModelReference(raw.context_compaction_model as string, providers)
+    ? normalizeModelReference(raw.context_compaction_model as string, providers, modelPools)
     : undefined
 
   return {
     providers,
+    ...(Object.keys(modelPools).length > 0 ? { modelPools } : {}),
     defaultModel,
     fallbackChain,
     schedules: (raw.schedules as SystemConfig['schedules']) ?? [],
@@ -86,19 +104,76 @@ function normalizeConfig(raw: Record<string, unknown>): SystemConfig {
   }
 }
 
-function normalizeModelReference(value: string, providers: SystemConfig['providers']): string {
+function normalizeModelReference(
+  value: string,
+  providers: SystemConfig['providers'],
+  modelPools: Record<string, ModelPoolConfig> = {},
+): string {
   if (!value) return value
+  if (modelPools[value]) {
+    return value
+  }
   if (value.includes('/')) {
     return value
   }
 
-  const matches = Object.entries(providers).flatMap(([providerName, provider]) =>
+  const providerMatches = Object.entries(providers).flatMap(([providerName, provider]) =>
     Object.entries(provider.models)
       .filter(([modelName, model]) => modelName === value || model.modelId === value)
       .map(([modelName]) => `${providerName}/${modelName}`),
   )
+  const poolMatches = Object.keys(modelPools).filter(
+    (poolName) => poolName.split('/').at(-1) === value,
+  )
+  const matches = [...poolMatches, ...providerMatches]
 
   return matches.length === 1 ? matches[0] : value
+}
+
+function normalizeManagedOAuthProvider(value: unknown): ManagedOAuthProviderKind | undefined {
+  return value === 'chatgpt' || value === 'anthropic' || value === 'x-premium' ? value : undefined
+}
+
+function normalizeModelPools(
+  rawPools: Record<string, unknown> | undefined,
+): Record<string, ModelPoolConfig> {
+  const pools: Record<string, ModelPoolConfig> = {}
+  if (!isRecord(rawPools)) return pools
+
+  for (const [name, rawPool] of Object.entries(rawPools)) {
+    if (!isRecord(rawPool)) continue
+    const rawMembers = Array.isArray(rawPool.members) ? rawPool.members : []
+    const members = rawMembers
+      .map((member): ModelPoolConfig['members'][number] | null => {
+        if (typeof member === 'string') {
+          return member.trim() ? { model: member.trim() } : null
+        }
+        if (!isRecord(member) || typeof member.model !== 'string' || !member.model.trim()) {
+          return null
+        }
+        return {
+          model: member.model.trim(),
+          priority: typeof member.priority === 'number' ? member.priority : undefined,
+        }
+      })
+      .filter((member): member is ModelPoolConfig['members'][number] => member !== null)
+
+    if (members.length === 0) continue
+    pools[name] = {
+      strategy: normalizeModelPoolStrategy(rawPool.strategy),
+      members,
+    }
+  }
+
+  return pools
+}
+
+function normalizeModelPoolStrategy(value: unknown): ModelPoolStrategy {
+  return value === 'priority_failover' ||
+    value === 'sticky_priority_failover' ||
+    value === 'sticky_quota_aware_failover'
+    ? value
+    : 'sticky_quota_aware_failover'
 }
 
 function normalizeChannelConfig(raw: Record<string, unknown>): ChannelInstanceConfig | null {

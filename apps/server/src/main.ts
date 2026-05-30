@@ -49,6 +49,8 @@ import type { MemoryRepository } from '@zero-os/memory'
 import {
   LiteLLMPricing,
   ModelRouter,
+  ProviderHealthRegistry,
+  type ProviderRecoveryResolver,
   type UsageRecorder,
   computeCost,
   getXPremiumAuthorizationScheme,
@@ -63,6 +65,7 @@ import {
   type Notification,
   type ScheduleConfig,
   type SessionSource,
+  type SystemConfig,
   collectAssistantReply,
   describeError,
   generateId,
@@ -74,9 +77,12 @@ import { RepairEngine } from '@zero-os/supervisor'
 import { HeartbeatWriter } from '@zero-os/supervisor'
 import { globalBus } from './bus'
 import { ChatGptTokenManager } from './chatgpt-oauth'
+import { ChatGptUsageService, type ChatGptUsageSnapshot } from './chatgpt-usage'
 import { ClaudeTokenManager } from './claude-oauth'
+import { ClaudeUsageService, type ClaudeUsageSnapshot } from './claude-usage'
 import { FeishuAdapter } from './feishu-adapter'
 import { handleChannelMessage } from './message-handler'
+import { getManagedOAuthKindForProvider } from './provider-oauth'
 import {
   type RestartTrigger,
   consumeRestartTrigger,
@@ -88,7 +94,7 @@ import { syncTelegramCommandMenu } from './telegram-menu'
 import { rebuildWebBundle } from './web-build'
 import { WeixinAdapter } from './weixin-adapter'
 import { XPremiumTokenManager } from './x-premium-oauth'
-import { getXPremiumBaseUrl, getXPremiumOAuthSessionRef } from './x-premium-provider'
+import { getXPremiumBaseUrl } from './x-premium-provider'
 
 export interface StartOptions {
   dataDir?: string
@@ -205,6 +211,7 @@ export interface ZeroOS {
   metrics: MetricsDB
   sessionDb: SessionDB
   modelRouter: ModelRouter
+  providerHealth: ProviderHealthRegistry
   toolRegistry: ToolRegistry
   sessionManager: SessionManager
   memoryStore: MemoryRepository
@@ -219,6 +226,7 @@ export interface ZeroOS {
   channelDefinitions: Map<string, ChannelRuntimeDefinition>
   notifications: Notification[]
   addNotification(n: Omit<Notification, 'id' | 'createdAt'>): Notification
+  reloadModelProviders(): Promise<void>
   isShuttingDown(): boolean
   shutdown(): Promise<void>
 }
@@ -254,6 +262,149 @@ export function createUsageRecorder(metrics: MetricsDB): UsageRecorder {
       })
     },
   }
+}
+
+function createOAuthRefreshers(config: SystemConfig, vault: Vault) {
+  const refreshers: Record<string, (reason: 'expiring' | 'unauthorized') => Promise<void>> = {}
+
+  for (const [providerName, provider] of Object.entries(config.providers)) {
+    const kind = getManagedOAuthKindForProvider(providerName, provider.auth.managedOAuthProvider)
+    const tokenRef = provider.auth.oauthTokenRef
+    if (!kind || !tokenRef) continue
+
+    if (kind === 'chatgpt') {
+      const manager = new ChatGptTokenManager(vault, { providerName, tokenRef })
+      refreshers[providerName] = async (reason) => {
+        if (reason === 'expiring') {
+          await manager.ensureFreshSession()
+          return
+        }
+        await manager.refreshSession(reason)
+      }
+    } else if (kind === 'anthropic') {
+      const manager = new ClaudeTokenManager(vault, { providerName, tokenRef })
+      refreshers[providerName] = async (reason) => {
+        if (reason === 'expiring') {
+          await manager.ensureFreshSession()
+          return
+        }
+        await manager.refreshSession(reason)
+      }
+    } else if (kind === 'x-premium') {
+      const manager = new XPremiumTokenManager(vault, { providerName, tokenRef })
+      refreshers[providerName] = async (reason) => {
+        if (reason === 'expiring') {
+          await manager.ensureFreshSession()
+          return
+        }
+        await manager.refreshSession(reason)
+      }
+    }
+  }
+
+  return refreshers
+}
+
+function createProviderRecoveryResolver(
+  getConfig: () => SystemConfig,
+  vault: Vault,
+): ProviderRecoveryResolver {
+  return async ({ providerName, modelName, reason }) => {
+    const config = getConfig()
+    const provider = config.providers[providerName]
+    const kind = provider
+      ? getManagedOAuthKindForProvider(providerName, provider.auth.managedOAuthProvider)
+      : undefined
+    const tokenRef = provider?.auth.oauthTokenRef
+    if (!kind || !tokenRef) return undefined
+
+    if (kind === 'chatgpt') {
+      const usage = await new ChatGptUsageService(vault, {
+        providerName,
+        tokenRef,
+        baseUrl: provider.baseUrl,
+      }).fetchUsage()
+      return quotaHintFromChatGptUsage(usage)
+    }
+
+    if (kind === 'anthropic') {
+      const usage = await new ClaudeUsageService(vault, { providerName, tokenRef }).fetchUsage()
+      return quotaHintFromClaudeUsage(usage, modelName)
+    }
+
+    if (kind === 'x-premium' && reason === 'quota_limited') {
+      return {
+        state: 'quota_limited',
+        cooldownUntil: Date.now() + 60 * 60_000,
+        reason: 'x-premium usage reset is not available; using conservative cooldown',
+      }
+    }
+
+    return undefined
+  }
+}
+
+function quotaHintFromChatGptUsage(usage: ChatGptUsageSnapshot) {
+  const windows = [usage.rateLimits.primary, usage.rateLimits.secondary].filter(Boolean)
+  const exhaustedResets = windows
+    .filter((window) => typeof window?.usedPercent === 'number' && window.usedPercent >= 95)
+    .map((window) => (typeof window?.resetsAt === 'number' ? window.resetsAt * 1000 : undefined))
+    .filter((value): value is number => typeof value === 'number' && value > Date.now())
+
+  if (exhaustedResets.length === 0) {
+    return { state: 'healthy' as const, evidence: { source: 'chatgpt_usage' } }
+  }
+
+  return {
+    state: 'quota_limited' as const,
+    cooldownUntil: Math.max(...exhaustedResets),
+    evidence: { source: 'chatgpt_usage' },
+  }
+}
+
+function quotaHintFromClaudeUsage(usage: ClaudeUsageSnapshot | null, modelName?: string) {
+  if (!usage) return undefined
+  const windows = [
+    usage.five_hour,
+    usage.seven_day,
+    usage.seven_day_oauth_apps,
+    modelName?.includes('opus') ? usage.seven_day_opus : undefined,
+    modelName?.includes('sonnet') ? usage.seven_day_sonnet : undefined,
+  ].filter(Boolean)
+  const exhaustedResets = windows
+    .filter((window) => isClaudeUsageExhausted(window?.utilization))
+    .map((window) => parseResetMs(window?.resets_at))
+    .filter((value): value is number => typeof value === 'number' && value > Date.now())
+
+  if (usage.extra_usage && isClaudeUsageExhausted(usage.extra_usage.utilization)) {
+    return {
+      state: 'quota_limited' as const,
+      cooldownUntil:
+        exhaustedResets.length > 0 ? Math.max(...exhaustedResets) : Date.now() + 60 * 60_000,
+      evidence: { source: 'claude_usage', extraUsage: true },
+    }
+  }
+
+  if (exhaustedResets.length === 0) {
+    return { state: 'healthy' as const, evidence: { source: 'claude_usage' } }
+  }
+
+  return {
+    state: 'quota_limited' as const,
+    cooldownUntil: Math.max(...exhaustedResets),
+    evidence: { source: 'claude_usage' },
+  }
+}
+
+function isClaudeUsageExhausted(value: number | null | undefined) {
+  if (typeof value !== 'number') return false
+  return value >= 95 || (value <= 1 && value >= 0.95)
+}
+
+function parseResetMs(value: string | null | undefined) {
+  if (!value) return undefined
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : undefined
 }
 
 /**
@@ -292,7 +443,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
 
   // 5. Load config
   const configPath = join(ZERO_DIR, 'config.yaml')
-  const config = loadConfig(configPath)
+  let config = loadConfig(configPath)
   console.log(`[ZeRo OS] Config loaded (${Object.keys(config.providers).length} providers)`)
 
   // 6. Initialize observability, metrics, and session DB
@@ -317,36 +468,15 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
 
   // 7. Initialize Model Router
   const secrets = new Map(vault.entries())
-  const chatgptTokenManager = new ChatGptTokenManager(vault)
-  const claudeTokenManager = new ClaudeTokenManager(vault)
-  const xPremiumTokenManager = new XPremiumTokenManager(vault)
   const usageRecorder = createUsageRecorder(metrics)
+  const providerHealth = new ProviderHealthRegistry({
+    recoveryResolver: createProviderRecoveryResolver(() => config, vault),
+  })
   const modelRouter = new ModelRouter(config, secrets, {
     secretGetter: (ref) => vault.get(ref) ?? undefined,
     usageRecorder,
-    oauthRefreshers: {
-      chatgpt: async (reason) => {
-        if (reason === 'expiring') {
-          await chatgptTokenManager.ensureFreshSession()
-          return
-        }
-        await chatgptTokenManager.refreshSession(reason)
-      },
-      anthropic: async (reason) => {
-        if (reason === 'expiring') {
-          await claudeTokenManager.ensureFreshSession()
-          return
-        }
-        await claudeTokenManager.refreshSession(reason)
-      },
-      'x-premium': async (reason) => {
-        if (reason === 'expiring') {
-          await xPremiumTokenManager.ensureFreshSession()
-          return
-        }
-        await xPremiumTokenManager.refreshSession(reason)
-      },
-    },
+    oauthRefreshers: createOAuthRefreshers(config, vault),
+    providerHealth,
   })
   const initResult = modelRouter.init()
   console.log(`[ZeRo OS] Model Router: ${initResult.message}`)
@@ -365,12 +495,23 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
   toolRegistry.register(new MemoryTool())
   toolRegistry.register(new ScheduleTool())
   toolRegistry.register(new CodexTool())
-  if (vault.get(getXPremiumOAuthSessionRef())?.trim() || vault.get('xai_api_key')?.trim()) {
+  const xPremiumOAuthProvider = Object.entries(config.providers).find(
+    ([providerName, provider]) => {
+      const kind = getManagedOAuthKindForProvider(providerName, provider.auth.managedOAuthProvider)
+      const tokenRef = provider.auth.oauthTokenRef
+      return kind === 'x-premium' && tokenRef && vault.get(tokenRef)?.trim()
+    },
+  )
+  if (xPremiumOAuthProvider || vault.get('xai_api_key')?.trim()) {
     toolRegistry.register(
       new XSearchTool({
         credentialProvider: async () => {
-          if (vault.get(getXPremiumOAuthSessionRef())?.trim()) {
-            const session = await xPremiumTokenManager.ensureFreshSession()
+          if (xPremiumOAuthProvider) {
+            const [providerName, provider] = xPremiumOAuthProvider
+            const session = await new XPremiumTokenManager(vault, {
+              providerName,
+              tokenRef: provider.auth.oauthTokenRef,
+            }).ensureFreshSession()
             return {
               bearerToken: session.accessToken,
               authorizationScheme: getXPremiumAuthorizationScheme(session.tokenType),
@@ -855,6 +996,27 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
     if (!options?.skipProcessExit) process.exit(0)
   }
 
+  const reloadModelProviders = async () => {
+    vault.load()
+    config = loadConfig(configPath)
+    providerHealth.setRecoveryResolver(createProviderRecoveryResolver(() => config, vault))
+    modelRouter.reload(config, new Map(vault.entries()), {
+      secretGetter: (ref) => vault.get(ref) ?? undefined,
+      usageRecorder,
+      oauthRefreshers: createOAuthRefreshers(config, vault),
+      providerHealth,
+    })
+    sessionManager.setTaskClosureModel(config.taskClosureModel)
+    sessionManager.setContextCompactionModels({
+      contextCompactionModel: config.contextCompactionModel,
+    })
+    zero.config = config
+    globalBus.emit('config:update', {
+      event: 'model_providers_reloaded',
+      providers: Object.keys(config.providers),
+    })
+  }
+
   const zero: ZeroOS = {
     config,
     vault,
@@ -863,6 +1025,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
     metrics,
     sessionDb,
     modelRouter,
+    providerHealth,
     toolRegistry,
     sessionManager,
     memoryStore,
@@ -877,6 +1040,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
     channelDefinitions,
     notifications,
     addNotification,
+    reloadModelProviders,
     isShuttingDown: () => shuttingDown,
     shutdown,
   }

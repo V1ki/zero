@@ -12,6 +12,46 @@ function getZeroDir() {
   return process.env.ZERO_DATA_DIR ?? join(process.cwd(), '.zero')
 }
 
+export interface XPremiumProviderInstanceOptions {
+  name?: string
+  providerName?: string
+  oauthTokenRef?: string
+}
+
+function toInstanceSlug(value: string): string {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  if (!slug) {
+    throw new Error('OAuth provider instance name must contain at least one letter or number.')
+  }
+  return slug
+}
+
+export function resolveXPremiumProviderInstance(options: XPremiumProviderInstanceOptions = {}) {
+  if (options.providerName || options.oauthTokenRef) {
+    return {
+      providerName: options.providerName ?? X_PREMIUM_PROVIDER,
+      oauthTokenRef: options.oauthTokenRef ?? X_PREMIUM_OAUTH_SESSION_REF,
+    }
+  }
+
+  if (!options.name) {
+    return {
+      providerName: X_PREMIUM_PROVIDER,
+      oauthTokenRef: X_PREMIUM_OAUTH_SESSION_REF,
+    }
+  }
+
+  const slug = toInstanceSlug(options.name)
+  return {
+    providerName: `${X_PREMIUM_PROVIDER}-${slug}`,
+    oauthTokenRef: `x_premium_oauth_${slug.replace(/-/g, '_')}`,
+  }
+}
+
 function getDefaultXPremiumModels() {
   return {
     'grok-4.3': {
@@ -60,7 +100,13 @@ export function getConfigPath() {
   return join(getZeroDir(), 'config.yaml')
 }
 
-export function ensureXPremiumProviderConfig(): { changed: boolean; config: SystemConfig } {
+export function ensureXPremiumProviderConfig(options: XPremiumProviderInstanceOptions = {}): {
+  changed: boolean
+  config: SystemConfig
+  providerName: string
+  oauthTokenRef: string
+} {
+  const instance = resolveXPremiumProviderInstance(options)
   const configPath = getConfigPath()
   const raw = loadRawConfig()
   let changed = false
@@ -71,12 +117,12 @@ export function ensureXPremiumProviderConfig(): { changed: boolean; config: Syst
   }
 
   const providers = raw.providers as Record<string, unknown>
-  if (!providers[X_PREMIUM_PROVIDER] || typeof providers[X_PREMIUM_PROVIDER] !== 'object') {
-    providers[X_PREMIUM_PROVIDER] = {}
+  if (!providers[instance.providerName] || typeof providers[instance.providerName] !== 'object') {
+    providers[instance.providerName] = {}
     changed = true
   }
 
-  const provider = providers[X_PREMIUM_PROVIDER] as Record<string, unknown>
+  const provider = providers[instance.providerName] as Record<string, unknown>
 
   if (provider.api_type !== 'x_responses') {
     provider.api_type = 'x_responses'
@@ -99,8 +145,16 @@ export function ensureXPremiumProviderConfig(): { changed: boolean; config: Syst
     changed = true
   }
 
-  if (auth.oauth_token_ref !== X_PREMIUM_OAUTH_SESSION_REF) {
-    auth.oauth_token_ref = X_PREMIUM_OAUTH_SESSION_REF
+  if (auth.oauth_token_ref !== instance.oauthTokenRef) {
+    auth.oauth_token_ref = instance.oauthTokenRef
+    changed = true
+  }
+
+  if (
+    instance.providerName !== X_PREMIUM_PROVIDER &&
+    auth.managed_oauth_provider !== X_PREMIUM_PROVIDER
+  ) {
+    auth.managed_oauth_provider = X_PREMIUM_PROVIDER
     changed = true
   }
 
@@ -131,5 +185,7 @@ export function ensureXPremiumProviderConfig(): { changed: boolean; config: Syst
   return {
     changed,
     config: loadConfig(configPath),
+    providerName: instance.providerName,
+    oauthTokenRef: instance.oauthTokenRef,
   }
 }

@@ -11,6 +11,46 @@ function getZeroDir() {
   return process.env.ZERO_DATA_DIR ?? join(process.cwd(), '.zero')
 }
 
+export interface ClaudeProviderInstanceOptions {
+  name?: string
+  providerName?: string
+  oauthTokenRef?: string
+}
+
+function toInstanceSlug(value: string): string {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  if (!slug) {
+    throw new Error('OAuth provider instance name must contain at least one letter or number.')
+  }
+  return slug
+}
+
+export function resolveClaudeProviderInstance(options: ClaudeProviderInstanceOptions = {}) {
+  if (options.providerName || options.oauthTokenRef) {
+    return {
+      providerName: options.providerName ?? CLAUDE_PROVIDER,
+      oauthTokenRef: options.oauthTokenRef ?? CLAUDE_OAUTH_SESSION_REF,
+    }
+  }
+
+  if (!options.name) {
+    return {
+      providerName: CLAUDE_PROVIDER,
+      oauthTokenRef: CLAUDE_OAUTH_SESSION_REF,
+    }
+  }
+
+  const slug = toInstanceSlug(options.name)
+  return {
+    providerName: `${CLAUDE_PROVIDER}-${slug}`,
+    oauthTokenRef: `claude_oauth_${slug.replace(/-/g, '_')}`,
+  }
+}
+
 function getDefaultClaudeModels() {
   return {
     'claude-sonnet-4-6': {
@@ -48,7 +88,13 @@ export function getConfigPath() {
   return join(getZeroDir(), 'config.yaml')
 }
 
-export function ensureClaudeProviderConfig(): { changed: boolean; config: SystemConfig } {
+export function ensureClaudeProviderConfig(options: ClaudeProviderInstanceOptions = {}): {
+  changed: boolean
+  config: SystemConfig
+  providerName: string
+  oauthTokenRef: string
+} {
+  const instance = resolveClaudeProviderInstance(options)
   const configPath = getConfigPath()
   const raw = loadRawConfig()
   let changed = false
@@ -59,12 +105,12 @@ export function ensureClaudeProviderConfig(): { changed: boolean; config: System
   }
 
   const providers = raw.providers as Record<string, unknown>
-  if (!providers[CLAUDE_PROVIDER] || typeof providers[CLAUDE_PROVIDER] !== 'object') {
-    providers[CLAUDE_PROVIDER] = {}
+  if (!providers[instance.providerName] || typeof providers[instance.providerName] !== 'object') {
+    providers[instance.providerName] = {}
     changed = true
   }
 
-  const provider = providers[CLAUDE_PROVIDER] as Record<string, unknown>
+  const provider = providers[instance.providerName] as Record<string, unknown>
 
   if (provider.api_type !== 'anthropic_messages') {
     provider.api_type = 'anthropic_messages'
@@ -87,8 +133,16 @@ export function ensureClaudeProviderConfig(): { changed: boolean; config: System
     changed = true
   }
 
-  if (auth.oauth_token_ref !== CLAUDE_OAUTH_SESSION_REF) {
-    auth.oauth_token_ref = CLAUDE_OAUTH_SESSION_REF
+  if (auth.oauth_token_ref !== instance.oauthTokenRef) {
+    auth.oauth_token_ref = instance.oauthTokenRef
+    changed = true
+  }
+
+  if (
+    instance.providerName !== CLAUDE_PROVIDER &&
+    auth.managed_oauth_provider !== CLAUDE_PROVIDER
+  ) {
+    auth.managed_oauth_provider = CLAUDE_PROVIDER
     changed = true
   }
 
@@ -116,5 +170,7 @@ export function ensureClaudeProviderConfig(): { changed: boolean; config: System
   return {
     changed,
     config: loadConfig(configPath),
+    providerName: instance.providerName,
+    oauthTokenRef: instance.oauthTokenRef,
   }
 }

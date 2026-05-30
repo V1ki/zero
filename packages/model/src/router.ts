@@ -18,10 +18,28 @@ export class ModelRouter {
   private fallbackChain: string[]
   private defaultModel: string
 
-  constructor(config: SystemConfig, secrets: Map<string, string>, options: ModelRegistryOptions = {}) {
+  constructor(
+    config: SystemConfig,
+    secrets: Map<string, string>,
+    options: ModelRegistryOptions = {},
+  ) {
     this.registry = new ModelRegistry(config, secrets, options)
     this.fallbackChain = config.fallbackChain
     this.defaultModel = config.defaultModel
+  }
+
+  reload(
+    config: SystemConfig,
+    secrets: Map<string, string>,
+    options: ModelRegistryOptions = {},
+  ): void {
+    const currentLabel = this.currentModel ? this.getModelLabel(this.currentModel) : undefined
+    this.registry = new ModelRegistry(config, secrets, options)
+    this.fallbackChain = config.fallbackChain
+    this.defaultModel = config.defaultModel
+    this.currentModel =
+      this.registry.resolve(currentLabel ?? this.defaultModel) ??
+      this.registry.resolve(this.defaultModel)
   }
 
   /**

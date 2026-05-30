@@ -37,11 +37,16 @@ export type ClaudeOAuthState =
   | 'error'
 
 export interface ClaudeOAuthStatus extends ManagedOAuthStatus {
-  provider: 'anthropic'
+  provider: string
   state: ClaudeOAuthState
 }
 
 type ClaudeRefreshReason = 'expiring' | 'unauthorized'
+
+interface ClaudeOAuthInstanceOptions {
+  providerName?: string
+  tokenRef?: string
+}
 
 interface ClaudeTokenExchangeResponse {
   access_token?: string
@@ -71,8 +76,11 @@ interface ClaudeProfileResponse {
   }
 }
 
-function readSessionFromVault(vault: Vault): ClaudeOAuthSession | null {
-  return parseClaudeOAuthSession(vault.get(getClaudeOAuthSessionRef()))
+function readSessionFromVault(
+  vault: Vault,
+  tokenRef = getClaudeOAuthSessionRef(),
+): ClaudeOAuthSession | null {
+  return parseClaudeOAuthSession(vault.get(tokenRef))
 }
 
 function isSessionExpiring(session: ClaudeOAuthSession, minValidityMs = CLAUDE_MIN_VALIDITY_MS) {
@@ -196,7 +204,9 @@ function buildReauthErrorMessage(status: number, detail: { code?: string; messag
     }
   }
 
-  return context.length > 0 ? `${CLAUDE_REAUTH_MESSAGE} [${context.join(', ')}]` : CLAUDE_REAUTH_MESSAGE
+  return context.length > 0
+    ? `${CLAUDE_REAUTH_MESSAGE} [${context.join(', ')}]`
+    : CLAUDE_REAUTH_MESSAGE
 }
 
 function buildSession(
@@ -242,7 +252,14 @@ function buildSession(
 }
 
 export class ClaudeOAuthDriver implements ManagedOAuthDriver<ClaudeOAuthSession> {
-  readonly provider = 'anthropic' as const
+  readonly provider: string
+  readonly kind = 'anthropic' as const
+  private tokenRef: string
+
+  constructor(options: ClaudeOAuthInstanceOptions = {}) {
+    this.provider = options.providerName ?? 'anthropic'
+    this.tokenRef = options.tokenRef ?? getClaudeOAuthSessionRef()
+  }
 
   getCallbackConfig() {
     return {
@@ -301,11 +318,11 @@ export class ClaudeOAuthDriver implements ManagedOAuthDriver<ClaudeOAuthSession>
   }
 
   readSession(vault: Vault): ClaudeOAuthSession | null {
-    return readSessionFromVault(vault)
+    return readSessionFromVault(vault, this.tokenRef)
   }
 
   writeSession(vault: Vault, session: ClaudeOAuthSession) {
-    vault.set(getClaudeOAuthSessionRef(), serializeClaudeOAuthSession(session))
+    vault.set(this.tokenRef, serializeClaudeOAuthSession(session))
   }
 
   isSessionExpired(session: ClaudeOAuthSession): boolean {
@@ -318,7 +335,7 @@ export class ClaudeOAuthDriver implements ManagedOAuthDriver<ClaudeOAuthSession>
   ): ClaudeOAuthStatus {
     const expired = this.isSessionExpired(session)
     return {
-      provider: 'anthropic',
+      provider: this.provider,
       state: expired ? 'expired' : 'connected',
       authorized: !expired,
       expiresAt: session.expiresAt,
@@ -333,7 +350,10 @@ export class ClaudeOAuthDriver implements ManagedOAuthDriver<ClaudeOAuthSession>
   }
 
   async refreshStatus(vault: Vault): Promise<void> {
-    await new ClaudeTokenManager(vault).ensureFreshSession()
+    await new ClaudeTokenManager(vault, {
+      providerName: this.provider,
+      tokenRef: this.tokenRef,
+    }).ensureFreshSession()
   }
 
   getCallbackSuccessHtml(): string {
@@ -368,20 +388,24 @@ export class ClaudeOAuthBroker {
 export class ClaudeTokenManager {
   private refreshPromise: Promise<ClaudeOAuthSession> | null = null
   private vault: Vault
+  private providerName: string
+  private tokenRef: string
 
-  constructor(vault: Vault) {
+  constructor(vault: Vault, options: ClaudeOAuthInstanceOptions = {}) {
     this.vault = vault
+    this.providerName = options.providerName ?? 'anthropic'
+    this.tokenRef = options.tokenRef ?? getClaudeOAuthSessionRef()
   }
 
   readSession(): ClaudeOAuthSession | null {
-    return readSessionFromVault(this.vault)
+    return readSessionFromVault(this.vault, this.tokenRef)
   }
 
   async ensureFreshSession(options: { minValidityMs?: number } = {}): Promise<ClaudeOAuthSession> {
     const session = this.readSession()
     if (!session) {
       throw new Error(
-        'Claude OAuth credentials not found. Please run `bun zero provider login anthropic`.',
+        `Claude OAuth credentials not found for ${this.providerName}. Please run \`bun zero provider login anthropic\`.`,
       )
     }
 
@@ -401,7 +425,7 @@ export class ClaudeTokenManager {
     const currentSession = this.readSession()
     if (!currentSession) {
       throw new Error(
-        'Claude OAuth credentials not found. Please run `bun zero provider login anthropic`.',
+        `Claude OAuth credentials not found for ${this.providerName}. Please run \`bun zero provider login anthropic\`.`,
       )
     }
 
@@ -456,7 +480,7 @@ export class ClaudeTokenManager {
       throw new Error(CLAUDE_REAUTH_MESSAGE)
     }
 
-    this.vault.set(getClaudeOAuthSessionRef(), serializeClaudeOAuthSession(refreshedSession))
+    this.vault.set(this.tokenRef, serializeClaudeOAuthSession(refreshedSession))
     return refreshedSession
   }
 }

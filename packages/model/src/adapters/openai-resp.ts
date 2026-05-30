@@ -92,7 +92,8 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
   private oauthTokenRefresher?: OAuthTokenRefresher
 
   constructor(config: AdapterConfig) {
-    this.isChatGptProvider = config.providerName === 'chatgpt'
+    this.isChatGptProvider =
+      config.managedOAuthProvider === 'chatgpt' || config.providerName === 'chatgpt'
     this.baseUrl = config.baseUrl
     this.oauthToken = config.oauthToken
     this.oauthTokenProvider = config.oauthTokenProvider

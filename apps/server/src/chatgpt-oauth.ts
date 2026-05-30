@@ -34,14 +34,22 @@ export type ChatGptOAuthState =
   | 'error'
 
 export interface ChatGptOAuthStatus extends ManagedOAuthStatus {
-  provider: 'chatgpt'
+  provider: string
   state: ChatGptOAuthState
 }
 
 type ChatGptRefreshReason = 'expiring' | 'unauthorized'
 
-function readSessionFromVault(vault: Vault): ChatGptOAuthSession | null {
-  return parseChatGptOAuthSession(vault.get(getChatgptOAuthTokenRef()))
+interface ChatGptOAuthInstanceOptions {
+  providerName?: string
+  tokenRef?: string
+}
+
+function readSessionFromVault(
+  vault: Vault,
+  tokenRef = getChatgptOAuthTokenRef(),
+): ChatGptOAuthSession | null {
+  return parseChatGptOAuthSession(vault.get(tokenRef))
 }
 
 function isSessionExpiring(session: ChatGptOAuthSession, minValidityMs = CHATGPT_MIN_VALIDITY_MS) {
@@ -129,7 +137,14 @@ function isReauthRequiredRefreshFailure(
 }
 
 export class ChatGptOAuthDriver implements ManagedOAuthDriver<ChatGptOAuthSession> {
-  readonly provider = 'chatgpt' as const
+  readonly provider: string
+  readonly kind = 'chatgpt' as const
+  private tokenRef: string
+
+  constructor(options: ChatGptOAuthInstanceOptions = {}) {
+    this.provider = options.providerName ?? 'chatgpt'
+    this.tokenRef = options.tokenRef ?? getChatgptOAuthTokenRef()
+  }
 
   getCallbackConfig() {
     return {
@@ -216,11 +231,11 @@ export class ChatGptOAuthDriver implements ManagedOAuthDriver<ChatGptOAuthSessio
   }
 
   readSession(vault: Vault): ChatGptOAuthSession | null {
-    return readSessionFromVault(vault)
+    return readSessionFromVault(vault, this.tokenRef)
   }
 
   writeSession(vault: Vault, session: ChatGptOAuthSession) {
-    vault.set(getChatgptOAuthTokenRef(), serializeChatGptOAuthSession(session))
+    vault.set(this.tokenRef, serializeChatGptOAuthSession(session))
   }
 
   isSessionExpired(session: ChatGptOAuthSession): boolean {
@@ -233,7 +248,7 @@ export class ChatGptOAuthDriver implements ManagedOAuthDriver<ChatGptOAuthSessio
   ): ChatGptOAuthStatus {
     const expired = this.isSessionExpired(session)
     return {
-      provider: 'chatgpt',
+      provider: this.provider,
       state: expired ? 'expired' : 'connected',
       authorized: !expired,
       expiresAt: session.expiresAt,
@@ -244,7 +259,10 @@ export class ChatGptOAuthDriver implements ManagedOAuthDriver<ChatGptOAuthSessio
   }
 
   async refreshStatus(vault: Vault): Promise<void> {
-    await new ChatGptTokenManager(vault).ensureFreshSession()
+    await new ChatGptTokenManager(vault, {
+      providerName: this.provider,
+      tokenRef: this.tokenRef,
+    }).ensureFreshSession()
   }
 
   getCallbackSuccessHtml(): string {
@@ -279,20 +297,24 @@ export class ChatGptOAuthBroker {
 export class ChatGptTokenManager {
   private refreshPromise: Promise<ChatGptOAuthSession> | null = null
   private vault: Vault
+  private providerName: string
+  private tokenRef: string
 
-  constructor(vault: Vault) {
+  constructor(vault: Vault, options: ChatGptOAuthInstanceOptions = {}) {
     this.vault = vault
+    this.providerName = options.providerName ?? 'chatgpt'
+    this.tokenRef = options.tokenRef ?? getChatgptOAuthTokenRef()
   }
 
   readSession(): ChatGptOAuthSession | null {
-    return readSessionFromVault(this.vault)
+    return readSessionFromVault(this.vault, this.tokenRef)
   }
 
   async ensureFreshSession(options: { minValidityMs?: number } = {}): Promise<ChatGptOAuthSession> {
     const session = this.readSession()
     if (!session) {
       throw new Error(
-        'ChatGPT OAuth credentials not found. Please run `bun zero provider login chatgpt`.',
+        `ChatGPT OAuth credentials not found for ${this.providerName}. Please run \`bun zero provider login chatgpt\`.`,
       )
     }
 
@@ -312,7 +334,7 @@ export class ChatGptTokenManager {
     const currentSession = this.readSession()
     if (!currentSession) {
       throw new Error(
-        'ChatGPT OAuth credentials not found. Please run `bun zero provider login chatgpt`.',
+        `ChatGPT OAuth credentials not found for ${this.providerName}. Please run \`bun zero provider login chatgpt\`.`,
       )
     }
 
@@ -386,7 +408,7 @@ export class ChatGptTokenManager {
       throw new Error(CHATGPT_REAUTH_MESSAGE)
     }
 
-    this.vault.set(getChatgptOAuthTokenRef(), serializeChatGptOAuthSession(refreshedSession))
+    this.vault.set(this.tokenRef, serializeChatGptOAuthSession(refreshedSession))
     return refreshedSession
   }
 }

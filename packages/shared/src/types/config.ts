@@ -9,11 +9,13 @@ export type ApiType =
   | 'x_responses'
 
 export type AuthType = 'api_key' | 'oauth2'
+export type ManagedOAuthProviderKind = 'chatgpt' | 'anthropic' | 'x-premium'
 
 export interface AuthConfig {
   type: AuthType
   apiKeyRef?: string
   oauthTokenRef?: string
+  managedOAuthProvider?: ManagedOAuthProviderKind
   oauth?: OAuthConfig
 }
 
@@ -54,6 +56,21 @@ export interface ProviderConfig {
   baseUrl: string
   auth: AuthConfig
   models: Record<string, ModelConfig>
+}
+
+export type ModelPoolStrategy =
+  | 'sticky_quota_aware_failover'
+  | 'sticky_priority_failover'
+  | 'priority_failover'
+
+export interface ModelPoolMemberConfig {
+  model: string
+  priority?: number
+}
+
+export interface ModelPoolConfig {
+  strategy: ModelPoolStrategy
+  members: ModelPoolMemberConfig[]
 }
 
 export interface ScheduleOverlapPolicy {
@@ -138,6 +155,7 @@ export interface EmbeddingModelConfig {
 
 export interface SystemConfig {
   providers: Record<string, ProviderConfig>
+  modelPools?: Record<string, ModelPoolConfig>
   defaultModel: string
   fallbackChain: string[]
   schedules: ScheduleConfig[]

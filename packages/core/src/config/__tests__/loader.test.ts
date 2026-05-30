@@ -116,6 +116,70 @@ default_model: test/claude
     })
   })
 
+  test('model pools and managed OAuth provider parse from config', () => {
+    const configPath = join(tmpDir, 'model-pools.yaml')
+    writeFileSync(
+      configPath,
+      `
+providers:
+  chatgpt-personal:
+    api_type: openai_responses
+    base_url: https://chatgpt.com/backend-api/codex
+    auth:
+      type: oauth2
+      oauth_token_ref: chatgpt_oauth_personal
+      managed_oauth_provider: chatgpt
+    models:
+      gpt-5.5:
+        model_id: gpt-5.5
+        max_context: 400000
+        max_output: 128000
+        capabilities:
+          - tools
+        tags:
+          - chatgpt
+  chatgpt-work:
+    api_type: openai_responses
+    base_url: https://chatgpt.com/backend-api/codex
+    auth:
+      type: oauth2
+      oauth_token_ref: chatgpt_oauth_work
+      managed_oauth_provider: chatgpt
+    models:
+      gpt-5.5:
+        model_id: gpt-5.5
+        max_context: 400000
+        max_output: 128000
+        capabilities:
+          - tools
+        tags:
+          - chatgpt
+model_pools:
+  chatgpt/gpt-5.5:
+    strategy: sticky_quota_aware_failover
+    members:
+      - chatgpt-personal/gpt-5.5
+      - model: chatgpt-work/gpt-5.5
+        priority: 2
+default_model: chatgpt/gpt-5.5
+fallback_chain:
+  - chatgpt/gpt-5.5
+`,
+    )
+
+    const config = loadConfig(configPath)
+
+    expect(config.providers['chatgpt-personal'].auth.managedOAuthProvider).toBe('chatgpt')
+    expect(config.modelPools?.['chatgpt/gpt-5.5']).toEqual({
+      strategy: 'sticky_quota_aware_failover',
+      members: [
+        { model: 'chatgpt-personal/gpt-5.5' },
+        { model: 'chatgpt-work/gpt-5.5', priority: 2 },
+      ],
+    })
+    expect(config.defaultModel).toBe('chatgpt/gpt-5.5')
+  })
+
   test('missing optional fields get defaults', () => {
     const configPath = join(tmpDir, 'minimal.yaml')
     writeFileSync(

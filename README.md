@@ -232,6 +232,28 @@ Claude browser OAuth is also available through the same managed callback flow. Z
 
 X Premium / xAI OAuth can be connected with `bun zero provider login x-premium`. This adds an `x-premium` `x_responses` provider backed by `https://api.x.ai/v1`, stores the OAuth session in the vault, refreshes it before expiry, and retries once after a 401. If xAI returns a 403 during token exchange or refresh, the account likely lacks API OAuth entitlement for the current plan; use an API-key xAI provider instead when available.
 
+Multiple OAuth accounts of the same kind can be connected by naming the provider instance:
+
+```bash
+bun zero provider login chatgpt --name personal
+bun zero provider login chatgpt --name work
+bun zero provider login anthropic --name max
+```
+
+Named logins create provider instances such as `chatgpt-work` with distinct vault refs, and a
+running server will reload model provider config automatically when reachable. To keep cache
+locality while failing over on exhausted accounts, define a logical model pool:
+
+```yaml
+model_pools:
+  chatgpt/gpt-5.5:
+    strategy: sticky_quota_aware_failover
+    members:
+      - chatgpt-personal/gpt-5.5
+      - chatgpt-work/gpt-5.5
+default_model: chatgpt/gpt-5.5
+```
+
 When X Premium OAuth is available at startup, ZeRo also registers `x_search`, a built-in tool that searches X posts through xAI's hosted `x_search` Responses tool. As a fallback, the tool can use a vault secret named `xai_api_key`.
 
 ## Development Workflow

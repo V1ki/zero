@@ -84,7 +84,10 @@ function normalizeBaseUrl(baseUrl: string | undefined): string {
   return normalized
 }
 
-function getChatGptUsageUrl() {
+function getChatGptUsageUrl(baseUrlOverride?: string) {
+  if (baseUrlOverride) {
+    return `${normalizeBaseUrl(baseUrlOverride)}/wham/usage`
+  }
   const config = loadConfig(getConfigPath())
   const baseUrl = normalizeBaseUrl(config.providers.chatgpt?.baseUrl)
   return `${baseUrl}/wham/usage`
@@ -176,14 +179,22 @@ function normalizeUsagePayload(payload: ChatGptRawUsagePayload): ChatGptUsageSna
 
 export class ChatGptUsageService {
   private tokenManager: ChatGptTokenManager
+  private baseUrl?: string
 
-  constructor(vault: Vault) {
-    this.tokenManager = new ChatGptTokenManager(vault)
+  constructor(
+    vault: Vault,
+    options: { providerName?: string; tokenRef?: string; baseUrl?: string } = {},
+  ) {
+    this.tokenManager = new ChatGptTokenManager(vault, {
+      providerName: options.providerName,
+      tokenRef: options.tokenRef,
+    })
+    this.baseUrl = options.baseUrl
   }
 
   async fetchUsage(): Promise<ChatGptUsageSnapshot> {
     const session = await this.tokenManager.ensureFreshSession()
-    const response = await fetch(getChatGptUsageUrl(), {
+    const response = await fetch(getChatGptUsageUrl(this.baseUrl), {
       method: 'GET',
       headers: {
         Authorization: `${getChatGptAuthorizationScheme(session.tokenType)} ${session.accessToken}`,

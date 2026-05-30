@@ -37,8 +37,11 @@ function isClaudeSubscriber(subscriptionType: string | null | undefined) {
 export class ClaudeUsageService {
   private tokenManager: ClaudeTokenManager
 
-  constructor(vault: Vault) {
-    this.tokenManager = new ClaudeTokenManager(vault)
+  constructor(vault: Vault, options: { providerName?: string; tokenRef?: string } = {}) {
+    this.tokenManager = new ClaudeTokenManager(vault, {
+      providerName: options.providerName,
+      tokenRef: options.tokenRef,
+    })
   }
 
   async fetchUsage(): Promise<ClaudeUsageSnapshot | null> {
