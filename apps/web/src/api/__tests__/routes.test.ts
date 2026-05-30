@@ -343,6 +343,7 @@ describe('API Routes (Real)', () => {
     const data = await res.json()
     expect(data.defaultModel).toBe('openai-codex/gpt-5.4-medium')
     expect(data.providers).toBeDefined()
+    expect(data.modelPools).toEqual({})
     expect(data.taskClosureModel).toBeNull()
   })
 
@@ -552,6 +553,55 @@ describe('API Routes (Real)', () => {
 
     const raw = readYaml<Record<string, unknown>>(join(testDataDir, 'config.yaml'))
     expect(raw.context_compaction_model).toBe('openai-codex/gpt-5.4-medium')
+  })
+
+  test('PUT /api/config updates model pools and reloads runtime model providers', async () => {
+    try {
+      const res = await app.request('/api/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          defaultModel: 'pooled/gpt-5.4-medium',
+          modelPools: {
+            'pooled/gpt-5.4-medium': {
+              strategy: 'sticky_quota_aware_failover',
+              members: [
+                { model: 'openai-codex/gpt-5.4-medium' },
+                { model: 'openai-codex/gpt-5.3-codex-medium' },
+              ],
+            },
+          },
+        }),
+      })
+      expect(res.status).toBe(200)
+      const data = await res.json()
+      expect(data.ok).toBe(true)
+      expect(data.defaultModel).toBe('pooled/gpt-5.4-medium')
+      expect(data.modelPools).toEqual({
+        'pooled/gpt-5.4-medium': {
+          strategy: 'sticky_quota_aware_failover',
+          members: [
+            { model: 'openai-codex/gpt-5.4-medium', priority: 0 },
+            { model: 'openai-codex/gpt-5.3-codex-medium', priority: 1 },
+          ],
+        },
+      })
+
+      const raw = readYaml<Record<string, unknown>>(join(testDataDir, 'config.yaml'))
+      expect(raw.default_model).toBe('pooled/gpt-5.4-medium')
+      expect(raw.model_pools).toEqual(data.modelPools)
+      expect(zero.config.defaultModel).toBe('pooled/gpt-5.4-medium')
+      expect(zero.modelRouter.resolveModel('pooled/gpt-5.4-medium')).toBeDefined()
+    } finally {
+      await app.request('/api/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          defaultModel: 'openai-codex/gpt-5.4-medium',
+          modelPools: {},
+        }),
+      })
+    }
   })
 
   test('PUT /api/config updates runtime task closure model for active and future sessions', async () => {

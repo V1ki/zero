@@ -46,6 +46,73 @@ test.describe('Config Page', () => {
     await expect(selector.locator('option')).toContainText(['Default（与 agent 主模型相同）'])
   })
 
+  test('model pools can be configured and used without restarting', async ({ page }) => {
+    try {
+      await page.goto('/config')
+      await expect(page.locator('main h3:has-text("Model Routing")')).toBeVisible({
+        timeout: 10_000,
+      })
+
+      await page.getByLabel('New model pool name').fill('pooled/gpt-5.4-medium')
+      await page.getByLabel('Add model pool').click()
+      await expect(page.getByLabel('Model pool name 1')).toHaveValue('pooled/gpt-5.4-medium')
+
+      await page.getByLabel('Add member to model pool 1').click()
+      await page
+        .getByLabel('Model pool member 1-2', { exact: true })
+        .selectOption('openai-codex/gpt-5.3-codex-medium')
+
+      const saveResponse = page.waitForResponse(
+        (response) =>
+          response.url().endsWith('/api/config') && response.request().method() === 'PUT',
+      )
+      await page.getByLabel('Save model pools').click()
+      await expect((await saveResponse).status()).toBe(200)
+
+      const modelsResponse = await page.request.get('/api/models')
+      expect(modelsResponse.ok()).toBe(true)
+      const modelsPayload = (await modelsResponse.json()) as {
+        models: Array<{ name: string }>
+      }
+      expect(modelsPayload.models.some((model) => model.name === 'pooled/gpt-5.4-medium')).toBe(
+        true,
+      )
+
+      const defaultSave = page.waitForResponse(
+        (response) =>
+          response.url().endsWith('/api/config') && response.request().method() === 'PUT',
+      )
+      await page.getByLabel('Default Model').selectOption('pooled/gpt-5.4-medium')
+      await expect((await defaultSave).status()).toBe(200)
+
+      await page.reload()
+      await expect(page.getByLabel('Default Model')).toHaveValue('pooled/gpt-5.4-medium')
+      await expect(page.getByLabel('Task Closure Model').locator('option')).toContainText([
+        'pooled/gpt-5.4-medium · pool',
+      ])
+    } finally {
+      await page.request.put('/api/config', {
+        data: {
+          defaultModel: 'openai-codex/gpt-5.4-medium',
+          modelPools: {},
+        },
+      })
+    }
+  })
+
+  test('model pool controls fit on mobile width', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto('/config')
+    await expect(page.locator('main h3:has-text("Model Routing")')).toBeVisible({
+      timeout: 10_000,
+    })
+    await expect(page.getByLabel('New model pool name')).toBeVisible()
+    const hasHorizontalOverflow = await page.evaluate(
+      () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+    )
+    expect(hasHorizontalOverflow).toBe(false)
+  })
+
   test('task closure model selector persists selection and can be cleared', async ({ page }) => {
     await page.goto('/config')
     const selector = page.getByLabel('Task Closure Model')

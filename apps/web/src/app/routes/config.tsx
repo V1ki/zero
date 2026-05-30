@@ -1,4 +1,4 @@
-import { Eye, EyeSlash, Plus, Trash } from '@phosphor-icons/react'
+import { Eye, EyeSlash, FloppyDisk, Plus, Trash } from '@phosphor-icons/react'
 import { useCallback, useEffect, useState } from 'react'
 import { ConfirmDialog } from '../components/shared/ConfirmDialog'
 import { SkeletonCard } from '../components/shared/Skeleton'
@@ -9,6 +9,7 @@ interface ProviderView {
   apiType: string
   baseUrl: string
   authType?: string
+  managedOAuthProvider?: 'chatgpt' | 'anthropic' | 'x-premium'
   secretRef?: string
   configured?: boolean
   authorized?: boolean
@@ -73,8 +74,36 @@ interface ChatGptUsageSnapshot {
   rateLimitsByLimitId: Record<string, ChatGptRateLimitSnapshot> | null
 }
 
+type ModelPoolStrategy =
+  | 'sticky_quota_aware_failover'
+  | 'sticky_priority_failover'
+  | 'priority_failover'
+
+interface ModelPoolMemberView {
+  model: string
+  priority?: number
+}
+
+interface ModelPoolView {
+  strategy: ModelPoolStrategy
+  members: ModelPoolMemberView[]
+}
+
+interface ModelPoolDraftMember {
+  id: string
+  model: string
+}
+
+interface ModelPoolDraft {
+  id: string
+  name: string
+  strategy: ModelPoolStrategy
+  members: ModelPoolDraftMember[]
+}
+
 interface ConfigData {
   providers: Record<string, ProviderView>
+  modelPools: Record<string, ModelPoolView>
   defaultModel: string
   fallbackChain: string[]
   schedules: { name: string; cron: string; task: string }[]
@@ -94,6 +123,12 @@ interface ChannelConfig {
 
 type Tab = 'models' | 'scheduler' | 'fuse' | 'secrets' | 'channels' | 'version'
 
+const MODEL_POOL_STRATEGIES: { value: ModelPoolStrategy; label: string }[] = [
+  { value: 'sticky_quota_aware_failover', label: 'Sticky quota-aware' },
+  { value: 'sticky_priority_failover', label: 'Sticky priority' },
+  { value: 'priority_failover', label: 'Priority failover' },
+]
+
 const TABS: { key: Tab; label: string }[] = [
   { key: 'models', label: 'Models' },
   { key: 'scheduler', label: 'Scheduler' },
@@ -103,17 +138,69 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'version', label: 'Version' },
 ]
 
+function getOAuthKind(name: string, provider: ProviderView) {
+  if (provider.managedOAuthProvider) return provider.managedOAuthProvider
+  if (name === 'chatgpt' || name.startsWith('chatgpt-')) return 'chatgpt'
+  if (name === 'anthropic' || name.startsWith('anthropic-')) return 'anthropic'
+  if (name === 'x-premium' || name.startsWith('x-premium-')) return 'x-premium'
+  return undefined
+}
+
+function createDraftId(prefix: string) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function createModelPoolDrafts(modelPools: Record<string, ModelPoolView> = {}): ModelPoolDraft[] {
+  return Object.entries(modelPools).map(([name, pool], poolIndex) => ({
+    id: `pool-${poolIndex}-${name}`,
+    name,
+    strategy: pool.strategy,
+    members: [...pool.members]
+      .sort((left, right) => (left.priority ?? 0) - (right.priority ?? 0))
+      .map((member, memberIndex) => ({
+        id: `member-${poolIndex}-${memberIndex}-${member.model}`,
+        model: member.model,
+      })),
+  }))
+}
+
+function serializeModelPoolDrafts(drafts: ModelPoolDraft[]): Record<string, ModelPoolView> {
+  const pools: Record<string, ModelPoolView> = {}
+  for (const draft of drafts) {
+    const name = draft.name.trim()
+    if (!name) continue
+    pools[name] = {
+      strategy: draft.strategy,
+      members: draft.members
+        .map((member, index) => ({
+          model: member.model.trim(),
+          priority: index,
+        }))
+        .filter((member) => member.model),
+    }
+  }
+  return pools
+}
+
 export function ConfigPage() {
   const [config, setConfig] = useState<ConfigData | null>(null)
+  const [modelPoolDrafts, setModelPoolDrafts] = useState<ModelPoolDraft[]>([])
+  const [modelPoolDirty, setModelPoolDirty] = useState(false)
+  const [modelPoolSaving, setModelPoolSaving] = useState(false)
+  const [newPoolName, setNewPoolName] = useState('')
   const [oauthConnecting, setOauthConnecting] = useState<string | null>(null)
-  const [chatgptUsage, setChatgptUsage] = useState<ChatGptUsageSnapshot | null>(null)
-  const [chatgptUsageState, setChatgptUsageState] = useState<
-    'idle' | 'loading' | 'ready' | 'error'
-  >('idle')
-  const [claudeUsage, setClaudeUsage] = useState<ClaudeUsageSnapshot | null>(null)
-  const [claudeUsageState, setClaudeUsageState] = useState<'idle' | 'loading' | 'ready' | 'error'>(
-    'idle',
-  )
+  const [chatgptUsageByProvider, setChatgptUsageByProvider] = useState<
+    Record<string, ChatGptUsageSnapshot>
+  >({})
+  const [chatgptUsageStateByProvider, setChatgptUsageStateByProvider] = useState<
+    Record<string, 'idle' | 'loading' | 'ready' | 'error'>
+  >({})
+  const [claudeUsageByProvider, setClaudeUsageByProvider] = useState<
+    Record<string, ClaudeUsageSnapshot | null>
+  >({})
+  const [claudeUsageStateByProvider, setClaudeUsageStateByProvider] = useState<
+    Record<string, 'idle' | 'loading' | 'ready' | 'error'>
+  >({})
   const [channels, setChannels] = useState<ChannelConfig[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<Tab>('models')
@@ -144,6 +231,7 @@ export function ConfigPage() {
       .catch(() => {})
     return Promise.all([p1, p2])
   }, [])
+  const loadedModelPools = config?.modelPools
 
   useEffect(() => {
     loadConfig().finally(() => setLoading(false))
@@ -153,29 +241,39 @@ export function ConfigPage() {
   }, [loadConfig])
 
   useEffect(() => {
-    const provider = config?.providers?.chatgpt
-    if (!provider?.authorized) {
-      setChatgptUsage(null)
-      setChatgptUsageState('idle')
+    setModelPoolDrafts(createModelPoolDrafts(loadedModelPools ?? {}))
+    setModelPoolDirty(false)
+  }, [loadedModelPools])
+
+  useEffect(() => {
+    const chatgptProviders = Object.entries(config?.providers ?? {}).filter(([name, provider]) => {
+      return provider.authorized && getOAuthKind(name, provider) === 'chatgpt'
+    })
+    if (chatgptProviders.length === 0) {
+      setChatgptUsageByProvider({})
+      setChatgptUsageStateByProvider({})
       return
     }
 
     let cancelled = false
-    setChatgptUsageState('loading')
-
-    apiFetch<{ provider: string; usage: ChatGptUsageSnapshot }>(
-      '/api/providers/chatgpt/oauth/usage',
+    setChatgptUsageStateByProvider(
+      Object.fromEntries(chatgptProviders.map(([name]) => [name, 'loading'])),
     )
-      .then((res) => {
-        if (cancelled) return
-        setChatgptUsage(res.usage)
-        setChatgptUsageState('ready')
-      })
-      .catch(() => {
-        if (cancelled) return
-        setChatgptUsage(null)
-        setChatgptUsageState('error')
-      })
+
+    for (const [name] of chatgptProviders) {
+      apiFetch<{ provider: string; usage: ChatGptUsageSnapshot }>(
+        `/api/providers/${name}/oauth/usage`,
+      )
+        .then((res) => {
+          if (cancelled) return
+          setChatgptUsageByProvider((prev) => ({ ...prev, [name]: res.usage }))
+          setChatgptUsageStateByProvider((prev) => ({ ...prev, [name]: 'ready' }))
+        })
+        .catch(() => {
+          if (cancelled) return
+          setChatgptUsageStateByProvider((prev) => ({ ...prev, [name]: 'error' }))
+        })
+    }
 
     return () => {
       cancelled = true
@@ -183,29 +281,34 @@ export function ConfigPage() {
   }, [config])
 
   useEffect(() => {
-    const claudeProvider = config?.providers?.anthropic
-    if (!claudeProvider?.authorized) {
-      setClaudeUsage(null)
-      setClaudeUsageState('idle')
+    const claudeProviders = Object.entries(config?.providers ?? {}).filter(([name, provider]) => {
+      return provider.authorized && getOAuthKind(name, provider) === 'anthropic'
+    })
+    if (claudeProviders.length === 0) {
+      setClaudeUsageByProvider({})
+      setClaudeUsageStateByProvider({})
       return
     }
 
     let cancelled = false
-    setClaudeUsageState('loading')
-
-    apiFetch<{ provider: string; usage: ClaudeUsageSnapshot | null }>(
-      '/api/providers/anthropic/oauth/usage',
+    setClaudeUsageStateByProvider(
+      Object.fromEntries(claudeProviders.map(([name]) => [name, 'loading'])),
     )
-      .then((res) => {
-        if (cancelled) return
-        setClaudeUsage(res.usage)
-        setClaudeUsageState('ready')
-      })
-      .catch(() => {
-        if (cancelled) return
-        setClaudeUsage(null)
-        setClaudeUsageState('error')
-      })
+
+    for (const [name] of claudeProviders) {
+      apiFetch<{ provider: string; usage: ClaudeUsageSnapshot | null }>(
+        `/api/providers/${name}/oauth/usage`,
+      )
+        .then((res) => {
+          if (cancelled) return
+          setClaudeUsageByProvider((prev) => ({ ...prev, [name]: res.usage }))
+          setClaudeUsageStateByProvider((prev) => ({ ...prev, [name]: 'ready' }))
+        })
+        .catch(() => {
+          if (cancelled) return
+          setClaudeUsageStateByProvider((prev) => ({ ...prev, [name]: 'error' }))
+        })
+    }
 
     return () => {
       cancelled = true
@@ -287,7 +390,133 @@ export function ConfigPage() {
     }
   }
 
-  async function handleConnectOAuthProvider(provider: 'chatgpt' | 'x-premium', label: string) {
+  async function handleSetDefaultModel(model: string) {
+    if (!model) return
+    try {
+      const res = await apiPut<{
+        defaultModel: string
+        modelPools: Record<string, ModelPoolView>
+      }>('/api/config', { defaultModel: model })
+      setConfig((prev) =>
+        prev
+          ? {
+              ...prev,
+              defaultModel: res.defaultModel,
+              modelPools: res.modelPools ?? prev.modelPools,
+            }
+          : prev,
+      )
+      addToast('success', `Default model set to ${res.defaultModel}`)
+    } catch {
+      // Error toast handled by api layer
+    }
+  }
+
+  function markModelPoolsDirty(next: ModelPoolDraft[]) {
+    setModelPoolDrafts(next)
+    setModelPoolDirty(true)
+  }
+
+  function handleAddModelPool(physicalModels: string[]) {
+    const name = newPoolName.trim()
+    if (!name) return
+    const firstModel = physicalModels[0] ?? ''
+    markModelPoolsDirty([
+      ...modelPoolDrafts,
+      {
+        id: createDraftId('pool'),
+        name,
+        strategy: 'sticky_quota_aware_failover',
+        members: firstModel ? [{ id: createDraftId('member'), model: firstModel }] : [],
+      },
+    ])
+    setNewPoolName('')
+  }
+
+  function handleUpdateModelPool(id: string, patch: Partial<Omit<ModelPoolDraft, 'id'>>) {
+    markModelPoolsDirty(
+      modelPoolDrafts.map((pool) => (pool.id === id ? { ...pool, ...patch } : pool)),
+    )
+  }
+
+  function handleRemoveModelPool(id: string) {
+    markModelPoolsDirty(modelPoolDrafts.filter((pool) => pool.id !== id))
+  }
+
+  function handleAddModelPoolMember(poolId: string, physicalModels: string[]) {
+    const firstModel = physicalModels[0] ?? ''
+    if (!firstModel) return
+    markModelPoolsDirty(
+      modelPoolDrafts.map((pool) =>
+        pool.id === poolId
+          ? {
+              ...pool,
+              members: [...pool.members, { id: createDraftId('member'), model: firstModel }],
+            }
+          : pool,
+      ),
+    )
+  }
+
+  function handleUpdateModelPoolMember(poolId: string, memberId: string, model: string) {
+    markModelPoolsDirty(
+      modelPoolDrafts.map((pool) =>
+        pool.id === poolId
+          ? {
+              ...pool,
+              members: pool.members.map((member) =>
+                member.id === memberId ? { ...member, model } : member,
+              ),
+            }
+          : pool,
+      ),
+    )
+  }
+
+  function handleRemoveModelPoolMember(poolId: string, memberId: string) {
+    markModelPoolsDirty(
+      modelPoolDrafts.map((pool) =>
+        pool.id === poolId
+          ? { ...pool, members: pool.members.filter((member) => member.id !== memberId) }
+          : pool,
+      ),
+    )
+  }
+
+  async function handleSaveModelPools() {
+    setModelPoolSaving(true)
+    try {
+      const modelPools = serializeModelPoolDrafts(modelPoolDrafts)
+      const res = await apiPut<{
+        defaultModel: string
+        fallbackChain: string[]
+        modelPools: Record<string, ModelPoolView>
+        taskClosureModel: string | null
+        contextCompactionModel: string | null
+      }>('/api/config', { modelPools })
+      setConfig((prev) =>
+        prev
+          ? {
+              ...prev,
+              defaultModel: res.defaultModel,
+              fallbackChain: res.fallbackChain,
+              modelPools: res.modelPools,
+              taskClosureModel: res.taskClosureModel,
+              contextCompactionModel: res.contextCompactionModel,
+            }
+          : prev,
+      )
+      setModelPoolDrafts(createModelPoolDrafts(res.modelPools))
+      setModelPoolDirty(false)
+      addToast('success', 'Model pools saved and runtime reloaded')
+    } catch {
+      // Error toast handled by api layer
+    } finally {
+      setModelPoolSaving(false)
+    }
+  }
+
+  async function handleConnectOAuthProvider(provider: string, label: string) {
     setOauthConnecting(provider)
     try {
       const start = await apiPost<{ url: string }>(`/api/providers/${provider}/oauth/start`, {})
@@ -305,7 +534,7 @@ export function ConfigPage() {
           await loadConfig()
           addToast(
             'success',
-            status.requiresRestart ? `${label} 已授权，重启 ZeRo 后可使用。` : `${label} 已授权。`,
+            status.requiresRestart ? `${label} 已授权，正在加载。` : `${label} 已授权。`,
           )
           return
         }
@@ -381,19 +610,68 @@ export function ConfigPage() {
     return `${value}m`
   }
 
+  function getModelPoolValidationErrors(physicalModels: string[]) {
+    const errors: string[] = []
+    const names = new Map<string, number>()
+    for (const pool of modelPoolDrafts) {
+      const name = pool.name.trim()
+      if (!name) {
+        errors.push('Every model pool needs a logical model name.')
+        continue
+      }
+      names.set(name, (names.get(name) ?? 0) + 1)
+      if (!name.includes('/')) {
+        errors.push(`${name} should use provider/model format.`)
+      }
+      if (pool.members.length === 0) {
+        errors.push(`${name} needs at least one member.`)
+      }
+      for (const member of pool.members) {
+        if (!member.model.trim()) {
+          errors.push(`${name} has an empty member.`)
+        } else if (!physicalModels.includes(member.model)) {
+          errors.push(`${member.model} is not available in configured providers.`)
+        }
+      }
+    }
+
+    for (const [name, count] of names) {
+      if (count > 1) {
+        errors.push(`${name} is duplicated.`)
+      }
+    }
+    return Array.from(new Set(errors))
+  }
+
+  function withCurrentModelOption(options: string[], current?: string | null) {
+    return current && !options.includes(current) ? [current, ...options] : options
+  }
+
   const providers = config?.providers ?? {}
   const chatgptProvider = providers.chatgpt
   const xPremiumProvider = providers['x-premium']
   const models = Object.entries(providers).flatMap(([provName, prov]) =>
     Object.entries(prov.models).map(([mName, model]) => ({ provName, mName, ...model })),
   )
+  const physicalModelOptions = models.map((model) => `${model.provName}/${model.mName}`)
+  const poolModelOptions = Object.keys(config?.modelPools ?? {})
+  const allModelOptions = [...poolModelOptions, ...physicalModelOptions]
+  const defaultModelOptions = withCurrentModelOption(allModelOptions, config?.defaultModel)
+  const taskClosureModelOptions = withCurrentModelOption(allModelOptions, config?.taskClosureModel)
+  const contextCompactionModelOptions = withCurrentModelOption(
+    allModelOptions,
+    config?.contextCompactionModel,
+  )
+  const modelPoolValidationErrors = getModelPoolValidationErrors(physicalModelOptions)
+  const canSaveModelPools =
+    modelPoolDirty && !modelPoolSaving && modelPoolValidationErrors.length === 0
 
   return (
     <div className="p-6 max-w-[1400px] mx-auto">
       <h1 className="text-[20px] font-bold tracking-tight mb-4">Config</h1>
 
       {/* Tab bar */}
-      <div className="flex gap-1.5 mb-4">
+      <div className="flex flex-wrap gap-1.5 mb-4">
         {TABS.map((t) => (
           <button
             key={t.key}
@@ -429,11 +707,16 @@ export function ConfigPage() {
                 <div className="space-y-3">
                   {Object.entries(providers).map(([name, prov]) => {
                     const badge = getProviderBadge(prov)
-                    const isChatgpt = name === 'chatgpt'
-                    const isXPremium = name === 'x-premium'
-                    const isClaude = name === 'anthropic'
-                    const oauthLabel = isXPremium ? 'X Premium' : 'ChatGPT'
-                    const canConnectOAuth = isChatgpt || isXPremium
+                    const oauthKind = getOAuthKind(name, prov)
+                    const isChatgpt = oauthKind === 'chatgpt'
+                    const isXPremium = oauthKind === 'x-premium'
+                    const isClaude = oauthKind === 'anthropic'
+                    const oauthLabel = isXPremium ? 'X Premium' : isClaude ? 'Claude' : 'ChatGPT'
+                    const canConnectOAuth = Boolean(oauthKind)
+                    const chatgptUsageState = chatgptUsageStateByProvider[name] ?? 'idle'
+                    const chatgptUsage = chatgptUsageByProvider[name]
+                    const claudeUsageState = claudeUsageStateByProvider[name] ?? 'idle'
+                    const claudeUsage = claudeUsageByProvider[name]
                     return (
                       <div
                         key={name}
@@ -446,7 +729,7 @@ export function ConfigPage() {
                           </p>
                           {canConnectOAuth && prov.requiresRestart && (
                             <p className="text-[11px] text-amber-400 mt-1">
-                              Authorized. Restart ZeRo to use new models.
+                              Authorized. Runtime reload may still be in progress.
                             </p>
                           )}
                           {isChatgpt && prov.authorized && chatgptUsageState === 'loading' && (
@@ -565,12 +848,7 @@ export function ConfigPage() {
                           {canConnectOAuth && (
                             <button
                               type="button"
-                              onClick={() =>
-                                handleConnectOAuthProvider(
-                                  isXPremium ? 'x-premium' : 'chatgpt',
-                                  oauthLabel,
-                                )
-                              }
+                              onClick={() => handleConnectOAuthProvider(name, oauthLabel)}
                               disabled={oauthConnecting === name}
                               className="text-[11px] px-2 py-1 rounded-md bg-[var(--color-accent-glow)] text-[var(--color-accent)] hover:opacity-90 disabled:opacity-50"
                             >
@@ -632,6 +910,205 @@ export function ConfigPage() {
                       No providers configured
                     </p>
                   )}
+                </div>
+              </div>
+
+              <div
+                className="card p-5 animate-fade-up lg:col-span-2"
+                style={{ animationDelay: '40ms' }}
+              >
+                <div className="flex flex-col gap-4">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                    <div>
+                      <h3 className="text-[14px] font-semibold mb-1 text-[var(--color-text-secondary)]">
+                        Model Routing
+                      </h3>
+                      <p className="text-[11px] text-[var(--color-text-muted)]">
+                        Default model and logical pools are applied with a runtime reload on save.
+                      </p>
+                    </div>
+                    <label className="flex flex-col gap-1 text-[11px] text-[var(--color-text-muted)] lg:min-w-[360px]">
+                      Default Model
+                      <select
+                        aria-label="Default Model"
+                        value={config?.defaultModel ?? ''}
+                        onChange={(e) => handleSetDefaultModel(e.target.value)}
+                        className="w-full px-3 py-2 rounded-lg bg-[var(--color-bg-secondary)] border border-[var(--color-border)] text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent)]"
+                      >
+                        {defaultModelOptions.map((model) => (
+                          <option key={`default-${model}`} value={model}>
+                            {model}
+                            {poolModelOptions.includes(model) ? ' · pool' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="border-t border-[var(--color-border)] pt-4">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                      <div className="grid gap-1">
+                        <h4 className="text-[13px] font-semibold text-[var(--color-text-secondary)]">
+                          Model Pools
+                        </h4>
+                        <p className="text-[11px] text-[var(--color-text-muted)]">
+                          Sticky pools keep a session on one provider until quota or availability
+                          requires failover.
+                        </p>
+                      </div>
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                        <input
+                          aria-label="New model pool name"
+                          type="text"
+                          value={newPoolName}
+                          onChange={(e) => setNewPoolName(e.target.value)}
+                          placeholder="chatgpt/gpt-5.5"
+                          className="w-full sm:w-[240px] px-3 py-2 rounded-lg bg-[var(--color-bg-secondary)] border border-[var(--color-border)] text-[13px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-disabled)] focus:outline-none focus:border-[var(--color-accent)]"
+                        />
+                        <button
+                          aria-label="Add model pool"
+                          type="button"
+                          onClick={() => handleAddModelPool(physicalModelOptions)}
+                          disabled={!newPoolName.trim() || physicalModelOptions.length === 0}
+                          className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[12px] border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-accent)] hover:border-[var(--color-border-hover)] transition-colors disabled:opacity-40"
+                        >
+                          <Plus size={14} />
+                          Add Pool
+                        </button>
+                        <button
+                          aria-label="Save model pools"
+                          type="button"
+                          onClick={handleSaveModelPools}
+                          disabled={!canSaveModelPools}
+                          className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[12px] bg-[var(--color-accent)] text-white hover:opacity-90 transition-opacity disabled:opacity-40"
+                        >
+                          <FloppyDisk size={14} />
+                          {modelPoolSaving ? 'Saving...' : 'Save Pools'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {modelPoolValidationErrors.length > 0 && modelPoolDirty && (
+                      <div className="mt-3 space-y-1">
+                        {modelPoolValidationErrors.map((error) => (
+                          <p key={error} className="text-[11px] text-red-400">
+                            {error}
+                          </p>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="mt-4 divide-y divide-[var(--color-border)]">
+                      {modelPoolDrafts.map((pool, poolIndex) => (
+                        <div key={pool.id} className="py-4 first:pt-0 last:pb-0">
+                          <div className="grid gap-3 lg:grid-cols-[minmax(220px,1fr)_220px_auto] lg:items-end">
+                            <label className="grid gap-1 text-[11px] text-[var(--color-text-muted)]">
+                              Logical Model
+                              <input
+                                aria-label={`Model pool name ${poolIndex + 1}`}
+                                type="text"
+                                value={pool.name}
+                                onChange={(e) =>
+                                  handleUpdateModelPool(pool.id, { name: e.target.value })
+                                }
+                                className="w-full px-3 py-2 rounded-lg bg-[var(--color-bg-secondary)] border border-[var(--color-border)] text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent)]"
+                              />
+                            </label>
+                            <label className="grid gap-1 text-[11px] text-[var(--color-text-muted)]">
+                              Strategy
+                              <select
+                                aria-label={`Model pool strategy ${poolIndex + 1}`}
+                                value={pool.strategy}
+                                onChange={(e) =>
+                                  handleUpdateModelPool(pool.id, {
+                                    strategy: e.target.value as ModelPoolStrategy,
+                                  })
+                                }
+                                className="w-full px-3 py-2 rounded-lg bg-[var(--color-bg-secondary)] border border-[var(--color-border)] text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent)]"
+                              >
+                                {MODEL_POOL_STRATEGIES.map((strategy) => (
+                                  <option key={strategy.value} value={strategy.value}>
+                                    {strategy.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <button
+                              aria-label={`Remove model pool ${poolIndex + 1}`}
+                              type="button"
+                              onClick={() => handleRemoveModelPool(pool.id)}
+                              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[12px] text-[var(--color-text-muted)] hover:text-red-400 hover:bg-red-400/10 transition-colors"
+                            >
+                              <Trash size={14} />
+                              Remove
+                            </button>
+                          </div>
+
+                          <div className="mt-3 space-y-2">
+                            {pool.members.map((member, memberIndex) => {
+                              const memberOptions = physicalModelOptions.includes(member.model)
+                                ? physicalModelOptions
+                                : [member.model, ...physicalModelOptions]
+                              return (
+                                <div
+                                  key={member.id}
+                                  className="grid gap-2 sm:grid-cols-[32px_minmax(180px,1fr)_auto] sm:items-center"
+                                >
+                                  <span className="hidden sm:inline-flex h-8 w-8 items-center justify-center rounded-md bg-white/[0.04] text-[11px] font-mono text-[var(--color-text-muted)]">
+                                    {memberIndex + 1}
+                                  </span>
+                                  <select
+                                    aria-label={`Model pool member ${poolIndex + 1}-${memberIndex + 1}`}
+                                    value={member.model}
+                                    onChange={(e) =>
+                                      handleUpdateModelPoolMember(
+                                        pool.id,
+                                        member.id,
+                                        e.target.value,
+                                      )
+                                    }
+                                    className="w-full px-3 py-2 rounded-lg bg-[var(--color-bg-secondary)] border border-[var(--color-border)] text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent)]"
+                                  >
+                                    {memberOptions.map((model) => (
+                                      <option key={`${member.id}-${model}`} value={model}>
+                                        {model}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <button
+                                    aria-label={`Remove model pool member ${poolIndex + 1}-${memberIndex + 1}`}
+                                    type="button"
+                                    onClick={() => handleRemoveModelPoolMember(pool.id, member.id)}
+                                    className="inline-flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg text-[12px] text-[var(--color-text-muted)] hover:text-red-400 hover:bg-red-400/10 transition-colors"
+                                  >
+                                    <Trash size={14} />
+                                    Member
+                                  </button>
+                                </div>
+                              )
+                            })}
+                            <button
+                              aria-label={`Add member to model pool ${poolIndex + 1}`}
+                              type="button"
+                              onClick={() =>
+                                handleAddModelPoolMember(pool.id, physicalModelOptions)
+                              }
+                              disabled={physicalModelOptions.length === 0}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-accent)] hover:border-[var(--color-border-hover)] transition-colors disabled:opacity-40"
+                            >
+                              <Plus size={14} />
+                              Add Member
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                      {modelPoolDrafts.length === 0 && (
+                        <p className="py-3 text-[13px] text-[var(--color-text-muted)]">
+                          No model pools configured
+                        </p>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -697,9 +1174,10 @@ export function ConfigPage() {
                   className="w-full max-w-md px-3 py-2 rounded-lg bg-[var(--color-bg-secondary)] border border-[var(--color-border)] text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent)]"
                 >
                   <option value="">Default（与 agent 主模型相同）</option>
-                  {models.map((m) => (
-                    <option key={`${m.provName}/${m.mName}`} value={`${m.provName}/${m.mName}`}>
-                      {m.provName}/{m.mName}
+                  {taskClosureModelOptions.map((model) => (
+                    <option key={`task-closure-${model}`} value={model}>
+                      {model}
+                      {poolModelOptions.includes(model) ? ' · pool' : ''}
                     </option>
                   ))}
                 </select>
@@ -724,12 +1202,10 @@ export function ConfigPage() {
                     className="w-full px-3 py-2 rounded-lg bg-[var(--color-bg-secondary)] border border-[var(--color-border)] text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent)]"
                   >
                     <option value="">Default（与 task closure / agent 主模型相同）</option>
-                    {models.map((m) => (
-                      <option
-                        key={`${m.provName}/${m.mName}:compact`}
-                        value={`${m.provName}/${m.mName}`}
-                      >
-                        {m.provName}/{m.mName}
+                    {contextCompactionModelOptions.map((model) => (
+                      <option key={`context-compaction-${model}`} value={model}>
+                        {model}
+                        {poolModelOptions.includes(model) ? ' · pool' : ''}
                       </option>
                     ))}
                   </select>

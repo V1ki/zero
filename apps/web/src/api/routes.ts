@@ -1,12 +1,9 @@
-import {
-  buildSessionInfoReply,
-  loadConfig,
-  parseSessionArgs,
-} from '@zero-os/core'
+import { buildSessionInfoReply, loadConfig, parseSessionArgs } from '@zero-os/core'
 import {
   ALL_MEMORY_TYPES,
   type MemoryStatus,
   type MemoryType,
+  type ModelPoolConfig,
   type ModelPricing,
   toErrorMessage,
 } from '@zero-os/shared'
@@ -20,17 +17,23 @@ import { ClaudeUsageService } from '../../../server/src/claude-usage'
 import type { ZeroOS } from '../../../server/src/main'
 import {
   createManagedOAuthCoordinator,
+  getManagedOAuthKindForProvider,
   isManagedOAuthProvider,
   isManagedOAuthTokenRef,
   prepareManagedOAuthProvider,
+  syncManagedOAuthCoordinator,
 } from '../../../server/src/provider-oauth'
 import type { SessionJudgeHistoryResponse, StoredSessionJudgeEntry } from '../eval/types'
 import { runSessionJudge } from './session-judge'
 
 export function createRoutes(zero: ZeroOS) {
-  const managedOAuth = createManagedOAuthCoordinator(zero.vault)
-  const chatgptUsage = new ChatGptUsageService(zero.vault)
-  const claudeUsage = new ClaudeUsageService(zero.vault)
+  const managedOAuth = createManagedOAuthCoordinator(zero.vault, loadConfig(getConfigPath()))
+
+  const MODEL_POOL_STRATEGIES = new Set([
+    'sticky_quota_aware_failover',
+    'sticky_priority_failover',
+    'priority_failover',
+  ])
 
   interface TraceLogEntry {
     spanId: string
@@ -45,6 +48,56 @@ export function createRoutes(zero: ZeroOS) {
 
   function readCurrentConfig() {
     return loadConfig(getConfigPath())
+  }
+
+  function omitConfigKey(config: Record<string, unknown>, key: string): Record<string, unknown> {
+    const { [key]: _omitted, ...rest } = config
+    return rest
+  }
+
+  function normalizeModelPoolsForWrite(value: unknown): Record<string, ModelPoolConfig> {
+    if (value === null || value === undefined || value === '') return {}
+    if (!isRecord(value)) {
+      throw new Error('modelPools must be an object')
+    }
+
+    const pools: Record<string, ModelPoolConfig> = {}
+    for (const [rawName, rawPool] of Object.entries(value)) {
+      const name = rawName.trim()
+      if (!name) continue
+      if (!isRecord(rawPool)) {
+        throw new Error(`Model pool ${name} must be an object`)
+      }
+
+      const rawStrategy = rawPool.strategy
+      const strategy: ModelPoolConfig['strategy'] =
+        typeof rawStrategy === 'string' && MODEL_POOL_STRATEGIES.has(rawStrategy)
+          ? (rawStrategy as ModelPoolConfig['strategy'])
+          : 'sticky_quota_aware_failover'
+      const rawMembers = Array.isArray(rawPool.members) ? rawPool.members : []
+      const members: ModelPoolConfig['members'] = []
+      for (const [index, member] of rawMembers.entries()) {
+        if (typeof member === 'string') {
+          const model = member.trim()
+          if (model) members.push({ model, priority: index })
+          continue
+        }
+        if (!isRecord(member) || typeof member.model !== 'string') continue
+        const model = member.model.trim()
+        if (!model) continue
+        members.push({
+          model,
+          priority: typeof member.priority === 'number' ? member.priority : index,
+        })
+      }
+
+      if (members.length === 0) {
+        throw new Error(`Model pool ${name} must include at least one member`)
+      }
+      pools[name] = { strategy, members }
+    }
+
+    return pools
   }
 
   function formatModelLabel(providerName: string, modelName: string) {
@@ -64,6 +117,7 @@ export function createRoutes(zero: ZeroOS) {
 
   async function buildProvidersForConfig() {
     const config = readCurrentConfig()
+    syncManagedOAuthCoordinator(managedOAuth, config)
     return Object.fromEntries(
       await Promise.all(
         Object.entries(config.providers).map(async ([name, provider]) => {
@@ -79,6 +133,7 @@ export function createRoutes(zero: ZeroOS) {
               apiType: provider.apiType,
               baseUrl: provider.baseUrl,
               authType: provider.auth.type,
+              managedOAuthProvider: provider.auth.managedOAuthProvider,
               secretRef,
               configured,
               authorized: oauthStatus ? oauthStatus.authorized : configured,
@@ -90,6 +145,53 @@ export function createRoutes(zero: ZeroOS) {
         }),
       ),
     )
+  }
+
+  async function fetchManagedOAuthUsage(providerName: string) {
+    const config = readCurrentConfig()
+    const provider = config.providers[providerName]
+    const kind = provider
+      ? getManagedOAuthKindForProvider(providerName, provider.auth.managedOAuthProvider)
+      : undefined
+    const tokenRef = provider?.auth.oauthTokenRef
+    if (kind && provider && tokenRef) {
+      switch (kind) {
+        case 'chatgpt': {
+          const usage = await new ChatGptUsageService(zero.vault, {
+            providerName,
+            tokenRef,
+            baseUrl: provider.baseUrl,
+          }).fetchUsage()
+          return { provider: providerName, usage }
+        }
+        case 'anthropic': {
+          const usage = await new ClaudeUsageService(zero.vault, {
+            providerName,
+            tokenRef,
+          }).fetchUsage()
+          return { provider: providerName, usage }
+        }
+        case 'x-premium':
+          return { provider: providerName, usage: null }
+      }
+    }
+
+    if (!isManagedOAuthProvider(providerName)) {
+      throw new Error('Unsupported OAuth provider')
+    }
+
+    switch (providerName) {
+      case 'chatgpt': {
+        const usage = await new ChatGptUsageService(zero.vault).fetchUsage()
+        return { provider: providerName, usage }
+      }
+      case 'anthropic': {
+        const usage = await new ClaudeUsageService(zero.vault).fetchUsage()
+        return { provider: providerName, usage }
+      }
+      case 'x-premium':
+        return { provider: providerName, usage: null }
+    }
   }
 
   function resolvePricing(providerName: string, modelName: string): ModelPricing | undefined {
@@ -1048,6 +1150,7 @@ export function createRoutes(zero: ZeroOS) {
       const config = readCurrentConfig()
       return c.json({
         providers: await buildProvidersForConfig(),
+        modelPools: config.modelPools ?? {},
         defaultModel: config.defaultModel,
         fallbackChain: config.fallbackChain,
         schedules: config.schedules,
@@ -1056,7 +1159,7 @@ export function createRoutes(zero: ZeroOS) {
         contextCompactionModel: config.contextCompactionModel ?? null,
         secrets: zero.vault.keys().map((key) => ({
           key,
-          masked: isManagedOAuthTokenRef(key) ? 'oauth:configured' : 'configured',
+          masked: isManagedOAuthTokenRef(key, config) ? 'oauth:configured' : 'configured',
           configured: true,
         })),
       })
@@ -1065,30 +1168,46 @@ export function createRoutes(zero: ZeroOS) {
     .put('/api/config', async (c) => {
       const body = await c.req.json<Record<string, unknown>>()
       const configPath = getConfigPath()
-      const raw = readYaml<Record<string, unknown>>(configPath)
+      let raw = readYaml<Record<string, unknown>>(configPath)
 
       const keyMap: Record<string, string> = {
+        defaultModel: 'default_model',
+        fallbackChain: 'fallback_chain',
         taskClosureModel: 'task_closure_model',
         contextCompactionModel: 'context_compaction_model',
       }
 
-      for (const [key, value] of Object.entries(body)) {
-        const yamlKey = keyMap[key] ?? key
-        if (value === null || value === '') {
-          delete raw[yamlKey]
-        } else {
-          raw[yamlKey] = value
+      try {
+        for (const [key, value] of Object.entries(body)) {
+          if (key === 'modelPools') {
+            const modelPools = normalizeModelPoolsForWrite(value)
+            if (Object.keys(modelPools).length === 0) {
+              raw = omitConfigKey(raw, 'model_pools')
+            } else {
+              raw.model_pools = modelPools
+            }
+            continue
+          }
+
+          const yamlKey = keyMap[key] ?? key
+          if (value === null || value === '') {
+            delete raw[yamlKey]
+          } else {
+            raw[yamlKey] = value
+          }
         }
+      } catch (error) {
+        return c.json({ error: toErrorMessage(error) }, 400)
       }
 
       writeYaml(configPath, raw)
+      await zero.reloadModelProviders()
       const updated = readCurrentConfig()
-      zero.sessionManager.setTaskClosureModel(updated.taskClosureModel)
-      zero.sessionManager.setContextCompactionModels({
-        contextCompactionModel: updated.contextCompactionModel,
-      })
       return c.json({
         ok: true,
+        defaultModel: updated.defaultModel,
+        fallbackChain: updated.fallbackChain,
+        modelPools: updated.modelPools ?? {},
         taskClosureModel: updated.taskClosureModel ?? null,
         contextCompactionModel: updated.contextCompactionModel ?? null,
       })
@@ -1096,12 +1215,24 @@ export function createRoutes(zero: ZeroOS) {
 
     .post('/api/providers/:provider/oauth/start', async (c) => {
       const provider = c.req.param('provider')
-      if (!isManagedOAuthProvider(provider)) {
-        return c.json({ error: 'Unsupported OAuth provider' }, 404)
-      }
 
       try {
-        prepareManagedOAuthProvider(provider)
+        let currentConfig = readCurrentConfig()
+        syncManagedOAuthCoordinator(managedOAuth, currentConfig)
+        if (isManagedOAuthProvider(provider) && !currentConfig.providers[provider]) {
+          prepareManagedOAuthProvider(provider)
+          await zero.reloadModelProviders()
+          currentConfig = readCurrentConfig()
+        }
+        if (!managedOAuth.supportsProvider(provider)) {
+          if (!isManagedOAuthProvider(provider)) {
+            return c.json({ error: 'Unsupported OAuth provider' }, 404)
+          }
+          prepareManagedOAuthProvider(provider)
+          await zero.reloadModelProviders()
+          currentConfig = readCurrentConfig()
+        }
+        syncManagedOAuthCoordinator(managedOAuth, currentConfig)
         const result = await managedOAuth.start(provider)
         return c.json({ ...result, status: managedOAuth.getStatus(provider) })
       } catch (error) {
@@ -1111,7 +1242,8 @@ export function createRoutes(zero: ZeroOS) {
 
     .get('/api/providers/:provider/oauth/status', async (c) => {
       const provider = c.req.param('provider')
-      if (!isManagedOAuthProvider(provider)) {
+      syncManagedOAuthCoordinator(managedOAuth, readCurrentConfig())
+      if (!managedOAuth.supportsProvider(provider)) {
         return c.json({ error: 'Unsupported OAuth provider' }, 404)
       }
 
@@ -1125,24 +1257,22 @@ export function createRoutes(zero: ZeroOS) {
 
     .get('/api/providers/:provider/oauth/usage', async (c) => {
       const provider = c.req.param('provider')
-      if (!isManagedOAuthProvider(provider)) {
-        return c.json({ error: 'Unsupported OAuth provider' }, 404)
-      }
-
       try {
-        switch (provider) {
-          case 'chatgpt': {
-            const usage = await chatgptUsage.fetchUsage()
-            return c.json({ provider: 'chatgpt', usage })
-          }
-          case 'anthropic': {
-            const usage = await claudeUsage.fetchUsage()
-            return c.json({ provider: 'anthropic', usage })
-          }
-          case 'x-premium': {
-            return c.json({ provider: 'x-premium', usage: null })
-          }
-        }
+        return c.json(await fetchManagedOAuthUsage(provider))
+      } catch (error) {
+        return c.json({ error: toErrorMessage(error) }, 500)
+      }
+    })
+
+    .get('/api/providers/health', (c) => {
+      return c.json({ providers: zero.providerHealth.list() })
+    })
+
+    .post('/api/runtime/model-providers/reload', async (c) => {
+      try {
+        await zero.reloadModelProviders()
+        syncManagedOAuthCoordinator(managedOAuth, readCurrentConfig())
+        return c.json({ ok: true })
       } catch (error) {
         return c.json({ error: toErrorMessage(error) }, 500)
       }
@@ -1151,6 +1281,8 @@ export function createRoutes(zero: ZeroOS) {
     .post('/api/providers/chatgpt/oauth/start', async (c) => {
       try {
         prepareManagedOAuthProvider('chatgpt')
+        await zero.reloadModelProviders()
+        syncManagedOAuthCoordinator(managedOAuth, readCurrentConfig())
         const result = await managedOAuth.start('chatgpt')
         return c.json({ ...result, status: managedOAuth.getStatus('chatgpt') })
       } catch (error) {
@@ -1169,8 +1301,7 @@ export function createRoutes(zero: ZeroOS) {
 
     .get('/api/providers/anthropic/oauth/usage', async (c) => {
       try {
-        const usage = await claudeUsage.fetchUsage()
-        return c.json({ provider: 'anthropic', usage })
+        return c.json(await fetchManagedOAuthUsage('anthropic'))
       } catch (error) {
         return c.json({ error: toErrorMessage(error) }, 500)
       }
