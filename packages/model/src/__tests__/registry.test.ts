@@ -87,6 +87,37 @@ describe('ModelRegistry', () => {
     expect(models.length).toBe(3)
   })
 
+  test('listModelPools returns pool membership ordered by priority', () => {
+    const registry = new ModelRegistry(
+      {
+        ...config,
+        modelPools: {
+          'pooled/gpt-5.5': {
+            strategy: 'sticky_quota_aware_failover',
+            members: [
+              { model: 'openai-codex/gpt-5.3-codex-medium', priority: 10 },
+              { model: 'claude-sonnet', priority: 1 },
+            ],
+          },
+        },
+      },
+      secrets,
+    )
+
+    expect(registry.listModelPools()).toEqual([
+      {
+        providerName: 'pooled',
+        modelName: 'gpt-5.5',
+        name: 'pooled/gpt-5.5',
+        strategy: 'sticky_quota_aware_failover',
+        members: [
+          { model: 'test-anthropic/claude-sonnet', priority: 1 },
+          { model: 'openai-codex/gpt-5.3-codex-medium', priority: 10 },
+        ],
+      },
+    ])
+  })
+
   test('resolve finds newly added anthropic/claude-sonnet-4-6', () => {
     const registry = new ModelRegistry(config, secrets)
     const resolved =

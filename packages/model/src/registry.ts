@@ -24,6 +24,24 @@ export interface ResolvedModel {
   adapter: ProviderAdapter
 }
 
+export interface ListedModel {
+  providerName: string
+  modelName: string
+  modelId: string
+  tags: string[]
+}
+
+export interface ListedModelPool {
+  providerName: string
+  modelName: string
+  name: string
+  strategy: ModelPoolConfig['strategy']
+  members: Array<{
+    model: string
+    priority: number
+  }>
+}
+
 export type SecretGetter = (ref: string) => string | undefined
 
 export interface ModelRegistryOptions {
@@ -137,9 +155,8 @@ export class ModelRegistry {
   /**
    * List all registered models.
    */
-  listModels(): { providerName: string; modelName: string; modelId: string; tags: string[] }[] {
-    const models: { providerName: string; modelName: string; modelId: string; tags: string[] }[] =
-      []
+  listModels(): ListedModel[] {
+    const models: ListedModel[] = []
     for (const [poolName] of this.modelPools) {
       const [providerName, ...modelParts] = poolName.split('/')
       const modelName = modelParts.join('/')
@@ -162,6 +179,46 @@ export class ModelRegistry {
       }
     }
     return models
+  }
+
+  listModelPools(): ListedModelPool[] {
+    return Array.from(this.modelPools.entries())
+      .map(([poolName, pool]): ListedModelPool | null => {
+        const [providerName, ...modelParts] = poolName.split('/')
+        const modelName = modelParts.join('/')
+        if (!providerName || !modelName) return null
+        return {
+          providerName,
+          modelName,
+          name: poolName,
+          strategy: pool.strategy,
+          members: pool.members
+            .map((member, index) => ({
+              model: this.resolvePhysicalModelLabel(member.model) ?? member.model,
+              priority: member.priority ?? index,
+            }))
+            .sort((left, right) => left.priority - right.priority),
+        }
+      })
+      .filter((pool): pool is ListedModelPool => pool !== null)
+  }
+
+  private resolvePhysicalModelLabel(modelRef: string): string | undefined {
+    for (const [providerName, provider] of this.providers) {
+      for (const [name, model] of Object.entries(provider.models)) {
+        const qualifiedName = `${providerName}/${name}`
+        const qualifiedModelId = `${providerName}/${model.modelId}`
+        if (
+          name === modelRef ||
+          model.modelId === modelRef ||
+          qualifiedName === modelRef ||
+          qualifiedModelId === modelRef
+        ) {
+          return qualifiedName
+        }
+      }
+    }
+    return undefined
   }
 
   getProviderHealth(): ProviderHealthRegistry {

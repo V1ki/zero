@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import type { MemoryRetriever } from '@zero-os/memory'
-import type { ModelRouter, ModelSwitchResult, ResolvedModel } from '@zero-os/model'
+import type { ListedModelPool, ModelRouter, ModelSwitchResult, ResolvedModel } from '@zero-os/model'
 import type {
   MetricsDB,
   ObservabilityStore,
@@ -73,6 +73,15 @@ export interface SessionDeps {
   taskClosureModel?: string
   contextCompactionModel?: string
   projectRoot?: string
+}
+
+export interface SessionModelListGroup {
+  model: string
+  members?: string[]
+}
+
+function formatPoolMembers(pool: ListedModelPool): string[] {
+  return pool.members.map((member) => member.model)
 }
 
 /**
@@ -911,6 +920,26 @@ export class Session {
       .getRegistry()
       .listModels()
       .map((model) => `${model.providerName}/${model.modelName}`)
+  }
+
+  listModelGroups(): SessionModelListGroup[] {
+    const registry = this.modelRouter.getRegistry()
+    const pools = registry.listModelPools()
+    const poolNames = new Set(pools.map((pool) => pool.name))
+    const memberNames = new Set(pools.flatMap((pool) => pool.members.map((member) => member.model)))
+
+    const groupedPools = pools.map((pool) => ({
+      model: pool.name,
+      members: formatPoolMembers(pool),
+    }))
+
+    const standaloneModels = registry
+      .listModels()
+      .map((model) => `${model.providerName}/${model.modelName}`)
+      .filter((model) => !poolNames.has(model) && !memberNames.has(model))
+      .map((model) => ({ model }))
+
+    return [...groupedPools, ...standaloneModels]
   }
 
   getReasoningEffort(): ReasoningEffort | undefined {

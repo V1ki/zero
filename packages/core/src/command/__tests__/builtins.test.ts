@@ -18,6 +18,7 @@ interface MockSession {
   initAgent(config: { name: string; agentInstruction: string }): void
   setChannelCapabilities(capabilities: ChannelCapabilities): void
   listModels(): string[]
+  listModelGroups?(): Array<{ model: string; members?: string[] }>
   getMessages(): Message[]
   getReasoningEffort(): ReasoningEffort | undefined
   setReasoningEffort(effort?: ReasoningEffort): {
@@ -242,6 +243,46 @@ describe('builtin commands', () => {
       handled: true,
       reply:
         'Available models:\n- openai-codex/gpt-5.3-codex-medium\n- openai-codex/gpt-5.4-medium',
+    })
+  })
+
+  test('/model list nests physical members under model pools', async () => {
+    const mockSession: MockSession = {
+      data: {
+        id: 'sess_model_pool_list',
+        currentModel: 'chatgpt/gpt-5.5',
+        createdAt: '2026-03-27T14:30:05',
+        updatedAt: '2026-03-27T14:30:05',
+      },
+      switchModel: async () => ({ success: true, message: 'ok' }),
+      initAgent: () => {},
+      setChannelCapabilities: () => {},
+      listModels: () => [],
+      listModelGroups: () => [
+        {
+          model: 'chatgpt/gpt-5.5',
+          members: ['chatgpt-personal/gpt-5.5', 'chatgpt-personal1/gpt-5.5'],
+        },
+        { model: 'openai-codex/gpt-5.4-medium' },
+      ],
+      getMessages: () => [],
+      getReasoningEffort: () => undefined,
+      setReasoningEffort: () => ({ changed: true, message: 'ok' }),
+    }
+
+    const sessionManager = {
+      getOrCreateForChannel: () => ({ session: mockSession, isNew: false }),
+    } as unknown as SessionManager
+
+    const result = await modelCommand.execute(
+      { target: 'list' },
+      createContext(sessionManager, 'feishu'),
+    )
+
+    expect(result).toEqual({
+      handled: true,
+      reply:
+        'Available models:\n- chatgpt/gpt-5.5\n  - chatgpt-personal/gpt-5.5\n  - chatgpt-personal1/gpt-5.5\n- openai-codex/gpt-5.4-medium',
     })
   })
 

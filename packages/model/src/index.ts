@@ -1,5 +1,5 @@
 export { ModelRegistry } from './registry'
-export type { ResolvedModel } from './registry'
+export type { ListedModel, ListedModelPool, ResolvedModel } from './registry'
 export { ModelRouter } from './router'
 export type { ModelSwitchResult } from './router'
 export { OpenAIChatAdapter } from './adapters/openai-chat'
