@@ -35,6 +35,22 @@ export interface ContextCompactionModelInput {
   retainedMessages: Message[]
   episode: EpisodeCompaction
   workingStateSummary: string
+  toolEnvironmentDigests?: ToolEnvironmentDigest[]
+}
+
+export interface ToolEnvironmentDigest {
+  id: string
+  scope: 'single' | 'group'
+  toolUseIds: string[]
+  messageIds: string[]
+  rawChars: number
+  digestChars: number
+  summary: string
+  model?: {
+    promptVersion: string
+    usedModel?: string
+    usedProvider?: string
+  }
 }
 
 export interface ContextCompactionModelOutput {

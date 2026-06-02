@@ -70,6 +70,16 @@ export const CONTEXT_PARAMS = {
     compactionPromptToolResultMaxChars: 24000,
     /** Max covered_messages chars sent to the compaction model. */
     compactionPromptTranscriptMaxChars: 180000,
+    /** Minimum raw tool IO chars before a single tool gets environment-digested. */
+    toolDigestMinRawChars: 12000,
+    /** Minimum combined raw tool IO chars before a local tool chain gets environment-digested. */
+    toolDigestGroupMinRawChars: 16000,
+    /** Max tool_use/tool_result pairs sent to one environment digest request. */
+    toolDigestMaxPairs: 4,
+    /** Max raw tool_result chars included per tool in the digest request. */
+    toolDigestMaxRawCharsPerTool: 24000,
+    /** Max output tokens for a tool environment digest request. */
+    toolDigestMaxOutputTokens: 2048,
     /** Turns N+1..M: tool output truncated to summary */
     summaryRetainTurns: 8,
     /** Summary truncation length (chars) */
