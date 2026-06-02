@@ -266,7 +266,7 @@ async function provider() {
 
     const status = await oauth.waitForCompletion(providerName, 120_000)
     if (status.state === 'connected') {
-      await tryReloadRunningServer()
+      await tryReloadRunningServer(providerName)
       console.log(`[ZeRo OS] ${label} OAuth configured.`)
       return
     }
@@ -288,7 +288,7 @@ async function provider() {
     if (status.state !== 'connected') {
       throw new Error(status.error ?? 'Authentication failed')
     }
-    await tryReloadRunningServer()
+    await tryReloadRunningServer(providerName)
     console.log(`[ZeRo OS] ${label} OAuth configured.`)
   } catch (error) {
     console.error(`[ZeRo OS] ${label} OAuth login failed:`, toErrorMessage(error))
@@ -310,11 +310,13 @@ function parseProviderLoginOptions(args: string[]) {
   return { name }
 }
 
-async function tryReloadRunningServer() {
+async function tryReloadRunningServer(recoveredProvider?: string) {
   const port = Number(process.env.PORT ?? 3001)
   try {
     const response = await fetch(`http://localhost:${port}/api/runtime/model-providers/reload`, {
       method: 'POST',
+      headers: recoveredProvider ? { 'Content-Type': 'application/json' } : undefined,
+      body: recoveredProvider ? JSON.stringify({ recoveredProvider }) : undefined,
     })
     if (response.ok) {
       console.log('[ZeRo OS] Running server reloaded provider config.')

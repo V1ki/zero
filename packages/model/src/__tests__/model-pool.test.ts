@@ -53,7 +53,11 @@ class FakeAdapter implements ProviderAdapter {
   }
 }
 
-function createPool(first: FakeAdapter, second: FakeAdapter) {
+function createPool(
+  first: FakeAdapter,
+  second: FakeAdapter,
+  health: ProviderHealthRegistry = new ProviderHealthRegistry(),
+) {
   return new ModelPoolAdapter(
     'chatgpt/gpt-5.5',
     [
@@ -72,7 +76,7 @@ function createPool(first: FakeAdapter, second: FakeAdapter) {
         priority: 1,
       },
     ],
-    new ProviderHealthRegistry(),
+    health,
     { sticky: true, quotaAware: true },
   )
 }
@@ -172,5 +176,24 @@ describe('ModelPoolAdapter', () => {
     expect(events).toEqual([{ type: 'text_delta', data: { text: 'partial' } }])
     expect(first.streamCalls).toBe(1)
     expect(second.streamCalls).toBe(0)
+  })
+
+  test('explains why all pool members are unavailable', async () => {
+    const health = new ProviderHealthRegistry()
+    health.markAuthError({
+      providerName: 'chatgpt-personal',
+      modelName: 'gpt-5.5',
+      reason: 'refresh token expired',
+    })
+    await health.markQuotaLimited({
+      providerName: 'chatgpt-work',
+      modelName: 'gpt-5.5',
+      reason: 'usage limit reached',
+    })
+    const pool = createPool(new FakeAdapter('personal'), new FakeAdapter('work'), health)
+
+    await expect(pool.complete(request)).rejects.toThrow(
+      /chatgpt-personal\/gpt-5\.5: auth_error.*chatgpt-work\/gpt-5\.5: quota_limited/,
+    )
   })
 })

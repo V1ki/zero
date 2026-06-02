@@ -226,9 +226,13 @@ export interface ZeroOS {
   channelDefinitions: Map<string, ChannelRuntimeDefinition>
   notifications: Notification[]
   addNotification(n: Omit<Notification, 'id' | 'createdAt'>): Notification
-  reloadModelProviders(): Promise<void>
+  reloadModelProviders(options?: ReloadModelProvidersOptions): Promise<void>
   isShuttingDown(): boolean
   shutdown(): Promise<void>
+}
+
+export interface ReloadModelProvidersOptions {
+  recoveredProviders?: string[]
 }
 
 export function createUsageRecorder(metrics: MetricsDB): UsageRecorder {
@@ -317,6 +321,32 @@ function createProviderRecoveryResolver(
       : undefined
     const tokenRef = provider?.auth.oauthTokenRef
     if (!kind || !tokenRef) return undefined
+
+    if (reason === 'auth_error') {
+      try {
+        if (kind === 'chatgpt') {
+          await new ChatGptTokenManager(vault, { providerName, tokenRef }).refreshSession(
+            'unauthorized',
+          )
+        } else if (kind === 'anthropic') {
+          await new ClaudeTokenManager(vault, { providerName, tokenRef }).refreshSession(
+            'unauthorized',
+          )
+        } else if (kind === 'x-premium') {
+          await new XPremiumTokenManager(vault, { providerName, tokenRef }).refreshSession(
+            'unauthorized',
+          )
+        }
+        return { state: 'healthy' as const, evidence: { source: 'oauth_refresh' } }
+      } catch (error) {
+        return {
+          state: 'auth_error' as const,
+          cooldownUntil: Date.now() + 60_000,
+          reason: toErrorMessage(error),
+          evidence: { source: 'oauth_refresh' },
+        }
+      }
+    }
 
     if (kind === 'chatgpt') {
       const usage = await new ChatGptUsageService(vault, {
@@ -996,10 +1026,20 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
     if (!options?.skipProcessExit) process.exit(0)
   }
 
-  const reloadModelProviders = async () => {
+  const reloadModelProviders = async (reloadOptions: ReloadModelProvidersOptions = {}) => {
     vault.load()
     config = loadConfig(configPath)
+    const recoveredProviders = Array.from(
+      new Set(
+        (reloadOptions.recoveredProviders ?? []).filter(
+          (providerName) => typeof providerName === 'string' && providerName in config.providers,
+        ),
+      ),
+    )
     providerHealth.setRecoveryResolver(createProviderRecoveryResolver(() => config, vault))
+    for (const providerName of recoveredProviders) {
+      providerHealth.markAuthRecovered(providerName, { source: 'oauth_login_reload' })
+    }
     modelRouter.reload(config, new Map(vault.entries()), {
       secretGetter: (ref) => vault.get(ref) ?? undefined,
       usageRecorder,
@@ -1014,6 +1054,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
     globalBus.emit('config:update', {
       event: 'model_providers_reloaded',
       providers: Object.keys(config.providers),
+      recoveredProviders,
     })
   }
 

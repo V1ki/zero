@@ -349,11 +349,16 @@ export class ClaudeOAuthDriver implements ManagedOAuthDriver<ClaudeOAuthSession>
     }
   }
 
-  async refreshStatus(vault: Vault): Promise<void> {
-    await new ClaudeTokenManager(vault, {
+  async refreshStatus(vault: Vault, options: { force?: boolean } = {}): Promise<void> {
+    const manager = new ClaudeTokenManager(vault, {
       providerName: this.provider,
       tokenRef: this.tokenRef,
-    }).ensureFreshSession()
+    })
+    if (options.force) {
+      await manager.refreshSession('unauthorized')
+      return
+    }
+    await manager.ensureFreshSession()
   }
 
   getCallbackSuccessHtml(): string {

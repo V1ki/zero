@@ -100,8 +100,35 @@ export function createRoutes(zero: ZeroOS) {
     return pools
   }
 
+  function normalizeRecoveredProviders(value: unknown): string[] {
+    const values = Array.isArray(value) ? value : [value]
+    return Array.from(
+      new Set(
+        values
+          .map((item) => (typeof item === 'string' ? item.trim() : ''))
+          .filter((item) => item.length > 0),
+      ),
+    )
+  }
+
   function formatModelLabel(providerName: string, modelName: string) {
     return `${providerName}/${modelName}`
+  }
+
+  function markProviderAuthRecovered(providerName: string, source: string) {
+    if (providerName in zero.config.providers) {
+      zero.providerHealth.markAuthRecovered(providerName, { source })
+    }
+  }
+
+  async function getManagedOAuthStatus(provider: string, refresh?: string) {
+    if (refresh === 'soft') {
+      return await managedOAuth.getStatusWithRefresh(provider)
+    }
+    if (refresh === 'hard') {
+      return await managedOAuth.getStatusWithRefresh(provider, { strict: true, force: true })
+    }
+    return managedOAuth.getStatus(provider)
   }
 
   function parseLogLimit(value: string | undefined, fallback: number, max: number) {
@@ -1248,10 +1275,10 @@ export function createRoutes(zero: ZeroOS) {
       }
 
       const refresh = c.req.query('refresh')
-      const status =
-        refresh === 'soft'
-          ? await managedOAuth.getStatusWithRefresh(provider)
-          : managedOAuth.getStatus(provider)
+      const status = await getManagedOAuthStatus(provider, refresh)
+      if (refresh === 'hard' && status.state === 'connected') {
+        markProviderAuthRecovered(provider, 'oauth_status_hard_refresh')
+      }
       return c.json(status)
     })
 
@@ -1270,9 +1297,18 @@ export function createRoutes(zero: ZeroOS) {
 
     .post('/api/runtime/model-providers/reload', async (c) => {
       try {
-        await zero.reloadModelProviders()
+        let body: Record<string, unknown> = {}
+        if (c.req.header('content-type')?.includes('application/json')) {
+          try {
+            body = await c.req.json<Record<string, unknown>>()
+          } catch {}
+        }
+        const recoveredProviders = normalizeRecoveredProviders(
+          body.recoveredProviders ?? body.recoveredProvider,
+        )
+        await zero.reloadModelProviders({ recoveredProviders })
         syncManagedOAuthCoordinator(managedOAuth, readCurrentConfig())
-        return c.json({ ok: true })
+        return c.json({ ok: true, recoveredProviders })
       } catch (error) {
         return c.json({ error: toErrorMessage(error) }, 500)
       }
@@ -1292,10 +1328,10 @@ export function createRoutes(zero: ZeroOS) {
 
     .get('/api/providers/chatgpt/oauth/status', async (c) => {
       const refresh = c.req.query('refresh')
-      const status =
-        refresh === 'soft'
-          ? await managedOAuth.getStatusWithRefresh('chatgpt')
-          : managedOAuth.getStatus('chatgpt')
+      const status = await getManagedOAuthStatus('chatgpt', refresh)
+      if (refresh === 'hard' && status.state === 'connected') {
+        markProviderAuthRecovered('chatgpt', 'oauth_status_hard_refresh')
+      }
       return c.json(status)
     })
 

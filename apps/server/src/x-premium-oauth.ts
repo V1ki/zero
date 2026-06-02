@@ -372,11 +372,16 @@ export class XPremiumOAuthDriver implements ManagedOAuthDriver<XPremiumOAuthSess
     }
   }
 
-  async refreshStatus(vault: Vault): Promise<void> {
-    await new XPremiumTokenManager(vault, {
+  async refreshStatus(vault: Vault, options: { force?: boolean } = {}): Promise<void> {
+    const manager = new XPremiumTokenManager(vault, {
       providerName: this.provider,
       tokenRef: this.tokenRef,
-    }).ensureFreshSession()
+    })
+    if (options.force) {
+      await manager.refreshSession('unauthorized')
+      return
+    }
+    await manager.ensureFreshSession()
   }
 
   getCallbackSuccessHtml(): string {

@@ -63,7 +63,7 @@ export class ModelPoolAdapter implements ProviderAdapter {
       }
     }
 
-    throw lastError ?? new Error(`No available providers for model pool ${this.logicalLabel}`)
+    throw lastError ?? this.createNoAvailableProvidersError()
   }
 
   async *stream(req: CompletionRequest): AsyncIterable<StreamEvent> {
@@ -91,7 +91,7 @@ export class ModelPoolAdapter implements ProviderAdapter {
       }
     }
 
-    throw lastError ?? new Error(`No available providers for model pool ${this.logicalLabel}`)
+    throw lastError ?? this.createNoAvailableProvidersError()
   }
 
   async healthCheck(): Promise<boolean> {
@@ -141,6 +141,23 @@ export class ModelPoolAdapter implements ProviderAdapter {
   private async isMemberAvailable(member: ModelPoolAdapterMember): Promise<boolean> {
     if (!this.options.quotaAware) return true
     return await this.health.isAvailable(member.providerName, member.modelName)
+  }
+
+  private createNoAvailableProvidersError(): Error {
+    const details = this.sortedMembers()
+      .map((member) => {
+        const record = this.health.get(member.providerName, member.modelName)
+        if (!record) return `${member.label}: unavailable`
+        const reason = record.reason ? `: ${truncate(record.reason, 220)}` : ''
+        const cooldown = record.cooldownUntil
+          ? ` until ${new Date(record.cooldownUntil).toISOString()}`
+          : ''
+        return `${member.label}: ${record.state}${cooldown}${reason}`
+      })
+      .join('; ')
+    return new Error(
+      `No available providers for model pool ${this.logicalLabel}${details ? ` (${details})` : ''}`,
+    )
   }
 
   private sortedMembers(): ModelPoolAdapterMember[] {
@@ -256,4 +273,8 @@ function errorEvidence(error: unknown): Record<string, unknown> {
     status: errorStatus(error),
     message: errorMessage(error).slice(0, 500),
   }
+}
+
+function truncate(value: string, maxLength: number): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value
 }

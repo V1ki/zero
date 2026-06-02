@@ -31,6 +31,7 @@ export type ProviderRecoveryResolver = (params: {
 
 const DEFAULT_QUOTA_COOLDOWN_MS = 5 * 60_000
 const DEFAULT_TEMPORARY_COOLDOWN_MS = 60_000
+const DEFAULT_AUTH_RECHECK_MS = 60_000
 
 export class ProviderHealthRegistry {
   private records = new Map<string, ProviderHealthRecord>()
@@ -117,6 +118,7 @@ export class ProviderHealthRegistry {
     providerName: string
     modelName?: string
     reason?: string
+    cooldownMs?: number
     evidence?: Record<string, unknown>
   }): ProviderHealthRecord {
     return this.markLimited({
@@ -124,8 +126,28 @@ export class ProviderHealthRegistry {
       modelName: params.modelName,
       state: 'auth_error',
       reason: params.reason,
+      cooldownUntil: Date.now() + (params.cooldownMs ?? DEFAULT_AUTH_RECHECK_MS),
       evidence: params.evidence,
     })
+  }
+
+  markAuthRecovered(providerName: string, evidence?: Record<string, unknown>): number {
+    const providerKey = this.key(providerName)
+    const providerRecord = this.records.get(providerKey)
+    let cleared = 0
+
+    for (const [key, record] of this.records) {
+      if (record.providerName === providerName && record.state === 'auth_error') {
+        this.records.delete(key)
+        cleared++
+      }
+    }
+
+    if (!providerRecord || providerRecord.state === 'auth_error') {
+      this.markHealthy(providerName, undefined, evidence)
+    }
+
+    return cleared
   }
 
   private markLimited(params: {

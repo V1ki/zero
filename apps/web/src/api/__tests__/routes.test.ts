@@ -604,6 +604,32 @@ describe('API Routes (Real)', () => {
     }
   })
 
+  test('POST /api/runtime/model-providers/reload clears recovered provider auth errors', async () => {
+    zero.providerHealth.markAuthError({
+      providerName: 'openai-codex',
+      modelName: 'gpt-5.4-medium',
+      reason: 'OAuth session can no longer be refreshed',
+    })
+    expect(await zero.providerHealth.isAvailable('openai-codex', 'gpt-5.4-medium')).toBe(false)
+
+    const res = await app.request('/api/runtime/model-providers/reload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ recoveredProvider: 'openai-codex' }),
+    })
+
+    expect(res.status).toBe(200)
+    const data = await res.json()
+    expect(data.ok).toBe(true)
+    expect(data.recoveredProviders).toEqual(['openai-codex'])
+    expect(await zero.providerHealth.isAvailable('openai-codex', 'gpt-5.4-medium')).toBe(true)
+    expect(
+      zero.providerHealth
+        .list()
+        .some((record) => record.providerName === 'openai-codex' && record.state === 'auth_error'),
+    ).toBe(false)
+  })
+
   test('PUT /api/config updates runtime task closure model for active and future sessions', async () => {
     const session = zero.sessionManager.create('web')
     session.initAgent({

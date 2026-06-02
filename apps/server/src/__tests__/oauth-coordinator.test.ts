@@ -160,4 +160,36 @@ describe('ManagedOAuthCoordinator', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  test('strict getStatusWithRefresh reports refresh failures instead of stored status', async () => {
+    const { dir, vault } = createVault()
+    const coordinator = new ManagedOAuthCoordinator(vault, [
+      createDriver('chatgpt', {
+        async onRefreshStatus() {
+          throw new Error('refresh token invalid')
+        },
+      }),
+    ])
+
+    try {
+      vault.set(
+        'chatgpt_session',
+        JSON.stringify({
+          provider: 'chatgpt',
+          accessToken: 'chatgpt:stored',
+          expiresAt: Date.now() + 5 * 60_000,
+        } satisfies FakeSession),
+      )
+
+      const softStatus = await coordinator.getStatusWithRefresh('chatgpt')
+      expect(softStatus.state).toBe('connected')
+
+      const hardStatus = await coordinator.getStatusWithRefresh('chatgpt', { strict: true })
+      expect(hardStatus.state).toBe('error')
+      expect(hardStatus.authorized).toBe(false)
+      expect(hardStatus.error).toBe('refresh token invalid')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
