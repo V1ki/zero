@@ -45,6 +45,10 @@ describe('resolveChannelSessionCandidate', () => {
     expect(resolveChannelSessionCandidate(candidates)?.id).toBe('sess_tg_2')
   })
 
+  test('does not fall back across sources when preferred source is missing', () => {
+    expect(resolveChannelSessionCandidate(candidates, undefined, undefined, 'feishu')).toBeNull()
+  })
+
   test('returns null when channel id does not match', () => {
     expect(resolveChannelSessionCandidate(candidates, 'room_404')).toBeNull()
   })

@@ -124,9 +124,14 @@ export function SessionSourceDetailPage() {
     onEvent: onSessionEvent,
   })
 
+  const activeCandidates = useMemo(
+    () => selectorCandidates.filter((candidate) => candidate.source === source),
+    [selectorCandidates, source],
+  )
+
   const selectedCandidate = useMemo(
-    () => resolveChannelSessionCandidate(selectorCandidates, search.id, search.channelName, source),
-    [search.channelName, search.id, selectorCandidates, source],
+    () => resolveChannelSessionCandidate(activeCandidates, search.id, search.channelName, source),
+    [activeCandidates, search.channelName, search.id, source],
   )
 
   const sources = useMemo(() => {
@@ -156,7 +161,7 @@ export function SessionSourceDetailPage() {
   const selector = (
     <ChannelSessionSelector
       sources={sources}
-      candidates={selectorCandidates}
+      candidates={activeCandidates}
       selectedCandidate={selectedCandidate}
       activeSource={source}
       loading={selectorLoading}

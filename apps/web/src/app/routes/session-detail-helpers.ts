@@ -54,6 +54,7 @@ export function resolveChannelSessionCandidate(
   if (preferredSource) {
     const preferred = candidates.find((candidate) => candidate.source === preferredSource)
     if (preferred) return preferred
+    return null
   }
 
   return candidates[0] ?? null
