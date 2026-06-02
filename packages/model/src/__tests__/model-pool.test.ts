@@ -106,6 +106,50 @@ describe('ModelPoolAdapter', () => {
     expect(second.completeCalls).toBe(1)
   })
 
+  test('fails over when an OAuth session can no longer refresh', async () => {
+    const first = new FakeAdapter('personal', {
+      complete() {
+        throw new Error(
+          'ChatGPT OAuth session can no longer be refreshed. Please re-authenticate with `bun zero provider login chatgpt`.',
+        )
+      },
+    })
+    const second = new FakeAdapter('work')
+    const pool = createPool(first, second)
+
+    const response = await pool.complete(request)
+
+    expect(response.model).toBe('work')
+    expect(first.completeCalls).toBe(1)
+    expect(second.completeCalls).toBe(1)
+  })
+
+  test('streams from the next member when OAuth refresh fails before output starts', async () => {
+    const first = new FakeAdapter('personal', {
+      async *stream() {
+        const noEventsBeforeFailure: StreamEvent[] = []
+        for (const event of noEventsBeforeFailure) yield event
+        throw new Error(
+          'ChatGPT OAuth session can no longer be refreshed. Please re-authenticate with `bun zero provider login chatgpt`.',
+        )
+      },
+    })
+    const second = new FakeAdapter('work')
+    const pool = createPool(first, second)
+
+    const events: StreamEvent[] = []
+    for await (const event of pool.stream({ ...request, stream: true })) {
+      events.push(event)
+    }
+
+    expect(events).toEqual([
+      { type: 'text_delta', data: { text: 'work' } },
+      { type: 'done', data: { model: 'work', usage: { input: 1, output: 1 } } },
+    ])
+    expect(first.streamCalls).toBe(1)
+    expect(second.streamCalls).toBe(1)
+  })
+
   test('does not retry streaming after visible output has started', async () => {
     const first = new FakeAdapter('personal', {
       async *stream() {

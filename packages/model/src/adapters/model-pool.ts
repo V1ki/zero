@@ -210,7 +210,7 @@ function classifyPoolFailure(error: unknown): RetryablePoolFailure | undefined {
     return 'quota_limited'
   }
 
-  if (status === 401 || status === 403 || message.includes('reauthenticate')) {
+  if (status === 401 || status === 403 || isAuthFailureMessage(message)) {
     return 'auth_error'
   }
 
@@ -219,6 +219,20 @@ function classifyPoolFailure(error: unknown): RetryablePoolFailure | undefined {
   }
 
   return undefined
+}
+
+function isAuthFailureMessage(message: string): boolean {
+  return (
+    message.includes('reauthenticate') ||
+    message.includes('re-authenticate') ||
+    message.includes('reauthentication') ||
+    message.includes('re-authentication') ||
+    message.includes('can no longer be refreshed') ||
+    message.includes('invalid_grant') ||
+    message.includes('refresh token') ||
+    message.includes('oauth credentials not found') ||
+    message.includes('credentials not found')
+  )
 }
 
 function errorStatus(error: unknown): number | undefined {
