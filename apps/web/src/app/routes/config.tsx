@@ -913,9 +913,54 @@ export function ConfigPage() {
                 </div>
               </div>
 
+              {/* Models */}
+              <div className="card p-5 animate-fade-up" style={{ animationDelay: '40ms' }}>
+                <h3 className="text-[14px] font-semibold mb-3 text-[var(--color-text-secondary)]">
+                  Models
+                </h3>
+                <div className="space-y-3">
+                  {models.map((m) => (
+                    <div
+                      key={`${m.provName}/${m.mName}`}
+                      className="flex items-center justify-between py-2 border-b border-[var(--color-border)]"
+                    >
+                      <div>
+                        <p className="text-[13px] text-[var(--color-text-primary)]">{`${m.provName}/${m.mName}`}</p>
+                        <p className="text-[11px] font-mono text-[var(--color-text-muted)]">
+                          {(m.maxContext / 1000).toFixed(0)}K context /{' '}
+                          {(m.maxOutput / 1000).toFixed(0)}K output
+                        </p>
+                        {m.tags.length > 0 && (
+                          <div className="flex gap-1 mt-1">
+                            {m.tags.map((tag) => (
+                              <span
+                                key={tag}
+                                className="text-[10px] px-1.5 py-0.5 rounded bg-white/[0.05] text-[var(--color-text-disabled)]"
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      {config?.defaultModel === `${m.provName}/${m.mName}` && (
+                        <span className="text-[11px] px-2 py-0.5 rounded-md bg-[var(--color-accent-glow)] text-[var(--color-accent)]">
+                          Default
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                  {models.length === 0 && (
+                    <p className="text-[13px] text-[var(--color-text-muted)]">
+                      No models configured
+                    </p>
+                  )}
+                </div>
+              </div>
+
               <div
                 className="card p-5 animate-fade-up lg:col-span-2"
-                style={{ animationDelay: '40ms' }}
+                style={{ animationDelay: '80ms' }}
               >
                 <div className="flex flex-col gap-4">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -1109,51 +1154,6 @@ export function ConfigPage() {
                       )}
                     </div>
                   </div>
-                </div>
-              </div>
-
-              {/* Models */}
-              <div className="card p-5 animate-fade-up" style={{ animationDelay: '60ms' }}>
-                <h3 className="text-[14px] font-semibold mb-3 text-[var(--color-text-secondary)]">
-                  Models
-                </h3>
-                <div className="space-y-3">
-                  {models.map((m) => (
-                    <div
-                      key={`${m.provName}/${m.mName}`}
-                      className="flex items-center justify-between py-2 border-b border-[var(--color-border)]"
-                    >
-                      <div>
-                        <p className="text-[13px] text-[var(--color-text-primary)]">{`${m.provName}/${m.mName}`}</p>
-                        <p className="text-[11px] font-mono text-[var(--color-text-muted)]">
-                          {(m.maxContext / 1000).toFixed(0)}K context /{' '}
-                          {(m.maxOutput / 1000).toFixed(0)}K output
-                        </p>
-                        {m.tags.length > 0 && (
-                          <div className="flex gap-1 mt-1">
-                            {m.tags.map((tag) => (
-                              <span
-                                key={tag}
-                                className="text-[10px] px-1.5 py-0.5 rounded bg-white/[0.05] text-[var(--color-text-disabled)]"
-                              >
-                                {tag}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                      {config?.defaultModel === `${m.provName}/${m.mName}` && (
-                        <span className="text-[11px] px-2 py-0.5 rounded-md bg-[var(--color-accent-glow)] text-[var(--color-accent)]">
-                          Default
-                        </span>
-                      )}
-                    </div>
-                  ))}
-                  {models.length === 0 && (
-                    <p className="text-[13px] text-[var(--color-text-muted)]">
-                      No models configured
-                    </p>
-                  )}
                 </div>
               </div>
 

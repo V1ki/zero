@@ -2,7 +2,11 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { SessionManager } from '@zero-os/core'
-import { serializeChatGptOAuthSession, serializeClaudeOAuthSession } from '@zero-os/model'
+import {
+  serializeChatGptOAuthSession,
+  serializeClaudeOAuthSession,
+  serializeXPremiumOAuthSession,
+} from '@zero-os/model'
 import type { ProviderAdapter } from '@zero-os/model'
 import { encryptSecrets } from '@zero-os/secrets'
 import type { Session as SessionData, TimelineCompactionBlock } from '@zero-os/shared'
@@ -13,6 +17,7 @@ import { getChatgptOAuthTokenRef } from '../../../../server/src/chatgpt-provider
 import { getClaudeOAuthSessionRef } from '../../../../server/src/claude-provider'
 import { startZeroOS } from '../../../../server/src/main'
 import type { ZeroOS } from '../../../../server/src/main'
+import { getXPremiumOAuthSessionRef } from '../../../../server/src/x-premium-provider'
 import { createRoutes } from '../routes'
 
 let app: ReturnType<typeof createRoutes>
@@ -345,6 +350,66 @@ describe('API Routes (Real)', () => {
     expect(data.providers).toBeDefined()
     expect(data.modelPools).toEqual({})
     expect(data.taskClosureModel).toBeNull()
+  })
+
+  test('GET /api/config reports OAuth status without refreshing providers', async () => {
+    writeFileSync(
+      join(testDataDir, 'config.yaml'),
+      `providers:
+  x-premium:
+    api_type: x_responses
+    base_url: https://api.x.ai/v1
+    auth:
+      type: oauth2
+      oauth_token_ref: x_premium_oauth_session
+    models:
+      grok-4.3:
+        model_id: grok-4.3
+        max_context: 128000
+        max_output: 8192
+        capabilities:
+          - tools
+        tags:
+          - oauth
+default_model: x-premium/grok-4.3
+fallback_chain:
+  - x-premium/grok-4.3
+schedules: []
+fuse_list: []
+`,
+    )
+    zero.vault.set(
+      getXPremiumOAuthSessionRef(),
+      serializeXPremiumOAuthSession({
+        accessToken: 'x-access-token',
+        refreshToken: 'x-refresh-token',
+        expiresAt: Date.now() - 1_000,
+        tokenType: 'Bearer',
+        scopes: ['openid', 'profile'],
+        tokenEndpoint: 'https://auth.x.ai/oauth/token',
+      }),
+    )
+
+    let fetchCalls = 0
+    globalThis.fetch = (async () => {
+      fetchCalls += 1
+      throw new Error('GET /api/config should not refresh OAuth providers')
+    }) as unknown as typeof fetch
+
+    try {
+      const res = await app.request('/api/config')
+      expect(res.status).toBe(200)
+      const data = await res.json()
+      expect(data.providers['x-premium']).toMatchObject({
+        authorized: false,
+        oauthState: 'expired',
+      })
+      expect(fetchCalls).toBe(0)
+    } finally {
+      globalThis.fetch = originalFetch
+      zero.vault.delete(getXPremiumOAuthSessionRef())
+      writeConfig(testDataDir)
+    }
   })
 
   test('GET /api/providers/anthropic/oauth/usage returns Claude OAuth usage', async () => {

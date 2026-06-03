@@ -151,7 +151,7 @@ export function createRoutes(zero: ZeroOS) {
           const secretRef = provider.auth.apiKeyRef ?? provider.auth.oauthTokenRef
           const configured = secretRef ? !!zero.vault.get(secretRef) : false
           const oauthStatus = managedOAuth.supportsProvider(name)
-            ? await managedOAuth.getStatusWithRefresh(name)
+            ? managedOAuth.getStatus(name)
             : undefined
 
           return [

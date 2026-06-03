@@ -32,6 +32,7 @@ const XAI_REDIRECT_PORT = 56121
 const XAI_REDIRECT_PATH = '/callback'
 const X_PREMIUM_PREEMPTIVE_REFRESH_WINDOW_MS = 2 * 60_000
 const X_PREMIUM_MIN_VALIDITY_MS = 60_000
+const X_PREMIUM_OAUTH_REQUEST_TIMEOUT_MS = 5_000
 const X_PREMIUM_REAUTH_MESSAGE =
   'X Premium OAuth session can no longer be refreshed. Please re-authenticate with `bun zero provider login x-premium`.'
 const X_PREMIUM_TIER_DENIED_MESSAGE =
@@ -55,6 +56,7 @@ type XPremiumRefreshReason = 'expiring' | 'unauthorized'
 interface XPremiumOAuthInstanceOptions {
   providerName?: string
   tokenRef?: string
+  requestTimeoutMs?: number
 }
 
 interface XPremiumDiscovery {
@@ -113,19 +115,79 @@ function validateXPremiumOAuthEndpoint(url: string, field: string) {
   }
 }
 
-async function discoverXPremiumOAuth(): Promise<XPremiumDiscovery> {
-  const response = await fetch(XAI_OAUTH_DISCOVERY_URL, {
-    method: 'GET',
-    headers: {
-      Accept: 'application/json',
-    },
+function buildTimeoutError(label: string, timeoutMs: number) {
+  return new Error(`X Premium OAuth ${label} timed out after ${timeoutMs}ms.`)
+}
+
+async function withXPremiumTimeout<T>(
+  label: string,
+  timeoutMs: number,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController()
+  let timedOut = false
+  let timeoutId: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+      reject(buildTimeoutError(label, timeoutMs))
+    }, timeoutMs)
   })
 
+  try {
+    return await Promise.race([operation(controller.signal), timeout])
+  } catch (error) {
+    if (timedOut) throw buildTimeoutError(label, timeoutMs)
+    throw error
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId)
+  }
+}
+
+async function readXPremiumResponseText(
+  response: Response,
+  label: string,
+  timeoutMs: number,
+): Promise<string> {
+  return await withXPremiumTimeout(label, timeoutMs, () => response.text())
+}
+
+async function readXPremiumResponseJson(
+  response: Response,
+  label: string,
+  timeoutMs: number,
+): Promise<unknown> {
+  return await withXPremiumTimeout(label, timeoutMs, () => response.json())
+}
+
+async function discoverXPremiumOAuth(
+  timeoutMs = X_PREMIUM_OAUTH_REQUEST_TIMEOUT_MS,
+): Promise<XPremiumDiscovery> {
+  const response = await withXPremiumTimeout('OIDC discovery request', timeoutMs, (signal) =>
+    fetch(XAI_OAUTH_DISCOVERY_URL, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+      },
+      signal,
+    }),
+  )
+
   if (!response.ok) {
-    throw new Error(`xAI OIDC discovery failed: ${response.status} ${await response.text()}`)
+    const body = await readXPremiumResponseText(
+      response,
+      'OIDC discovery error body read',
+      timeoutMs,
+    )
+    throw new Error(`xAI OIDC discovery failed: ${response.status} ${body}`)
   }
 
-  const payload = (await response.json()) as Record<string, unknown>
+  const payload = (await readXPremiumResponseJson(
+    response,
+    'OIDC discovery response body read',
+    timeoutMs,
+  )) as Record<string, unknown>
   const authorizationEndpoint =
     typeof payload.authorization_endpoint === 'string' ? payload.authorization_endpoint.trim() : ''
   const tokenEndpoint =
@@ -267,10 +329,12 @@ export class XPremiumOAuthDriver implements ManagedOAuthDriver<XPremiumOAuthSess
   readonly provider: string
   readonly kind = 'x-premium' as const
   private tokenRef: string
+  private requestTimeoutMs: number
 
   constructor(options: XPremiumOAuthInstanceOptions = {}) {
     this.provider = options.providerName ?? 'x-premium'
     this.tokenRef = options.tokenRef ?? getXPremiumOAuthSessionRef()
+    this.requestTimeoutMs = options.requestTimeoutMs ?? X_PREMIUM_OAUTH_REQUEST_TIMEOUT_MS
   }
 
   getCallbackConfig() {
@@ -287,7 +351,7 @@ export class XPremiumOAuthDriver implements ManagedOAuthDriver<XPremiumOAuthSess
     codeVerifier: string
     codeChallenge: string
   }): Promise<string> {
-    const discovery = await discoverXPremiumOAuth()
+    const discovery = await discoverXPremiumOAuth(this.requestTimeoutMs)
     const query = new URLSearchParams({
       response_type: 'code',
       client_id: XAI_OAUTH_CLIENT_ID,
@@ -310,7 +374,7 @@ export class XPremiumOAuthDriver implements ManagedOAuthDriver<XPremiumOAuthSess
     redirectUri: string
     codeVerifier: string
   }): Promise<XPremiumOAuthSession> {
-    const discovery = await discoverXPremiumOAuth()
+    const discovery = await discoverXPremiumOAuth(this.requestTimeoutMs)
     const codeChallenge = buildCodeChallenge(params.codeVerifier)
     const body = new URLSearchParams({
       grant_type: 'authorization_code',
@@ -322,24 +386,41 @@ export class XPremiumOAuthDriver implements ManagedOAuthDriver<XPremiumOAuthSess
       code_challenge_method: 'S256',
     })
 
-    const response = await fetch(discovery.tokenEndpoint, {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: body.toString(),
-    })
+    const response = await withXPremiumTimeout(
+      'token exchange request',
+      this.requestTimeoutMs,
+      (signal) =>
+        fetch(discovery.tokenEndpoint, {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: body.toString(),
+          signal,
+        }),
+    )
 
     if (!response.ok) {
-      const body = await response.text()
+      const body = await readXPremiumResponseText(
+        response,
+        'token exchange error body read',
+        this.requestTimeoutMs,
+      )
       if (response.status === 403) {
         throw buildTierDeniedError('xAI token exchange failed with HTTP 403', body)
       }
       throw new Error(`xAI token exchange failed: ${response.status} ${body}`)
     }
 
-    return buildSession((await response.json()) as XPremiumTokenResponse, discovery.tokenEndpoint)
+    return buildSession(
+      (await readXPremiumResponseJson(
+        response,
+        'token exchange response body read',
+        this.requestTimeoutMs,
+      )) as XPremiumTokenResponse,
+      discovery.tokenEndpoint,
+    )
   }
 
   readSession(vault: Vault): XPremiumOAuthSession | null {
@@ -376,6 +457,7 @@ export class XPremiumOAuthDriver implements ManagedOAuthDriver<XPremiumOAuthSess
     const manager = new XPremiumTokenManager(vault, {
       providerName: this.provider,
       tokenRef: this.tokenRef,
+      requestTimeoutMs: this.requestTimeoutMs,
     })
     if (options.force) {
       await manager.refreshSession('unauthorized')
@@ -418,11 +500,13 @@ export class XPremiumTokenManager {
   private vault: Vault
   private providerName: string
   private tokenRef: string
+  private requestTimeoutMs: number
 
   constructor(vault: Vault, options: XPremiumOAuthInstanceOptions = {}) {
     this.vault = vault
     this.providerName = options.providerName ?? 'x-premium'
     this.tokenRef = options.tokenRef ?? getXPremiumOAuthSessionRef()
+    this.requestTimeoutMs = options.requestTimeoutMs ?? X_PREMIUM_OAUTH_REQUEST_TIMEOUT_MS
   }
 
   readSession(): XPremiumOAuthSession | null {
@@ -474,7 +558,8 @@ export class XPremiumTokenManager {
     _reason: XPremiumRefreshReason,
   ): Promise<XPremiumOAuthSession> {
     const tokenEndpoint =
-      currentSession.tokenEndpoint ?? (await discoverXPremiumOAuth()).tokenEndpoint
+      currentSession.tokenEndpoint ??
+      (await discoverXPremiumOAuth(this.requestTimeoutMs)).tokenEndpoint
     validateXPremiumOAuthEndpoint(tokenEndpoint, 'token_endpoint')
 
     const body = new URLSearchParams({
@@ -483,17 +568,27 @@ export class XPremiumTokenManager {
       refresh_token: currentSession.refreshToken,
     })
 
-    const response = await fetch(tokenEndpoint, {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: body.toString(),
-    })
+    const response = await withXPremiumTimeout(
+      'token refresh request',
+      this.requestTimeoutMs,
+      (signal) =>
+        fetch(tokenEndpoint, {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: body.toString(),
+          signal,
+        }),
+    )
 
     if (!response.ok) {
-      const body = await response.text()
+      const body = await readXPremiumResponseText(
+        response,
+        'token refresh error body read',
+        this.requestTimeoutMs,
+      )
       const detail = extractRefreshErrorDetail(body)
       if (response.status === 403) {
         throw buildTierDeniedError('xAI token refresh failed with HTTP 403', body)
@@ -507,7 +602,11 @@ export class XPremiumTokenManager {
     }
 
     const refreshedSession = buildSession(
-      (await response.json()) as XPremiumTokenResponse,
+      (await readXPremiumResponseJson(
+        response,
+        'token refresh response body read',
+        this.requestTimeoutMs,
+      )) as XPremiumTokenResponse,
       tokenEndpoint,
       currentSession.refreshToken,
       currentSession,

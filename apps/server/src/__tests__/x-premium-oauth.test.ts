@@ -207,4 +207,40 @@ describe('XPremiumTokenManager', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  test('times out stalled token refresh requests', async () => {
+    const { dir, vault } = createVault()
+    vault.set(
+      getXPremiumOAuthSessionRef(),
+      serializeXPremiumOAuthSession({
+        accessToken: makeJwt({ exp: Math.floor(Date.now() / 1000) + 30 }),
+        refreshToken: 'refresh-old',
+        expiresAt: Date.now() + 30_000,
+        tokenType: 'Bearer',
+        scopes: ['openid', 'profile'],
+        tokenEndpoint: discovery.token_endpoint,
+      }),
+    )
+
+    let sawAbortSignal = false
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      sawAbortSignal = init?.signal instanceof AbortSignal
+      return await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), {
+          once: true,
+        })
+      })
+    }) as unknown as typeof fetch
+
+    const manager = new XPremiumTokenManager(vault, { requestTimeoutMs: 10 })
+
+    try {
+      await expect(manager.refreshSession('unauthorized')).rejects.toThrow(
+        /token refresh request timed out after 10ms/,
+      )
+      expect(sawAbortSignal).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
