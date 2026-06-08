@@ -30,6 +30,41 @@ test.describe('Dashboard', () => {
     await expect(page.getByRole('heading', { name: 'Current Sessions' })).toBeVisible()
   })
 
+  test('shows bot name in current session rows', async ({ page }) => {
+    await page.route(
+      (url) => url.pathname === '/api/sessions' && url.searchParams.get('filter') === 'current',
+      async (route) => {
+        await route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify({
+            sessions: [
+              {
+                id: 'sess_bot_name_001',
+                source: 'weixin',
+                channelName: 'personal-bot',
+                isCurrent: true,
+                placement: 'current',
+                currentModel: 'chatgpt/gpt-5.5',
+                createdAt: '2026-06-08T00:00:00.000Z',
+                updatedAt: '2026-06-08T00:00:00.000Z',
+                summary: '',
+                toolCallCount: 0,
+                userMessageCount: 1,
+                assistantMessageCount: 0,
+              },
+            ],
+          }),
+        })
+      },
+    )
+
+    await page.goto('/')
+
+    await expect(page.getByRole('heading', { name: 'Current Sessions' })).toBeVisible()
+    await expect(page.getByText('weixin', { exact: true })).toBeVisible()
+    await expect(page.getByText('personal-bot', { exact: true })).toBeVisible()
+  })
+
   test('shows channel status with all channel names', async ({ page }) => {
     await page.goto('/')
     // ChannelStatus component auto-hides when all channels are offline

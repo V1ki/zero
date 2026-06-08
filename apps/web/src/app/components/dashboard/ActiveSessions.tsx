@@ -7,6 +7,7 @@ import { PulseDot } from '../shared/PulseDot'
 interface Session {
   id: string
   source: string
+  channelName?: string
   isCurrent: boolean
   placement: 'current' | 'background'
   currentModel: string
@@ -79,20 +80,30 @@ export function ActiveSessions() {
         <div className="space-y-3">
           {sessions.map((s) => {
             const activeTool = liveTools.get(s.id)
+            const channelName = s.channelName?.trim()
+            const showChannelName = channelName && channelName !== s.source
             return (
               <div key={s.id} className="rounded-lg bg-white/[0.02] p-3">
-                <div className="flex items-center gap-2.5 mb-1">
+                <div className="flex items-center gap-2.5 mb-1 min-w-0">
                   <PulseDot status={s.isCurrent ? 'active' : 'idle'} size={8} />
-                  <span className="text-[12px] font-mono text-[var(--color-text-primary)]">
+                  <span className="text-[12px] font-mono text-[var(--color-text-primary)] shrink-0">
                     {s.id.slice(0, 8)}
                   </span>
-                  <span className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-white/[0.04] text-[var(--color-text-muted)]">
+                  <span className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-white/[0.04] text-[var(--color-text-muted)] shrink-0">
                     {s.source}
                   </span>
-                  <span className="text-[11px] font-mono text-[var(--color-text-muted)]">
+                  {showChannelName && (
+                    <span
+                      className="text-[11px] font-mono px-1.5 py-0.5 rounded max-w-[140px] truncate bg-[var(--color-accent)]/10 text-[var(--color-accent)]"
+                      title={channelName}
+                    >
+                      {channelName}
+                    </span>
+                  )}
+                  <span className="text-[11px] font-mono text-[var(--color-text-muted)] min-w-0 truncate">
                     {s.currentModel}
                   </span>
-                  <span className="text-[11px] text-[var(--color-text-disabled)] ml-auto">
+                  <span className="text-[11px] text-[var(--color-text-disabled)] ml-auto shrink-0">
                     {formatTimeAgo(s.createdAt)}
                   </span>
                 </div>
