@@ -1,23 +1,11 @@
 import { expect, test } from './fixtures'
 
 test.describe('WebSocket and Real-time UI', () => {
-  test('dashboard shows activity feed section', async ({ page }) => {
+  test('dashboard omits activity feed section', async ({ page }) => {
     await page.goto('/')
     await expect(page.locator('main h1')).toContainText('Dashboard')
-    // Activity feed renders with heading
-    await expect(page.locator('text=Recent Activity')).toBeVisible({ timeout: 10_000 })
-  })
-
-  test('dashboard activity feed renders initial state', async ({ page }) => {
-    await page.goto('/')
-    await expect(page.locator('text=Recent Activity')).toBeVisible({ timeout: 10_000 })
-    // Activity feed shows either log entries or the empty state message
-    const main = page.locator('main')
-    await page.waitForTimeout(2000)
-    const hasEntries = await main.locator('.font-mono').count()
-    if (hasEntries === 0) {
-      await expect(main).toContainText('No activity yet')
-    }
+    await expect(page.getByText('Recent Activity', { exact: true })).not.toBeVisible()
+    await expect(page.getByText('No activity yet')).not.toBeVisible()
   })
 
   test('navigation between pages maintains app state', async ({ page }) => {
@@ -36,9 +24,9 @@ test.describe('WebSocket and Real-time UI', () => {
     await page.locator('nav button').filter({ hasText: 'Dashboard' }).click()
     await expect(page.locator('main h1')).toContainText('Dashboard')
 
-    // Dashboard should still show its sections
-    await expect(page.locator('text=Recent Activity')).toBeVisible({ timeout: 10_000 })
+    // Dashboard should still show its remaining sections
     await expect(page.locator('text=Cost Overview')).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Current Sessions' })).toBeVisible()
   })
 
   test('real-time elements present on dashboard', async ({ page }) => {

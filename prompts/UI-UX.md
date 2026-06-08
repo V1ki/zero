@@ -285,23 +285,6 @@ Apple 风格弹性缓出曲线。
 - 工具图标 `▸` 用 `slate-500`，工具名用 `cyan-400`
 - 点击跳转到 Session 详情页
 
-### E. 事件流
-
-```
-┌─ Recent Activity ──────────────────────────────────────────────┐
-│  10:05   sess_001  ▸ bash    git commit -m "refactor adapter"  │
-│  10:04   sess_001  ▸ edit    src/provider.ts L42-58            │
-│  09:00   sess_003  ▸ sched   weekly_report 触发                │
-│  08:30   system    ▸ alert   claude-opus API 超时，降级到 sonnet│
-│                                          查看全部 →             │
-└────────────────────────────────────────────────────────────────┘
-```
-
-- 单行时间线，信息密度高
-- 新事件从顶部滑入（`translateY(-12px) → 0`）
-- 系统级事件用状态色高亮
-- 实时更新（WebSocket）
-
 ### 动态布局
 
 Dashboard 根据系统状态自适应：

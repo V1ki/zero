@@ -20,9 +20,9 @@ test.describe('Dashboard', () => {
     await expect(page.locator('text=This Month')).toBeVisible()
   })
 
-  test('shows activity feed section', async ({ page }) => {
+  test('does not show activity feed section', async ({ page }) => {
     await page.goto('/')
-    await expect(page.locator('text=Recent Activity')).toBeVisible()
+    await expect(page.getByText('Recent Activity', { exact: true })).not.toBeVisible()
   })
 
   test('shows Current Sessions heading', async ({ page }) => {

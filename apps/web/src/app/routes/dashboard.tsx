@@ -1,5 +1,4 @@
 import { ActiveSessions } from '../components/dashboard/ActiveSessions'
-import { ActivityFeed } from '../components/dashboard/ActivityFeed'
 import { AttentionCard } from '../components/dashboard/AttentionCard'
 import { ChannelStatus } from '../components/dashboard/ChannelStatus'
 import { CostOverview } from '../components/dashboard/CostOverview'
@@ -17,7 +16,6 @@ export function DashboardPage() {
           <CostOverview />
           <ActiveSessions />
         </div>
-        <ActivityFeed />
       </div>
     </div>
   )
