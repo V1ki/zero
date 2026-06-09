@@ -5,7 +5,13 @@ import { join } from 'node:path'
 import type { IncomingMessage as ZeroIncoming } from '../base'
 import type { FetchImpl } from '../weixin/api'
 import { WeixinChannel, guessChatType } from '../weixin/channel'
-import { SESSION_EXPIRED_PAUSE_MS, TYPING_START, TYPING_STOP } from '../weixin/constants'
+import {
+  ITEM_IMAGE,
+  ITEM_TEXT,
+  SESSION_EXPIRED_PAUSE_MS,
+  TYPING_START,
+  TYPING_STOP,
+} from '../weixin/constants'
 
 let tempDir: string
 
@@ -134,6 +140,53 @@ describe('WeixinChannel.send', () => {
     )
     await ch.sendToChat('peer', 'hi')
     expect(attempts).toBe(3)
+  })
+
+  test('sends markdown image references as standalone image messages', async () => {
+    const sendMessageBodies: Array<{
+      msg?: { item_list?: Array<Record<string, unknown>> }
+    }> = []
+    const { fetchImpl } = makeFetch((call) => {
+      const url = String(call.url)
+      if (url.includes('getuploadurl')) {
+        return new Response(
+          JSON.stringify({ upload_param: 'p', upload_full_url: 'https://cdn.example/upload/x' }),
+          { status: 200 },
+        )
+      }
+      if (url.startsWith('https://cdn.example/upload/')) {
+        return new Response('', { status: 200, headers: { 'x-encrypted-param': 'enc-param' } })
+      }
+      if (url.includes('sendmessage')) {
+        sendMessageBodies.push(JSON.parse(String(call.init?.body ?? '{}')))
+      }
+      return new Response(JSON.stringify({ ret: 0 }), { status: 200 })
+    })
+    const ch = new WeixinChannel(
+      {
+        accountId: 'acc',
+        token: 'tok',
+        homeDir: tempDir,
+        sendChunkDelayMs: 0,
+      },
+      { fetchImpl, sleep: async () => {} },
+    )
+
+    await ch.sendToChat('peer', 'Hello\n\n![diagram](data:image/png;base64,aW1n)')
+
+    expect(sendMessageBodies).toHaveLength(2)
+    expect(sendMessageBodies[0].msg?.item_list?.[0]).toMatchObject({
+      type: ITEM_TEXT,
+      text_item: { text: 'Hello' },
+    })
+    const imageItem = sendMessageBodies[1].msg?.item_list?.[0] as {
+      type?: number
+      image_item?: { media?: { encrypt_query_param?: string; aes_key?: string }; mid_size?: number }
+    }
+    expect(imageItem.type).toBe(ITEM_IMAGE)
+    expect(imageItem.image_item?.media?.encrypt_query_param).toBe('enc-param')
+    expect(imageItem.image_item?.media?.aes_key).toBeTruthy()
+    expect(imageItem.image_item?.mid_size).toBeGreaterThan(0)
   })
 
   test('routes incoming payloads as direct messages like OpenClaw', async () => {
@@ -297,12 +350,13 @@ describe('WeixinChannel lifecycle', () => {
 })
 
 describe('capabilities', () => {
-  test('streaming=false, maxMessageLength=4000', () => {
+  test('streaming=false, inline image references=true, maxMessageLength=4000', () => {
     const ch = new WeixinChannel({ accountId: 'a', token: 't', homeDir: tempDir })
     const caps = ch.getCapabilities()
     expect(caps.streaming).toBe(false)
-    expect(caps.inlineImages).toBe(false)
+    expect(caps.inlineImages).toBe(true)
     expect(caps.imageMessages).toBe(true)
+    expect(caps.markdownNotes).toContain('follow-up image messages')
     expect(caps.maxMessageLength).toBe(4000)
     expect(caps.threadReply).toBe(false)
   })

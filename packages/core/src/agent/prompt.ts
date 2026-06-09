@@ -367,7 +367,7 @@ export function buildRuntimeBlock(info: RuntimeInfo): string {
     if (caps.streaming) capLines.push('- Streaming output: supported (text appears progressively)')
     if (caps.inlineImages)
       capLines.push(
-        '- Inline images: supported (use standard markdown images; existing img_xxx, local absolute paths, file:// URIs, and http(s) URLs can be handled)',
+        '- Inline images: supported via standard markdown image syntax (channel notes describe accepted references and delivery behavior)',
       )
     else capLines.push('- Inline images: NOT supported (send images as separate messages)')
     if (caps.imageMessages) capLines.push('- Image messages: supported')

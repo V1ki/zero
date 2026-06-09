@@ -4,9 +4,9 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import type {
   Channel,
   ChannelCapabilities,
@@ -15,6 +15,7 @@ import type {
   MessageHandler,
   IncomingMessage as ZeroIncomingMessage,
 } from '../base'
+import { protectMarkdownCodeContent } from '../richtext/code-protection'
 import {
   type ApiOptions,
   type FetchImpl,
@@ -304,7 +305,7 @@ export class WeixinChannel implements Channel {
   getCapabilities(): ChannelCapabilities {
     return {
       streaming: false,
-      inlineImages: false,
+      inlineImages: true,
       imageMessages: true,
       fileMessages: true,
       interactiveCards: false,
@@ -312,7 +313,7 @@ export class WeixinChannel implements Channel {
       reactions: false,
       threadReply: false,
       maxMessageLength: MAX_MESSAGE_LENGTH,
-      markdownNotes: `Weixin does not support H1 headings (converted to 【Title】). H2+ become **bold**. Tables are flattened to \`- key: value\` lists. Sent messages cannot be edited. Long content is split into multiple bubbles at ${MAX_MESSAGE_LENGTH} chars.`,
+      markdownNotes: `Weixin does not support true inline image embedding; markdown image references are delivered as follow-up image messages. H1 headings are converted to 【Title】. H2+ become **bold**. Tables are flattened to \`- key: value\` lists. Sent messages cannot be edited. Long content is split into multiple bubbles at ${MAX_MESSAGE_LENGTH} chars.`,
     }
   }
 
@@ -619,7 +620,8 @@ export class WeixinChannel implements Channel {
    */
   async sendToChat(chatId: string, content: string): Promise<void> {
     this.assertNotSessionPaused()
-    const formatted = normalizeMarkdownForWeixin(content)
+    const { text, images } = extractMarkdownImageReferences(content)
+    const formatted = normalizeMarkdownForWeixin(text)
     const chunks = splitForWeixinDelivery(formatted, {
       splitMultilineMessages: this.splitMultiline,
       maxLength: MAX_MESSAGE_LENGTH,
@@ -632,6 +634,56 @@ export class WeixinChannel implements Channel {
       if (i < chunks.length - 1 && this.sendChunkDelayMs > 0) {
         await this.sleep(this.sendChunkDelayMs)
       }
+    }
+
+    for (const image of images) {
+      await this.sendImageReference(chatId, image.reference)
+    }
+  }
+
+  private async sendImageReference(chatId: string, reference: string): Promise<void> {
+    const resolved = await this.resolveImageReference(reference)
+    await this.sendAttachment(chatId, resolved.bytes, resolved.filename, resolved.mimeHint)
+  }
+
+  private async resolveImageReference(reference: string): Promise<{
+    bytes: Buffer
+    filename: string
+    mimeHint?: string
+  }> {
+    const normalizedRef = normalizeImageReference(reference)
+
+    if (normalizedRef.startsWith('data:')) {
+      const match = normalizedRef.match(/^data:([^;,]+);base64,([\s\S]+)$/)
+      if (!match) throw new Error('Unsupported inline image data URI')
+      const mimeHint = match[1].trim()
+      return {
+        bytes: Buffer.from(match[2].replace(/\s/g, ''), 'base64'),
+        filename: defaultImageFilename(mimeHint),
+        mimeHint,
+      }
+    }
+
+    if (normalizedRef.startsWith('http://') || normalizedRef.startsWith('https://')) {
+      const response = await this.fetchImpl(normalizedRef, {
+        method: 'GET',
+        signal: AbortSignal.timeout(15_000),
+      })
+      if (!response.ok) throw new Error(`Image download HTTP ${response.status}`)
+      const mimeHint = cleanMimeType(response.headers.get('content-type'))
+      return {
+        bytes: Buffer.from(await response.arrayBuffer()),
+        filename: filenameFromUrl(normalizedRef, mimeHint),
+        mimeHint,
+      }
+    }
+
+    if (!existsSync(normalizedRef)) {
+      throw new Error(`Image file not found: ${normalizedRef}`)
+    }
+    return {
+      bytes: readFileSync(normalizedRef),
+      filename: basename(normalizedRef) || 'image.png',
     }
   }
 
@@ -811,5 +863,97 @@ function buildOutboundMediaItem(params: {
   return {
     type: ITEM_FILE,
     file_item: { media, file_name: params.filename, len: String(params.rawsize) },
+  }
+}
+
+interface MarkdownImageReference {
+  alt: string
+  reference: string
+}
+
+const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
+const WIKILINK_IMAGE_RE = /!\[\[([^\]]+)\]\]/g
+
+function extractMarkdownImageReferences(content: string): {
+  text: string
+  images: MarkdownImageReference[]
+} {
+  if (!content.includes('![')) return { text: content, images: [] }
+
+  const protectedContent = protectMarkdownCodeContent(content, 'WEIXIN_IMG')
+  const images: MarkdownImageReference[] = []
+  let processed = protectedContent.processed
+
+  processed = processed.replace(WIKILINK_IMAGE_RE, (_match, reference: string) => {
+    const normalized = reference.trim()
+    if (normalized) {
+      images.push({
+        alt: basename(normalized).replace(/\.[^.]+$/, '') || 'image',
+        reference: normalized,
+      })
+    }
+    return ''
+  })
+
+  processed = processed.replace(MARKDOWN_IMAGE_RE, (_match, alt: string, reference: string) => {
+    const normalized = reference.trim()
+    if (normalized) images.push({ alt: alt.trim(), reference: normalized })
+    return ''
+  })
+
+  return {
+    text: cleanupTextAfterImageExtraction(protectedContent.restore(processed)),
+    images,
+  }
+}
+
+function cleanupTextAfterImageExtraction(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+$/g, ''))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function normalizeImageReference(reference: string): string {
+  const trimmed = reference.trim()
+  if (!trimmed.startsWith('file://')) return trimmed
+
+  try {
+    return new URL(trimmed).pathname
+  } catch {
+    return trimmed.replace(/^file:\/\//, '')
+  }
+}
+
+function cleanMimeType(value: string | null): string | undefined {
+  const mime = value?.split(';')[0]?.trim().toLowerCase()
+  return mime || undefined
+}
+
+function filenameFromUrl(url: string, mimeHint?: string): string {
+  try {
+    const parsed = new URL(url)
+    const name = basename(decodeURIComponent(parsed.pathname))
+    return name || defaultImageFilename(mimeHint)
+  } catch {
+    return defaultImageFilename(mimeHint)
+  }
+}
+
+function defaultImageFilename(mimeHint?: string): string {
+  switch (mimeHint) {
+    case 'image/jpeg':
+    case 'image/jpg':
+      return 'image.jpg'
+    case 'image/gif':
+      return 'image.gif'
+    case 'image/webp':
+      return 'image.webp'
+    case 'image/bmp':
+      return 'image.bmp'
+    default:
+      return 'image.png'
   }
 }
