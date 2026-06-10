@@ -1149,8 +1149,17 @@ export function createRoutes(zero: ZeroOS) {
         return c.json({ neighbors: [], reason: 'no vector for this memory' })
       }
       const hits = await index.query(vector, topK + 1)
-      const neighbors: Array<{ memoryId: string; type?: string; title?: string; score: number }> =
-        []
+      // 携带 status/谱系信号，与 clusters 成员一致——让治理者看见"已归档/已被取代"的死节点，
+      // 不至于把死节点误当顶级"选取代来源"候选（对抗实测：neighbors 缺 status 跨面不一致）。
+      const neighbors: Array<{
+        memoryId: string
+        type?: string
+        title?: string
+        score: number
+        status?: string
+        supersededBy?: string
+        mergedInto?: string
+      }> = []
       for (const hit of hits) {
         if (hit.memoryId === id) continue
         const meta = await index.getMetadata?.(hit.memoryId)
@@ -1164,6 +1173,9 @@ export function createRoutes(zero: ZeroOS) {
           type: live.type,
           title: live.title,
           score: hit.score,
+          status: live.status,
+          ...(live.supersededBy ? { supersededBy: live.supersededBy } : {}),
+          ...(live.mergedInto ? { mergedInto: live.mergedInto } : {}),
         })
         if (neighbors.length >= topK) break
       }

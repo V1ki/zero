@@ -336,3 +336,18 @@ describe('Adversarial regression locks R4', () => {
     expect(data.memoriesInClusters).toBe(2)
   })
 })
+
+describe('Adversarial regression locks R5', () => {
+  test('neighbors payload carries status/lineage so dead nodes are visible', async () => {
+    // 主 describe 已 supersede(a by b)→ a archived & supersededBy=b；a 是 b 的最近邻
+    const res = await app.request(`/api/memory/runbook/${ids.b}/neighbors`)
+    expect(res.status).toBe(200)
+    const data = (await res.json()) as {
+      neighbors: Array<{ memoryId: string; status?: string; supersededBy?: string }>
+    }
+    const aNeighbor = data.neighbors.find((n) => n.memoryId === ids.a)
+    expect(aNeighbor).toBeDefined()
+    expect(aNeighbor?.status).toBe('archived') // 死节点状态可见
+    expect(aNeighbor?.supersededBy).toBe(ids.b) // 携带谱系信号
+  })
+})

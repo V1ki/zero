@@ -44,7 +44,7 @@ export interface MemoryRepository {
     type: MemoryType,
     id: string,
     updates: Partial<Memory>,
-    context?: { sessionId?: string },
+    context?: { sessionId?: string; precondition?: (current: Memory) => boolean },
   ): Promise<Memory | undefined>
   delete(type: MemoryType, id: string): Promise<boolean>
   getAgentPreference(agentName: string): string
@@ -235,10 +235,16 @@ export class MemoryStore implements MemoryRepository {
     type: MemoryType,
     id: string,
     updates: Partial<Memory>,
-    _context?: { sessionId?: string },
+    _context?: { sessionId?: string; precondition?: (current: Memory) => boolean },
   ): Promise<Memory | undefined> {
     const memory = this.get(type, id)
     if (!memory) return undefined
+
+    // 提交时活性复检（commit-time）：get→precondition→save 之间无 await，相对其他写入原子。
+    // 折叠场景用它在落盘前复查目标仍活——堵住 route() 判活到 update 落盘的 TOCTOU 窗口
+    // （期间被并发 archive/supersede 会让新内容写进死文档成孤儿，对抗实测确认）。不满足则中止，
+    // 由调用方降级为 create。
+    if (_context?.precondition && !_context.precondition(memory)) return undefined
 
     // 显式传 undefined/null：仅可选谱系/元字段视为"移除"（verify 清谱系指针走此通道）；
     // 必填字段（content/title/status...）的 undefined/null 一律忽略、保留原值，

@@ -197,3 +197,39 @@ describe('MemoryStore.update field protection', () => {
     expect(after?.supersededBy).toBeUndefined()
   })
 })
+
+// 对抗R5回归：commit-time precondition 复检不满足时中止 update、不落盘（折叠 TOCTOU 防护机制）。
+describe('MemoryStore.update commit-time precondition', () => {
+  let d: string
+  let s: MemoryStore
+  beforeAll(() => {
+    d = join(import.meta.dir, '__fixtures__', 'store-precondition')
+    mkdirSync(d, { recursive: true })
+    s = new MemoryStore(d)
+  })
+  afterAll(() => rmSync(d, { recursive: true, force: true }))
+
+  test('failing precondition aborts the write (returns undefined, content unchanged)', async () => {
+    const m = await s.create('note', 'TOCTOU', 'original', { status: 'archived' })
+    const r = await s.update(
+      'note',
+      m.id,
+      { content: 'late entry' },
+      { precondition: (cur) => cur.status !== 'archived' },
+    )
+    expect(r).toBeUndefined()
+    expect(s.get('note', m.id)?.content).toBe('original') // 未写进死文档
+  })
+
+  test('passing precondition allows the write', async () => {
+    const m = await s.create('note', 'Live', 'original', { status: 'verified' })
+    const r = await s.update(
+      'note',
+      m.id,
+      { content: 'folded' },
+      { precondition: (cur) => cur.status !== 'archived' },
+    )
+    expect(r).toBeDefined()
+    expect(s.get('note', m.id)?.content).toBe('folded')
+  })
+})

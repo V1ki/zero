@@ -6,6 +6,7 @@ import {
   clampConfidence,
   isMemoryStatus,
 } from '@zero-os/shared'
+import { isActiveFoldTarget } from '../session/live-doc'
 import { BaseTool } from './base'
 
 type MemoryAction = 'create' | 'update' | 'delete' | 'list'
@@ -113,7 +114,9 @@ export class MemoryTool extends BaseTool {
             type,
             folded.memoryId,
             { content: mergedContent, tags: mergedTags },
-            { sessionId: ctx.sessionId },
+            // precondition：落盘前复查目标仍活，堵 route()→update 的 TOCTOU 窗口
+            // （期间被并发 archive/supersede 则中止折叠，降级为下方 create，避免写进死文档）。
+            { sessionId: ctx.sessionId, precondition: isActiveFoldTarget },
           )
           if (updated) {
             return {
@@ -122,7 +125,7 @@ export class MemoryTool extends BaseTool {
               outputSummary: `Updated live-doc: ${updated.title}`,
             }
           }
-          // 活文档已不存在（被删/归档清理）→ 落到正常 create。
+          // 活文档已不存在（被删/归档清理）或落盘前被并发归档/取代 → 落到正常 create。
         }
         const memory = await ctx.memoryStore.create(type, title, content, {
           status: 'verified',

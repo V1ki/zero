@@ -113,7 +113,7 @@ export class IndexedMemoryStore implements MemoryRepository {
     type: MemoryType,
     id: string,
     updates: Partial<Memory>,
-    context?: { sessionId?: string },
+    context?: { sessionId?: string; precondition?: (current: Memory) => boolean },
   ): Promise<Memory | undefined> {
     const existing = this.store.get(type, id)
     if (!existing) return undefined

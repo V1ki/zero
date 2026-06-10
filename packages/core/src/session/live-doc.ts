@@ -3,7 +3,7 @@ import { CONTEXT_PARAMS } from '../agent/params'
 
 // 活文档只能折进"仍活跃"的文档：已归档/已被取代/已并入的文档不再是有效折叠目标，
 // 否则会话中途被治理归档后，同主题新写入会被静默埋进检索不可见的归档文档（数据黑洞）。
-function isActiveFoldTarget(m: {
+export function isActiveFoldTarget(m: {
   status: string
   supersededBy?: string
   mergedInto?: string
