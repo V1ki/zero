@@ -123,6 +123,10 @@ export async function computeMemoryClusters(
 
 // P3c: 进程内 TTL 缓存，避免治理 UI 每次加载都重算 O(n²)。后台检测任务也可调本入口预热。
 let clusterCache: { at: number; threshold: number; result: ClusterResult } | null = null
+// 代际计数：每次 invalidate 自增。compute 横跨 await（listAll + O(n²)）期间若被 invalidate，
+// 用开算前的代际比对，拒绝回写陈旧结果——否则用旧快照算出的簇会复活刚被失效的缓存，
+// 隐藏并发 mutation 产生的新簇（对抗实测的缓存复活竞态）。
+let cacheEpoch = 0
 
 export async function getMemoryClusters(
   vectorIndex: VectorIndexLike | undefined,
@@ -140,12 +144,17 @@ export async function getMemoryClusters(
   ) {
     return clusterCache.result
   }
+  const startEpoch = cacheEpoch
   const result = await computeMemoryClusters(vectorIndex, store, { threshold })
-  clusterCache = { at: Date.now(), threshold, result }
+  // 仅当本次计算期间未发生 invalidate 才回写缓存；否则丢弃（下次调用会基于新状态重算）。
+  if (cacheEpoch === startEpoch) {
+    clusterCache = { at: Date.now(), threshold, result }
+  }
   return result
 }
 
-// 写入（归档/取代等）后调用，使缓存失效，下次重算。
+// 写入（归档/取代等）后调用，使缓存失效，下次重算。自增代际以作废任何 in-flight 计算的回写。
 export function invalidateClusterCache(): void {
   clusterCache = null
+  cacheEpoch++
 }
