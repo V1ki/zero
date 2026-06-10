@@ -418,11 +418,27 @@ function ClusterCard({
   )
 }
 
+// 状态展示顺序：verified（生效）在前，archived（已归档/不生效）在后。
+const STATUS_ORDER = ['verified', 'draft', 'conflict', 'archived'] as const
+
 function MemoryOverview({ memories }: { memories: MemoryItem[] }) {
-  const typeCounts: Record<string, number> = {}
+  // 按类型统计的同时拆出 verified/archived，让"哪些在生效"一目了然。
+  const typeStats: Record<string, { total: number; verified: number; archived: number }> = {}
+  const statusCounts: Record<string, number> = {}
   for (const m of memories) {
-    typeCounts[m.type] = (typeCounts[m.type] ?? 0) + 1
+    const t = (typeStats[m.type] ??= { total: 0, verified: 0, archived: 0 })
+    t.total++
+    if (m.status === 'verified') t.verified++
+    else if (m.status === 'archived') t.archived++
+    statusCounts[m.status] = (statusCounts[m.status] ?? 0) + 1
   }
+  const verifiedCount = statusCounts.verified ?? 0
+  const archivedCount = statusCounts.archived ?? 0
+  // 已知顺序在前，未知 status 兜底排后
+  const statusKeys = [
+    ...STATUS_ORDER.filter((s) => statusCounts[s]),
+    ...Object.keys(statusCounts).filter((s) => !STATUS_ORDER.includes(s as (typeof STATUS_ORDER)[number])),
+  ]
 
   const mostRecent =
     memories.length > 0
@@ -435,16 +451,36 @@ function MemoryOverview({ memories }: { memories: MemoryItem[] }) {
         Memory Overview
       </h3>
 
-      <div className="flex items-center gap-3">
+      <div className="flex items-baseline gap-3">
         <div className="text-[28px] font-bold tracking-tight">{memories.length}</div>
         <span className="text-[13px] text-[var(--color-text-muted)]">total memories</span>
+      </div>
+      {/* 生效/归档小结：verified = 当前生效的权威条，archived = 已归档不参与默认检索 */}
+      <div className="flex items-center gap-2 text-[12px] font-mono">
+        <span className="text-emerald-400">{verifiedCount} verified</span>
+        <span className="text-[var(--color-text-disabled)]">·</span>
+        <span className="text-[var(--color-text-disabled)]">{archivedCount} archived</span>
+      </div>
+
+      <div className="space-y-2">
+        <p className="text-[11px] text-[var(--color-text-disabled)] tracking-wide font-semibold">
+          BY STATUS
+        </p>
+        {statusKeys.map((status) => (
+          <div key={status} className="flex items-center justify-between py-1">
+            <StatusPill status={status} />
+            <span className="text-[13px] font-mono text-[var(--color-text-primary)]">
+              {statusCounts[status]}
+            </span>
+          </div>
+        ))}
       </div>
 
       <div className="space-y-2">
         <p className="text-[11px] text-[var(--color-text-disabled)] tracking-wide font-semibold">
           BY TYPE
         </p>
-        {Object.entries(typeCounts).map(([type, count]) => (
+        {Object.entries(typeStats).map(([type, s]) => (
           <div key={type} className="flex items-center justify-between py-1">
             <div className="flex items-center gap-2">
               <span
@@ -453,7 +489,16 @@ function MemoryOverview({ memories }: { memories: MemoryItem[] }) {
                 {type}
               </span>
             </div>
-            <span className="text-[13px] font-mono text-[var(--color-text-primary)]">{count}</span>
+            <span className="text-[13px] font-mono text-[var(--color-text-primary)]">
+              <span className="text-emerald-400">{s.verified}</span>
+              <span className="text-[var(--color-text-disabled)]"> / {s.total}</span>
+              {s.archived > 0 ? (
+                <span className="text-[11px] text-[var(--color-text-disabled)]">
+                  {' '}
+                  ({s.archived} arch)
+                </span>
+              ) : null}
+            </span>
           </div>
         ))}
       </div>
@@ -1246,7 +1291,8 @@ export function MemoryPage() {
                 )}
               </div>
             ) : (
-              <MemoryOverview memories={filteredMemories} />
+              // 传全量 memories（不受 statusFilter 影响）——Overview 的状态拆分要反映完整集合
+              <MemoryOverview memories={memories} />
             )}
           </div>
         </div>
