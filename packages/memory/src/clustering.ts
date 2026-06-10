@@ -30,6 +30,13 @@ interface ClusterMemoryStore {
   ): { title: string; status: string; confidence: number; updatedAt: string } | undefined
 }
 
+// 阈值规范化：非有限输入（NaN/Infinity，如 ?threshold=abc → Number('abc')=NaN）归一为默认 0.9，
+// 再钳到 [0.8,0.99]。否则 NaN 会穿透 clamp 使所有 cos>=NaN 恒 false → 近重复簇静默消失。
+function normalizeThreshold(t: number | undefined): number {
+  const base = typeof t === 'number' && Number.isFinite(t) ? t : 0.9
+  return Math.min(0.99, Math.max(0.8, base))
+}
+
 // 权威条排序：verified 最优、archived 次次、未知/非法 status 最次（绝不当权威条）；
 // 与设计 3.4 一致（updatedAt 已被污染，仅作末位兜底）。
 const statusRank = (s: string): number => {
@@ -51,7 +58,7 @@ export async function computeMemoryClusters(
   if (!vectorIndex?.listAll) {
     return { clusters: [], total: 0, memoriesInClusters: 0, reason: 'vector index unavailable' }
   }
-  const threshold = Math.min(0.99, Math.max(0.8, opts?.threshold ?? 0.9))
+  const threshold = normalizeThreshold(opts?.threshold)
   const items = await vectorIndex.listAll()
   const n = items.length
   const parent = Array.from({ length: n }, (_, i) => i)
@@ -122,7 +129,8 @@ export async function getMemoryClusters(
   store: ClusterMemoryStore,
   opts?: { threshold?: number; maxAgeMs?: number; force?: boolean },
 ): Promise<ClusterResult> {
-  const threshold = opts?.threshold ?? 0.9
+  // 规范化后再做缓存键，避免 NaN 阈值既算错又永不命中缓存。
+  const threshold = normalizeThreshold(opts?.threshold)
   const maxAge = opts?.maxAgeMs ?? 60_000
   if (
     !opts?.force &&

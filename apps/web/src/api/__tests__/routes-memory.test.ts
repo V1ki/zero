@@ -325,3 +325,14 @@ describe('Adversarial regression locks R3', () => {
     expect(sb).toBe(mid) // 回退到直接 target
   })
 })
+
+describe('Adversarial regression locks R4', () => {
+  test('clusters endpoint tolerates non-finite threshold (no silent zero-cluster)', async () => {
+    // ?threshold=abc → Number('abc')=NaN；归一到默认 0.9，a+b 仍应成 1 簇而非静默消失
+    const res = await app.request('/api/memory/clusters?threshold=abc&fresh=1')
+    expect(res.status).toBe(200)
+    const data = (await res.json()) as { total: number; memoriesInClusters: number }
+    expect(data.total).toBe(1)
+    expect(data.memoriesInClusters).toBe(2)
+  })
+})
