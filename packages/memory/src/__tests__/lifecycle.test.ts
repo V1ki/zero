@@ -319,3 +319,50 @@ describe('MemoryLifecycle endpoint-integration hardening (R9)', () => {
     expect(await life.archiveOld('note', 1e308)).toBeGreaterThanOrEqual(0) // 不抛
   })
 })
+
+describe('MemoryLifecycle resolveConflict segment ordering (R10)', () => {
+  let dir: string
+  let store: MemoryStore
+  let life: MemoryLifecycle
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'zero-life-r10-'))
+    store = new MemoryStore(dir)
+    life = new MemoryLifecycle(store)
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  test('winner is committed before loser, so a failed loser segment leaves no both-archived collapse', async () => {
+    // governance 常态：旧 archived 条作 winner 复活（conf 高）；loser 为活条
+    const winner = await store.create('note', 'W', 'w', { status: 'archived', confidence: 0.9 })
+    const loser = await store.create('note', 'L', 'l', { status: 'verified', confidence: 0.4 })
+    // 让第 2 次 update（loser 段）抛错，模拟 winner 段成功、loser 段 re-embed 瞬时失败
+    const realUpdate = store.update.bind(store)
+    let calls = 0
+    ;(store as unknown as { update: MemoryStore['update'] }).update = ((
+      t: Parameters<MemoryStore['update']>[0],
+      i: Parameters<MemoryStore['update']>[1],
+      u: Parameters<MemoryStore['update']>[2],
+      ctx: Parameters<MemoryStore['update']>[3],
+    ) => {
+      calls++
+      if (calls === 2) throw new Error('transient embed failure on loser segment')
+      return realUpdate(t, i, u, ctx)
+    }) as MemoryStore['update']
+    await expect(life.resolveConflict('note', winner.id, loser.id)).rejects.toThrow('transient')
+    ;(store as unknown as { update: MemoryStore['update'] }).update = realUpdate
+    // winner 已先复活为活权威；loser 仍存活 → 无双 archived 坍塌，重试可补完
+    expect(store.get('note', winner.id)?.status).toBe('verified')
+    expect(store.get('note', winner.id)?.related).toContain(loser.id)
+    expect(store.get('note', loser.id)?.status).toBe('verified')
+  })
+
+  test('happy path unchanged: loser archived+supersededBy, winner live with related', async () => {
+    const a = await store.create('note', 'A', 'a', { status: 'verified', confidence: 0.9 })
+    const b = await store.create('note', 'B', 'b', { status: 'verified', confidence: 0.4 })
+    const winner = await life.resolveConflict('note', a.id, b.id)
+    expect(winner?.id).toBe(a.id)
+    expect(store.get('note', b.id)?.status).toBe('archived')
+    expect(store.get('note', b.id)?.supersededBy).toBe(a.id)
+    expect(store.get('note', a.id)?.related).toContain(b.id)
+  })
+})

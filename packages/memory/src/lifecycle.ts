@@ -147,18 +147,18 @@ export class MemoryLifecycle {
           : a2
     const loser = winner.id === a1.id ? a2 : a1
 
-    // loser 归档并指向 winner —— 命中 loser 的检索沿谱系重定向到 winner（与 /supersede 一致）。
-    // 用各自解析出的权威条 type（可能跨 type），不能用入参 type。
-    await this.store.update(loser.type, loser.id, { status: 'archived', supersededBy: winner.id })
-
-    // winner 强制为活权威态：清自身谱系指针、若被归档则复活，并记录关联。
-    // 用函数式更新基于【最新】winner 快照算 related——并发裁决同一 winner 时正确叠加 related，
-    // 不会后写覆盖前写丢反向关联（对抗实测）。
-    return this.store.update(winner.type, winner.id, (cur) => ({
+    // 段序：winner 先复活为活权威（含 related 追加），loser 后归档——两段非原子（IndexedMemoryStore
+    // 的 update 末尾 await re-embed 可瞬时失败）。按此序任一段失败都不留下 loser→archived-winner 的
+    // 坍塌谱系：winner 段失败 → 无提交；loser 段失败 → winner 已活、loser 仍活（无坍塌），重试可补完
+    // （对抗实测：旧的 loser-先 序在 winner 段失败时整条召回坍塌且重试不自愈）。函数式更新保并发原子叠加。
+    const updatedWinner = await this.store.update(winner.type, winner.id, (cur) => ({
       related: cur.related.includes(loser.id) ? cur.related : [...cur.related, loser.id],
       status: cur.status === 'archived' ? 'verified' : cur.status,
       supersededBy: undefined,
       mergedInto: undefined,
     }))
+    // loser 归档并指向 winner（用解析出的权威条 type，可能跨 type）—— 命中 loser 沿谱系重定向到 winner。
+    await this.store.update(loser.type, loser.id, { status: 'archived', supersededBy: winner.id })
+    return updatedWinner
   }
 }

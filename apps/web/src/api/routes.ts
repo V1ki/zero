@@ -1137,10 +1137,22 @@ export function createRoutes(zero: ZeroOS) {
       const otherId = typeof body.otherId === 'string' ? body.otherId : ''
       if (!otherId) return c.json({ error: 'otherId is required' }, 400)
       if (otherId === id) return c.json({ error: 'cannot resolve a memory against itself' }, 400)
-      const winner = await zero.memoryLifecycle.resolveConflict(type, id, otherId)
-      if (!winner) return c.json({ error: 'one or both memories not found' }, 404)
-      invalidateClusterCache()
-      return c.json({ winner })
+      try {
+        const winner = await zero.memoryLifecycle.resolveConflict(type, id, otherId)
+        if (!winner) return c.json({ error: 'one or both memories not found' }, 404)
+        invalidateClusterCache()
+        return c.json({ winner })
+      } catch (error) {
+        // 段序保证任一段失败都留下安全态（winner 活/loser 仍活，无坍塌）；提示客户端重试补完。
+        invalidateClusterCache()
+        return c.json(
+          {
+            error: 'resolve-conflict interrupted mid-apply; state is safe, retry to complete',
+            detail: toErrorMessage(error),
+          },
+          503,
+        )
+      }
     })
 
     // 发展(维护): 按龄归档某类型中早于 olderThanDays 的非权威记忆。
