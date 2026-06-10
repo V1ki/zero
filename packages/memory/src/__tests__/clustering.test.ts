@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { getMemoryClusters, invalidateClusterCache } from '../clustering'
+import { IndexedMemoryStore } from '../indexed-store'
+import { MemoryStore } from '../store'
 
 // listAll 项与 store 成员的最小 fake，匹配 VectorIndexLike / ClusterMemoryStore 形态。
 function meta(id: string) {
@@ -56,5 +61,75 @@ describe('getMemoryClusters cache epoch guard (R12)', () => {
     const cached = await getMemoryClusters(index as never, store as never, {})
     expect(cached).toBe(first) // 同引用 = 命中缓存
     invalidateClusterCache() // 清理，避免污染其它套件
+  })
+})
+
+// 对抗R13回归：缓存失效下沉到 IndexedMemoryStore，覆盖所有写路径(不止 HTTP 路由)。
+describe('IndexedMemoryStore mutations invalidate cluster cache (R13)', () => {
+  function makeIndex() {
+    const items = new Map<
+      string,
+      { vector: number[]; norm: number; meta: ReturnType<typeof meta> }
+    >()
+    return {
+      async ensureIndex() {},
+      async upsert(id: string, vector: number[], m: ReturnType<typeof meta>) {
+        const norm = Math.sqrt(vector.reduce((s, x) => s + x * x, 0)) || 1
+        items.set(id, { vector, norm, meta: m })
+      },
+      async delete(id: string) {
+        items.delete(id)
+      },
+      async query() {
+        return []
+      },
+      async getMetadata(id: string) {
+        return items.get(id)?.meta
+      },
+      async getStats() {
+        return { itemCount: items.size }
+      },
+      async listAll() {
+        return [...items.entries()].map(([memoryId, v]) => ({ memoryId, ...v }))
+      },
+    }
+  }
+  const embedding = {
+    async embed() {
+      return [1, 0] // 所有记忆同向量 → cos=1 → 同簇
+    },
+    async embedBatch(texts: string[]) {
+      return texts.map(() => [1, 0])
+    },
+    memoryToText(m: { title: string; content: string }) {
+      return `${m.title}\n${m.content}`
+    },
+  }
+
+  test('create invalidates the cache (covers agent-tool / any non-route write path)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zero-cluster-create-'))
+    const base = new MemoryStore(dir)
+    const index = makeIndex()
+    const store = new IndexedMemoryStore(base, embedding as never, index as never)
+    invalidateClusterCache()
+    await store.create('note', 'A', 'a', { status: 'verified' })
+    expect((await getMemoryClusters(index as never, base as never, {})).total).toBe(0) // 1 条 → 0 簇,缓存
+    await store.create('note', 'B', 'b', { status: 'verified' }) // 近重复,应失效缓存
+    expect((await getMemoryClusters(index as never, base as never, {})).total).toBe(1) // 重算见 a+b 簇
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('delete invalidates the cache (covers session-delete path)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zero-cluster-delete-'))
+    const base = new MemoryStore(dir)
+    const index = makeIndex()
+    const store = new IndexedMemoryStore(base, embedding as never, index as never)
+    invalidateClusterCache()
+    const a = await store.create('note', 'A', 'a', { status: 'verified' })
+    await store.create('note', 'B', 'b', { status: 'verified' })
+    expect((await getMemoryClusters(index as never, base as never, {})).total).toBe(1) // a+b 簇,缓存
+    await store.delete('note', a.id) // 删一条,应失效缓存
+    expect((await getMemoryClusters(index as never, base as never, {})).total).toBe(0) // 重算:剩 1 条 → 0 簇
+    rmSync(dir, { recursive: true, force: true })
   })
 })

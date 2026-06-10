@@ -1,4 +1,5 @@
 import { ALL_MEMORY_TYPES, type Memory, type MemoryType } from '@zero-os/shared'
+import { invalidateClusterCache } from './clustering'
 import type { EmbeddingProvider } from './embedding'
 import type { MemoryRepository } from './store'
 import type { MemoryVectorMeta, VectorIndexLike } from './vector-index'
@@ -82,6 +83,9 @@ export class IndexedMemoryStore implements MemoryRepository {
 
     try {
       await this.upsertMemory(memory, options?.sessionId)
+      // 失效簇缓存：新成员入索引 → 簇组成变化。下沉到此处统一覆盖【所有写路径】(HTTP 端点/
+      // session 删除/agent 工具/未来新路径)，避免散落在路由层漏调致陈旧簇(对抗实测 R12/R13)。
+      invalidateClusterCache()
       return memory
     } catch (error) {
       await this.store.delete(type, memory.id)
@@ -123,6 +127,7 @@ export class IndexedMemoryStore implements MemoryRepository {
 
     try {
       await this.upsertMemory(updated, context?.sessionId)
+      invalidateClusterCache() // status/内容/向量变化 → 簇成员与权威建议变化
       return updated
     } catch (error) {
       await this.store.save(existing)
@@ -136,7 +141,10 @@ export class IndexedMemoryStore implements MemoryRepository {
 
     await this.vectorIndex.delete(id)
     const deleted = await this.store.delete(type, id)
-    if (deleted) return true
+    if (deleted) {
+      invalidateClusterCache() // 成员移除 → 簇组成变化（覆盖 session 删除/agent 工具/任意删除路径）
+      return true
+    }
 
     await this.upsertMemory(existing)
     return false
