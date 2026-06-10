@@ -12,6 +12,66 @@ export class IndexedMemoryStore implements MemoryRepository {
     private vectorIndex: VectorIndexLike,
   ) {}
 
+  // P3a: 按内容找语义近邻，供活文档折叠治 tag 漂移漏判。
+  // 给定 candidateIds（少数几条会话活文档）时直接取候选向量算精确余弦——
+  // 全库 topK 召回会被历史同主题近重复挤掉候选（实测库里有 24 条同主题簇），不可靠。
+  async findSimilar(
+    input: { title: string; content: string; tags: string[] },
+    opts?: { topK?: number; candidateIds?: string[]; minScore?: number },
+  ): Promise<{ id: string; type: MemoryType; score: number } | undefined> {
+    // 折叠是 best-effort：embedding/向量查询失败绝不能让上游的 memory create 失败。
+    try {
+      return await this.findSimilarUnsafe(input, opts)
+    } catch {
+      return undefined
+    }
+  }
+
+  private async findSimilarUnsafe(
+    input: { title: string; content: string; tags: string[] },
+    opts?: { topK?: number; candidateIds?: string[]; minScore?: number },
+  ): Promise<{ id: string; type: MemoryType; score: number } | undefined> {
+    const text = this.embeddingClient.memoryToText({
+      title: input.title,
+      content: input.content,
+      tags: input.tags,
+    } as Memory)
+    const vector = await this.embeddingClient.embed(text)
+    const minScore = opts?.minScore ?? 0.9
+
+    if (opts?.candidateIds?.length && this.vectorIndex.getVector) {
+      let queryNorm = 0
+      for (const x of vector) queryNorm += x * x
+      queryNorm = Math.sqrt(queryNorm) || 1
+      let best: { id: string; score: number } | undefined
+      for (const id of opts.candidateIds) {
+        const cand = await this.vectorIndex.getVector(id)
+        if (!cand || cand.length !== vector.length) continue
+        let dot = 0
+        let candNorm = 0
+        for (let d = 0; d < vector.length; d++) {
+          dot += vector[d] * cand[d]
+          candNorm += cand[d] * cand[d]
+        }
+        const score = dot / (queryNorm * (Math.sqrt(candNorm) || 1))
+        if (!best || score > best.score) best = { id, score }
+      }
+      if (!best || best.score < minScore) return undefined
+      const meta = await this.vectorIndex.getMetadata?.(best.id)
+      const type = meta?.type as MemoryType | undefined
+      return type ? { id: best.id, type, score: best.score } : undefined
+    }
+
+    const hits = await this.vectorIndex.query(vector, opts?.topK ?? 20)
+    for (const hit of hits) {
+      if (hit.score < minScore) return undefined
+      const meta = await this.vectorIndex.getMetadata?.(hit.memoryId)
+      const type = meta?.type as MemoryType | undefined
+      if (type) return { id: hit.memoryId, type, score: hit.score }
+    }
+    return undefined
+  }
+
   async create(
     type: MemoryType,
     title: string,

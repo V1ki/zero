@@ -44,4 +44,22 @@ describe('VectorIndex', () => {
     const afterDelete = await index.query([1, 0], 2)
     expect(afterDelete.some((entry) => entry.memoryId === 'mem_1')).toBe(false)
   })
+
+  test('getVector and listAll expose stored vectors', async () => {
+    await index.upsert('mem_v', [0.6, 0.8], {
+      memoryId: 'mem_v',
+      type: 'runbook',
+      title: 'Vectorized',
+      updatedAt: '2026-03-12T00:00:00.000Z',
+    })
+
+    expect(await index.getVector('mem_v')).toEqual([0.6, 0.8])
+    expect(await index.getVector('does-not-exist')).toBeUndefined()
+
+    const all = await index.listAll()
+    const entry = all.find((it) => it.memoryId === 'mem_v')
+    expect(entry?.vector).toEqual([0.6, 0.8])
+    expect(entry?.meta.title).toBe('Vectorized')
+    expect(typeof entry?.norm).toBe('number')
+  })
 })

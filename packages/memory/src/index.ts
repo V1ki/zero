@@ -5,7 +5,11 @@ export { MemoryRetriever } from './retrieval'
 export type { MemoryRetrieverConfig } from './retrieval'
 export type { ScoredMemoryMatch } from '@zero-os/shared'
 export { MemoryLifecycle } from './lifecycle'
-export { MEMORY_NUDGE_PROMPT, SESSION_MEMORY_PROMPT, shouldEvaluateSessionMemory } from './session-memory'
+export {
+  MEMORY_NUDGE_PROMPT,
+  SESSION_MEMORY_PROMPT,
+  shouldEvaluateSessionMemory,
+} from './session-memory'
 export { buildRetrievalDecisionPrompt, parseRetrievalDecision } from './retrieval-decision'
 export type { RetrievalDecision } from './retrieval-decision'
 export {
@@ -22,3 +26,5 @@ export type { EmbeddingConfig, EmbeddingProvider } from './embedding'
 export { VectorIndex } from './vector-index'
 export type { MemoryVectorMeta, VectorIndexLike } from './vector-index'
 export { IndexedMemoryStore } from './indexed-store'
+export { computeMemoryClusters, getMemoryClusters, invalidateClusterCache } from './clustering'
+export type { ClusterMember, MemoryCluster, ClusterResult } from './clustering'

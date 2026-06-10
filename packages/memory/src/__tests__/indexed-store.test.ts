@@ -243,4 +243,77 @@ describe('IndexedMemoryStore', () => {
 
     rmSync(reindexDir, { recursive: true, force: true })
   })
+
+  test('findSimilar with candidates uses direct cosine via getVector (immune to topK recall)', async () => {
+    const fixedEmbedding: EmbeddingProvider = {
+      async embed() {
+        return [1, 0]
+      },
+      async embedBatch(texts: string[]) {
+        return texts.map(() => [1, 0])
+      },
+      memoryToText(memory) {
+        return `${memory.title}\n${memory.content}`
+      },
+    }
+    const vectors = new Map<string, number[]>([
+      ['doc1', [1, 0]], // cos = 1
+      ['doc2', [0, 1]], // cos = 0
+    ])
+    const meta = new Map<string, MemoryVectorMeta>([
+      ['doc1', { memoryId: 'doc1', type: 'runbook', title: 'D1', updatedAt: 'x' }],
+    ])
+    const store = new IndexedMemoryStore(baseStore, fixedEmbedding, {
+      async ensureIndex() {},
+      async upsert() {},
+      async query() {
+        throw new Error('candidate path must not call global query')
+      },
+      async delete() {},
+      async getMetadata(id) {
+        return meta.get(id)
+      },
+      async getVector(id) {
+        return vectors.get(id)
+      },
+      async getStats() {
+        return { itemCount: 0 }
+      },
+    })
+    const match = await store.findSimilar(
+      { title: 't', content: 'c', tags: [] },
+      { candidateIds: ['doc1', 'doc2'], minScore: 0.9 },
+    )
+    expect(match?.id).toBe('doc1')
+    expect(match?.type).toBe('runbook')
+    expect(match?.score).toBeCloseTo(1, 5)
+
+    const below = await store.findSimilar(
+      { title: 't', content: 'c', tags: [] },
+      { candidateIds: ['doc2'], minScore: 0.9 },
+    )
+    expect(below).toBeUndefined()
+  })
+
+  test('findSimilar without candidates falls back to global query path', async () => {
+    const store = new IndexedMemoryStore(baseStore, embeddingClient, {
+      async ensureIndex() {},
+      async upsert() {},
+      async query() {
+        return [{ memoryId: 'doc2', score: 0.8 }]
+      },
+      async delete() {},
+      async getMetadata() {
+        return undefined
+      },
+      async getStats() {
+        return { itemCount: 0 }
+      },
+    })
+    const match = await store.findSimilar(
+      { title: 't', content: 'c', tags: [] },
+      { minScore: 0.92 },
+    )
+    expect(match).toBeUndefined()
+  })
 })

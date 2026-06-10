@@ -13,6 +13,10 @@ export interface VectorIndexLike {
   query(vector: number[], topK: number): Promise<Array<{ memoryId: string; score: number }>>
   delete(memoryId: string): Promise<void>
   getMetadata?(memoryId: string): Promise<MemoryVectorMeta | undefined>
+  getVector?(memoryId: string): Promise<number[] | undefined>
+  listAll?(): Promise<
+    Array<{ memoryId: string; vector: number[]; norm: number; meta: MemoryVectorMeta }>
+  >
   getStats(): Promise<{ itemCount: number }>
 }
 
@@ -67,6 +71,29 @@ export class VectorIndex implements VectorIndexLike {
 
     const item = await this.index.getItem(memoryId)
     return item?.metadata
+  }
+
+  async getVector(memoryId: string): Promise<number[] | undefined> {
+    const exists = await this.index.isIndexCreated()
+    if (!exists) return undefined
+
+    const item = await this.index.getItem(memoryId)
+    return item?.vector
+  }
+
+  // 列出全部 item（向量 + norm + 元数据），供离线/按需聚类用。
+  async listAll(): Promise<
+    Array<{ memoryId: string; vector: number[]; norm: number; meta: MemoryVectorMeta }>
+  > {
+    const exists = await this.index.isIndexCreated()
+    if (!exists) return []
+    const items = await this.index.listItems()
+    return items.map((it) => ({
+      memoryId: it.id,
+      vector: it.vector,
+      norm: it.norm,
+      meta: it.metadata,
+    }))
   }
 
   async getStats(): Promise<{ itemCount: number }> {
