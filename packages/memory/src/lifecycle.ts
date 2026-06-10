@@ -77,12 +77,38 @@ export class MemoryLifecycle {
 
     for (const mem of memories) {
       if (mem.updatedAt < cutoff && mem.status !== 'archived' && !referenced.has(mem.id)) {
-        await this.store.update(type, mem.id, { status: 'archived' })
-        archived++
+        try {
+          // commit-time precondition：在 store.update 的同步 get→save 临界区内权威复检——仍非归档、
+          // 仍早于 cutoff、仍未被任何条引用。堵住"顶层快照→逐条落盘"间的 TOCTOU：并发 resolveConflict
+          // 复活该条为 winner（updatedAt→now）或 supersede 使其成谱系目标，否则会误归档活权威致整条
+          // 召回坍塌（对抗实测；IndexedMemoryStore 的 re-embed await 把该窗口拉得很宽）。
+          const updated = await this.store.update(
+            type,
+            mem.id,
+            { status: 'archived' },
+            {
+              precondition: (cur) =>
+                cur.status !== 'archived' && cur.updatedAt < cutoff && !this.isReferenced(cur.id),
+            },
+          )
+          if (updated) archived++
+        } catch {
+          // 单条瞬时失败（如 re-embed 网络抖动）→ 跳过该条继续，不中断整批（幂等，可重跑补齐）。
+        }
       }
     }
 
     return archived
+  }
+
+  // 是否被【任何类型】的 supersededBy/mergedInto 指向（commit 时权威复检，跨 type）。
+  private isReferenced(id: string): boolean {
+    for (const t of ALL_MEMORY_TYPES) {
+      for (const m of this.store.list(t)) {
+        if (m.supersededBy === id || m.mergedInto === id) return true
+      }
+    }
+    return false
   }
 
   // 谱系指针只存 id（merge/supersede 可跨 type），先扫全类型定位——与 retrieval.findById 一致。

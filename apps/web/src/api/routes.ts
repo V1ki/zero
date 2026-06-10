@@ -1169,9 +1169,21 @@ export function createRoutes(zero: ZeroOS) {
         typeof body.olderThanDays === 'number' && Number.isFinite(body.olderThanDays)
           ? Math.max(0, body.olderThanDays)
           : 30
-      const archived = await zero.memoryLifecycle.archiveOld(type, olderThanDays)
-      if (archived > 0) invalidateClusterCache()
-      return c.json({ archived })
+      try {
+        const archived = await zero.memoryLifecycle.archiveOld(type, olderThanDays)
+        if (archived > 0) invalidateClusterCache()
+        return c.json({ archived })
+      } catch (error) {
+        // archiveOld 已逐条容错；此处兜底非逐条来源的异常，返回可重试 503 而非裸 500（对齐 resolve-conflict）。
+        invalidateClusterCache()
+        return c.json(
+          {
+            error: 'archive-old interrupted; partial progress applied, retry to complete',
+            detail: toErrorMessage(error),
+          },
+          503,
+        )
+      }
     })
 
     // P1(关联): 维护带类型的边（独立 edges 字段，不污染 related）。

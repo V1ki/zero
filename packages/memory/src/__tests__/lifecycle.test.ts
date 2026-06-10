@@ -366,3 +366,71 @@ describe('MemoryLifecycle resolveConflict segment ordering (R10)', () => {
     expect(store.get('note', a.id)?.related).toContain(b.id)
   })
 })
+
+describe('MemoryLifecycle archiveOld TOCTOU + tolerance (R11)', () => {
+  let dir: string
+  let store: MemoryStore
+  let life: MemoryLifecycle
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'zero-life-r11-'))
+    store = new MemoryStore(dir)
+    life = new MemoryLifecycle(store)
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  test('archiveOld skips an item that becomes referenced after the snapshot (commit-time precondition)', async () => {
+    const target = await store.create('note', 'Target', 't', { status: 'verified' })
+    await store.save({
+      ...expectDefined(store.get('note', target.id)),
+      updatedAt: '2000-01-01T00:00:00.000Z',
+    })
+    // 在第一次 update 提交前注入一条引用 target 的记忆（模拟并发 supersede 使 target 成谱系目标）
+    const realUpdate = store.update.bind(store)
+    let injected = false
+    ;(store as unknown as { update: MemoryStore['update'] }).update = (async (
+      t: Parameters<MemoryStore['update']>[0],
+      i: Parameters<MemoryStore['update']>[1],
+      u: Parameters<MemoryStore['update']>[2],
+      ctx: Parameters<MemoryStore['update']>[3],
+    ) => {
+      if (!injected) {
+        injected = true
+        const other = await store.create('note', 'Other', 'o', { status: 'archived' })
+        await realUpdate('note', other.id, { supersededBy: target.id })
+      }
+      return realUpdate(t, i, u, ctx)
+    }) as MemoryStore['update']
+    await life.archiveOld('note', 30)
+    ;(store as unknown as { update: MemoryStore['update'] }).update = realUpdate
+    // precondition 的 isReferenced 在 commit 时发现 target 已被引用 → 不归档
+    expect(store.get('note', target.id)?.status).toBe('verified')
+  })
+
+  test('archiveOld tolerates a transient per-item failure and still archives the rest', async () => {
+    const a = await store.create('note', 'A', 'a', { status: 'verified' })
+    const b = await store.create('note', 'B', 'b', { status: 'verified' })
+    for (const m of [a, b]) {
+      await store.save({
+        ...expectDefined(store.get('note', m.id)),
+        updatedAt: '2000-01-01T00:00:00.000Z',
+      })
+    }
+    const realUpdate = store.update.bind(store)
+    let calls = 0
+    ;(store as unknown as { update: MemoryStore['update'] }).update = ((
+      t: Parameters<MemoryStore['update']>[0],
+      i: Parameters<MemoryStore['update']>[1],
+      u: Parameters<MemoryStore['update']>[2],
+      ctx: Parameters<MemoryStore['update']>[3],
+    ) => {
+      calls++
+      if (calls === 1) throw new Error('transient embed failure')
+      return realUpdate(t, i, u, ctx)
+    }) as MemoryStore['update']
+    const archived = await life.archiveOld('note', 30) // 不抛
+    ;(store as unknown as { update: MemoryStore['update'] }).update = realUpdate
+    expect(archived).toBe(1) // 一条失败被跳过，另一条成功
+    const statuses = [a, b].map((m) => store.get('note', m.id)?.status).sort()
+    expect(statuses).toEqual(['archived', 'verified']) // 失败那条回滚保 verified
+  })
+})
