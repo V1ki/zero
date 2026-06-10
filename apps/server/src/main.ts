@@ -216,6 +216,7 @@ export interface ZeroOS {
   sessionManager: SessionManager
   memoryStore: MemoryRepository
   memoryRetriever: MemoryRetriever
+  vectorIndex?: VectorIndex
   memoManager: MemoManager
   tracer: Tracer
   repairEngine: RepairEngine
@@ -1071,6 +1072,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
     sessionManager,
     memoryStore,
     memoryRetriever,
+    vectorIndex,
     memoManager,
     tracer,
     repairEngine,

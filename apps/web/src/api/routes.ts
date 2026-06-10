@@ -1,6 +1,8 @@
 import { buildSessionInfoReply, loadConfig, parseSessionArgs } from '@zero-os/core'
+import { getMemoryClusters, invalidateClusterCache } from '@zero-os/memory'
 import {
   ALL_MEMORY_TYPES,
+  type MemoryEdge,
   type MemoryStatus,
   type MemoryType,
   type ModelPoolConfig,
@@ -976,6 +978,7 @@ export function createRoutes(zero: ZeroOS) {
         status: body.status ?? 'draft',
         confidence: body.confidence ?? 0.5,
       })
+      invalidateClusterCache()
       return c.json({ memory })
     })
 
@@ -993,7 +996,169 @@ export function createRoutes(zero: ZeroOS) {
       const body = await c.req.json<Record<string, unknown>>()
       const updated = await zero.memoryStore.update(type, id, body)
       if (!updated) return c.json({ error: 'Memory not found' }, 404)
+      invalidateClusterCache()
       return c.json({ memory: updated })
+    })
+
+    // P0: 可逆归档 = 改 status，不物理删除；检索的 status 过滤会自动隐藏归档项。
+    // 注意(P1): 经 store.update 可能触发 re-embedding，后续应改走 metadata-only 更新路径。
+    .post('/api/memory/:type/:id/archive', async (c) => {
+      const type = c.req.param('type') as MemoryType
+      const id = c.req.param('id')
+      const updated = await zero.memoryStore.update(type, id, {
+        status: 'archived' as MemoryStatus,
+      })
+      if (!updated) return c.json({ error: 'Memory not found' }, 404)
+      invalidateClusterCache()
+      return c.json({ memory: updated })
+    })
+
+    // P1(发展): 验证 = 提升到 verified + 默认置信 0.9（对齐 lifecycle.verify）。
+    // 同时清除谱系指针：verified 与 supersededBy/mergedInto 并存是非法僵尸态——
+    // 检索会把复活的权威条重定向回废弃条（对抗实测交付错误内容或丢失结果）。
+    .post('/api/memory/:type/:id/verify', async (c) => {
+      const type = c.req.param('type') as MemoryType
+      const id = c.req.param('id')
+      const updated = await zero.memoryStore.update(type, id, {
+        status: 'verified' as MemoryStatus,
+        confidence: 0.9,
+        supersededBy: undefined,
+        mergedInto: undefined,
+      })
+      if (!updated) return c.json({ error: 'Memory not found' }, 404)
+      invalidateClusterCache()
+      return c.json({ memory: updated })
+    })
+
+    // P1(发展): 取代 = 被取代方标记 supersededBy + 可逆归档。
+    // 反向 supersedes 边（如需）由用户经 relations 端点手动建立——系统不自动建边。
+    .post('/api/memory/:type/:id/supersede', async (c) => {
+      const type = c.req.param('type') as MemoryType
+      const id = c.req.param('id')
+      const body = await c.req
+        .json<{ bySupersededId?: string }>()
+        .catch(() => ({}) as { bySupersededId?: string })
+      if (!body.bySupersededId) {
+        return c.json({ error: 'bySupersededId is required' }, 400)
+      }
+      // 谱系完整性校验：自指/幽灵目标/成环都会污染权威解析（对抗实测可经端点落盘），写入前拒绝。
+      const targetId = body.bySupersededId
+      if (targetId === id) {
+        return c.json({ error: 'cannot supersede a memory by itself' }, 400)
+      }
+      const findById = (memId: string) => {
+        for (const t of ALL_MEMORY_TYPES) {
+          const m = zero.memoryStore.get(t, memId)
+          if (m) return m
+        }
+        return undefined
+      }
+      const target = findById(targetId)
+      if (!target) {
+        return c.json({ error: `supersede target not found: ${targetId}` }, 404)
+      }
+      // 沿目标谱系链走，若回指本条则成环
+      let cursor: typeof target | undefined = target
+      const visited = new Set<string>([targetId])
+      for (let hops = 0; hops < 100 && cursor; hops++) {
+        const nextId: string | undefined = cursor.supersededBy ?? cursor.mergedInto
+        if (!nextId || visited.has(nextId)) break
+        if (nextId === id) {
+          return c.json({ error: 'supersede would create a lineage cycle' }, 409)
+        }
+        visited.add(nextId)
+        cursor = findById(nextId)
+      }
+      const updated = await zero.memoryStore.update(type, id, {
+        status: 'archived' as MemoryStatus,
+        supersededBy: targetId,
+      })
+      if (!updated) return c.json({ error: 'Memory not found' }, 404)
+      invalidateClusterCache()
+      return c.json({ memory: updated })
+    })
+
+    // P1(关联): 维护带类型的边（独立 edges 字段，不污染 related）。
+    .patch('/api/memory/:type/:id/relations', async (c) => {
+      const type = c.req.param('type') as MemoryType
+      const id = c.req.param('id')
+      type RemoveSpec = string | { toId: string; kind: string }
+      const body = await c.req
+        .json<{ add?: MemoryEdge[]; remove?: RemoveSpec[] }>()
+        .catch(() => ({}) as { add?: MemoryEdge[]; remove?: RemoveSpec[] })
+      const memory = zero.memoryStore.get(type, id)
+      if (!memory) return c.json({ error: 'Memory not found' }, 404)
+      // 去重：既排除与已有边重复，也排除本批 add 内部重复（按 kind:toId）。
+      const seen = new Set((memory.edges ?? []).map((e) => `${e.kind}:${e.toId}`))
+      const additions: MemoryEdge[] = []
+      for (const a of body.add ?? []) {
+        const key = `${a.kind}:${a.toId}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        additions.push(a)
+      }
+      // 删除粒度与 add 对称：传 {toId,kind} 精确删一条 typed 边；传裸 toId 字符串删该目标全部边。
+      // remove 在 add 之后生效（同请求 add∩remove 时删除意图胜出，不被静默吞掉）。
+      const removeAll = new Set<string>()
+      const removeExact = new Set<string>()
+      for (const r of body.remove ?? []) {
+        if (typeof r === 'string') removeAll.add(r)
+        else removeExact.add(`${r.kind}:${r.toId}`)
+      }
+      const edges = [...(memory.edges ?? []), ...additions].filter(
+        (e) => !removeAll.has(e.toId) && !removeExact.has(`${e.kind}:${e.toId}`),
+      )
+      const updated = await zero.memoryStore.update(type, id, { edges })
+      if (!updated) return c.json({ error: 'Memory not found' }, 404)
+      invalidateClusterCache()
+      return c.json({ memory: updated })
+    })
+
+    // P1(关联): 某条记忆的语义近邻，供人工建边/选取代来源。向量索引不可用时返回空。
+    .get('/api/memory/:type/:id/neighbors', async (c) => {
+      const id = c.req.param('id')
+      const topK = Math.min(20, Math.max(1, Number(c.req.query('topK') ?? 8)))
+      const index = zero.vectorIndex
+      if (!index?.getVector) {
+        return c.json({ neighbors: [], reason: 'vector index unavailable' })
+      }
+      const vector = await index.getVector(id)
+      if (!vector) {
+        return c.json({ neighbors: [], reason: 'no vector for this memory' })
+      }
+      const hits = await index.query(vector, topK + 1)
+      const neighbors: Array<{ memoryId: string; type?: string; title?: string; score: number }> =
+        []
+      for (const hit of hits) {
+        if (hit.memoryId === id) continue
+        const meta = await index.getMetadata?.(hit.memoryId)
+        // 以 store 实时数据覆盖索引 meta（降级线路下 meta 可能陈旧）；store 里已不存在的幽灵向量直接跳过。
+        const live = meta?.type
+          ? zero.memoryStore.get(meta.type as MemoryType, hit.memoryId)
+          : undefined
+        if (!live) continue
+        neighbors.push({
+          memoryId: hit.memoryId,
+          type: live.type,
+          title: live.title,
+          score: hit.score,
+        })
+        if (neighbors.length >= topK) break
+      }
+      return c.json({ neighbors })
+    })
+
+    // P2/P3c(读/关联): 全库 cos≥阈值 连通聚类，返回近重复簇供治理。
+    // 聚类逻辑抽到 @zero-os/memory 的 computeMemoryClusters，端点与后台检测任务共用。
+    // 注意：O(n²) 同步计算，P3c 将由定时任务计算并缓存。
+    .get('/api/memory/clusters', async (c) => {
+      const threshold = Number(c.req.query('threshold') ?? 0.9)
+      const force = c.req.query('fresh') === '1'
+      const result = await getMemoryClusters(zero.vectorIndex, zero.memoryStore, {
+        threshold,
+        force,
+      })
+      return c.json(result)
     })
 
     .delete('/api/memory/:type/:id', async (c) => {
@@ -1001,6 +1166,14 @@ export function createRoutes(zero: ZeroOS) {
       const id = c.req.param('id')
       const deleted = await zero.memoryStore.delete(type, id)
       if (!deleted) return c.json({ error: 'Memory not found' }, 404)
+      // 兜底删除向量：降级线路下 memoryStore 可能是 raw store（不触索引），
+      // 否则已删记忆会以幽灵成员/幽灵近邻形态残留。IndexedMemoryStore 路径下此调用为幂等 no-op。
+      try {
+        await zero.vectorIndex?.delete(id)
+      } catch {
+        // 索引删除失败不影响主删除结果
+      }
+      invalidateClusterCache()
       return c.json({ ok: true })
     })
 
