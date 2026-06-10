@@ -40,9 +40,13 @@ export class MemoryLifecycle {
    * Verify a memory (mark as verified with high confidence).
    */
   async verify(type: MemoryType, id: string, confidence?: number): Promise<Memory | undefined> {
+    // 清谱系指针，与 HTTP /verify 端点一致——一条被确认为活权威的记忆不应再指向"更新的"条，
+    // 否则留下 verified+supersededBy 僵尸态，检索会把它重定向到别处（召回错乱）。
     return this.store.update(type, id, {
       status: 'verified',
       confidence: confidence ?? 0.9,
+      supersededBy: undefined,
+      mergedInto: undefined,
     })
   }
 

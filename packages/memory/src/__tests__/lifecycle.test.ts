@@ -207,3 +207,25 @@ describe('MemoryLifecycle authority alignment (R6)', () => {
     expect(n).toBe(0)
   })
 })
+
+// 对抗R6观察点回归：verify 清谱系指针，避免 verified+supersededBy 僵尸态。
+describe('MemoryLifecycle.verify clears lineage (R6 followup)', () => {
+  let dir: string
+  let store: MemoryStore
+  let life: MemoryLifecycle
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'zero-life-verify-'))
+    store = new MemoryStore(dir)
+    life = new MemoryLifecycle(store)
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  test('verifying a superseded memory clears its lineage pointers (no zombie)', async () => {
+    const m = await store.create('note', 'Z', 'z', { status: 'archived' })
+    await store.update('note', m.id, { supersededBy: 'mem_other', mergedInto: 'mem_x' })
+    const verified = await life.verify('note', m.id)
+    expect(verified?.status).toBe('verified')
+    expect(verified?.supersededBy).toBeUndefined()
+    expect(verified?.mergedInto).toBeUndefined()
+  })
+})
