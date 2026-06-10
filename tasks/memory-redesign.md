@@ -274,3 +274,29 @@
 - [med] relations remove 粗粒度 + add 静默吞 remove → remove 支持 `{toId,kind}` 精确删，且 remove 后于 add 生效。
 - [med] 降级线路 DELETE 不删向量→幽灵簇成员/近邻 → 路由层兜底 `vectorIndex.delete` + clustering 剔除幽灵成员 + neighbors 用 store 实时数据覆盖并跳过幽灵。
 - 验证：`check` 0 错、**230/230**（+6 回归锁）、build 通过、重启上线后 live 烟测（自指 supersede→400）。
+
+### 12.3 Opus 4.8 对抗多轮收敛（R2–R4，2026-06-10，已全部上线）
+
+承 12.2 的 R1，继续做 loop-until-dry 多轮对抗，直到一轮无功能缺陷。**核心架构洞察：不变量校验只在语义端点（supersede/verify）做是不够的——共用写入层（PUT 端点 / memory 工具 update / `store.update`）是绕过一切校验的旁路。R2 起把校验下沉/收口到写入层。**
+
+**R2（7 确认，4 high）—— 校验旁路类，根因结构性修复：**
+- [high] PUT `/api/memory/:type/:id` 原样转发 body 到 `store.update`，可写自指/成环/幽灵指针/僵尸态 → **PUT 字段白名单**（仅 title/content/tags/confidence；status 走 verify/archive、谱系走 supersede、edges 走 relations）。
+- [high] `store.update` 无差别 undefined-strip 删必填字段：`content:null/undefined` → `matter.stringify` 崩溃 → **strip 白名单**（仅可选谱系/元字段可清；必填字段 null/undefined 忽略保留原值）+ save() 非串 content 兜底 `''`。
+- [high] 活文档折叠只查存在不查 status：会话中途文档被归档/取代后同主题新写入继续折进归档文档 → 检索黑洞 → `route()` 两路径都查 `isActiveFoldTarget`（非 archived 且无谱系指针）。
+- [high] supersede 成环检测 100 跳 `break` 是 fail-open，≥102 深链可绕过把真环落盘 → **visited 终止（无数值熔断）+ 路径压缩**（supersededBy 指链尾活权威，链深恒 ≤1）。
+- [med] PUT status 无枚举校验（被 PUT 白名单一并堵死，create 端点遗漏留到 R3）。
+- [med] resolveAuthority 100 跳熔断停中间节点 → 改 **visited 终止无熔断**。
+- [low] PUT 写畸形 edges（被白名单堵）。
+- 提交 `a3dcbcf`。
+
+**R3（3 确认，0 high）—— 校验一致性补完：**
+- [med] POST `/api/memory` create 端点 status 无枚举校验（PUT/工具已加，create 漏）→ 可植入任意 status / 直接 verified → create 端 `isMemoryStatus` 校验。
+- [low] confidence 三路写入（create/PUT/工具）无 [0,1] 钳制 → 共享 `clampConfidence`。
+- [low] supersede 路径压缩注释称"链尾活权威"但未排除 archived → 压缩到**最后一个活节点 `lastLive`**，整链全归档回退直接 target。
+- 新增共享 `isMemoryStatus`/`clampConfidence`（`packages/shared`），三路写入统一调用。提交 `3ae83d1`。
+
+**R4（1 确认，0 high/0 med，收口轮）—— 实质干净：**
+- [low] `GET /api/memory/clusters?threshold=abc` → `Number('abc')=NaN` 穿透 `[0.8,0.99]` clamp → 所有 cos≥NaN 恒 false → 近重复簇静默归零（现网 UI 不传 threshold 不可达）→ `normalizeThreshold()` 非有限值归一默认 0.9（compute + getCached 共用，缓存键也规范化）。提交 `1ef7cca`。
+- R4 大批 passedChecks 确认 R1–R3 修复全部闭合：clampConfidence/isMemoryStatus 各边界、supersede lastLive 多跳压缩+全归档回退、retrieval 空 query 短路、relations/neighbors/clusters/折叠边界、谱系隔离未回退。
+
+**收敛结论**：缺陷数 R1→R4 = 8→7→3→1，high 数 多→4→0→0，R4 实质干净。**关联（typed edges/relations）与发展（supersede/verify 生命周期 + 路径压缩 + 检索权威解析）功能确认正常。** 累计 **241 测试全绿**（+15 R2–R4 回归锁），每轮 `check`+build+重启上线+live 烟测。对抗测试纪律：只攻 mkdtemp/stub 临时数据，绝不碰真实 `.zero/memory`，绝不改产品代码，临时测试跑完即删，0 残留。
