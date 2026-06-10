@@ -333,4 +333,24 @@ R1–R4 主攻【写入校验/绕路/畸形输入】(安全向)且收敛后，�
 - recency 对 NaN/未来 updatedAt 给最高分（dormant，仅 out-of-band 可触发）→ NaN→0（最旧）；create 保留接受显式 updatedAt 的能力（import/migration 合法），危害由 recency 修复中和。提交 `C17`。
 - R8 大批 passedChecks 确认 truncateToTokens 在所有代理对边界稳健（可达全过）、R6/R7 修复全部闭合。
 
+### 12.6 MemoryLifecycle 接线 + 接线面对抗（R9–R12，2026-06-10，已上线）
+
+R8 收敛后，把此前 dormant（无生产调用方）的 MemoryLifecycle **接入生产**，再对新面对抗。
+
+**接线（C18）**：`zero.memoryLifecycle = new MemoryLifecycle(memoryStore)`（用 IndexedMemoryStore 保向量一致），暴露两个发展批操作端点：
+- `POST /api/memory/:type/:id/resolve-conflict { otherId }` — 按 confidence/recency 自动裁决（区别于 supersede 需显式指定被取代方）。
+- `POST /api/memory/maintenance/archive-old { type, olderThanDays }` — 按龄归档非权威条。
+
+**R9（3 low，全可达）**：跨 type resolve-conflict 误报 404（两顶层入参只按 URL type 查）→ findById 跨 type 兜底；archive-old 超大 olderThanDays → Date 溢出 500 → 钳值；并发 resolve-conflict 丢 related → **store.update 新增函数式形态 `(cur)=>patch`**（原子 get→save 区内重算）。提交 `C19`。
+
+**R10（1 med，可达）**：resolveConflict 两次 await 写非原子，IndexedMemoryStore 下 winner 段 re-embed 瞬时失败 → loser 已归档指向 archived-winner → 召回坍塌且重试不自愈 → **交换段序**（winner 先复活、loser 后归档，任一段失败留安全态）+ 端点 503。提交 `C20`。
+
+**R11（1 med + 1 low，可达）**：archive-old 顶层快照后逐条归档（re-embed await 窗口宽），并发 resolveConflict 复活 winner / supersede 成谱系目标 → 误归档活权威 → 坍塌 → archive 加 **commit-time precondition**（复检 status/cutoff/跨type 引用）+ 逐条容错（批容忍）+ 端点 503。提交 `C21`。
+
+**R12（1 med，可达，tangential）**：cluster 缓存复活竞态——getMemoryClusters compute 期间被 invalidate，in-flight 完成后无条件回写复活陈旧缓存 → **epoch 代际守卫**（invalidate 自增 epoch，compute 完成仅当 epoch 未变才回写）。R12 大批 passedChecks 确认 R9–R11 接线修复全部闭合。提交 `C22`。
+
+**关键模式（R9–R12）**：① 接线 dormant 代码会暴露新集成缺陷——测【接线后的路径】而非只测单元；② 多步非原子 mutation：排序写操作使部分失败落安全态（R10）；③ IndexedMemoryStore 对纯元字段更新（status）也 re-embed，引入了 R10/R11 的失败窗口（潜在优化点：metadata-only 更新跳过 re-embed）；④ 缓存失效与重算并发需 epoch 守卫（R12）。
+
+---
+
 **最终收敛结论**：缺陷数 R1→R8 = 8→7→3→1→2→7→5→2，**high 数 R3–R8 连续 6 轮归零，R8 = 0 生产可达缺陷**。覆盖全系统（store/retrieval/routes/live-doc/lifecycle/injection/memo/tokens）× 两个角度（安全绕路 + 功能正确性）。**关联（typed edges/relations）与发展（supersede/verify 生命周期 + 路径压缩 + 跨 type 权威解析 + 检索权威交付）功能确认正常。** 累计 **1544 测试全绿**（+35 R2–R8 回归锁），每轮 `check`+build+重启上线+live 烟测。对抗纪律：只攻 mkdtemp/stub 临时数据，绝不碰真实 `.zero/memory`，绝不改产品代码，临时测试跑完即删，0 残留；schema 加 `reachable` 字段区分生产可达 vs dormant，以"0 可达缺陷"为停止判据。

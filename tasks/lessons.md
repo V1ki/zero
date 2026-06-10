@@ -66,6 +66,30 @@
 
 **规则**：报告/定级时把 `isReal`（逻辑是否真错）与 `reachable`（生产是否可触发）分开。以"**0 生产可达缺陷**"作为收敛/停止判据，dormant 真实缺陷修不修取决于成本与未来接线计划（廉价且属同类一致性的就顺手修）。
 
+## 接线 dormant 代码会暴露新集成缺陷——测接线后的路径
+
+**场景**：MemoryLifecycle 的单元逻辑经 R6–R8 充分加固，但它 dormant（无生产调用方）。一旦接入 HTTP 端点变为生产可达，R9–R12 立刻发现 5 个新的可达集成缺陷（跨 type 入参、Date 溢出、并发丢更新、段序非原子、缓存竞态）——全是【端点/并发/失败模式/store 实现交互】层面的，单元测试照不到。
+
+**规则**：把 dormant 代码接线时，要把它当全新功能对待——测【接线后的端到端路径 + 并发 + 失败模式 + 与共享单例(store/cache)的交互】，而非只信任既有单元测试。可达性一变，攻击面就变。
+
+## 多步非原子 mutation：排序写操作使部分失败落安全态
+
+**场景**：resolveConflict 做两次独立 await 的 store.update（归档 loser、复活 winner）。文件存储 + 向量索引没有跨写事务。旧序（loser 先）下 winner 段失败 → loser 已归档指向 archived-winner → 召回坍塌。
+
+**规则**：无法事务化的多步 mutation，**排序写操作，使任何前缀完成都是安全态**。这里把 winner 复活提到 loser 归档之前：winner 段失败→无提交；loser 段失败→winner 已活+loser 仍活（无坍塌），重试幂等补完。先问："如果在第 k 步后崩溃，留下的状态安全吗？"——重排到答案永远是"是"。
+
+## 元字段更新不该触发昂贵/易错的副作用（re-embed）
+
+**场景**：IndexedMemoryStore.update 对任何更新都 re-embed（调真实 embedding 服务），即便只改 status。这给 archive/supersede/verify/archiveOld 这些纯元字段写都加了一个网络失败点（R10/R11 的失败窗口根源），也浪费算力（内容没变向量不变）。
+
+**规则**：写路径若对"内容未变、仅元字段变"的更新仍触发重计算/外部调用，是隐藏的失败面 + 浪费。理想是检测 content/title/tags 未变则跳过 re-embed。（已记为优化点；当前用 commit-time precondition + 段序 + 逐条容错从下游兜住。）
+
+## 缓存失效与重算并发：用 epoch 代际守卫
+
+**场景**：getMemoryClusters 重算横跨 await；重算期间 invalidateClusterCache() 把缓存置 null，但 in-flight 重算完成后无条件回写，复活了陈旧缓存。
+
+**规则**："重算 N 秒 + 期间可能被 invalidate"的缓存，置 null 不够——in-flight 重算会覆盖失效。用**代际计数**：invalidate 时 epoch++，重算前记 startEpoch，完成后仅当 epoch 未变才回写。这是 compare-and-swap 思路在单线程异步缓存上的应用。
+
 ## Opus 多轮对抗的纪律（沿用并固化）
 
 - loop-until-dry：每轮"攻击面→实跑测试→只报可复现→复现验证（设计内判 false）"，直到一轮 0 high/med。趋势看 high 数（多→4→0→0 即收敛）。
