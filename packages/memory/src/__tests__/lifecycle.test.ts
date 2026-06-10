@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -152,5 +152,58 @@ describe('MemoryLifecycle', () => {
 
     const loser = store.get('note', m1.id)
     expect(expectDefined(loser).status).toBe('archived')
+  })
+})
+
+// 对抗R6回归：发展裁决与权威模型对齐。
+describe('MemoryLifecycle authority alignment (R6)', () => {
+  let dir: string
+  let store: MemoryStore
+  let life: MemoryLifecycle
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'zero-life-r6-'))
+    store = new MemoryStore(dir)
+    life = new MemoryLifecycle(store)
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  test('resolveConflict on an already-superseded pair keeps the live authority, not the archived one', async () => {
+    const newer = await store.create('note', 'Newer', 'truth', {
+      status: 'verified',
+      confidence: 0.7,
+    })
+    const older = await store.create('note', 'Older', 'stale', {
+      status: 'verified',
+      confidence: 0.95,
+    })
+    // older 已被 newer 取代（older.supersededBy=newer），older conf 更高
+    await store.update('note', older.id, { status: 'archived', supersededBy: newer.id })
+    const winner = await life.resolveConflict('note', older.id, newer.id)
+    // 解析到活权威后两者同谱系 → 返回活权威 newer，绝不把 archived older 当 winner
+    expect(winner?.id).toBe(newer.id)
+    expect(store.get('note', newer.id)?.status).toBe('verified') // 活权威未被归档
+  })
+
+  test('resolveConflict archives loser WITH supersededBy so hits on loser redirect to winner', async () => {
+    const a = await store.create('note', 'A', 'a', { status: 'verified', confidence: 0.9 })
+    const b = await store.create('note', 'B', 'b', { status: 'verified', confidence: 0.5 })
+    await life.resolveConflict('note', a.id, b.id) // a 胜（conf 高）
+    const loser = store.get('note', b.id)
+    expect(loser?.status).toBe('archived')
+    expect(loser?.supersededBy).toBe(a.id) // 谱系指针存在 → 检索可重定向
+    expect(store.get('note', a.id)?.related).toContain(b.id)
+  })
+
+  test('archiveOld does not archive a live authority still referenced by a supersededBy chain', async () => {
+    const authority = await store.create('note', 'Auth', 'truth', { status: 'verified' })
+    const old = await store.create('note', 'Old', 'old', { status: 'archived' })
+    await store.update('note', old.id, { supersededBy: authority.id })
+    // 强制 authority 的 updatedAt 很旧（稳定权威反而"显老"）
+    const past = '2000-01-01T00:00:00.000Z'
+    await store.save({ ...expectDefined(store.get('note', authority.id)), updatedAt: past })
+    const n = await life.archiveOld('note', 30)
+    // authority 被 old.supersededBy 引用 → 不应被归档（否则整条谱系召回坍塌）
+    expect(store.get('note', authority.id)?.status).toBe('verified')
+    expect(n).toBe(0)
   })
 })

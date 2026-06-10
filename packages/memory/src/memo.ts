@@ -36,12 +36,14 @@ export class MemoManager {
   async updateAgentSection(agentName: string, status: string, plan: string): Promise<void> {
     await withLock(this.filePath, async () => {
       let content = this.read()
-      const sectionHeader = `### ${agentName}`
-      const sectionRegex = new RegExp(`### ${escapeRegExp(agentName)}\\n[\\s\\S]*?(?=###|$)`, 'g')
+      const escaped = escapeRegExp(agentName)
+      const sectionRegex = new RegExp(`### ${escaped}\\n[\\s\\S]*?(?=###|$)`, 'g')
 
       const newSection = `### ${agentName}\n**In Progress**: ${status}\n**Plan**: ${plan}\n\n`
 
-      if (content.includes(sectionHeader)) {
+      // 用与替换一致的【行锚】判定该 section 是否存在——不能用 includes 子串，否则 agent 名是
+      // 已存在名的前缀（如 'A' vs 'Alpha'）会误入 replace 分支但正则不匹配 → 写入静默丢失（对抗实测）。
+      if (new RegExp(`### ${escaped}\\n`).test(content)) {
         content = content.replace(sectionRegex, newSection)
       } else {
         content = `${content.trimEnd()}\n\n${newSection}`

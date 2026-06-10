@@ -72,3 +72,32 @@ describe('MemoManager', () => {
     expect(result).toContain('Complete v2.0 release')
   })
 })
+
+describe('MemoManager.updateAgentSection prefix collision (R6)', () => {
+  const dir = join(import.meta.dir, '__fixtures__-r6')
+  afterAll(() => rmSync(dir, { recursive: true, force: true }))
+
+  test('agent name that is a prefix of an existing section is not silently dropped', async () => {
+    mkdirSync(dir, { recursive: true })
+    const m = new MemoManager(join(dir, 'memo.md'))
+    await m.updateAgentSection('Alpha', 'status-alpha', 'plan-alpha')
+    await m.updateAgentSection('A', 'status-A-MARKER', 'plan-A')
+    const content = m.read()
+    // 两个 section 都在，A 的写入未被静默丢失
+    expect(content).toContain('### Alpha\n')
+    expect(content).toContain('### A\n')
+    expect(content).toContain('status-A-MARKER')
+    expect(content).toContain('status-alpha')
+  })
+
+  test('updating an existing section still replaces in place (no regression)', async () => {
+    mkdirSync(dir, { recursive: true })
+    const m = new MemoManager(join(dir, 'memo2.md'))
+    await m.updateAgentSection('web', 'v1', 'p1')
+    await m.updateAgentSection('web', 'v2-MARKER', 'p2')
+    const content = m.read()
+    expect(content).toContain('v2-MARKER')
+    expect(content).not.toContain('v1') // 旧内容被替换
+    expect((content.match(/### web\n/g) ?? []).length).toBe(1) // 不重复
+  })
+})

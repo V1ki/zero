@@ -196,7 +196,12 @@ export async function runMemoryRetrievalAgentDetailed(
 
   const memories =
     dedupedSelections.length > 0
-      ? materializeSelections(dedupedSelections, searchCache, options.config.perMemoryMaxTokens)
+      ? materializeSelections(
+          dedupedSelections,
+          searchCache,
+          options.config.perMemoryMaxTokens,
+          options.config.maxSelectedMemories,
+        )
       : undefined
 
   if (memories && memories.length > 0) {
@@ -375,12 +380,20 @@ function materializeSelections(
   selected: ParsedLoopSelection[],
   searchCache: Map<string, SearchCacheEntry>,
   perMemoryMaxTokens: number,
+  maxSelectedMemories: number,
 ): RetrievedMemoryMatch[] | undefined {
-  const results = selected.flatMap((entry) => {
+  // 按 id 去重（保留首现顺序）并硬约束注入条数——显式选择路径与 fallback 路径同口径，
+  // 防 LLM 重复选同一条注入 N 份、或多选突破 maxSelectedMemories 撑大 prompt（对抗实测）。
+  const seen = new Set<string>()
+  const results: RetrievedMemoryMatch[] = []
+  for (const entry of selected) {
+    if (seen.has(entry.id)) continue
     const cached = searchCache.get(entry.id)
-    if (!cached) return []
-    return [toRetrievedMemoryMatch(cached, perMemoryMaxTokens)]
-  })
+    if (!cached) continue
+    seen.add(entry.id)
+    results.push(toRetrievedMemoryMatch(cached, perMemoryMaxTokens))
+    if (results.length >= maxSelectedMemories) break
+  }
 
   return results.length > 0 ? results : undefined
 }
@@ -400,6 +413,9 @@ function fallbackSelection(
   return memories.length > 0 ? memories : undefined
 }
 
+// title 注入上限（token）——标题应是短语，64 token≈250 字符足够，超长一律截断。
+const TITLE_MAX_TOKENS = 64
+
 function toRetrievedMemoryMatch(
   entry: SearchCacheEntry,
   perMemoryMaxTokens: number,
@@ -407,7 +423,8 @@ function toRetrievedMemoryMatch(
   return {
     id: entry.memory.id,
     type: entry.memory.type,
-    title: entry.memory.title,
+    // title 也纳入 token 截断——否则超长 title 绕过 perMemoryMaxTokens 直入 prompt（对抗实测）。
+    title: truncateToTokens(entry.memory.title, TITLE_MAX_TOKENS),
     content: truncateToTokens(entry.memory.content, perMemoryMaxTokens),
     score: entry.score,
   }

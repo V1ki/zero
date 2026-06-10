@@ -222,3 +222,82 @@ describe('runMemoryRetrievalAgentDetailed', () => {
     expect(result.usedFallbackSelection).toBe(false)
   })
 })
+
+describe('runMemoryRetrievalAgentDetailed selection hardening (R6)', () => {
+  test('dedupes repeated ids in explicit selection (no N-times injection)', async () => {
+    const runLoop: LoopRunner = async (config) => {
+      await config.toolHandler('memory_search', { query: 'q' })
+      return {
+        finalText:
+          '{"result":[{"id":"mem_a","reason":"r1"},{"id":"mem_a","reason":"r2"},{"id":"mem_a","reason":"r3"}]}',
+        toolCalls: [],
+        usage: { input: 1, output: 1 },
+        durationMs: 1,
+      }
+    }
+    const result = await runMemoryRetrievalAgentDetailed({
+      runLoop,
+      memoryRetriever: {
+        async retrieveScored() {
+          return [makeScoredMemory('mem_a', 'A', 0.9)]
+        },
+      },
+      identitySummary: '',
+      userMessage: 'q',
+      config: baseConfig,
+    })
+    expect(result.memories?.length).toBe(1)
+    expect(result.selectedMemoryIds).toEqual(['mem_a'])
+  })
+
+  test('caps explicit selection at maxSelectedMemories', async () => {
+    const ids = ['m0', 'm1', 'm2', 'm3', 'm4', 'm5']
+    const runLoop: LoopRunner = async (config) => {
+      await config.toolHandler('memory_search', { query: 'q' })
+      return {
+        finalText: JSON.stringify({ result: ids.map((id) => ({ id, reason: 'r' })) }),
+        toolCalls: [],
+        usage: { input: 1, output: 1 },
+        durationMs: 1,
+      }
+    }
+    const result = await runMemoryRetrievalAgentDetailed({
+      runLoop,
+      memoryRetriever: {
+        async retrieveScored() {
+          return ids.map((id, i) => makeScoredMemory(id, `T${i}`, 0.9 - i * 0.01))
+        },
+      },
+      identitySummary: '',
+      userMessage: 'q',
+      config: baseConfig,
+    })
+    expect(result.memories?.length).toBe(3) // = maxSelectedMemories，显式路径不再失控
+    expect(result.usedFallbackSelection).toBe(false)
+  })
+
+  test('truncates an oversized title in the injected match', async () => {
+    const hugeTitle = 'T'.repeat(100000)
+    const runLoop: LoopRunner = async (config) => {
+      await config.toolHandler('memory_search', { query: 'q' })
+      return {
+        finalText: '{"result":[{"id":"mem_x","reason":"r"}]}',
+        toolCalls: [],
+        usage: { input: 1, output: 1 },
+        durationMs: 1,
+      }
+    }
+    const result = await runMemoryRetrievalAgentDetailed({
+      runLoop,
+      memoryRetriever: {
+        async retrieveScored() {
+          return [makeScoredMemory('mem_x', hugeTitle, 0.9)]
+        },
+      },
+      identitySummary: '',
+      userMessage: 'q',
+      config: baseConfig,
+    })
+    expect(result.memories?.[0].title.length).toBeLessThan(1000) // 64 token 截断，远小于 100k
+  })
+})
