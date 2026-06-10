@@ -795,6 +795,109 @@ describe('Session queue handling', () => {
     expect(rollbackUpdate?.data.messageCount).toBe(1)
   })
 
+  test('rollbackTailMessages dry-runs tail removal without mutating messages', () => {
+    const session = new Session('web', createRouter(), new ToolRegistry(), {
+      projectRoot: testProject.projectRoot,
+    })
+    const first = makeMessage(session.data.id, 'user', 'message', 'keep me')
+    const second = makeMessage(session.data.id, 'user', 'control', 'remove me')
+    ;(session as unknown as { messages: Message[] }).messages.push(first, second)
+
+    const result = session.rollbackTailMessages(1)
+
+    expect(result).toMatchObject({
+      ok: true,
+      status: 'ok',
+      dryRun: true,
+      beforeCount: 2,
+      afterCount: 1,
+    })
+    expect(result.removed).toEqual([
+      expect.objectContaining({
+        index: 1,
+        id: second.id,
+        role: 'user',
+        messageType: 'control',
+        preview: 'remove me',
+      }),
+    ])
+    expect(session.getMessages()).toEqual([first, second])
+  })
+
+  test('rollbackTailMessages removes tail messages and persists the repaired history', () => {
+    const sessionDb = SessionDB.createInMemory()
+    const events: Array<{ topic: string; data: Record<string, unknown> }> = []
+    const session = new Session('web', createRouter(), new ToolRegistry(), {
+      sessionDb,
+      projectRoot: testProject.projectRoot,
+      bus: {
+        emit(topic, data) {
+          events.push({ topic, data })
+        },
+      },
+    })
+    const first = makeMessage(session.data.id, 'user', 'message', 'keep me')
+    const second = {
+      ...makeMessage(session.data.id, 'user', 'control', 'remove empty retry'),
+      controlKind: 'empty_retry' as const,
+    }
+    ;(session as unknown as { messages: Message[] }).messages.push(first, second)
+
+    const result = session.rollbackTailMessages(1, {
+      dryRun: false,
+      reason: 'remove empty retry control tail',
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      status: 'ok',
+      dryRun: false,
+      beforeCount: 2,
+      afterCount: 1,
+      reason: 'remove empty retry control tail',
+    })
+    expect(result.removed[0]).toMatchObject({
+      index: 1,
+      id: second.id,
+      messageType: 'control',
+      controlKind: 'empty_retry',
+    })
+    expect(session.getMessages()).toEqual([first])
+    expect(sessionDb.loadSessionMessages(session.data.id)).toEqual([first])
+    expect(
+      events.find(
+        (event) =>
+          event.topic === 'session:update' && event.data.event === 'message_tail_rollback',
+      ),
+    ).toMatchObject({
+      data: {
+        sessionId: session.data.id,
+        messageCount: 1,
+        removedCount: 1,
+        reason: 'remove empty retry control tail',
+      },
+    })
+  })
+
+  test('rollbackTailMessages rejects repair while a turn is running', () => {
+    const session = new Session('web', createRouter(), new ToolRegistry(), {
+      projectRoot: testProject.projectRoot,
+    })
+    const message = makeMessage(session.data.id, 'user', 'message', 'keep me')
+    ;(session as unknown as { messages: Message[] }).messages.push(message)
+    ;(session as unknown as { isTurnInProgress: () => boolean }).isTurnInProgress = () => true
+
+    const result = session.rollbackTailMessages(1, { dryRun: false })
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: 'turn_in_progress',
+      beforeCount: 1,
+      afterCount: 1,
+    })
+    expect(session.getMessages()).toEqual([message])
+  })
+
   test('logs leaked queued messages after a turn finishes without draining them', async () => {
     const warnings: Array<{ event: string; data?: Record<string, unknown> }> = []
     const session = new Session('web', createRouter(), new ToolRegistry(), {

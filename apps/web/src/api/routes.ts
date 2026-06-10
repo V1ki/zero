@@ -850,6 +850,32 @@ export function createRoutes(zero: ZeroOS) {
       return c.json({ ok: true, status })
     })
 
+    .post('/api/sessions/:id/repair/rollback-tail', async (c) => {
+      const id = c.req.param('id')
+      const session = zero.sessionManager.get(id)
+      if (!session) {
+        return c.json({ error: 'Session not found' }, 404)
+      }
+
+      const body = await c.req
+        .json<{ count?: unknown; dryRun?: unknown; reason?: unknown }>()
+        .catch(() => ({}) as { count?: unknown; dryRun?: unknown; reason?: unknown })
+      const rawCount = body.count ?? 1
+      const count = typeof rawCount === 'number' ? rawCount : Number(rawCount)
+      const dryRun = body.dryRun === undefined ? true : body.dryRun !== false
+      const reason = typeof body.reason === 'string' ? body.reason : undefined
+      const result = session.rollbackTailMessages(count, { dryRun, reason })
+
+      if (!result.ok && result.status === 'invalid_count') {
+        return c.json(result, 400)
+      }
+      if (!result.ok && result.status === 'turn_in_progress') {
+        return c.json(result, 409)
+      }
+
+      return c.json(result)
+    })
+
     .delete('/api/sessions/:id', async (c) => {
       const id = c.req.param('id')
       const deleted = await zero.sessionManager.deleteSession(id, zero.memoryStore, zero.metrics)

@@ -82,6 +82,28 @@ export interface SessionModelListGroup {
   members?: string[]
 }
 
+export interface SessionTailRollbackRemovedMessage {
+  index: number
+  id: string
+  role: Message['role']
+  messageType: Message['messageType']
+  controlKind?: Message['controlKind']
+  createdAt: string
+  preview: string
+}
+
+export interface SessionTailRollbackResult {
+  ok: boolean
+  status: 'ok' | 'invalid_count' | 'turn_in_progress'
+  dryRun: boolean
+  requestedCount: number
+  beforeCount: number
+  afterCount: number
+  removed: SessionTailRollbackRemovedMessage[]
+  reason?: string
+  error?: string
+}
+
 function formatPoolMembers(pool: ListedModelPool): string[] {
   return pool.members.map((member) => member.model)
 }
@@ -982,6 +1004,75 @@ export class Session {
     }
   }
 
+  rollbackTailMessages(
+    count: number,
+    options: { dryRun?: boolean; reason?: string } = {},
+  ): SessionTailRollbackResult {
+    const requestedCount = Math.trunc(count)
+    const dryRun = options.dryRun ?? true
+    const beforeCount = this.messages.length
+    const reason = options.reason?.trim() || undefined
+
+    if (!Number.isFinite(count) || !Number.isInteger(count) || requestedCount <= 0) {
+      return {
+        ok: false,
+        status: 'invalid_count',
+        dryRun,
+        requestedCount: count,
+        beforeCount,
+        afterCount: beforeCount,
+        removed: [],
+        reason,
+        error: 'count must be a positive integer',
+      }
+    }
+
+    if (this.isTurnInProgress()) {
+      return {
+        ok: false,
+        status: 'turn_in_progress',
+        dryRun,
+        requestedCount,
+        beforeCount,
+        afterCount: beforeCount,
+        removed: [],
+        reason,
+        error: 'session has a turn in progress',
+      }
+    }
+
+    const removeCount = Math.min(requestedCount, beforeCount)
+    const startIndex = beforeCount - removeCount
+    const removed = this.messages
+      .slice(startIndex)
+      .map((message, offset) => this.summarizeRollbackMessage(message, startIndex + offset))
+    const afterCount = beforeCount - removeCount
+
+    if (!dryRun && removeCount > 0) {
+      this.messages.length = afterCount
+      this.data.updatedAt = now()
+      this.persistState()
+      this.deps.bus?.emit('session:update', {
+        sessionId: this.data.id,
+        event: 'message_tail_rollback',
+        messageCount: this.messages.length,
+        removedCount: removeCount,
+        reason: reason ?? null,
+      })
+    }
+
+    return {
+      ok: true,
+      status: 'ok',
+      dryRun,
+      requestedCount,
+      beforeCount,
+      afterCount,
+      removed,
+      reason,
+    }
+  }
+
   private reinitializeAgent(): void {
     if (!this.agent || !this.lastAgentConfig) return
     this.initAgent(this.lastAgentConfig)
@@ -1070,6 +1161,37 @@ export class Session {
       content,
       createdAt,
     }
+  }
+
+  private summarizeRollbackMessage(
+    message: Message,
+    index: number,
+  ): SessionTailRollbackRemovedMessage {
+    return {
+      index,
+      id: message.id,
+      role: message.role,
+      messageType: message.messageType,
+      ...(message.controlKind ? { controlKind: message.controlKind } : {}),
+      createdAt: message.createdAt,
+      preview: this.buildRollbackPreview(message),
+    }
+  }
+
+  private buildRollbackPreview(message: Message): string {
+    const parts = message.content.map((block) => {
+      if (block.type === 'text') return block.text
+      if (block.type === 'tool_use') return `tool_use:${block.name}:${block.id}`
+      if (block.type === 'tool_result') {
+        const text = block.outputSummary ?? block.content
+        return `tool_result:${block.toolUseId}:${text}`
+      }
+      if (block.type === 'image') return `image:${block.mediaType}`
+      if (block.type === 'thinking') return 'thinking'
+      return 'unknown'
+    })
+    const preview = parts.join(' ').replace(/\s+/g, ' ').trim()
+    return preview.length > 180 ? `${preview.slice(0, 177)}...` : preview
   }
 
   private static allocateSessionId(source: SessionSource, sessionDb?: SessionDB): string {

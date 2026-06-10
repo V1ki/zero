@@ -283,6 +283,113 @@ describe('API Routes Extended', () => {
     expect(res.status).toBe(404)
   })
 
+  test('POST /api/sessions/:id/repair/rollback-tail dry-runs without mutating messages', async () => {
+    const session = zero.sessionManager.create('web')
+    const keep: Message = {
+      id: 'repair_keep_1',
+      sessionId: session.data.id,
+      role: 'user',
+      messageType: 'message',
+      content: [{ type: 'text', text: 'keep me' }],
+      createdAt: new Date().toISOString(),
+    }
+    const tail: Message = {
+      id: 'repair_tail_1',
+      sessionId: session.data.id,
+      role: 'user',
+      messageType: 'control',
+      controlKind: 'empty_retry',
+      content: [{ type: 'text', text: 'remove me' }],
+      createdAt: new Date().toISOString(),
+    }
+    ;(session as unknown as { messages: Message[] }).messages.push(keep, tail)
+
+    const res = await app.request(`/api/sessions/${session.data.id}/repair/rollback-tail`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ count: 1 }),
+    })
+
+    expect(res.status).toBe(200)
+    const data = await res.json()
+    expect(data).toMatchObject({
+      ok: true,
+      status: 'ok',
+      dryRun: true,
+      beforeCount: 2,
+      afterCount: 1,
+    })
+    expect(data.removed[0]).toMatchObject({
+      id: 'repair_tail_1',
+      messageType: 'control',
+      controlKind: 'empty_retry',
+      preview: 'remove me',
+    })
+    expect(session.getMessages()).toEqual([keep, tail])
+  })
+
+  test('POST /api/sessions/:id/repair/rollback-tail removes and persists tail messages', async () => {
+    const session = zero.sessionManager.create('web')
+    const keep: Message = {
+      id: 'repair_keep_2',
+      sessionId: session.data.id,
+      role: 'user',
+      messageType: 'message',
+      content: [{ type: 'text', text: 'keep me' }],
+      createdAt: new Date().toISOString(),
+    }
+    const tail: Message = {
+      id: 'repair_tail_2',
+      sessionId: session.data.id,
+      role: 'user',
+      messageType: 'control',
+      controlKind: 'empty_retry',
+      content: [{ type: 'text', text: 'remove me' }],
+      createdAt: new Date().toISOString(),
+    }
+    ;(session as unknown as { messages: Message[] }).messages.push(keep, tail)
+
+    const res = await app.request(`/api/sessions/${session.data.id}/repair/rollback-tail`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        count: 1,
+        dryRun: false,
+        reason: 'remove empty-response retry control tail',
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const data = await res.json()
+    expect(data).toMatchObject({
+      ok: true,
+      status: 'ok',
+      dryRun: false,
+      beforeCount: 2,
+      afterCount: 1,
+      reason: 'remove empty-response retry control tail',
+    })
+    expect(session.getMessages()).toEqual([keep])
+    expect(zero.sessionManager.getMessagesFromDB(session.data.id)).toEqual([keep])
+  })
+
+  test('POST /api/sessions/:id/repair/rollback-tail rejects running sessions', async () => {
+    const session = zero.sessionManager.create('web')
+    ;(session as unknown as { isTurnInProgress: () => boolean }).isTurnInProgress = () => true
+
+    const res = await app.request(`/api/sessions/${session.data.id}/repair/rollback-tail`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ count: 1, dryRun: false }),
+    })
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({
+      ok: false,
+      status: 'turn_in_progress',
+    })
+  })
+
   test('GET /api/memory/search?q=query returns results', async () => {
     const res = await app.request('/api/memory/search?q=test')
     expect(res.status).toBe(200)
