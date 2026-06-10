@@ -19,6 +19,20 @@ export const ALL_MEMORY_TYPES: MemoryType[] = [
 
 export type MemoryStatus = 'draft' | 'verified' | 'archived' | 'conflict'
 
+/** 记忆之间带类型的边（关联柱）。不复用 related[]，避免与 resolveConflict 的裸 id 双写污染。 */
+export type MemoryEdgeKind =
+  | 'same-as' // 纯重复
+  | 'subsumes' // 包含
+  | 'same-topic' // 互补，共享 topicKey
+  | 'supersedes' // 演进取代
+  | 'contradicts' // 冲突
+  | 'derived-from' // 派生
+
+export interface MemoryEdge {
+  toId: string
+  kind: MemoryEdgeKind
+}
+
 export interface Memory {
   id: string
   type: MemoryType
@@ -32,6 +46,11 @@ export interface Memory {
   confidence: number
   tags: string[]
   related: string[]
+  // 记忆重构方向（关联/发展）的字段，均可选、空库零影响；聚类/裁决在 P1/P2 落地。
+  topicKey?: string
+  supersededBy?: string
+  mergedInto?: string
+  edges?: MemoryEdge[]
   content: string
 }
 
@@ -45,6 +64,8 @@ export interface ScoredMemoryMatch {
   memory: Memory
   score: number
   scoreBreakdown: MemoryScoreBreakdown
+  /** 发展柱：该权威条由哪些已被取代/并入的命中条沿谱系链重定向而来（原命中 id）。 */
+  resolvedFrom?: string[]
 }
 
 export interface MemorySearchOptions {

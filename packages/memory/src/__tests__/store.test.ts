@@ -143,4 +143,22 @@ describe('MemoryStore', () => {
     expect(retrieved?.accessCount).toBe(3)
     expect(retrieved?.lastAccessedAt).toBe('2026-03-11T00:00:00.000Z')
   })
+
+  test('parseFile round-trips association/evolution fields', async () => {
+    const store = new MemoryStore(testDir)
+    const memory = await store.create('runbook', 'Topic Memory', 'Deploy steps')
+
+    await store.update('runbook', memory.id, {
+      topicKey: 'deploy-comfyui',
+      supersededBy: 'mem_newer',
+      mergedInto: 'mem_canonical',
+      edges: [{ toId: 'mem_other', kind: 'same-topic' }],
+    })
+
+    const retrieved = store.get('runbook', memory.id)
+    expect(retrieved?.topicKey).toBe('deploy-comfyui')
+    expect(retrieved?.supersededBy).toBe('mem_newer')
+    expect(retrieved?.mergedInto).toBe('mem_canonical')
+    expect(retrieved?.edges).toEqual([{ toId: 'mem_other', kind: 'same-topic' }])
+  })
 })

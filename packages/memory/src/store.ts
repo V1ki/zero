@@ -37,6 +37,11 @@ export interface MemoryRepository {
   delete(type: MemoryType, id: string): Promise<boolean>
   getAgentPreference(agentName: string): string
   deleteBySessionId(sessionId: string): Promise<number>
+  // P3a: 可选的语义近邻查找（仅向量化的实现提供），供活文档折叠治 tag 漂移。
+  findSimilar?(
+    input: { title: string; content: string; tags: string[] },
+    opts?: { topK?: number; candidateIds?: string[]; minScore?: number },
+  ): Promise<{ id: string; type: MemoryType; score: number } | undefined>
   readByPath(
     path: string,
     options?: { from?: number; lines?: number },
@@ -231,6 +236,12 @@ export class MemoryStore implements MemoryRepository {
       updatedAt: now(),
     }
 
+    // get-then-save 整体覆盖语义下，显式传 undefined 的字段视为"移除该字段"
+    // （如 verify 清除 supersededBy 谱系指针），避免依赖 YAML 序列化对 undefined 的处理。
+    for (const key of Object.keys(updated) as Array<keyof Memory>) {
+      if (updated[key] === undefined) delete updated[key]
+    }
+
     await this.save(updated)
     return updated
   }
@@ -385,6 +396,10 @@ export class MemoryStore implements MemoryRepository {
       if (data.sessionId) memory.sessionId = data.sessionId
       if (typeof data.accessCount === 'number') memory.accessCount = data.accessCount
       if (typeof data.lastAccessedAt === 'string') memory.lastAccessedAt = data.lastAccessedAt
+      if (typeof data.topicKey === 'string') memory.topicKey = data.topicKey
+      if (typeof data.supersededBy === 'string') memory.supersededBy = data.supersededBy
+      if (typeof data.mergedInto === 'string') memory.mergedInto = data.mergedInto
+      if (Array.isArray(data.edges)) memory.edges = data.edges
       return memory
     } catch {
       return undefined
