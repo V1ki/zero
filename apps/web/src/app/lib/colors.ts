@@ -32,6 +32,14 @@ export const statusColors: Record<string, string> = {
   failed: 'text-red-400',
 }
 
+/** 记忆生命周期状态（发展柱）→ 胶囊配色。 */
+export const memoryStatusColors: Record<string, string> = {
+  draft: 'bg-white/[0.06] text-[var(--color-text-muted)]',
+  verified: 'bg-emerald-400/10 text-emerald-400',
+  archived: 'bg-white/[0.04] text-[var(--color-text-disabled)]',
+  conflict: 'bg-amber-400/10 text-amber-400',
+}
+
 export const statusDotColors: Record<string, string> = {
   running: 'bg-emerald-400',
   degraded: 'bg-amber-400',
