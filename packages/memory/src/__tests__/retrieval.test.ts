@@ -241,9 +241,9 @@ describe('MemoryRetriever', () => {
   })
 
   test('default retrieval excludes session memories but explicit types can include them', async () => {
-    await expect(retriever.retrieve('session memory', { confidenceThreshold: 0.1 })).resolves.toEqual(
-      [],
-    )
+    await expect(
+      retriever.retrieve('session memory', { confidenceThreshold: 0.1 }),
+    ).resolves.toEqual([])
 
     const results = await retriever.retrieve('session memory', {
       confidenceThreshold: 0.1,
@@ -344,5 +344,200 @@ describe('MemoryRetriever', () => {
     expect(results[1]?.memory.id).toBe(oldMemory.id)
 
     rmSync(recentDir, { recursive: true, force: true })
+  })
+})
+
+// P3/读柱：检索只取权威条 —— supersededBy/mergedInto 谱系重定向 + 权威去重。
+describe('MemoryRetriever authority resolution', () => {
+  let dir: string
+  let store: MemoryStore
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'zero-retrieval-authority-'))
+    store = new MemoryStore(dir)
+  })
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  function makeRetriever(
+    hits: Array<{ memoryId: string; score: number }>,
+    metadataById: Map<string, MemoryVectorMeta>,
+  ) {
+    return new MemoryRetriever(
+      store,
+      createEmbeddingClient({ q: 1 }),
+      createVectorIndex({ resultsByVector: { 1: hits }, metadataById }),
+    )
+  }
+
+  const meta = (m: { id: string; type: string; title: string; updatedAt: string }): [
+    string,
+    MemoryVectorMeta,
+  ] => [m.id, { memoryId: m.id, type: m.type, title: m.title, updatedAt: m.updatedAt }]
+
+  test('superseded hit redirects to live authority (score inherited from hit)', async () => {
+    const authority = await store.create('runbook', 'Deploy v2', 'new truth', {
+      status: 'verified',
+      confidence: 0.9,
+    })
+    const old = await store.create('runbook', 'Deploy v1', 'old truth', {
+      status: 'archived',
+      confidence: 0.85,
+      supersededBy: authority.id,
+    })
+    const retriever = makeRetriever([{ memoryId: old.id, score: 0.95 }], new Map([meta(old)]))
+    const results = await retriever.retrieveScored('q', { types: ['runbook'] })
+    expect(results.length).toBe(1)
+    expect(results[0]?.memory.id).toBe(authority.id)
+    expect(results[0]?.resolvedFrom).toEqual([old.id])
+    expect(results[0]?.scoreBreakdown.vector).toBe(0.95)
+  })
+
+  test('transitive chain resolves to final authority and dedupes multiple hits', async () => {
+    const final = await store.create('note', 'Truth v3', 'final', {
+      status: 'verified',
+      confidence: 0.9,
+    })
+    const mid = await store.create('note', 'Truth v2', 'mid', {
+      status: 'archived',
+      confidence: 0.85,
+      supersededBy: final.id,
+    })
+    const first = await store.create('note', 'Truth v1', 'first', {
+      status: 'archived',
+      confidence: 0.85,
+      supersededBy: mid.id,
+    })
+    const retriever = makeRetriever(
+      [
+        { memoryId: first.id, score: 0.9 },
+        { memoryId: mid.id, score: 0.8 },
+        { memoryId: final.id, score: 0.7 },
+      ],
+      new Map([meta(first), meta(mid), meta(final)]),
+    )
+    const results = await retriever.retrieveScored('q', { types: ['note'] })
+    expect(results.length).toBe(1)
+    expect(results[0]?.memory.id).toBe(final.id)
+    expect(results[0]?.scoreBreakdown.vector).toBe(0.9) // 取所有重定向命中的最高向量分
+    expect(new Set(results[0]?.resolvedFrom)).toEqual(new Set([first.id, mid.id]))
+  })
+
+  test('cycle in lineage terminates and archived endpoints stay filtered', async () => {
+    const a = await store.create('note', 'Cycle A', 'a', { status: 'archived', confidence: 0.9 })
+    const b = await store.create('note', 'Cycle B', 'b', {
+      status: 'archived',
+      confidence: 0.9,
+      supersededBy: a.id,
+    })
+    await store.update('note', a.id, { supersededBy: b.id })
+    const retriever = makeRetriever([{ memoryId: a.id, score: 0.9 }], new Map([meta(a)]))
+    const results = await retriever.retrieveScored('q', { types: ['note'] })
+    expect(results).toEqual([]) // 不死循环；环内全归档 → 被状态过滤
+  })
+
+  test('broken pointer stays on current node; mergedInto redirects cross-type', async () => {
+    const broken = await store.create('note', 'Broken ptr', 'x', {
+      status: 'verified',
+      confidence: 0.9,
+      supersededBy: 'mem_missing_target',
+    })
+    const canonical = await store.create('runbook', 'Canonical doc', 'merged truth', {
+      status: 'verified',
+      confidence: 0.9,
+    })
+    const absorbed = await store.create('note', 'Absorbed note', 'y', {
+      status: 'archived',
+      confidence: 0.85,
+      mergedInto: canonical.id,
+    })
+    const retriever = makeRetriever(
+      [
+        { memoryId: broken.id, score: 0.9 },
+        { memoryId: absorbed.id, score: 0.8 },
+      ],
+      new Map([meta(broken), meta(absorbed)]),
+    )
+    const results = await retriever.retrieveScored('q', { types: ['note'] })
+    expect(results.length).toBe(2)
+    const ids = results.map((r) => r.memory.id)
+    expect(ids).toContain(broken.id) // 指针断裂 → 留在原条（verified 仍可返回）
+    expect(ids).toContain(canonical.id) // mergedInto 跨 type 重定向到权威条
+  })
+})
+
+// 对抗评审修复回归锁：门槛回退(命中条或权威条任一满足) + 深链解析。
+describe('MemoryRetriever authority gates & deep chains', () => {
+  let dir: string
+  let store: MemoryStore
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'zero-retrieval-gates-'))
+    store = new MemoryStore(dir)
+  })
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  const meta2 = (m: { id: string; type: string; title: string; updatedAt: string }): [
+    string,
+    MemoryVectorMeta,
+  ] => [m.id, { memoryId: m.id, type: m.type, title: m.title, updatedAt: m.updatedAt }]
+  function mk(
+    hits: Array<{ memoryId: string; score: number }>,
+    metadataById: Map<string, MemoryVectorMeta>,
+  ) {
+    return new MemoryRetriever(
+      store,
+      createEmbeddingClient({ q: 1 }),
+      createVectorIndex({ resultsByVector: { 1: hits }, metadataById }),
+    )
+  }
+
+  test('confidence/tags gates pass when hit OR authority satisfies (authority delivered)', async () => {
+    const lowConfAuth = await store.create('note', 'Auth low conf', 'truth', {
+      status: 'verified',
+      confidence: 0.3,
+      tags: ['newtag'],
+    })
+    const highConfHit = await store.create('note', 'Hit high conf', 'old', {
+      status: 'archived',
+      confidence: 0.95,
+      tags: ['oldtag'],
+      supersededBy: lowConfAuth.id,
+    })
+    const retriever = mk([{ memoryId: highConfHit.id, score: 0.9 }], new Map([meta2(highConfHit)]))
+    // 默认 confidenceThreshold 0.6：权威条 0.3 不够，但命中条 0.95 满足 → 仍交付权威条
+    const byConf = await retriever.retrieveScored('q', { types: ['note'] })
+    expect(byConf.length).toBe(1)
+    expect(byConf[0]?.memory.id).toBe(lowConfAuth.id)
+    // 按命中条历史 tag 查询：权威条没有该 tag，但命中条有 → 仍交付权威条
+    const byTag = await retriever.retrieveScored('q', { types: ['note'], tags: ['oldtag'] })
+    expect(byTag.length).toBe(1)
+    expect(byTag[0]?.memory.id).toBe(lowConfAuth.id)
+  })
+
+  test('deep lineage chain (12 hops) resolves to final authority', async () => {
+    const final = await store.create('note', 'Deep final', 'truth', {
+      status: 'verified',
+      confidence: 0.9,
+    })
+    let nextId = final.id
+    let head = final
+    for (let i = 0; i < 12; i++) {
+      head = await store.create('note', `Deep n${i}`, `v${i}`, {
+        status: 'archived',
+        confidence: 0.8,
+        supersededBy: nextId,
+      })
+      nextId = head.id
+    }
+    const retriever = mk([{ memoryId: head.id, score: 0.9 }], new Map([meta2(head)]))
+    const results = await retriever.retrieveScored('q', { types: ['note'] })
+    expect(results.length).toBe(1)
+    expect(results[0]?.memory.id).toBe(final.id)
   })
 })
