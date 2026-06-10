@@ -224,3 +224,50 @@ describe('Adversarial regression locks', () => {
     expect(await vectorIndex.getVector(f)).toBeUndefined()
   })
 })
+
+describe('Adversarial regression locks R2', () => {
+  test('PUT only edits safe fields (status/supersededBy ignored)', async () => {
+    const m = await store.create('note', 'PutGuard', 'body', {
+      status: 'verified',
+      confidence: 0.9,
+    })
+    const res = await app.request(`/api/memory/note/${m.id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        content: 'edited',
+        status: 'archived',
+        supersededBy: 'mem_evil',
+        edges: 'not-an-array',
+      }),
+    })
+    expect(res.status).toBe(200)
+    const after = store.get('note', m.id)
+    expect(after?.content).toBe('edited') // 安全字段生效
+    expect(after?.status).toBe('verified') // status 未被 PUT 改
+    expect(after?.supersededBy).toBeUndefined() // 谱系未被 PUT 写
+  })
+
+  test('supersede rejects cycle even on deep chains (visited, no fuse)', async () => {
+    const ids: string[] = []
+    for (let i = 0; i < 105; i++) {
+      ids.push((await store.create('note', `Chain ${i}`, `c${i}`, { status: 'verified' })).id)
+    }
+    for (let i = 0; i < 104; i++) {
+      const r = await post(`/api/memory/note/${ids[i]}/supersede`, { bySupersededId: ids[i + 1] })
+      expect(r.status).toBe(200)
+    }
+    // 闭合环：最后一条 supersede 回第一条 → 必须 409（旧实现 >101 会漏过）
+    const close = await post(`/api/memory/note/${ids[104]}/supersede`, { bySupersededId: ids[0] })
+    expect(close.status).toBe(409)
+  })
+
+  test('supersede path-compresses to final authority (chain depth <=1)', async () => {
+    const a = (await store.create('note', 'PC a', 'a', { status: 'verified' })).id
+    const b = (await store.create('note', 'PC b', 'b', { status: 'verified' })).id
+    const cc = (await store.create('note', 'PC c', 'c', { status: 'verified' })).id
+    await post(`/api/memory/note/${b}/supersede`, { bySupersededId: cc }) // b -> c
+    await post(`/api/memory/note/${a}/supersede`, { bySupersededId: b }) // a -> (compress) c
+    expect(store.get('note', a)?.supersededBy).toBe(cc)
+  })
+})

@@ -993,8 +993,19 @@ export function createRoutes(zero: ZeroOS) {
     .put('/api/memory/:type/:id', async (c) => {
       const type = c.req.param('type') as MemoryType
       const id = c.req.param('id')
-      const body = await c.req.json<Record<string, unknown>>()
-      const updated = await zero.memoryStore.update(type, id, body)
+      // PUT 仅允许编辑安全字段；status 走 verify/archive、谱系走 supersede、edges 走 relations，
+      // 不从这条通用写路径写入——否则可绕过 supersede/verify 的全部谱系校验（对抗实测确认）。
+      const body = await c.req
+        .json<Record<string, unknown>>()
+        .catch(() => ({}) as Record<string, unknown>)
+      const safe: Record<string, unknown> = {}
+      if (typeof body.title === 'string') safe.title = body.title
+      if (typeof body.content === 'string') safe.content = body.content
+      if (Array.isArray(body.tags) && body.tags.every((t: unknown) => typeof t === 'string')) {
+        safe.tags = body.tags
+      }
+      if (typeof body.confidence === 'number') safe.confidence = body.confidence
+      const updated = await zero.memoryStore.update(type, id, safe)
       if (!updated) return c.json({ error: 'Memory not found' }, 404)
       invalidateClusterCache()
       return c.json({ memory: updated })
@@ -1057,21 +1068,25 @@ export function createRoutes(zero: ZeroOS) {
       if (!target) {
         return c.json({ error: `supersede target not found: ${targetId}` }, 404)
       }
-      // 沿目标谱系链走，若回指本条则成环
+      // 沿目标谱系链走到底（visited 保证终止、无数值熔断——否则深链可绕过环检测）：
+      // 途中回指本条 → 成环拒绝(409)；链尾活权威用于路径压缩，让链深恒 ≤1。
       let cursor: typeof target | undefined = target
       const visited = new Set<string>([targetId])
-      for (let hops = 0; hops < 100 && cursor; hops++) {
+      while (cursor) {
         const nextId: string | undefined = cursor.supersededBy ?? cursor.mergedInto
         if (!nextId || visited.has(nextId)) break
         if (nextId === id) {
           return c.json({ error: 'supersede would create a lineage cycle' }, 409)
         }
         visited.add(nextId)
-        cursor = findById(nextId)
+        const next = findById(nextId)
+        if (!next) break
+        cursor = next
       }
+      const authorityId = cursor?.id ?? targetId
       const updated = await zero.memoryStore.update(type, id, {
         status: 'archived' as MemoryStatus,
-        supersededBy: targetId,
+        supersededBy: authorityId,
       })
       if (!updated) return c.json({ error: 'Memory not found' }, 404)
       invalidateClusterCache()

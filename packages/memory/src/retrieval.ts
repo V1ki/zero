@@ -178,12 +178,13 @@ export class MemoryRetriever {
     return undefined
   }
 
-  // 沿 supersededBy/mergedInto 链走到底（环由 visited 守卫；跳数上限仅是远超现实链长的保险丝，
-  // 截断停在中间节点会交付陈旧"权威"——对抗实测确认，故上限必须远大于真实链深）。
+  // 沿 supersededBy/mergedInto 链走到底。终止由 visited 集合保证（每步加入新 id，
+  // 受记忆总数上界约束），不用固定数值熔断——熔断截断会停在中间节点把陈旧条当权威
+  // （对抗实测：>跳数上限的深链导致召回坍塌）。supersede 端点做路径压缩使链深恒 ≤1。
   private resolveAuthority(memory: Memory): Memory {
     let current = memory
     const visited = new Set<string>([memory.id])
-    for (let hops = 0; hops < 100; hops++) {
+    while (true) {
       const nextId = current.supersededBy ?? current.mergedInto
       if (!nextId || visited.has(nextId)) break
       const next = this.findById(nextId, current.type)

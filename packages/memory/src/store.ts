@@ -16,6 +16,18 @@ import {
 } from '@zero-os/shared'
 import matter from 'gray-matter'
 
+// update() 中显式传 undefined/null 时，仅这些可选字段视为"移除"；
+// 必填字段（content/title/status/confidence/tags/related/id/type/createdAt）一律不可被清除。
+const STRIPPABLE_UPDATE_KEYS = new Set<string>([
+  'supersededBy',
+  'mergedInto',
+  'topicKey',
+  'sessionId',
+  'edges',
+  'accessCount',
+  'lastAccessedAt',
+])
+
 export interface MemoryRepository {
   create(
     type: MemoryType,
@@ -105,7 +117,8 @@ export class MemoryStore implements MemoryRepository {
 
     const filePath = join(dir, `${memory.id}.md`)
     const { content, ...frontmatter } = memory
-    const fileContent = matter.stringify(content, frontmatter)
+    // content 应恒为 string；对异常传入（null/非串）兜底为 '' 防 matter.stringify 崩溃。
+    const fileContent = matter.stringify(typeof content === 'string' ? content : '', frontmatter)
     writeFileSync(filePath, fileContent, 'utf-8')
   }
 
@@ -227,23 +240,25 @@ export class MemoryStore implements MemoryRepository {
     const memory = this.get(type, id)
     if (!memory) return undefined
 
-    const updated: Memory = {
-      ...memory,
-      ...updates,
-      id: memory.id,
-      type: memory.type,
-      createdAt: memory.createdAt,
-      updatedAt: now(),
+    // 显式传 undefined/null：仅可选谱系/元字段视为"移除"（verify 清谱系指针走此通道）；
+    // 必填字段（content/title/status...）的 undefined/null 一律忽略、保留原值，
+    // 否则会把正文清成空导致序列化崩溃（对抗实测：工具/PUT 误传 content:null 崩溃整个 update）。
+    const updated = { ...memory } as unknown as Record<string, unknown>
+    for (const [key, value] of Object.entries(updates)) {
+      if (value === undefined || value === null) {
+        if (STRIPPABLE_UPDATE_KEYS.has(key)) delete updated[key]
+        continue
+      }
+      updated[key] = value
     }
+    updated.id = memory.id
+    updated.type = memory.type
+    updated.createdAt = memory.createdAt
+    updated.updatedAt = now()
 
-    // get-then-save 整体覆盖语义下，显式传 undefined 的字段视为"移除该字段"
-    // （如 verify 清除 supersededBy 谱系指针），避免依赖 YAML 序列化对 undefined 的处理。
-    for (const key of Object.keys(updated) as Array<keyof Memory>) {
-      if (updated[key] === undefined) delete updated[key]
-    }
-
-    await this.save(updated)
-    return updated
+    const result = updated as unknown as Memory
+    await this.save(result)
+    return result
   }
 
   /**

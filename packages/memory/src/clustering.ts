@@ -30,8 +30,14 @@ interface ClusterMemoryStore {
   ): { title: string; status: string; confidence: number; updatedAt: string } | undefined
 }
 
-// 权威条排序：verified 最优、archived 最次；与设计 3.4 一致（updatedAt 已被污染，仅作末位兜底）。
-const statusRank = (s: string): number => (s === 'verified' ? 0 : s === 'archived' ? 3 : 1)
+// 权威条排序：verified 最优、archived 次次、未知/非法 status 最次（绝不当权威条）；
+// 与设计 3.4 一致（updatedAt 已被污染，仅作末位兜底）。
+const statusRank = (s: string): number => {
+  if (s === 'verified') return 0
+  if (s === 'draft' || s === 'conflict') return 1
+  if (s === 'archived') return 3
+  return 4 // 未知/非法 status
+}
 
 /**
  * 对全库向量做 cos≥threshold 的连通聚类（union-find），返回近重复簇 + 每簇建议权威条。

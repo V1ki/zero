@@ -1,6 +1,16 @@
 import type { MemoryType, ToolContext } from '@zero-os/shared'
 import { CONTEXT_PARAMS } from '../agent/params'
 
+// 活文档只能折进"仍活跃"的文档：已归档/已被取代/已并入的文档不再是有效折叠目标，
+// 否则会话中途被治理归档后，同主题新写入会被静默埋进检索不可见的归档文档（数据黑洞）。
+function isActiveFoldTarget(m: {
+  status: string
+  supersededBy?: string
+  mergedInto?: string
+}): boolean {
+  return m.status !== 'archived' && !m.supersededBy && !m.mergedInto
+}
+
 // P3a: 活文档折叠键 —— 同 type + tags 归一化（归一化后为空时退化为 title slug，
 // 避免全空白 tags 产生 "type|" 这种跨主题碰撞键）。
 export function deriveLiveDocKey(type: MemoryType, title: string, tags: string[]): string {
@@ -29,7 +39,7 @@ export function createLiveDocHandle(
       const existingId = liveDocs.get(key)
       if (existingId) {
         const existing = memoryStore?.get(input.type, existingId)
-        if (existing) {
+        if (existing && isActiveFoldTarget(existing)) {
           return {
             memoryId: existingId,
             existingContent: existing.content,
@@ -37,6 +47,7 @@ export function createLiveDocHandle(
             maxChars: CONTEXT_PARAMS.memory.liveDocMaxChars,
           }
         }
+        // 不存在或已归档/取代 → 弃用陈旧指针，落到新建
         liveDocs.delete(key)
       }
       // tag-key 未命中 → 向量相似度兜底（治 tag 漂移；实测 tag 键仅消除 1%，向量才是主力）。
@@ -57,7 +68,7 @@ export function createLiveDocHandle(
             },
           )
           const existing = match ? memoryStore.get(match.type, match.id) : undefined
-          if (match && existing) {
+          if (match && existing && isActiveFoldTarget(existing)) {
             liveDocs.set(key, match.id)
             return {
               memoryId: match.id,

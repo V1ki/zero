@@ -148,7 +148,23 @@ export class MemoryTool extends BaseTool {
         if (!resolvedType.success) {
           return resolvedType.result
         }
-        const updated = await ctx.memoryStore.update(resolvedType.type, id, updates ?? {}, {
+        // 工具 update 仅允许安全字段；谱系(supersededBy/mergedInto)/edges/topicKey 是系统管理的
+        // 图结构，不经 agent 自由写入（对抗实测：工具直传可写坏谱系）。status 做枚举校验。
+        const raw = (updates ?? {}) as Record<string, unknown>
+        const safeUpdates: Record<string, unknown> = {}
+        if (typeof raw.title === 'string') safeUpdates.title = raw.title
+        if (typeof raw.content === 'string') safeUpdates.content = raw.content
+        if (Array.isArray(raw.tags) && raw.tags.every((t) => typeof t === 'string')) {
+          safeUpdates.tags = raw.tags
+        }
+        if (typeof raw.confidence === 'number') safeUpdates.confidence = raw.confidence
+        if (
+          typeof raw.status === 'string' &&
+          ['draft', 'verified', 'archived', 'conflict'].includes(raw.status)
+        ) {
+          safeUpdates.status = raw.status
+        }
+        const updated = await ctx.memoryStore.update(resolvedType.type, id, safeUpdates, {
           sessionId: ctx.sessionId,
         })
         if (!updated) {

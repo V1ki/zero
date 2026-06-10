@@ -418,3 +418,60 @@ describe('MemoryTool live-doc fold (P3a)', () => {
     )
   })
 })
+
+describe('MemoryTool live-doc fold lifecycle (R2)', () => {
+  const tool = new MemoryTool()
+
+  test('does not fold into an archived doc (no retrieval black hole)', async () => {
+    const ctx = { ...makeCtx(store), liveDocHandle: makeLiveDocHandle(store) }
+    const r1 = await tool.run(ctx, {
+      action: 'create',
+      type: 'runbook',
+      title: 'Lifecycle fold',
+      content: 'phase one',
+      tags: ['p3a-life'],
+    })
+    const id = expectDefined(r1.output.match(/mem_[\w-]+/))[0]
+    // 治理把活文档归档（模拟会话中途 archive/supersede）
+    await store.update('runbook', id, { status: 'archived' })
+    // 同主题再写 → 不应折进归档文档，应新建一条可检索的 verified
+    const r2 = await tool.run(ctx, {
+      action: 'create',
+      type: 'runbook',
+      title: 'Lifecycle fold',
+      content: 'phase two',
+      tags: ['p3a-life'],
+    })
+    expect(r2.output).toContain('Memory created')
+    expect(r2.output).not.toContain('folded')
+    const newId = expectDefined(r2.output.match(/mem_[\w-]+/))[0]
+    expect(newId).not.toBe(id)
+    expect(store.get('runbook', newId)?.status).toBe('verified')
+  })
+
+  test('update action drops system-managed lineage/edges fields', async () => {
+    const r1 = await tool.run(makeCtx(store), {
+      action: 'create',
+      type: 'note',
+      title: 'Tool update guard',
+      content: 'body',
+    })
+    const id = expectDefined(r1.output.match(/mem_[\w-]+/))[0]
+    await tool.run(makeCtx(store), {
+      action: 'update',
+      type: 'note',
+      id,
+      updates: {
+        content: 'edited body',
+        supersededBy: 'mem_evil',
+        edges: [{ toId: 'x', kind: 'same-topic' }],
+        status: 'archived',
+      },
+    })
+    const m = store.get('note', id)
+    expect(m?.content).toBe('edited body') // 安全字段生效
+    expect(m?.status).toBe('archived') // status 枚举合法 → 生效
+    expect(m?.supersededBy).toBeUndefined() // 谱系不经工具写
+    expect(m?.edges).toBeUndefined() // edges 不经工具写
+  })
+})

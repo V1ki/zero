@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { MemoryStore } from '../store'
@@ -160,5 +160,40 @@ describe('MemoryStore', () => {
     expect(retrieved?.supersededBy).toBe('mem_newer')
     expect(retrieved?.mergedInto).toBe('mem_canonical')
     expect(retrieved?.edges).toEqual([{ toId: 'mem_other', kind: 'same-topic' }])
+  })
+})
+
+// 对抗R2回归：update 对必填字段 null/undefined 不清除（防序列化崩溃），仅清可选谱系字段。
+describe('MemoryStore.update field protection', () => {
+  let d: string
+  let s: MemoryStore
+  beforeAll(() => {
+    d = join(import.meta.dir, '__fixtures__', 'store-update-protect')
+    mkdirSync(d, { recursive: true })
+    s = new MemoryStore(d)
+  })
+  afterAll(() => rmSync(d, { recursive: true, force: true }))
+
+  test('content undefined/null is ignored (preserved, no crash)', async () => {
+    const m = await s.create('note', 'Keep', 'original body', { status: 'verified' })
+    await expect(
+      s.update('note', m.id, { content: undefined as unknown as string }),
+    ).resolves.toBeDefined()
+    expect(s.get('note', m.id)?.content).toBe('original body')
+    await expect(
+      s.update('note', m.id, { content: null as unknown as string, title: 'NewT' }),
+    ).resolves.toBeDefined()
+    const after = s.get('note', m.id)
+    expect(after?.content).toBe('original body')
+    expect(after?.title).toBe('NewT')
+  })
+
+  test('explicit undefined clears optional lineage pointer', async () => {
+    const m = await s.create('note', 'Lin', 'x', { status: 'archived', supersededBy: 'mem_other' })
+    expect(s.get('note', m.id)?.supersededBy).toBe('mem_other')
+    await s.update('note', m.id, { status: 'verified', supersededBy: undefined })
+    const after = s.get('note', m.id)
+    expect(after?.status).toBe('verified')
+    expect(after?.supersededBy).toBeUndefined()
   })
 })
