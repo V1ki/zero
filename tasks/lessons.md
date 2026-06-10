@@ -36,6 +36,36 @@
 - 修复下沉到**原子临界区内的 commit-time 复检**：找到无 await 的同步 get→write 段（JS 单线程下它相对其他写入原子），在 write 前复查不变量，违反则中止/降级。不要靠"判定时检查一次"。
 - 识别真竞态边界：先问"这两条写路径共享 mutex 吗"。会话内串行（agent-loop for-await + 消息级 Mutex）能消除会话内并发，但消除不了 web 端点与 agent 的并发——后者才是真窗口。
 
+## 同一权威模型必须在所有消费者间一致（跨 type vs 单 type）
+
+**场景**：retrieval 和 supersede 端点的谱系解析是跨 type 的（findById 扫 ALL_MEMORY_TYPES，因为 merge 可跨类型）；但 MemoryLifecycle 的 resolveConflict/archiveOld 是单 type 的。同一个"权威模型"在不同消费者里实现不一致 → 跨 type 谱系下选错 winner、误归档活权威。
+
+**规则**：当多个组件声称遵循"同一模型"（注释甚至明说），要验证它们的实现真的一致。最稳的是**抽共享函数**（如跨 type 的 resolveAuthority），让"同一模型"由构造保证而非各自复刻。复刻必然漂移。
+
+## String.replace 的替换串会解释 `$` 模式
+
+**场景**：`content.replace(marker, userText)` —— userText 里的 `$&/$\`/$'/$N/$$` 被当作替换模式展开（$&=匹配串、$\`=匹配前文本、$N=捕获组），用户/agent 自由文本含 `$`（shell $PATH、价格、git HEAD@{1}）时把文档拼坏。
+
+**规则**：替换串含任何不可信/自由文本时，用**函数替换器** `replace(pat, () => text)`——函数返回值不受 `$` 模式解释。这和"用户输入不可信"同理，只是发生在 String.replace 的第二参数这个不显眼处。
+
+## 截断要按字符（码点）而非码元，别切裂代理对
+
+**场景**：`text.slice(0, maxChars)` 按 UTF-16 码元切，正好切在星平面字符（emoji/CJK扩展/数学符号，占 2 码元）中间 → 留半个代理 → UTF-8 编码上线时损坏成 U+FFFD 或被丢。
+
+**规则**：定长截断后检查末位是否落单高位代理（0xD800–0xDBFF），是则丢弃；或用 `[...text]` 按码点切。任何"按长度切字符串"的地方都要想到代理对。
+
+## 修在正确的层，别为关边角牺牲合法能力
+
+**场景**：recency 对损坏 updatedAt 给最高分。诱人的修法是"create 强制 now()、不接受 caller updatedAt"。但 create 接受显式时间戳是 import/migration 的合法能力，强制 now() 反而损害未来 import，且破坏既有测试。
+
+**规则**：一个缺陷可在多层修；选**不牺牲合法能力**的那层。这里真正的 bug 是"评分让损坏时间戳获胜"，修在 recency（NaN→最旧）即可中和危害，不必阉割 create。修复前问："这一层的改动会不会关掉某个正当用途？"
+
+## 区分"真实缺陷"与"生产可达"
+
+**场景**：MemoryLifecycle 全套是真实逻辑缺陷，但 grep 全仓零生产调用方（dormant）。对抗后期大量发现落在 dormant 代码。
+
+**规则**：报告/定级时把 `isReal`（逻辑是否真错）与 `reachable`（生产是否可触发）分开。以"**0 生产可达缺陷**"作为收敛/停止判据，dormant 真实缺陷修不修取决于成本与未来接线计划（廉价且属同类一致性的就顺手修）。
+
 ## Opus 多轮对抗的纪律（沿用并固化）
 
 - loop-until-dry：每轮"攻击面→实跑测试→只报可复现→复现验证（设计内判 false）"，直到一轮 0 high/med。趋势看 high 数（多→4→0→0 即收敛）。

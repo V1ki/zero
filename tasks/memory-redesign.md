@@ -310,4 +310,27 @@ R1–R4 主攻【写入校验/绕路/畸形输入】(安全向)且收敛后，�
 - [low] **neighbors 返回死节点当顶级"选取代来源"且不带 status**——与 clusters/retrieval 跨面不一致（误导治理 UI，但下游 supersede 会压缩到活权威，无数据损坏）。**修**：payload 补 `status`/`supersededBy`/`mergedInto`，与 cluster 成员一致，让治理者看见死节点。
 - 提交 `a6b8f24`。
 
-**总收敛结论**：缺陷数 R1→R5 = 8→7→3→1→2，high 数 多→4→0→0→0，R4/R5 连续两轮 0 high/0 med（仅 low 有界边角）。**两个角度（安全/绕路 + 功能正确性）均已收敛；关联（typed edges/relations）与发展（supersede/verify 生命周期 + 路径压缩 + 检索权威解析）功能确认正常。** 累计 **244 测试全绿**（+19 R2–R5 回归锁），每轮 `check`+build+重启上线+live 烟测。对抗测试纪律：只攻 mkdtemp/stub 临时数据，绝不碰真实 `.zero/memory`，绝不改产品代码，临时测试跑完即删，0 残留。
+**阶段收敛结论（R1–R5）**：缺陷数 8→7→3→1→2，high 数 多→4→0→0→0，R4/R5 连续两轮 0 high/0 med（仅 low 有界边角）。
+
+### 12.5 Opus 4.8 对抗 R6–R8：新面扩展 + 收口（2026-06-10，已全部上线）
+
+用户多次重启 loop 后，R6–R8 把对抗从 store/retrieval/routes/live-doc 扩到【前 5 轮从未触及的新面】并做收口确认。
+
+**R6（7 确认，0 high）—— 新面首扫（MemoryLifecycle/读注入/memo）：**
+- resolveConflict 按裸 confidence 选 winner、不设 loser.supersededBy → 留 archived 当权威、召回坍塌 → 先 resolveAuthority 各输入、loser 归档带 supersededBy=winner、winner 强制活态。
+- archiveOld 用被折叠污染的 updatedAt 判老化、归档仍被谱系引用的活权威 → 跳过被 supersededBy/mergedInto 引用的 id。
+- 显式选择路径不去重/不限 maxSelectedMemories → 按 id 去重 + 硬截断；title 也走 truncateToTokens。
+- memo updateAgentSection 用 `includes` 子串判 add-vs-replace → 前缀名（A vs Alpha）静默丢写 → 改行锚正则。
+- followup：lifecycle.verify 不清谱系（verified+supersededBy 僵尸态）→ 清 supersededBy/mergedInto。提交 `3f1068b`+`838d23a`。
+
+**R7（5 确认，0 high）—— 收口确认 + 完整性扫荡：**
+- **truncateToTokens 切裂代理对**（可达）：截断落在星平面字符（emoji/CJK扩展/数学符号）边界 → 留半个代理 → UTF-8 上线损坏 → 末位落单高代理则丢弃。
+- **memo `String.replace` 把自由文本当替换串**（可达）：`$&/$\`/$'/$N` 被当替换模式 → memo 错乱 → 三处改函数替换器 `()=>text`。
+- lifecycle resolveAuthority/archiveOld 是单 type，与 retrieval/route 的跨 type 权威模型分裂（dormant）→ 跨 type findById；同谱系早返回若 archived 则复活。提交 `41492b9`。
+
+**R8（2 确认，reachableCount=0，终轮）—— 收敛达成：**
+- memo addGoal/addUserAction 子串 marker 命中超集标题（`## Goals Achieved`）（dormant）→ 行锚正则。
+- recency 对 NaN/未来 updatedAt 给最高分（dormant，仅 out-of-band 可触发）→ NaN→0（最旧）；create 保留接受显式 updatedAt 的能力（import/migration 合法），危害由 recency 修复中和。提交 `C17`。
+- R8 大批 passedChecks 确认 truncateToTokens 在所有代理对边界稳健（可达全过）、R6/R7 修复全部闭合。
+
+**最终收敛结论**：缺陷数 R1→R8 = 8→7→3→1→2→7→5→2，**high 数 R3–R8 连续 6 轮归零，R8 = 0 生产可达缺陷**。覆盖全系统（store/retrieval/routes/live-doc/lifecycle/injection/memo/tokens）× 两个角度（安全绕路 + 功能正确性）。**关联（typed edges/relations）与发展（supersede/verify 生命周期 + 路径压缩 + 跨 type 权威解析 + 检索权威交付）功能确认正常。** 累计 **1544 测试全绿**（+35 R2–R8 回归锁），每轮 `check`+build+重启上线+live 烟测。对抗纪律：只攻 mkdtemp/stub 临时数据，绝不碰真实 `.zero/memory`，绝不改产品代码，临时测试跑完即删，0 残留；schema 加 `reachable` 字段区分生产可达 vs dormant，以"0 可达缺陷"为停止判据。
