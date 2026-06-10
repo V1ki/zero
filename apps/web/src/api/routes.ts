@@ -7,6 +7,8 @@ import {
   type MemoryType,
   type ModelPoolConfig,
   type ModelPricing,
+  clampConfidence,
+  isMemoryStatus,
   toErrorMessage,
 } from '@zero-os/shared'
 import { readYaml, writeYaml } from '@zero-os/shared/utils'
@@ -973,10 +975,11 @@ export function createRoutes(zero: ZeroOS) {
       if (!body.type || !body.title || !body.content) {
         return c.json({ error: 'type, title, and content are required' }, 400)
       }
+      // status 枚举校验 + confidence 钳制，与 PUT/工具写路径一致（对抗实测：create 端点曾是唯一缺口）。
       const memory = await zero.memoryStore.create(body.type, body.title, body.content, {
-        tags: body.tags ?? [],
-        status: body.status ?? 'draft',
-        confidence: body.confidence ?? 0.5,
+        tags: Array.isArray(body.tags) ? body.tags.filter((t) => typeof t === 'string') : [],
+        status: isMemoryStatus(body.status) ? body.status : 'draft',
+        confidence: clampConfidence(body.confidence) ?? 0.5,
       })
       invalidateClusterCache()
       return c.json({ memory })
@@ -1004,7 +1007,8 @@ export function createRoutes(zero: ZeroOS) {
       if (Array.isArray(body.tags) && body.tags.every((t: unknown) => typeof t === 'string')) {
         safe.tags = body.tags
       }
-      if (typeof body.confidence === 'number') safe.confidence = body.confidence
+      const clampedConfidence = clampConfidence(body.confidence)
+      if (clampedConfidence !== undefined) safe.confidence = clampedConfidence
       const updated = await zero.memoryStore.update(type, id, safe)
       if (!updated) return c.json({ error: 'Memory not found' }, 404)
       invalidateClusterCache()
@@ -1069,8 +1073,10 @@ export function createRoutes(zero: ZeroOS) {
         return c.json({ error: `supersede target not found: ${targetId}` }, 404)
       }
       // 沿目标谱系链走到底（visited 保证终止、无数值熔断——否则深链可绕过环检测）：
-      // 途中回指本条 → 成环拒绝(409)；链尾活权威用于路径压缩，让链深恒 ≤1。
+      // 途中回指本条 → 成环拒绝(409)；压缩到链尾【最后一个活节点】，让链深恒 ≤1
+      // 且不把 supersededBy 静默指向 archived 节点（整链全归档则回退到直接 target）。
       let cursor: typeof target | undefined = target
+      let lastLive: typeof target | undefined = target.status !== 'archived' ? target : undefined
       const visited = new Set<string>([targetId])
       while (cursor) {
         const nextId: string | undefined = cursor.supersededBy ?? cursor.mergedInto
@@ -1082,8 +1088,9 @@ export function createRoutes(zero: ZeroOS) {
         const next = findById(nextId)
         if (!next) break
         cursor = next
+        if (cursor.status !== 'archived') lastLive = cursor
       }
-      const authorityId = cursor?.id ?? targetId
+      const authorityId = lastLive?.id ?? targetId
       const updated = await zero.memoryStore.update(type, id, {
         status: 'archived' as MemoryStatus,
         supersededBy: authorityId,

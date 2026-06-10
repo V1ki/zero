@@ -271,3 +271,57 @@ describe('Adversarial regression locks R2', () => {
     expect(store.get('note', a)?.supersededBy).toBe(cc)
   })
 })
+
+describe('Adversarial regression locks R3', () => {
+  test('create endpoint validates status enum and clamps confidence', async () => {
+    const res = await post('/api/memory', {
+      type: 'note',
+      title: 'R3 create guard',
+      content: 'x',
+      status: 'PWNED_NOT_A_STATUS',
+      confidence: 999,
+      tags: ['__e2e__'],
+    })
+    expect(res.status).toBe(200)
+    const id = ((await res.json()) as { memory: { id: string } }).memory.id
+    const m = store.get('note', id)
+    expect(m?.status).toBe('draft') // 非法 status → 退回默认
+    expect(m?.confidence).toBe(1) // 999 → 钳制到 1
+    const neg = await post('/api/memory', {
+      type: 'note',
+      title: 'R3 neg',
+      content: 'y',
+      confidence: -5,
+      tags: ['__e2e__'],
+    })
+    const id2 = ((await neg.json()) as { memory: { id: string } }).memory.id
+    expect(store.get('note', id2)?.confidence).toBe(0) // -5 → 0
+  })
+
+  test('PUT clamps confidence to [0,1]', async () => {
+    const m = await store.create('note', 'R3 put conf', 'b', {
+      status: 'verified',
+      confidence: 0.5,
+    })
+    await app.request(`/api/memory/note/${m.id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ confidence: 42 }),
+    })
+    expect(store.get('note', m.id)?.confidence).toBe(1)
+  })
+
+  test('supersede compresses to last live node, not an archived tail', async () => {
+    const a = (await store.create('note', 'R3 a', 'a', { status: 'verified' })).id
+    const mid = (await store.create('note', 'R3 mid', 'm', { status: 'verified' })).id
+    const tail = (await store.create('note', 'R3 tail', 't', { status: 'verified' })).id
+    await post(`/api/memory/note/${mid}/supersede`, { bySupersededId: tail }) // mid -> tail (mid archived, tail live)
+    await post(`/api/memory/note/${tail}/archive`) // tail now archived → chain tail dead
+    // a superseded by mid: walk mid->tail, both archived → no live node deeper than... mid is archived,
+    // tail archived → lastLive undefined → falls back to immediate target (mid), not the archived tail
+    await post(`/api/memory/note/${a}/supersede`, { bySupersededId: mid })
+    const sb = store.get('note', a)?.supersededBy
+    expect(sb).not.toBe(tail) // 不指向 archived 链尾
+    expect(sb).toBe(mid) // 回退到直接 target
+  })
+})

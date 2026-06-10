@@ -19,6 +19,19 @@ export const ALL_MEMORY_TYPES: MemoryType[] = [
 
 export type MemoryStatus = 'draft' | 'verified' | 'archived' | 'conflict'
 
+export const MEMORY_STATUSES: MemoryStatus[] = ['draft', 'verified', 'archived', 'conflict']
+
+/** 运行时校验 status 枚举（写路径绕过 TS 类型，需统一校验）。 */
+export function isMemoryStatus(s: unknown): s is MemoryStatus {
+  return typeof s === 'string' && (MEMORY_STATUSES as string[]).includes(s)
+}
+
+/** confidence 语义为 [0,1] 概率；非有限数返回 undefined，否则钳制到 [0,1]。 */
+export function clampConfidence(n: unknown): number | undefined {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return undefined
+  return Math.min(1, Math.max(0, n))
+}
+
 /** 记忆之间带类型的边（关联柱）。不复用 related[]，避免与 resolveConflict 的裸 id 双写污染。 */
 export type MemoryEdgeKind =
   | 'same-as' // 纯重复

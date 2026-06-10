@@ -3,6 +3,8 @@ import {
   type MemoryType,
   type ToolContext,
   type ToolResult,
+  clampConfidence,
+  isMemoryStatus,
 } from '@zero-os/shared'
 import { BaseTool } from './base'
 
@@ -157,13 +159,9 @@ export class MemoryTool extends BaseTool {
         if (Array.isArray(raw.tags) && raw.tags.every((t) => typeof t === 'string')) {
           safeUpdates.tags = raw.tags
         }
-        if (typeof raw.confidence === 'number') safeUpdates.confidence = raw.confidence
-        if (
-          typeof raw.status === 'string' &&
-          ['draft', 'verified', 'archived', 'conflict'].includes(raw.status)
-        ) {
-          safeUpdates.status = raw.status
-        }
+        const clampedConfidence = clampConfidence(raw.confidence)
+        if (clampedConfidence !== undefined) safeUpdates.confidence = clampedConfidence
+        if (isMemoryStatus(raw.status)) safeUpdates.status = raw.status
         const updated = await ctx.memoryStore.update(resolvedType.type, id, safeUpdates, {
           sessionId: ctx.sessionId,
         })
