@@ -54,7 +54,12 @@ export class MemoryLifecycle {
    * Archive old or low-value memories.
    */
   async archiveOld(type: MemoryType, olderThanDays: number): Promise<number> {
-    const cutoff = new Date(Date.now() - olderThanDays * 86_400_000).toISOString()
+    // 钳到安全区间：超大有限值会让 Date 毫秒越界（|ms|>8.64e15）→ toISOString 抛 RangeError→500
+    // （对抗实测：olderThanDays≈27 万年即崩）；非有限值回退默认 30。
+    const safeDays = Number.isFinite(olderThanDays)
+      ? Math.max(0, Math.min(olderThanDays, 3_650_000))
+      : 30
+    const cutoff = new Date(Date.now() - safeDays * 86_400_000).toISOString()
     const memories = this.store.list(type)
     // 仍被其他条 supersededBy/mergedInto 指向的 id 是活权威——绝不能因 updatedAt 老化被归档，
     // 否则命中被取代条沿谱系重定向到的目标会被 status 门槛丢弃（整条谱系召回坍塌）。
@@ -110,8 +115,10 @@ export class MemoryLifecycle {
    * Higher confidence wins; if equal, more recent wins.
    */
   async resolveConflict(type: MemoryType, id1: string, id2: string): Promise<Memory | undefined> {
-    const m1 = this.store.get(type, id1)
-    const m2 = this.store.get(type, id2)
+    // 跨 type 解析两个顶层入参：otherId 常是 neighbors/clusters surface 的异类型条，
+    // 只按入参 type 查会把存在的异类型条误判"不存在"（对抗实测：端点误报 404）。
+    const m1 = this.store.get(type, id1) ?? this.findById(id1)
+    const m2 = this.store.get(type, id2) ?? this.findById(id2)
     if (!m1 || !m2) return undefined
 
     // 先解析到各自活权威，避免把已被取代的旧条选成 winner（对抗实测：裸 confidence 选 winner
@@ -145,14 +152,13 @@ export class MemoryLifecycle {
     await this.store.update(loser.type, loser.id, { status: 'archived', supersededBy: winner.id })
 
     // winner 强制为活权威态：清自身谱系指针、若被归档则复活，并记录关联。
-    const related = winner.related.includes(loser.id)
-      ? winner.related
-      : [...winner.related, loser.id]
-    return this.store.update(winner.type, winner.id, {
-      related,
-      status: winner.status === 'archived' ? 'verified' : winner.status,
+    // 用函数式更新基于【最新】winner 快照算 related——并发裁决同一 winner 时正确叠加 related，
+    // 不会后写覆盖前写丢反向关联（对抗实测）。
+    return this.store.update(winner.type, winner.id, (cur) => ({
+      related: cur.related.includes(loser.id) ? cur.related : [...cur.related, loser.id],
+      status: cur.status === 'archived' ? 'verified' : cur.status,
       supersededBy: undefined,
       mergedInto: undefined,
-    })
+    }))
   }
 }

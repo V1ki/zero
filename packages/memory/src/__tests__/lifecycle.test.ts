@@ -279,3 +279,43 @@ describe('MemoryLifecycle cross-type authority (R7)', () => {
     expect(winner?.status).toBe('verified') // 复活，不返回 archived
   })
 })
+
+describe('MemoryLifecycle endpoint-integration hardening (R9)', () => {
+  let dir: string
+  let store: MemoryStore
+  let life: MemoryLifecycle
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'zero-life-r9-'))
+    store = new MemoryStore(dir)
+    life = new MemoryLifecycle(store)
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  test('concurrent resolveConflict on the same winner accumulates related (no lost update)', async () => {
+    const a = await store.create('note', 'A', 'a', { status: 'verified', confidence: 0.9 })
+    const b = await store.create('note', 'B', 'b', { status: 'verified', confidence: 0.4 })
+    const cc = await store.create('note', 'C', 'c', { status: 'verified', confidence: 0.5 })
+    await Promise.all([
+      life.resolveConflict('note', a.id, b.id),
+      life.resolveConflict('note', a.id, cc.id),
+    ])
+    const winner = store.get('note', a.id)
+    expect(winner?.related.sort()).toEqual([b.id, cc.id].sort()) // 两条反向关联都在
+    expect(store.get('note', b.id)?.supersededBy).toBe(a.id)
+    expect(store.get('note', cc.id)?.supersededBy).toBe(a.id)
+  })
+
+  test('resolveConflict resolves cross-type top-level args', async () => {
+    const rb = await store.create('runbook', 'RB', 'x', { status: 'verified', confidence: 0.9 })
+    const nt = await store.create('note', 'NT', 'x', { status: 'verified', confidence: 0.3 })
+    // 入参 type=runbook，但 id2 是 note：仍应裁决成功（不返回 undefined）
+    const winner = await life.resolveConflict('runbook', rb.id, nt.id)
+    expect(winner?.id).toBe(rb.id)
+    expect(store.get('note', nt.id)?.status).toBe('archived')
+  })
+
+  test('archiveOld clamps huge olderThanDays (no RangeError)', async () => {
+    await store.create('note', 'X', 'x', { status: 'verified' })
+    expect(await life.archiveOld('note', 1e308)).toBeGreaterThanOrEqual(0) // 不抛
+  })
+})

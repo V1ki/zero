@@ -407,3 +407,29 @@ describe('MemoryLifecycle endpoints (wired)', () => {
     expect((await post('/api/memory/maintenance/archive-old', {})).status).toBe(400)
   })
 })
+
+describe('MemoryLifecycle endpoints hardening (R9)', () => {
+  test('resolve-conflict works cross-type (otherId of a different type)', async () => {
+    const rb = await store.create('runbook', 'Kernel rb', 'k', {
+      status: 'verified',
+      confidence: 0.9,
+    })
+    const nt = await store.create('note', 'Kernel nt', 'k', { status: 'verified', confidence: 0.4 })
+    const res = await post(`/api/memory/runbook/${rb.id}/resolve-conflict`, { otherId: nt.id })
+    expect(res.status).toBe(200) // 不再误报 404
+    const data = (await res.json()) as { winner: { id: string } }
+    expect(data.winner.id).toBe(rb.id) // 高 conf 的 runbook 胜
+    expect(store.get('note', nt.id)?.status).toBe('archived') // 跨 type loser 正确归档
+    expect(store.get('note', nt.id)?.supersededBy).toBe(rb.id)
+  })
+
+  test('archive-old clamps a huge olderThanDays instead of 500ing', async () => {
+    const res = await post('/api/memory/maintenance/archive-old', {
+      type: 'decision',
+      olderThanDays: 1e308,
+    })
+    expect(res.status).toBe(200) // 不再 RangeError → 500
+    const data = (await res.json()) as { archived: number }
+    expect(typeof data.archived).toBe('number')
+  })
+})

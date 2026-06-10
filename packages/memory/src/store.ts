@@ -43,7 +43,7 @@ export interface MemoryRepository {
   update(
     type: MemoryType,
     id: string,
-    updates: Partial<Memory>,
+    updates: Partial<Memory> | ((current: Memory) => Partial<Memory>),
     context?: { sessionId?: string; precondition?: (current: Memory) => boolean },
   ): Promise<Memory | undefined>
   delete(type: MemoryType, id: string): Promise<boolean>
@@ -236,7 +236,7 @@ export class MemoryStore implements MemoryRepository {
   async update(
     type: MemoryType,
     id: string,
-    updates: Partial<Memory>,
+    updates: Partial<Memory> | ((current: Memory) => Partial<Memory>),
     _context?: { sessionId?: string; precondition?: (current: Memory) => boolean },
   ): Promise<Memory | undefined> {
     const memory = this.get(type, id)
@@ -248,11 +248,15 @@ export class MemoryStore implements MemoryRepository {
     // 由调用方降级为 create。
     if (_context?.precondition && !_context.precondition(memory)) return undefined
 
+    // 函数式更新：在同一原子 get→save 临界区内基于【最新】快照计算补丁，让并发 read-modify-write
+    // （如多次 resolveConflict 往同一 winner.related 追加）正确叠加而非后写覆盖前写（对抗实测）。
+    const patch = typeof updates === 'function' ? updates(memory) : updates
+
     // 显式传 undefined/null：仅可选谱系/元字段视为"移除"（verify 清谱系指针走此通道）；
     // 必填字段（content/title/status...）的 undefined/null 一律忽略、保留原值，
     // 否则会把正文清成空导致序列化崩溃（对抗实测：工具/PUT 误传 content:null 崩溃整个 update）。
     const updated = { ...memory } as unknown as Record<string, unknown>
-    for (const [key, value] of Object.entries(updates)) {
+    for (const [key, value] of Object.entries(patch)) {
       if (value === undefined || value === null) {
         if (STRIPPABLE_UPDATE_KEYS.has(key)) delete updated[key]
         continue
