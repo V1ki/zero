@@ -34,6 +34,7 @@ import {
   sanitizeConversationHistoryForSignedThinkingToolUse,
 } from '../agent/context'
 import { retrieveMemoriesWithDecision } from '../agent/memory-retrieval'
+import { CONTEXT_PARAMS } from '../agent/params'
 import {
   buildDynamicContext,
   buildRetrievedMemoriesBlock,
@@ -46,6 +47,7 @@ import { loadBootstrapFiles } from '../bootstrap/loader'
 import { loadSkills } from '../skill/loader'
 import { supportsToolForModel, supportsVision } from '../tool/capabilities'
 import type { ToolRegistry } from '../tool/registry'
+import { createLiveDocHandle } from './live-doc'
 import { SessionRunningToolRegistry } from './running-tool-registry'
 
 /**
@@ -137,6 +139,9 @@ export class Session {
   private nextTurnIndex = 1
   private pendingAgentRefresh = false
   private injectedMemoryIds = new Map<string, string>()
+  // P3a: topicKey → 本会话该主题的活文档 memoryId。纯内存态，不进 persistState；
+  // 作用域是会话（跨 initAgent 重建有意保留）；restore() 必须重新初始化为空 Map。
+  private liveDocs = new Map<string, string>()
   private runningToolRegistry = new SessionRunningToolRegistry()
   /** Channel capabilities for system prompt injection */
   private channelCapabilities?: ChannelCapabilities
@@ -294,6 +299,9 @@ export class Session {
       scheduleStore: this.deps.scheduleStore,
       agentControl: this.agentControl,
       runningToolRegistry: this.runningToolRegistry,
+      liveDocHandle: CONTEXT_PARAMS.memory.liveDocEnabled
+        ? createLiveDocHandle(this.liveDocs, this.deps.memoryStore)
+        : undefined,
     }
 
     const agentObs: AgentObservability = {
@@ -1142,6 +1150,7 @@ export class Session {
       nextTurnIndex: Session.deriveNextTurnIndex(data.id, restoredMessages, deps.observability),
       pendingAgentRefresh: false,
       injectedMemoryIds: new Map<string, string>(),
+      liveDocs: new Map<string, string>(),
       runningToolRegistry: new SessionRunningToolRegistry(),
     })
     session.restoreSnapshotStateFromLogger()

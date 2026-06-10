@@ -257,6 +257,10 @@ export interface ToolContext {
       path: string,
       options?: { from?: number; lines?: number },
     ): { path: string; text: string } | undefined
+    findSimilar?(
+      input: { title: string; content: string; tags: string[] },
+      opts?: { topK?: number; candidateIds?: string[]; minScore?: number },
+    ): Promise<{ id: string; type: MemoryType; score: number } | undefined>
   }
   channelBinding?: {
     source: string
@@ -276,6 +280,19 @@ export interface ToolContext {
   }
   agentControl?: AgentControlHandle
   runningToolRegistry?: RunningToolRegistry
+  /** P3a: 会话内活文档折叠句柄。memory create 命中同主题时改走 update（合并正文），治会话内快照爆发。 */
+  liveDocHandle?: {
+    route(input: {
+      type: MemoryType
+      title: string
+      content: string
+      tags: string[]
+    }): Promise<
+      | { memoryId: string; existingContent: string; existingTags: string[]; maxChars: number }
+      | undefined
+    >
+    register(input: { type: MemoryType; title: string; tags: string[] }, memoryId: string): void
+  }
 }
 
 export interface ToolLogger {

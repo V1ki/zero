@@ -3,6 +3,16 @@
  * All magic numbers are collected here for easy experimentation.
  */
 export const CONTEXT_PARAMS = {
+  /** P3a 会话内活文档折叠（同主题 create→update 合并），默认关：先影子标定折叠率再开 */
+  memory: {
+    // 2026-06-10 经真实数据回放标定后开启（会话内去重 40%，ComfyUI 24→4、ADB 7→1）。
+    liveDocEnabled: true,
+    liveDocMaxChars: 8000,
+    // 真实数据回放实测：tag 键折叠仅消除 1%（tag 漂移是常态），向量路径才是主力；
+    // 阈值 0.90（与聚类入簇阈值一致）会话内重复消除 40%，0.92 只有 29%。折叠是 append 不丢内容，0.90 风险可控。
+    liveDocVectorEnabled: true,
+    liveDocSimThreshold: 0.9,
+  },
   /** System Prompt fixed budget allocations (tokens) — static, built once per session */
   budget: {
     role: 500,

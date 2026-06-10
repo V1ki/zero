@@ -18,6 +18,25 @@ interface MemoryInput {
   updates?: Record<string, unknown>
 }
 
+const LIVE_DOC_SEP = '\n\n---\n\n'
+
+// P3a: 有界 section append —— 新写入作为新小节追加；超字符上界则丢最旧小节，防活文档无限膨胀。
+// 去重按"小节级全等"（不用 includes 子串判定，避免短句误吞）；单节自身超界时硬截断兜底。
+function mergeLiveDocContent(existing: string, incoming: string, maxChars: number): string {
+  const inc = incoming.trim()
+  const ex = existing.trim()
+  const existingParts = ex ? ex.split(LIVE_DOC_SEP) : []
+  if (!inc || existingParts.some((p) => p.trim() === inc)) return ex
+  let parts = existingParts.concat(inc)
+  let merged = parts.join(LIVE_DOC_SEP)
+  while (parts.length > 1 && merged.length > maxChars) {
+    parts = parts.slice(1)
+    merged = parts.join(LIVE_DOC_SEP)
+  }
+  if (merged.length > maxChars) merged = merged.slice(0, maxChars)
+  return merged
+}
+
 /**
  * MemoryTool — create, update, delete, or list memories.
  */
@@ -36,7 +55,8 @@ export class MemoryTool extends BaseTool {
       type: {
         type: 'string',
         enum: ALL_MEMORY_TYPES,
-        description: 'Memory type (required for create/list; optional for update/delete when id is enough)',
+        description:
+          'Memory type (required for create/list; optional for update/delete when id is enough)',
       },
       title: { type: 'string', description: 'Memory title (required for create)' },
       content: { type: 'string', description: 'Memory content in Markdown (required for create)' },
@@ -74,12 +94,41 @@ export class MemoryTool extends BaseTool {
             outputSummary: 'Missing required fields for create',
           }
         }
+        const tagList = tags ?? []
+        // P3a: 会话内活文档折叠 —— 命中同主题则改走 update（合并正文），不新增。
+        // 折叠是 best-effort：路由（含向量查询）失败一律降级为正常 create，绝不阻断写入。
+        const folded = await ctx.liveDocHandle
+          ?.route({ type, title, content, tags: tagList })
+          .catch(() => undefined)
+        if (folded) {
+          const mergedContent = mergeLiveDocContent(
+            folded.existingContent,
+            content,
+            folded.maxChars,
+          )
+          const mergedTags = Array.from(new Set([...folded.existingTags, ...tagList]))
+          const updated = await ctx.memoryStore.update(
+            type,
+            folded.memoryId,
+            { content: mergedContent, tags: mergedTags },
+            { sessionId: ctx.sessionId },
+          )
+          if (updated) {
+            return {
+              success: true,
+              output: `Memory folded into live-doc: ${updated.id} (${updated.type}) "${updated.title}"`,
+              outputSummary: `Updated live-doc: ${updated.title}`,
+            }
+          }
+          // 活文档已不存在（被删/归档清理）→ 落到正常 create。
+        }
         const memory = await ctx.memoryStore.create(type, title, content, {
           status: 'verified',
           confidence: 0.85,
-          tags: tags ?? [],
+          tags: tagList,
           sessionId: ctx.sessionId,
         })
+        ctx.liveDocHandle?.register({ type, title, tags: tagList }, memory.id)
         return {
           success: true,
           output: `Memory created: ${memory.id} (${memory.type}) "${memory.title}"`,
