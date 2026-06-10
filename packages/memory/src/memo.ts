@@ -61,10 +61,11 @@ export class MemoManager {
     await withLock(this.filePath, async () => {
       let content = this.read()
       const marker = '## Needs User Action'
-
-      if (content.includes(marker)) {
-        // 函数替换器：自由文本里的 $&/$`/$'/$N 不会被当替换模式展开（对抗实测：否则 memo 错乱）。
-        content = content.replace(marker, () => `${marker}\n- ${item}`)
+      // 行锚正则判定+替换：避免子串匹配命中超集标题（如 '## Needs User Action Log'）而错位拼接；
+      // 函数替换器：自由文本里的 $&/$`/$'/$N 不会被当替换模式展开（对抗实测）。
+      const markerRegex = /^## Needs User Action$/m
+      if (markerRegex.test(content)) {
+        content = content.replace(markerRegex, () => `${marker}\n- ${item}`)
       } else {
         content += `\n\n## Needs User Action\n- ${item}\n`
       }
@@ -80,10 +81,11 @@ export class MemoManager {
     await withLock(this.filePath, async () => {
       let content = this.read()
       const marker = '## Goals'
-
-      if (content.includes(marker)) {
-        // 函数替换器：自由文本里的 $&/$`/$'/$N 不会被当替换模式展开（对抗实测：否则 memo 错乱）。
-        content = content.replace(marker, () => `${marker}\n- ${goal}`)
+      // 行锚正则判定+替换：避免子串匹配命中超集标题（如 '## Goals Achieved'）而错位拼接；
+      // 函数替换器：自由文本里的 $&/$`/$'/$N 不会被当替换模式展开（对抗实测）。
+      const markerRegex = /^## Goals$/m
+      if (markerRegex.test(content)) {
+        content = content.replace(markerRegex, () => `${marker}\n- ${goal}`)
       } else {
         content += `\n\n## Goals\n- ${goal}\n`
       }

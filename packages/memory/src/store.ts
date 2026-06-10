@@ -81,6 +81,8 @@ export class MemoryStore implements MemoryRepository {
     const { id, release } = this.allocateCreateId(requestedId)
     const timestamp = now()
     try {
+      // create 允许 caller 显式提供 createdAt/updatedAt（import/migration 需保留原始时间戳）；
+      // 对异常时间戳的防护下沉到 recency 评分（NaN→最旧），不在此处强制 now()。
       const memory: Memory = {
         id,
         type,

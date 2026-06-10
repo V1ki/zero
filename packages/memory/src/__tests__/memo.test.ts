@@ -119,3 +119,21 @@ describe('MemoManager $-pattern safety (R7)', () => {
     expect(content).not.toContain('## Goals100') // $& 未被展开成 marker
   })
 })
+
+describe('MemoManager superset-header safety (R8)', () => {
+  const dir = join(import.meta.dir, '__fixtures__-r8')
+  afterAll(() => rmSync(dir, { recursive: true, force: true }))
+
+  test('addGoal does not corrupt a preceding superset header (## Goals Achieved)', async () => {
+    mkdirSync(dir, { recursive: true })
+    const p = join(dir, 'memo.md')
+    const m = new MemoManager(p)
+    await m.write('# Memo\n\n## Goals Achieved\n- old done\n\n## Goals\n- active goal\n')
+    await m.addGoal('NEW GOAL')
+    const content = m.read()
+    expect(content).toContain('## Goals Achieved') // 超集标题完好
+    expect(content).toContain('- old done')
+    expect(content).not.toContain('NEW GOAL Achieved') // 没拼到超集标题里
+    expect(content).toMatch(/## Goals\n- NEW GOAL\n- active goal/) // 拼到了真正的 ## Goals
+  })
+})

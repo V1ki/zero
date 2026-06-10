@@ -345,6 +345,47 @@ describe('MemoryRetriever', () => {
 
     rmSync(recentDir, { recursive: true, force: true })
   })
+
+  // 对抗R8回归：不可解析的 updatedAt → recency=0（最旧），不被最高加成顶到前面。
+  test('recency treats an unparseable updatedAt as oldest, not max-boosted', async () => {
+    const badDir = mkdtempSync(join(tmpdir(), 'zero-retrieval-badrecency-'))
+    const badStore = new MemoryStore(badDir)
+    const good = await badStore.create('note', 'Good', 'deploy notes', {
+      tags: ['deploy'],
+      status: 'verified',
+      confidence: 0.8,
+      updatedAt: '2026-03-10T00:00:00.000Z',
+    })
+    const bad = await badStore.create('note', 'Bad', 'deploy notes', {
+      tags: ['deploy'],
+      status: 'verified',
+      confidence: 0.8,
+      updatedAt: 'not-a-date',
+    })
+    const metadata = new Map(
+      [good, bad].map((m) => [
+        m.id,
+        { memoryId: m.id, type: m.type, title: m.title, updatedAt: m.updatedAt },
+      ]),
+    )
+    const retriever = new MemoryRetriever(
+      badStore,
+      createEmbeddingClient({ deploy: 1 }),
+      createVectorIndex({
+        metadataById: metadata,
+        resultsByVector: {
+          1: [
+            { memoryId: good.id, score: 0.8 },
+            { memoryId: bad.id, score: 0.8 },
+          ],
+        },
+      }),
+      { vectorWeight: 0.8, recencyWeight: 0.2, recencyHalfLifeDays: 30 },
+    )
+    const results = await retriever.retrieveScored('deploy')
+    expect(results[0]?.memory.id).toBe(good.id) // NaN 日期的 bad 不被顶到第一
+    rmSync(badDir, { recursive: true, force: true })
+  })
 })
 
 // P3/读柱：检索只取权威条 —— supersededBy/mergedInto 谱系重定向 + 权威去重。

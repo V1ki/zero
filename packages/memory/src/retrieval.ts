@@ -210,6 +210,9 @@ export class MemoryRetriever {
 
 function computeRecencyScore(memory: Memory, recencyHalfLifeDays: number): number {
   const ageInDays = (Date.now() - new Date(memory.updatedAt).getTime()) / 86_400_000
-  if (!Number.isFinite(ageInDays) || ageInDays < 0) return 1
+  // 不可解析/NaN 的 updatedAt 视为最旧（return 0）——绝不让损坏时间戳拿到最高 recency 加成；
+  // 轻微未来（时钟偏移，ageInDays<0）仍算最新。
+  if (!Number.isFinite(ageInDays)) return 0
+  if (ageInDays < 0) return 1
   return Math.exp(-ageInDays / recencyHalfLifeDays)
 }
