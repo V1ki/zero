@@ -27,6 +27,15 @@
 
 **规则**：整体覆盖（spread updates）语义里，`undefined/null` 含义二义——只对**可选字段白名单**视为"删除"，必填字段的 undefined/null 一律视为"不改、保留原值"。
 
+## route-time 检查 ≠ commit-time 保证（跨上下文 TOCTOU）
+
+**场景**：折叠 `route()` 里判过目标"仍活跃"，但到 `store.update` 落盘之间隔着 await（findSimilar）。这期间 web `/archive`|`/supersede` 端点（与 agent 折叠写共享同一 store、但无共享 mutex）把目标改死，新内容仍写进死文档成孤儿。Session Mutex 只串行化会话内 turn，挡不住"web 端点 vs agent 写"这种跨上下文竞态。
+
+**规则**：
+- 不变量在"读时/路由时"成立，不代表"写时/提交时"仍成立。凡判定点与落盘点之间有 await，且别的代码路径能改同一状态，就有 TOCTOU 窗口。
+- 修复下沉到**原子临界区内的 commit-time 复检**：找到无 await 的同步 get→write 段（JS 单线程下它相对其他写入原子），在 write 前复查不变量，违反则中止/降级。不要靠"判定时检查一次"。
+- 识别真竞态边界：先问"这两条写路径共享 mutex 吗"。会话内串行（agent-loop for-await + 消息级 Mutex）能消除会话内并发，但消除不了 web 端点与 agent 的并发——后者才是真窗口。
+
 ## Opus 多轮对抗的纪律（沿用并固化）
 
 - loop-until-dry：每轮"攻击面→实跑测试→只报可复现→复现验证（设计内判 false）"，直到一轮 0 high/med。趋势看 high 数（多→4→0→0 即收敛）。

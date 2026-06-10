@@ -299,4 +299,15 @@
 - [low] `GET /api/memory/clusters?threshold=abc` → `Number('abc')=NaN` 穿透 `[0.8,0.99]` clamp → 所有 cos≥NaN 恒 false → 近重复簇静默归零（现网 UI 不传 threshold 不可达）→ `normalizeThreshold()` 非有限值归一默认 0.9（compute + getCached 共用，缓存键也规范化）。提交 `1ef7cca`。
 - R4 大批 passedChecks 确认 R1–R3 修复全部闭合：clampConfidence/isMemoryStatus 各边界、supersede lastLive 多跳压缩+全归档回退、retrieval 空 query 短路、relations/neighbors/clusters/折叠边界、谱系隔离未回退。
 
-**收敛结论**：缺陷数 R1→R4 = 8→7→3→1，high 数 多→4→0→0，R4 实质干净。**关联（typed edges/relations）与发展（supersede/verify 生命周期 + 路径压缩 + 检索权威解析）功能确认正常。** 累计 **241 测试全绿**（+15 R2–R4 回归锁），每轮 `check`+build+重启上线+live 烟测。对抗测试纪律：只攻 mkdtemp/stub 临时数据，绝不碰真实 `.zero/memory`，绝不改产品代码，临时测试跑完即删，0 残留。
+### 12.4 Opus 4.8 对抗 R5（功能正确性向新角度，2026-06-10，已上线）
+
+R1–R4 主攻【写入校验/绕路/畸形输入】(安全向)且收敛后，用户再次重启 loop。R5 换【功能正确性向】新角度——验证关联/发展"做对了事"，而非只"挡住坏输入"。
+
+**读柱交付正确性（大批 passedChecks 确认全对）**：跨 type mergedInto 重定向交付活权威本体（id/type/content 对）；topN 截断在 byAuthority 去重【之后】不丢真权威；评分多命中去重取 max；resolvedFrom 溯源（自身命中不入、两跳只记最初命中）；门槛"命中或权威任一满足 confidence/tags"各组合正确；status 门槛只看权威条；悬挂谱系指针/环/自环防护（visited 终止）。关联图大多设计内（edges 不入任何交付/聚类路径，纯人工标注）。
+
+**2 确认（0 high/0 med，均 low、均有界、均已修）**：
+- [low] **折叠 TOCTOU**：`route()` 判活与 `store.update` 落盘之间有 await 窗口（findSimilar），期间文档被 web `/archive`|`/supersede` 端点改掉（与 agent 折叠写无共享 mutex——Session Mutex 只串行化会话内 turn，不同步 web 端点），新内容写进死文档成孤儿（检索黑洞，有界）。代码预见了"删除竞态"（update 返回 undefined → 降级 create）却漏了"归档/取代竞态"（update 返回 truthy → 折叠"成功"进死文档）。**修**：`store.update` 加 commit-time `precondition`，在 get→save 同步临界区内复检；折叠路径传 `isActiveFoldTarget`，不满足则中止、降级 create。（注：同会话并发折叠丢写判 false——agent-loop 串行 + 消息级 Mutex 双重串行化，per-Session liveDocs 不可能真并发。）
+- [low] **neighbors 返回死节点当顶级"选取代来源"且不带 status**——与 clusters/retrieval 跨面不一致（误导治理 UI，但下游 supersede 会压缩到活权威，无数据损坏）。**修**：payload 补 `status`/`supersededBy`/`mergedInto`，与 cluster 成员一致，让治理者看见死节点。
+- 提交 `a6b8f24`。
+
+**总收敛结论**：缺陷数 R1→R5 = 8→7→3→1→2，high 数 多→4→0→0→0，R4/R5 连续两轮 0 high/0 med（仅 low 有界边角）。**两个角度（安全/绕路 + 功能正确性）均已收敛；关联（typed edges/relations）与发展（supersede/verify 生命周期 + 路径压缩 + 检索权威解析）功能确认正常。** 累计 **244 测试全绿**（+19 R2–R5 回归锁），每轮 `check`+build+重启上线+live 烟测。对抗测试纪律：只攻 mkdtemp/stub 临时数据，绝不碰真实 `.zero/memory`，绝不改产品代码，临时测试跑完即删，0 残留。
