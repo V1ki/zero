@@ -317,3 +317,71 @@ describe('IndexedMemoryStore', () => {
     expect(match).toBeUndefined()
   })
 })
+
+// 对抗R14回归：IndexedMemoryStore 按 id 串行化——并发同 id 写不丢失/不分叉(store 与向量索引一致)。
+describe('IndexedMemoryStore per-id serialization (R14)', () => {
+  test('concurrent same-id updates keep store content and index vector consistent', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zero-indexed-concurrency-'))
+    const base = new MemoryStore(dir)
+    const vectors = new Map<string, number[]>()
+    const idx = {
+      async ensureIndex() {},
+      async query() {
+        return []
+      },
+      async getStats() {
+        return { itemCount: vectors.size }
+      },
+      async getMetadata() {
+        return undefined
+      },
+      async listAll() {
+        return [] as never[]
+      },
+      async upsert(id: string, vector: number[]) {
+        vectors.set(id, vector)
+      },
+      async delete(id: string) {
+        vectors.delete(id)
+      },
+    }
+    // embed 把内容长度编进向量；用一次性闸卡住"并发第一个写"的 embed 以强制最坏交错(无 sleep)
+    let parkedResolve: (() => void) | undefined
+    const parked = new Promise<void>((r) => {
+      parkedResolve = r
+    })
+    let releaseGate: (() => void) | undefined
+    const gate = new Promise<void>((r) => {
+      releaseGate = r
+    })
+    let armed = false
+    const embedding = {
+      async embed(text: string) {
+        if (armed) {
+          armed = false
+          parkedResolve?.()
+          await gate
+        }
+        return [text.length, 1]
+      },
+      async embedBatch(texts: string[]) {
+        return texts.map((t) => [t.length, 1])
+      },
+      memoryToText(m: { content: string }) {
+        return m.content
+      },
+    }
+    const store = new IndexedMemoryStore(base, embedding as never, idx as never)
+    const m = await store.create('note', 'T', 'aaaa', { status: 'verified' }) // ungated 建立
+    armed = true
+    const pA = store.update('note', m.id, { content: 'AAAAAAAAAA' }) // 10 字符,其 embed 被卡
+    await parked // 确定性执行点:pA 已进 embed 并持锁 park
+    const pB = store.update('note', m.id, { content: 'BB' }) // 2 字符,被锁阻塞
+    releaseGate?.()
+    await Promise.all([pA, pB])
+    // 串行化后:store 内容长度 === 索引向量[0]（不分叉、不丢失）
+    const finalLen = base.get('note', m.id)?.content.length
+    expect(vectors.get(m.id)?.[0]).toBe(finalLen)
+    rmSync(dir, { recursive: true, force: true })
+  })
+})

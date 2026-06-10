@@ -13,6 +13,30 @@ export class IndexedMemoryStore implements MemoryRepository {
     private vectorIndex: VectorIndexLike,
   ) {}
 
+  // 按 memory id 串行化的 promise 链：store 写 + 向量 upsert + 失败回滚是跨 await 的复合操作，
+  // 无串行化时并发同 id 写会(A)回滚用旧快照覆盖并发已提交的写、(B)磁盘与向量索引分叉（对抗实测 R14）。
+  private readonly idChains = new Map<string, Promise<unknown>>()
+
+  private async withIdLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.idChains.get(id) ?? Promise.resolve()
+    // 串到上一持有者之后（忽略其成败），再运行 fn
+    const run = prev.then(
+      () => fn(),
+      () => fn(),
+    )
+    const tail = run.then(
+      () => {},
+      () => {},
+    )
+    this.idChains.set(id, tail)
+    try {
+      return await run
+    } finally {
+      // 没有更晚的调用接在后面才清理，避免 map 泄漏
+      if (this.idChains.get(id) === tail) this.idChains.delete(id)
+    }
+  }
+
   // P3a: 按内容找语义近邻，供活文档折叠治 tag 漂移漏判。
   // 给定 candidateIds（少数几条会话活文档）时直接取候选向量算精确余弦——
   // 全库 topK 召回会被历史同主题近重复挤掉候选（实测库里有 24 条同主题簇），不可靠。
@@ -119,35 +143,41 @@ export class IndexedMemoryStore implements MemoryRepository {
     updates: Partial<Memory> | ((current: Memory) => Partial<Memory>),
     context?: { sessionId?: string; precondition?: (current: Memory) => boolean },
   ): Promise<Memory | undefined> {
-    const existing = this.store.get(type, id)
-    if (!existing) return undefined
+    // 按 id 串行化：store 写 + upsert + 回滚 对同 id 原子，杜绝并发覆盖/分叉（R14）。
+    return this.withIdLock(id, async () => {
+      const existing = this.store.get(type, id)
+      if (!existing) return undefined
 
-    const updated = await this.store.update(type, id, updates, context)
-    if (!updated) return undefined
+      const updated = await this.store.update(type, id, updates, context)
+      if (!updated) return undefined
 
-    try {
-      await this.upsertMemory(updated, context?.sessionId)
-      invalidateClusterCache() // status/内容/向量变化 → 簇成员与权威建议变化
-      return updated
-    } catch (error) {
-      await this.store.save(existing)
-      throw error
-    }
+      try {
+        await this.upsertMemory(updated, context?.sessionId)
+        invalidateClusterCache() // status/内容/向量变化 → 簇成员与权威建议变化
+        return updated
+      } catch (error) {
+        // 持锁期间 existing 必为真实前像（无并发提交插入），回滚不会覆盖他人的写
+        await this.store.save(existing)
+        throw error
+      }
+    })
   }
 
   async delete(type: MemoryType, id: string): Promise<boolean> {
-    const existing = this.store.get(type, id)
-    if (!existing) return false
+    return this.withIdLock(id, async () => {
+      const existing = this.store.get(type, id)
+      if (!existing) return false
 
-    await this.vectorIndex.delete(id)
-    const deleted = await this.store.delete(type, id)
-    if (deleted) {
-      invalidateClusterCache() // 成员移除 → 簇组成变化（覆盖 session 删除/agent 工具/任意删除路径）
-      return true
-    }
+      await this.vectorIndex.delete(id)
+      const deleted = await this.store.delete(type, id)
+      if (deleted) {
+        invalidateClusterCache() // 成员移除 → 簇组成变化（覆盖 session 删除/agent 工具/任意删除路径）
+        return true
+      }
 
-    await this.upsertMemory(existing)
-    return false
+      await this.upsertMemory(existing)
+      return false
+    })
   }
 
   getAgentPreference(agentName: string): string {
