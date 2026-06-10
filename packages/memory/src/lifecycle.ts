@@ -1,4 +1,4 @@
-import type { Memory, MemoryType } from '@zero-os/shared'
+import { ALL_MEMORY_TYPES, type Memory, type MemoryType } from '@zero-os/shared'
 import type { MemoryRepository } from './store'
 
 /**
@@ -59,10 +59,14 @@ export class MemoryLifecycle {
     // 仍被其他条 supersededBy/mergedInto 指向的 id 是活权威——绝不能因 updatedAt 老化被归档，
     // 否则命中被取代条沿谱系重定向到的目标会被 status 门槛丢弃（整条谱系召回坍塌）。
     // 注：updatedAt 受折叠刷新污染，稳定权威条反而"显老"，故此守卫尤为必要（对抗实测）。
+    // 谱系指针可跨 type（merge/supersede 都用跨 type findById），故扫【所有类型】收集被引用 id，
+    // 单 type 扫描会漏掉跨 type 引用、把仍是别条权威的记忆误归档（与检索/supersede 权威模型一致）。
     const referenced = new Set<string>()
-    for (const mem of memories) {
-      if (mem.supersededBy) referenced.add(mem.supersededBy)
-      if (mem.mergedInto) referenced.add(mem.mergedInto)
+    for (const t of ALL_MEMORY_TYPES) {
+      for (const mem of this.store.list(t)) {
+        if (mem.supersededBy) referenced.add(mem.supersededBy)
+        if (mem.mergedInto) referenced.add(mem.mergedInto)
+      }
     }
     let archived = 0
 
@@ -76,15 +80,24 @@ export class MemoryLifecycle {
     return archived
   }
 
-  // 沿 supersededBy/mergedInto 链解析到活权威（visited 终止）；与 retrieval.resolveAuthority、
+  // 谱系指针只存 id（merge/supersede 可跨 type），先扫全类型定位——与 retrieval.findById 一致。
+  private findById(id: string): Memory | undefined {
+    for (const t of ALL_MEMORY_TYPES) {
+      const m = this.store.get(t, id)
+      if (m) return m
+    }
+    return undefined
+  }
+
+  // 沿 supersededBy/mergedInto 链解析到活权威（visited 终止，跨 type）；与 retrieval.resolveAuthority、
   // supersede 端点路径压缩同一权威模型，避免把已被取代的旧条当作裁决对象。
-  private resolveAuthority(type: MemoryType, memory: Memory): Memory {
+  private resolveAuthority(memory: Memory): Memory {
     let current = memory
     const visited = new Set<string>([memory.id])
     while (true) {
       const nextId = current.supersededBy ?? current.mergedInto
       if (!nextId || visited.has(nextId)) break
-      const next = this.store.get(type, nextId)
+      const next = this.findById(nextId)
       if (!next) break
       visited.add(nextId)
       current = next
@@ -103,9 +116,19 @@ export class MemoryLifecycle {
 
     // 先解析到各自活权威，避免把已被取代的旧条选成 winner（对抗实测：裸 confidence 选 winner
     // 会留 archived 当权威、把唯一活权威归档 → 召回坍塌）。同谱系则无需裁决。
-    const a1 = this.resolveAuthority(type, m1)
-    const a2 = this.resolveAuthority(type, m2)
-    if (a1.id === a2.id) return a1
+    const a1 = this.resolveAuthority(m1)
+    const a2 = this.resolveAuthority(m2)
+    if (a1.id === a2.id) {
+      // 同谱系无需裁决；但共同权威若已归档则复活——与下方 winner 分支一致，绝不返回 archived 当活权威。
+      if (a1.status === 'archived') {
+        return this.store.update(a1.type, a1.id, {
+          status: 'verified',
+          supersededBy: undefined,
+          mergedInto: undefined,
+        })
+      }
+      return a1
+    }
 
     const winner =
       a1.confidence !== a2.confidence
@@ -118,13 +141,14 @@ export class MemoryLifecycle {
     const loser = winner.id === a1.id ? a2 : a1
 
     // loser 归档并指向 winner —— 命中 loser 的检索沿谱系重定向到 winner（与 /supersede 一致）。
-    await this.store.update(type, loser.id, { status: 'archived', supersededBy: winner.id })
+    // 用各自解析出的权威条 type（可能跨 type），不能用入参 type。
+    await this.store.update(loser.type, loser.id, { status: 'archived', supersededBy: winner.id })
 
     // winner 强制为活权威态：清自身谱系指针、若被归档则复活，并记录关联。
     const related = winner.related.includes(loser.id)
       ? winner.related
       : [...winner.related, loser.id]
-    return this.store.update(type, winner.id, {
+    return this.store.update(winner.type, winner.id, {
       related,
       status: winner.status === 'archived' ? 'verified' : winner.status,
       supersededBy: undefined,

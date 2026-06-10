@@ -44,7 +44,8 @@ export class MemoManager {
       // 用与替换一致的【行锚】判定该 section 是否存在——不能用 includes 子串，否则 agent 名是
       // 已存在名的前缀（如 'A' vs 'Alpha'）会误入 replace 分支但正则不匹配 → 写入静默丢失（对抗实测）。
       if (new RegExp(`### ${escaped}\\n`).test(content)) {
-        content = content.replace(sectionRegex, newSection)
+        // 函数替换器：status/plan 自由文本里的 $&/$`/$'/$N 不会被当替换模式展开（对抗实测）。
+        content = content.replace(sectionRegex, () => newSection)
       } else {
         content = `${content.trimEnd()}\n\n${newSection}`
       }
@@ -62,7 +63,8 @@ export class MemoManager {
       const marker = '## Needs User Action'
 
       if (content.includes(marker)) {
-        content = content.replace(marker, `${marker}\n- ${item}`)
+        // 函数替换器：自由文本里的 $&/$`/$'/$N 不会被当替换模式展开（对抗实测：否则 memo 错乱）。
+        content = content.replace(marker, () => `${marker}\n- ${item}`)
       } else {
         content += `\n\n## Needs User Action\n- ${item}\n`
       }
@@ -80,7 +82,8 @@ export class MemoManager {
       const marker = '## Goals'
 
       if (content.includes(marker)) {
-        content = content.replace(marker, `${marker}\n- ${goal}`)
+        // 函数替换器：自由文本里的 $&/$`/$'/$N 不会被当替换模式展开（对抗实测：否则 memo 错乱）。
+        content = content.replace(marker, () => `${marker}\n- ${goal}`)
       } else {
         content += `\n\n## Goals\n- ${goal}\n`
       }

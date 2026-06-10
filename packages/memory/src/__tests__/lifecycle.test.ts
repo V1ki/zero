@@ -229,3 +229,53 @@ describe('MemoryLifecycle.verify clears lineage (R6 followup)', () => {
     expect(verified?.mergedInto).toBeUndefined()
   })
 })
+
+describe('MemoryLifecycle cross-type authority (R7)', () => {
+  let dir: string
+  let store: MemoryStore
+  let life: MemoryLifecycle
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'zero-life-r7-'))
+    store = new MemoryStore(dir)
+    life = new MemoryLifecycle(store)
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  test('archiveOld does not archive a live authority referenced cross-type', async () => {
+    const auth = await store.create('note', 'Auth', 'truth', { status: 'verified' })
+    const old = await store.create('decision', 'Old', 'old', { status: 'archived' })
+    await store.update('decision', old.id, { supersededBy: auth.id }) // 跨 type 引用
+    await store.save({
+      ...expectDefined(store.get('note', auth.id)),
+      updatedAt: '2000-01-01T00:00:00.000Z',
+    })
+    const n = await life.archiveOld('note', 30)
+    expect(store.get('note', auth.id)?.status).toBe('verified') // 跨 type 引用 → 不归档
+    expect(n).toBe(0)
+  })
+
+  test('resolveConflict resolves cross-type lineage to the real authority', async () => {
+    const tail = await store.create('decision', 'Tail', 'truth', {
+      status: 'verified',
+      confidence: 0.95,
+    })
+    const h = await store.create('note', 'H', 'stale', { status: 'archived', confidence: 0.5 })
+    await store.update('note', h.id, { supersededBy: tail.id }) // h 跨 type 指向 tail
+    const other = await store.create('note', 'Other', 'o', { status: 'verified', confidence: 0.6 })
+    const winner = await life.resolveConflict('note', h.id, other.id)
+    // h 解析到跨 type 的活权威 tail(conf 0.95) → tail 胜，h 的谱系指针不被改写
+    expect(winner?.id).toBe(tail.id)
+    expect(store.get('note', h.id)?.supersededBy).toBe(tail.id) // 未被改写
+  })
+
+  test('resolveConflict same-lineage early-return revives an archived shared authority', async () => {
+    const tail = await store.create('note', 'T', 't', { status: 'archived' })
+    const a = await store.create('note', 'A', 'a', { status: 'archived' })
+    const b = await store.create('note', 'B', 'b', { status: 'archived' })
+    await store.update('note', a.id, { supersededBy: tail.id })
+    await store.update('note', b.id, { supersededBy: tail.id })
+    const winner = await life.resolveConflict('note', a.id, b.id) // 同权威 tail
+    expect(winner?.id).toBe(tail.id)
+    expect(winner?.status).toBe('verified') // 复活，不返回 archived
+  })
+})

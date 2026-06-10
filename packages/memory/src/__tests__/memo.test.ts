@@ -101,3 +101,21 @@ describe('MemoManager.updateAgentSection prefix collision (R6)', () => {
     expect((content.match(/### web\n/g) ?? []).length).toBe(1) // 不重复
   })
 })
+
+describe('MemoManager $-pattern safety (R7)', () => {
+  const dir = join(import.meta.dir, '__fixtures__-r7')
+  afterAll(() => rmSync(dir, { recursive: true, force: true }))
+
+  test('addGoal/addUserAction/updateAgentSection do not expand $& / $` / $N from free text', async () => {
+    mkdirSync(dir, { recursive: true })
+    const m = new MemoManager(join(dir, 'memo.md'))
+    await m.addGoal('price is $&100 discount')
+    await m.addUserAction('run `echo $`backtick')
+    await m.updateAgentSection('web', 'matched $& and $1 group', 'plan $0')
+    const content = m.read()
+    expect(content).toContain('price is $&100 discount') // 原样保留
+    expect(content).toContain('run `echo $`backtick')
+    expect(content).toContain('matched $& and $1 group')
+    expect(content).not.toContain('## Goals100') // $& 未被展开成 marker
+  })
+})

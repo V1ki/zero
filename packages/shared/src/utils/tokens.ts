@@ -19,7 +19,12 @@ export function truncateToTokens(text: string, maxTokens: number): string {
   if (maxTokens <= 0) return ''
   const maxChars = Math.floor(maxTokens * CHARS_PER_TOKEN)
   if (text.length <= maxChars) return text
-  return text.slice(0, maxChars)
+  let sliced = text.slice(0, maxChars)
+  // 不在代理对中间切断：末位若是落单高位代理(0xD800–0xDBFF)则丢弃，
+  // 否则星平面字符(emoji/CJK扩展/数学符号)会在 UTF-8 上线时损坏成 U+FFFD 或被丢。
+  const lastCode = sliced.charCodeAt(sliced.length - 1)
+  if (lastCode >= 0xd800 && lastCode <= 0xdbff) sliced = sliced.slice(0, -1)
+  return sliced
 }
 
 /**
