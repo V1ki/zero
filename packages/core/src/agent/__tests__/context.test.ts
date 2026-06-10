@@ -3,7 +3,12 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { generateId, now } from '@zero-os/shared'
-import type { ContentBlock, Message, TimelineCompactionBlock } from '@zero-os/shared'
+import type {
+  ContentBlock,
+  Message,
+  TimelineCompactionBlock,
+  ToolResultBlock,
+} from '@zero-os/shared'
 import {
   type ContextCompactionModelInput,
   type EpisodeCompactionTraceEvent,
@@ -77,6 +82,10 @@ function expectDefined<T>(value: T | null | undefined): NonNullable<T> {
   return value
 }
 
+function isToolResultBlock(block: ContentBlock): block is ToolResultBlock {
+  return block.type === 'tool_result'
+}
+
 function semanticCompactor(label = 'semantic compact') {
   return async (input: ContextCompactionModelInput) => ({
     summary: `${label}: ${input.episode.goal}`,
@@ -94,6 +103,10 @@ function semanticCompactor(label = 'semantic compact') {
       .slice(0, 2)
       .map((item) => `${item.toolName}:${item.toolUseId} path=${item.path}`),
   })
+}
+
+function unavailableSemanticCompactor() {
+  return async () => undefined
 }
 
 function makeTimelineBlock(
@@ -398,6 +411,26 @@ describe('prepareConversationHistory', () => {
     }
   })
 
+  test('reduces oversized active turn by tool-result recency under prompt pressure', () => {
+    const messages: Message[] = [makeUserText('single active turn with many tools')]
+    for (let index = 0; index < 24; index++) {
+      const toolId = `active-tool-${index}`
+      messages.push(makeAssistantToolUse('bash', toolId))
+      messages.push(makeToolResult(toolId, `ACTIVE_RAW_${index}_`.repeat(900)))
+    }
+
+    const result = prepareConversationHistory(messages)
+    const toolResults = result
+      .flatMap((message) => message.content)
+      .filter((block) => block.type === 'tool_result')
+
+    expect(toolResults[0]?.truncationLevel).toBe('status')
+    expect(toolResults[5]?.truncationLevel).toBe('summary')
+    expect(toolResults[5]?.content.length).toBeLessThan(260)
+    expect(toolResults.at(-1)?.truncationLevel).toBe('full')
+    expect(toolResults.at(-1)?.content).toContain('ACTIVE_RAW_23_')
+  })
+
   test('truncates tool output to ~200 chars for turns 4-8', () => {
     // 12 turns: turns 0-3 = full, 4-8 = truncated, 9-11 = status only
     // Turn numbering is from the end, so the oldest turns get the highest age.
@@ -591,6 +624,47 @@ describe('prepareConversationHistory', () => {
 
     expect(olderToolResult.content).toBe('A'.repeat(400))
     expect(result[4]).toBe(messages[4])
+  })
+
+  test('reduces uncovered historical tool results after projecting timeline blocks', () => {
+    const messages = buildConversation(12).map((message) => ({
+      ...message,
+      sessionId: 'sess_project_reduce_fixture',
+    }))
+    const existingBlock = makeTimelineBlock('timeline_compaction_projected', messages.slice(0, 4))
+
+    const result = prepareConversationHistory(messages, {
+      enableEpisodeCompaction: true,
+      evidenceWorkDir: '/tmp/zero-project-reduce-fixture',
+      sessionId: 'sess_project_reduce_fixture',
+      timelineCompactionBlocks: [existingBlock],
+    })
+    const text = JSON.stringify(result)
+    const olderUncoveredResult = expectDefined(
+      result
+        .flatMap((message) => message.content)
+        .find(
+          (block): block is ToolResultBlock =>
+            isToolResultBlock(block) &&
+            block.toolUseId === 'tool-1' &&
+            block.truncationLevel === 'status',
+        ),
+    )
+    const recentResult = expectDefined(
+      result
+        .flatMap((message) => message.content)
+        .find(
+          (block): block is ToolResultBlock =>
+            isToolResultBlock(block) && block.toolUseId === 'tool-11',
+        ),
+    )
+
+    expect(text).toContain('timeline_compaction_projected')
+    expect(text).not.toContain(
+      'Full output of tool execution for turn 1. Full output of tool execution for turn 1.',
+    )
+    expect(olderUncoveredResult.content).toBe('\u2713 success')
+    expect(recentResult.content).toContain('Full output of tool execution for turn 11')
   })
 
   test('compacts old tool-heavy turns into model-authored semantic block with evidence paths', async () => {
@@ -801,7 +875,16 @@ describe('prepareConversationHistory', () => {
       })
 
       expect(changed).toBe(false)
-      expect(result).toEqual(messages)
+      const singleLargeResult = expectDefined(
+        result
+          .flatMap((message) => message.content)
+          .find(
+            (block): block is ToolResultBlock =>
+              isToolResultBlock(block) && block.toolUseId === 'single_large_tool',
+          ),
+      )
+      expect(singleLargeResult.truncationLevel).toBe('summary')
+      expect(singleLargeResult.content.length).toBeLessThan(260)
     } finally {
       rmSync(workDir, { recursive: true, force: true })
     }
@@ -855,6 +938,59 @@ describe('prepareConversationHistory', () => {
       expect(events.some((event) => event.lifecycle === 'created')).toBe(true)
       expect(JSON.stringify(result)).toContain('raw recompact')
       expect(JSON.stringify(result)).not.toContain('Full output of tool execution for turn 0')
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
+
+  test('uses deterministic fallback when semantic recompact returns unusable output', async () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-recompact-fallback-'))
+    const messages = buildConversation(12).map((message) => ({
+      ...message,
+      sessionId: 'sess_recompact_fallback_fixture',
+    }))
+    const existingBlocks = Array.from({ length: 9 }, (_, index) => {
+      const start = index * 4
+      return makeTimelineBlock(
+        `timeline_compaction_existing_fallback_${index}`,
+        messages.slice(start, start + 4),
+      )
+    })
+    let timelineCompactionBlocks: TimelineCompactionBlock[] = existingBlocks
+    const events: EpisodeCompactionTraceEvent[] = []
+
+    try {
+      const result = await prepareConversationHistoryWithCompaction(messages, {
+        enableEpisodeCompaction: true,
+        evidenceWorkDir: workDir,
+        sessionId: 'sess_recompact_fallback_fixture',
+        timelineCompactionBlocks,
+        contextCompactor: unavailableSemanticCompactor(),
+        onTimelineCompactionBlocksChanged: (blocks) => {
+          timelineCompactionBlocks = blocks
+        },
+        onEpisodeCompaction: (event) => events.push(event),
+      })
+      const activeBlocks = timelineCompactionBlocks.filter((block) => block.status === 'active')
+      const supersededBlocks = timelineCompactionBlocks.filter(
+        (block) => block.status === 'superseded',
+      )
+      const activeBlock = expectDefined(activeBlocks[0])
+      const text = JSON.stringify(result)
+
+      expect(activeBlocks).toHaveLength(1)
+      expect(supersededBlocks).toHaveLength(existingBlocks.length)
+      expect(activeBlock.strategy).toBe('semantic_recompact_raw_history_v1')
+      expect(activeBlock.summary).toContain(
+        '<context_compaction_summary source="deterministic_fallback">',
+      )
+      expect(activeBlock.model?.usedModel).toBe('deterministic-fallback')
+      expect(activeBlock.validation?.warnings).toContain(
+        'semantic_compaction_unavailable; deterministic fallback preserved evidence pointers',
+      )
+      expect(events.some((event) => event.lifecycle === 'created')).toBe(true)
+      expect(text).toContain('deterministic_fallback')
+      expect(text).not.toContain('Full output of tool execution for turn 0')
     } finally {
       rmSync(workDir, { recursive: true, force: true })
     }

@@ -73,6 +73,7 @@ export type ContextCompactor = (
 ) => Promise<ContextCompactionModelOutput | undefined>
 
 const timelineCompactionStrategyVersion = 'timeline_compaction_block_v3'
+const deterministicFallbackPromptVersion = 'context_compaction_deterministic_fallback_v1'
 const timelineRecompactStrategy = 'semantic_recompact_raw_history_v1'
 const timelineRecompactBoundaryReason =
   'Recompacted active timeline blocks from original raw messages and tool evidence because the projected prompt was still block-heavy or oversized.'
@@ -293,14 +294,14 @@ export function prepareConversationHistory(
 
   if (options.enableEpisodeCompaction && options.evidenceWorkDir) {
     const sessionId = options.sessionId ?? prepared.cleaned[0]?.sessionId ?? 'session'
-    return projectTimelineCompactionBlocks(
+    return projectTimelineCompactionBlocksForPrompt(
       prepared.cleaned,
       normalizeTimelineCompactionBlocks(options.timelineCompactionBlocks, sessionId),
       sessionId,
     )
   }
 
-  return reduceHistoricalToolOutput(prepared.cleaned, prepared.turnBoundaries)
+  return reducePromptToolOutputs(prepared.cleaned, prepared.turnBoundaries)
 }
 
 export async function prepareConversationHistoryWithCompaction(
@@ -321,7 +322,7 @@ export async function prepareConversationHistoryWithCompaction(
     })
   }
 
-  return reduceHistoricalToolOutput(prepared.cleaned, prepared.turnBoundaries)
+  return reducePromptToolOutputs(prepared.cleaned, prepared.turnBoundaries)
 }
 
 function prepareConversationHistoryBase(
@@ -389,6 +390,51 @@ function reduceHistoricalToolOutput(messages: Message[], turnBoundaries: number[
 
     return { ...msg, content: newContent }
   })
+}
+
+function reducePromptToolOutputs(messages: Message[], turnBoundaries: number[]): Message[] {
+  return reduceToolOutputsUnderPromptPressure(reduceHistoricalToolOutput(messages, turnBoundaries))
+}
+
+function reduceToolOutputsUnderPromptPressure(messages: Message[]): Message[] {
+  if (JSON.stringify(messages).length <= CONTEXT_PARAMS.history.promptPressureCharsThreshold) {
+    return messages
+  }
+
+  const toolResults: ToolResultBlock[] = []
+  for (const message of messages) {
+    if (message.role !== 'user') continue
+    for (const block of message.content) {
+      if (block.type === 'tool_result') toolResults.push(block)
+    }
+  }
+
+  const fullRetain = CONTEXT_PARAMS.history.promptPressureFullToolResults
+  const summaryRetain = CONTEXT_PARAMS.history.promptPressureSummaryToolResults
+  for (let index = 0; index < toolResults.length; index++) {
+    const block = toolResults[index]
+    const age = toolResults.length - 1 - index
+    if (block.truncationLevel === 'status') continue
+    if (age < fullRetain) {
+      if (!block.truncationLevel) block.truncationLevel = 'full'
+      continue
+    }
+
+    if (age < fullRetain + summaryRetain) {
+      const summarized = summarizeToolResult(block)
+      block.content = summarized.content
+      block.contentItems = undefined
+      block.truncationLevel = 'summary'
+      continue
+    }
+
+    const statusOnly = statusOnlyToolResult(block)
+    block.content = statusOnly.content
+    block.contentItems = undefined
+    block.truncationLevel = 'status'
+  }
+
+  return messages
 }
 
 function findTurnBoundaries(messages: Message[]): number[] {
@@ -466,10 +512,18 @@ async function compactEpisodeHistoryAsync(
         )
       }
     }
-    return projectTimelineCompactionBlocks(messages, plan.activeExistingBlocks, options.sessionId)
+    return projectTimelineCompactionBlocksForPrompt(
+      messages,
+      plan.activeExistingBlocks,
+      options.sessionId,
+    )
   }
   if (!options.contextCompactor) {
-    return projectTimelineCompactionBlocks(messages, plan.activeExistingBlocks, options.sessionId)
+    return projectTimelineCompactionBlocksForPrompt(
+      messages,
+      plan.activeExistingBlocks,
+      options.sessionId,
+    )
   }
 
   const createdBlocks: TimelineCompactionBlock[] = []
@@ -578,7 +632,7 @@ function finalizeEpisodeCompaction(
       (block) => !supersededBlockIds.has(block.id),
     ),
   )
-  const projectedMessages = projectTimelineCompactionBlocks(
+  const projectedMessages = projectTimelineCompactionBlocksForPrompt(
     messages,
     activeBlocks,
     options.sessionId,
@@ -752,17 +806,25 @@ async function buildTimelineCompactionBlockAsync(params: {
     strategyVersion,
     params.generation,
   )
-  const modelOutput = await params.options.contextCompactor?.({
-    sessionId: params.options.sessionId,
-    blockId,
-    strategyVersion,
-    currentGoal,
-    segment: params.segment,
-    retainedMessages,
-    episode,
-    workingStateSummary,
-  })
-  if (!modelOutput) return undefined
+  const modelOutput =
+    (await params.options.contextCompactor?.({
+      sessionId: params.options.sessionId,
+      blockId,
+      strategyVersion,
+      currentGoal,
+      segment: params.segment,
+      retainedMessages,
+      episode,
+      workingStateSummary,
+    })) ??
+    buildDeterministicFallbackCompaction({
+      sessionId: params.options.sessionId,
+      blockId,
+      strategyVersion,
+      currentGoal,
+      episode,
+      workingStateSummary,
+    })
 
   return buildTimelineCompactionBlockFromEpisode({
     ...params,
@@ -923,8 +985,12 @@ function formatContextCompactionSummary(
 ): string {
   const facts = modelOutput.confirmedFacts ?? []
   const blockers = modelOutput.openQuestions ?? episode.blockers
+  const source =
+    modelOutput.model?.promptVersion === deterministicFallbackPromptVersion
+      ? 'deterministic_fallback'
+      : 'model'
   return [
-    '<context_compaction_summary source="model">',
+    `<context_compaction_summary source="${source}">`,
     'summary:',
     modelOutput.summary.trim(),
     'topics:',
@@ -949,6 +1015,93 @@ function formatContextCompactionSummary(
     ...formatEvidenceManifest(episode),
     '</context_compaction_summary>',
   ].join('\n')
+}
+
+function buildDeterministicFallbackCompaction(params: {
+  sessionId: string
+  blockId: string
+  strategyVersion: string
+  currentGoal: string
+  episode: EpisodeCompaction
+  workingStateSummary: string
+}): ContextCompactionModelOutput {
+  const topicStatus = params.episode.status === 'blocked' ? 'blocked' : 'unknown'
+  const evidence = params.episode.evidence
+    .slice(0, CONTEXT_PARAMS.history.episodePromptEvidenceLimit)
+    .map(
+      (item) =>
+        `${item.toolName}:${item.toolUseId}:${item.kind} path=${item.path} chars=${item.chars}`,
+    )
+  const fallbackWarning =
+    'semantic_compaction_unavailable; deterministic fallback preserved evidence pointers'
+
+  return {
+    summary: [
+      `Deterministic fallback for ${params.episode.messageIds.length} older messages in ${params.sessionId} because semantic context compaction did not return usable output.`,
+      `block_id=${params.blockId} strategy_version=${params.strategyVersion}`,
+      params.episode.summary,
+    ]
+      .filter((item) => item.trim().length > 0)
+      .join('\n'),
+    topics: [
+      {
+        id: 'T1',
+        title: truncateOneLine(params.episode.goal || 'Compacted historical work', 100),
+        status: topicStatus,
+        summary: truncateOneLine(params.episode.summary, 1000),
+        sourceMessageRefs: [],
+        sourceMessageIds: params.episode.messageIds,
+        toolRefs: [],
+        toolUseIds: params.episode.toolUseIds,
+        confirmedFacts: params.episode.confirmedFacts,
+        currentState: [
+          `current_goal=${truncateOneLine(params.currentGoal || 'unknown', 240)}`,
+          'Use retained recent turns as the authoritative high-fidelity context.',
+          'Read evidence paths only when exact raw tool IO is needed.',
+        ],
+        openQuestions: params.episode.blockers,
+        nextActions: [
+          'Continue from the retained recent turn; do not replay full historical tool IO.',
+        ],
+        evidence,
+        needsRawReview: params.episode.evidence.length > 0,
+      },
+    ],
+    confirmedFacts: params.episode.confirmedFacts,
+    currentState: [
+      'Semantic compaction was unavailable; this block is an evidence-preserving deterministic fallback.',
+      params.workingStateSummary,
+    ],
+    openQuestions: params.episode.blockers,
+    nextActions: ['Continue from retained recent turns.'],
+    doNotInfer: [
+      'Do not treat this deterministic fallback as a full semantic summary.',
+      'Do not claim raw tool output was reviewed unless an evidence path is opened.',
+    ],
+    keyEvidence: evidence,
+    validation: {
+      status: 'legacy',
+      promptVersion: deterministicFallbackPromptVersion,
+      topicCount: 1,
+      expectedToolRefs: [],
+      coveredToolRefs: [],
+      invalidToolRefs: [],
+      missingToolRefs: [],
+      expectedMessageRefs: [],
+      coveredMessageRefs: [],
+      invalidMessageRefs: [],
+      errors: [],
+      warnings: [fallbackWarning],
+    },
+    model: {
+      promptVersion: deterministicFallbackPromptVersion,
+      primaryModel: 'local',
+      primaryProvider: 'deterministic',
+      usedModel: 'deterministic-fallback',
+      usedProvider: 'local',
+      attempts: 0,
+    },
+  }
 }
 
 function formatTopicPromptList(topics: TimelineCompactionTopic[]): string[] {
@@ -1023,6 +1176,15 @@ function projectTimelineCompactionBlocks(
   }
 
   return projected
+}
+
+function projectTimelineCompactionBlocksForPrompt(
+  messages: Message[],
+  blocks: TimelineCompactionBlock[],
+  sessionId: string,
+): Message[] {
+  const projected = projectTimelineCompactionBlocks(messages, blocks, sessionId)
+  return reducePromptToolOutputs(projected, findTurnBoundaries(projected))
 }
 
 function sortTimelineCompactionBlocks(

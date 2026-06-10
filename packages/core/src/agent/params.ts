@@ -62,6 +62,12 @@ export const CONTEXT_PARAMS = {
     timelineRecompactBlockCountThreshold: 8,
     /** Recompact existing blocks from raw messages when projected history remains large. */
     timelineRecompactCharsThreshold: 140000,
+    /** Apply tool-result recency reduction when even the current projected prompt is oversized. */
+    promptPressureCharsThreshold: 180000,
+    /** Under prompt pressure, keep only the most recent N tool_result payloads fully expanded. */
+    promptPressureFullToolResults: 4,
+    /** Under prompt pressure, keep the next N tool_result payloads as short summaries. */
+    promptPressureSummaryToolResults: 16,
     /** Prompt manifest cap; full evidence remains in artifact files and trace metadata. */
     episodePromptEvidenceLimit: 12,
     /** Prompt tool-observation cap; prevents deterministic fallback from becoming an IO dump. */

@@ -1042,6 +1042,7 @@ export async function generateContextCompaction(
       traceSpanId: span?.id,
       tracer: runtime.tracer,
       secretFilter: runtime.secretFilter,
+      logger: runtime.logger,
     })
     if (isContextCompactionModelOutputUsable(result.parsed)) {
       const output = {
@@ -1467,6 +1468,7 @@ async function requestContextCompactionModel(params: {
   traceSpanId?: string
   tracer?: ContextCompactionTracer
   secretFilter?: SecretFilter
+  logger?: Pick<ToolContext['logger'], 'warn'>
 }): Promise<{
   parsed: ContextCompactionModelOutput | undefined
   responseChars: number
@@ -1487,7 +1489,7 @@ async function requestContextCompactionModel(params: {
     ],
     system: CONTEXT_COMPACTION_SYSTEM_PROMPT,
     stream: false,
-    maxTokens: 4096,
+    maxTokens: 16384,
     reasoningEffort: params.reasoningEffort,
     meta: {
       sessionId: params.sessionId,
@@ -1512,10 +1514,26 @@ async function requestContextCompactionModel(params: {
   const durationMs = Date.now() - startedAt
   const text = extractResponseText(response)
   const parsed = parseContextCompactionModelOutput(text, params.input)
+  const validationStatus = parsed?.validation?.status
   const usable = isContextCompactionModelOutputUsable(parsed)
+  const reason = usable ? undefined : describeContextCompactionFailure(text, parsed, response)
   const cost = computeCost(response.usage, params.pricing)
   const model = params.modelLabel ?? response.model
   const provider = params.providerName ?? 'unknown'
+
+  if (!usable) {
+    params.logger?.warn('context_compaction_model_invalid', {
+      sessionId: params.sessionId,
+      blockId: params.input.blockId,
+      turnIndex: params.turnIndex,
+      phase: params.phase,
+      reason,
+      responseChars: text.length,
+      validationStatus,
+      model,
+      provider,
+    })
+  }
 
   params.tracer?.logSession?.(
     params.sessionId,
@@ -1528,6 +1546,7 @@ async function requestContextCompactionModel(params: {
       phase: params.phase,
       durationMs,
       responseChars: text.length,
+      reason,
       validation: filterTraceValue(parsed?.validation, params.secretFilter),
       response: filterTraceValue(response, params.secretFilter),
       parsed: filterTraceValue(parsed, params.secretFilter),
@@ -1542,6 +1561,35 @@ async function requestContextCompactionModel(params: {
     model,
     provider,
   }
+}
+
+function describeContextCompactionFailure(
+  text: string,
+  parsed: ContextCompactionModelOutput | undefined,
+  response: CompletionResponse,
+): string | undefined {
+  const trimmed = text.trim()
+  const hasThinkingOnly = response.content.some((block) => block.type === 'thinking')
+  if (!trimmed) {
+    return hasThinkingOnly ? 'empty_final_text_with_reasoning' : 'empty_final_text'
+  }
+
+  if (!extractXmlElement(text, 'context_compaction')) {
+    return text.includes('<context_compaction')
+      ? 'incomplete_context_compaction_xml'
+      : 'missing_context_compaction_xml'
+  }
+
+  if (!parsed) return 'unparsed_context_compaction_xml'
+
+  if (parsed.validation?.status === 'failed') {
+    const errors =
+      parsed.validation.errors.length > 0 ? parsed.validation.errors.join(',') : 'unknown'
+    return `validation_failed:${errors}`
+  }
+
+  if (!parsed.summary?.trim()) return 'missing_block_summary'
+  return 'parsed_but_unusable'
 }
 
 function finishContextCompactionSpan(

@@ -925,7 +925,14 @@ describe('Agent', () => {
       expect(
         invalidCompaction.requests.filter((request) => request.meta?.purpose === 'compression'),
       ).toHaveLength(1)
-      expect(timelineCompactionBlocks).toHaveLength(0)
+      expect(timelineCompactionBlocks).toHaveLength(1)
+      expect(timelineCompactionBlocks[0]?.summary).toContain(
+        '<context_compaction_summary source="deterministic_fallback">',
+      )
+      expect(timelineCompactionBlocks[0]?.model?.usedModel).toBe('deterministic-fallback')
+      expect(timelineCompactionBlocks[0]?.validation?.warnings).toContain(
+        'semantic_compaction_unavailable; deterministic fallback preserved evidence pointers',
+      )
     } finally {
       rmSync(workDir, { recursive: true, force: true })
     }

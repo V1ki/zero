@@ -631,6 +631,73 @@ describe('generateContextCompaction', () => {
     })
   })
 
+  test('logs failure reason when context compaction returns reasoning without final text', async () => {
+    const input = makeContextCompactionInput()
+    const trace = makeTraceRecorder()
+    const warnings: Array<{ event: string; data?: Record<string, unknown> }> = []
+    const adapter = {
+      ...mockAdapter,
+      async complete() {
+        return {
+          id: 'resp_context_compaction_empty_text',
+          content: [
+            {
+              type: 'thinking' as const,
+              thinking: 'I reasoned about the compaction but did not emit final XML.',
+              signature: 'test-signature',
+            },
+          ],
+          stopReason: 'end_turn' as const,
+          usage: { input: 200, output: 120, reasoning: 120 },
+          model: 'provider/raw-context-model',
+        }
+      },
+    } satisfies ProviderAdapter
+
+    const output = await generateContextCompaction(input, {
+      adapter,
+      sessionId: 'sess_context_runner',
+      agentName: 'agent-test',
+      parentSpanId: 'parent-span',
+      turnIndex: 9,
+      parentSessionId: 'parent-session',
+      modelLabel: 'provider/context-model',
+      providerName: 'provider',
+      pricing: { input: 1, output: 2 },
+      tracer: trace.tracer,
+      secretFilter,
+      logger: {
+        warn: (event, data) => warnings.push({ event, data }),
+      },
+    })
+
+    expect(output).toBeUndefined()
+    expect(warnings).toContainEqual({
+      event: 'context_compaction_model_invalid',
+      data: expect.objectContaining({
+        reason: 'empty_final_text_with_reasoning',
+      }),
+    })
+    const invalidLog = trace.logSessionCalls.find(
+      (call) => call.event === 'context_compaction.model_invalid',
+    )
+    expect(invalidLog?.data?.reason).toBe('empty_final_text_with_reasoning')
+    expect(trace.updateCalls[0]?.update).toMatchObject({
+      data: {
+        contextCompactionModel: {
+          responseChars: 0,
+          parsed: false,
+        },
+      },
+    })
+    expect(trace.endCalls[0]).toMatchObject({
+      status: 'error',
+      metadata: {
+        parsed: false,
+      },
+    })
+  })
+
   test('pre-digests large tool IO before the main context compaction request', async () => {
     const input = makeContextCompactionInput()
     const resultBlock = input.segment[2]?.content.find((block) => block.type === 'tool_result')
