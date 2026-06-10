@@ -41,6 +41,7 @@ import {
   EmbeddingClient,
   IndexedMemoryStore,
   MemoManager,
+  MemoryLifecycle,
   MemoryRetriever,
   MemoryStore,
   VectorIndex,
@@ -216,6 +217,7 @@ export interface ZeroOS {
   sessionManager: SessionManager
   memoryStore: MemoryRepository
   memoryRetriever: MemoryRetriever
+  memoryLifecycle: MemoryLifecycle
   vectorIndex?: VectorIndex
   memoManager: MemoManager
   tracer: Tracer
@@ -665,6 +667,10 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
     recencyHalfLifeDays: CONTEXT_PARAMS.retrieval.recencyHalfLifeDays,
   })
 
+  // 发展生命周期：冲突裁决/按龄归档/verify。用最终的 memoryStore（embedding 启用时为 IndexedMemoryStore，
+  // 谱系/status 变更经它落盘并保持向量索引一致），经 HTTP 端点暴露给治理/维护路径。
+  const memoryLifecycle = new MemoryLifecycle(memoryStore)
+
   // 9.5 Identity reader — hot-reloads identity on each turn per agent name
   const identityReader = (agentName: string) => {
     const globalPref = memoryStore.list('preference').find((m) => m.id === 'pref_global')
@@ -1072,6 +1078,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
     sessionManager,
     memoryStore,
     memoryRetriever,
+    memoryLifecycle,
     vectorIndex,
     memoManager,
     tracer,

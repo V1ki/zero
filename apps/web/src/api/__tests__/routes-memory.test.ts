@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { MemoryStore, VectorIndex, invalidateClusterCache } from '@zero-os/memory'
+import { MemoryLifecycle, MemoryStore, VectorIndex, invalidateClusterCache } from '@zero-os/memory'
 import type { ZeroOS } from '../../../../server/src/main'
 import { createRoutes } from '../routes'
 
@@ -40,7 +40,11 @@ beforeAll(async () => {
   await vectorIndex.upsert(b.id, [0.99, 0.141, 0], meta(b))
   await vectorIndex.upsert(c.id, [0, 0, 1], meta(c))
 
-  const zero = { memoryStore: store, vectorIndex } as unknown as ZeroOS
+  const zero = {
+    memoryStore: store,
+    vectorIndex,
+    memoryLifecycle: new MemoryLifecycle(store),
+  } as unknown as ZeroOS
   app = createRoutes(zero)
 })
 
@@ -349,5 +353,57 @@ describe('Adversarial regression locks R5', () => {
     expect(aNeighbor).toBeDefined()
     expect(aNeighbor?.status).toBe('archived') // 死节点状态可见
     expect(aNeighbor?.supersededBy).toBe(ids.b) // 携带谱系信号
+  })
+})
+
+describe('MemoryLifecycle endpoints (wired)', () => {
+  test('POST resolve-conflict adjudicates winner and redirects loser', async () => {
+    const hi = await store.create('note', 'Hi conf', 'truth', {
+      status: 'verified',
+      confidence: 0.9,
+    })
+    const lo = await store.create('note', 'Lo conf', 'stale', {
+      status: 'verified',
+      confidence: 0.4,
+    })
+    const res = await post(`/api/memory/note/${hi.id}/resolve-conflict`, { otherId: lo.id })
+    expect(res.status).toBe(200)
+    const data = (await res.json()) as { winner: { id: string } }
+    expect(data.winner.id).toBe(hi.id) // 高 confidence 胜
+    const loser = store.get('note', lo.id)
+    expect(loser?.status).toBe('archived')
+    expect(loser?.supersededBy).toBe(hi.id) // loser 指向 winner，命中可重定向
+  })
+
+  test('resolve-conflict requires otherId and rejects self', async () => {
+    const m = await store.create('note', 'Solo', 'x', { status: 'verified' })
+    expect((await post(`/api/memory/note/${m.id}/resolve-conflict`, {})).status).toBe(400)
+    expect(
+      (await post(`/api/memory/note/${m.id}/resolve-conflict`, { otherId: m.id })).status,
+    ).toBe(400)
+  })
+
+  test('resolve-conflict 404 when a memory is missing', async () => {
+    const m = await store.create('note', 'Exists', 'x', { status: 'verified' })
+    const res = await post(`/api/memory/note/${m.id}/resolve-conflict`, { otherId: 'mem_ghost' })
+    expect(res.status).toBe(404)
+  })
+
+  test('POST maintenance/archive-old archives aged non-authority memories', async () => {
+    const old = await store.create('incident', 'Aged', 'old', { status: 'verified' })
+    await store.save({ ...old, updatedAt: '2000-01-01T00:00:00.000Z' })
+    const res = await post('/api/memory/maintenance/archive-old', {
+      type: 'incident',
+      olderThanDays: 30,
+    })
+    expect(res.status).toBe(200)
+    const data = (await res.json()) as { archived: number }
+    expect(data.archived).toBeGreaterThanOrEqual(1)
+    expect(store.get('incident', old.id)?.status).toBe('archived')
+  })
+
+  test('archive-old rejects an invalid type', async () => {
+    expect((await post('/api/memory/maintenance/archive-old', { type: 'bogus' })).status).toBe(400)
+    expect((await post('/api/memory/maintenance/archive-old', {})).status).toBe(400)
   })
 })

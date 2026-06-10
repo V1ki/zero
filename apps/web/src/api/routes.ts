@@ -1126,6 +1126,42 @@ export function createRoutes(zero: ZeroOS) {
       return c.json({ memory: updated })
     })
 
+    // 发展(裁决): 自动按 confidence/recency 裁决两条记忆的冲突——先各自解析到活权威(跨 type)，
+    // loser 归档并指向 winner(命中可重定向)、winner 强制活态。区别于 supersede 需显式指定被取代方。
+    .post('/api/memory/:type/:id/resolve-conflict', async (c) => {
+      const type = c.req.param('type') as MemoryType
+      const id = c.req.param('id')
+      const body = await c.req
+        .json<{ otherId?: string }>()
+        .catch(() => ({}) as { otherId?: string })
+      const otherId = typeof body.otherId === 'string' ? body.otherId : ''
+      if (!otherId) return c.json({ error: 'otherId is required' }, 400)
+      if (otherId === id) return c.json({ error: 'cannot resolve a memory against itself' }, 400)
+      const winner = await zero.memoryLifecycle.resolveConflict(type, id, otherId)
+      if (!winner) return c.json({ error: 'one or both memories not found' }, 404)
+      invalidateClusterCache()
+      return c.json({ winner })
+    })
+
+    // 发展(维护): 按龄归档某类型中早于 olderThanDays 的非权威记忆。
+    // 仍被其他条 supersededBy/mergedInto(跨 type)引用的活权威不会被归档。
+    .post('/api/memory/maintenance/archive-old', async (c) => {
+      const body = await c.req
+        .json<{ type?: MemoryType; olderThanDays?: number }>()
+        .catch(() => ({}) as { type?: MemoryType; olderThanDays?: number })
+      const type = body.type
+      if (!type || !ALL_MEMORY_TYPES.includes(type)) {
+        return c.json({ error: 'valid type is required' }, 400)
+      }
+      const olderThanDays =
+        typeof body.olderThanDays === 'number' && Number.isFinite(body.olderThanDays)
+          ? Math.max(0, body.olderThanDays)
+          : 30
+      const archived = await zero.memoryLifecycle.archiveOld(type, olderThanDays)
+      if (archived > 0) invalidateClusterCache()
+      return c.json({ archived })
+    })
+
     // P1(关联): 维护带类型的边（独立 edges 字段，不污染 related）。
     .patch('/api/memory/:type/:id/relations', async (c) => {
       const type = c.req.param('type') as MemoryType
