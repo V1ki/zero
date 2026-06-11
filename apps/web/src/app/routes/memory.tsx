@@ -178,6 +178,9 @@ function NeighborPicker({
           <NeighborRow
             key={n.memoryId}
             n={n}
+            existingKinds={(memory.edges ?? [])
+              .filter((e) => e.toId === n.memoryId)
+              .map((e) => e.kind)}
             onCreateEdge={onCreateEdge}
             onSupersede={onSupersede}
           />
@@ -189,14 +192,17 @@ function NeighborPicker({
 
 function NeighborRow({
   n,
+  existingKinds,
   onCreateEdge,
   onSupersede,
 }: {
   n: Neighbor
+  existingKinds?: string[]
   onCreateEdge: (toId: string, kind: string) => Promise<void>
   onSupersede: (byId: string) => Promise<void>
 }) {
-  const [kind, setKind] = useState('same-topic')
+  // 已建边的近邻：选择器默认其真实边类型（而非笼统的"同主题"），避免显示误导。
+  const [kind, setKind] = useState(existingKinds?.[0] ?? 'same-topic')
   const [busy, setBusy] = useState(false)
   return (
     <div className="card p-2 space-y-1">
@@ -215,6 +221,19 @@ function NeighborRow({
           {n.score.toFixed(2)}
         </span>
       </div>
+      {existingKinds && existingKinds.length > 0 && (
+        <div className="flex items-center gap-1 flex-wrap">
+          <span className="text-[9px] text-[var(--color-text-disabled)]">已关联</span>
+          {existingKinds.map((k) => (
+            <span
+              key={k}
+              className="text-[9px] px-1 py-0.5 rounded bg-[var(--color-accent-glow)] text-[var(--color-accent)]"
+            >
+              {EDGE_KIND_LABELS[k] ?? k}
+            </span>
+          ))}
+        </div>
+      )}
       <div className="flex items-center gap-1.5">
         <select
           value={kind}
@@ -437,7 +456,9 @@ function MemoryOverview({ memories }: { memories: MemoryItem[] }) {
   // 已知顺序在前，未知 status 兜底排后
   const statusKeys = [
     ...STATUS_ORDER.filter((s) => statusCounts[s]),
-    ...Object.keys(statusCounts).filter((s) => !STATUS_ORDER.includes(s as (typeof STATUS_ORDER)[number])),
+    ...Object.keys(statusCounts).filter(
+      (s) => !STATUS_ORDER.includes(s as (typeof STATUS_ORDER)[number]),
+    ),
   ]
 
   const mostRecent =
