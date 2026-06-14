@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { Message } from '@zero-os/shared'
 import { Session } from '../../../core/src/session/session'
-import { shouldEvaluateSessionMemory } from '../session-memory'
+import { shouldEvaluateSessionMemory } from '../index'
 
 function makeMessage(
   role: Message['role'],
@@ -50,7 +50,9 @@ describe('shouldEvaluateSessionMemory', () => {
         sessionId: 'sess_test_session_memory',
         role: 'assistant',
         messageType: 'message',
-        content: [{ type: 'tool_use', id: 'tool_1', name: 'bash', input: { cmd: 'bun run check' } }],
+        content: [
+          { type: 'tool_use', id: 'tool_1', name: 'bash', input: { cmd: 'bun run check' } },
+        ],
         createdAt: new Date().toISOString(),
       },
       makeMessage(

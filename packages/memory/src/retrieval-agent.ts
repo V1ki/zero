@@ -16,6 +16,27 @@ export interface RetrievedMemoryMatch {
   score: number
 }
 
+interface ParsedLoopSelection {
+  id: string
+  reason: string
+}
+
+interface ParsedLoopSelectionResult {
+  parsed: boolean
+  selections: ParsedLoopSelection[]
+  explicitEmptySelectionIntent: boolean
+}
+
+interface SearchCacheEntry {
+  memory: Memory
+  score: number
+  scoreBreakdown: {
+    keyword: number
+    recency: number
+    vector?: number
+  }
+}
+
 export interface MemoryRetrievalAgentOptions {
   runLoop: LoopRunner
   memoryRetriever: {
@@ -34,17 +55,6 @@ export interface MemoryRetrievalAgentOptions {
     agentMaxIterations: number
     agentMaxOutputTokens: number
   }
-}
-
-interface ParsedLoopSelection {
-  id: string
-  reason: string
-}
-
-interface ParsedLoopSelectionResult {
-  parsed: boolean
-  selections: ParsedLoopSelection[]
-  explicitEmptySelectionIntent: boolean
 }
 
 interface SearchTrace {
@@ -68,16 +78,6 @@ interface SearchTrace {
       vector?: number
     }
   }>
-}
-
-interface SearchCacheEntry {
-  memory: Memory
-  score: number
-  scoreBreakdown: {
-    keyword: number
-    recency: number
-    vector?: number
-  }
 }
 
 export interface MemoryRetrievalAgentRun {
@@ -318,6 +318,12 @@ async function retrieveEntries(
   }))
 }
 
+function buildContentPreview(content: string, maxChars = 160): string {
+  const normalized = content.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= maxChars) return normalized
+  return `${normalized.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`
+}
+
 function parseSelectedMemories(finalText: string): ParsedLoopSelectionResult {
   const trimmed = finalText.trim()
   const explicitEmptySelectionIntent = hasExplicitEmptySelectionIntent(trimmed)
@@ -372,18 +378,13 @@ function parseSelectedMemories(finalText: string): ParsedLoopSelectionResult {
   }
 }
 
-function hasExplicitEmptySelectionIntent(text: string): boolean {
-  return /["']?results?["']?\s*:\s*\[\s*\]/i.test(text)
-}
-
 function materializeSelections(
   selected: ParsedLoopSelection[],
   searchCache: Map<string, SearchCacheEntry>,
   perMemoryMaxTokens: number,
   maxSelectedMemories: number,
 ): RetrievedMemoryMatch[] | undefined {
-  // 按 id 去重（保留首现顺序）并硬约束注入条数——显式选择路径与 fallback 路径同口径，
-  // 防 LLM 重复选同一条注入 N 份、或多选突破 maxSelectedMemories 撑大 prompt（对抗实测）。
+  // Deduplicate and cap explicit selections exactly like fallback selections.
   const seen = new Set<string>()
   const results: RetrievedMemoryMatch[] = []
   for (const entry of selected) {
@@ -413,7 +414,11 @@ function fallbackSelection(
   return memories.length > 0 ? memories : undefined
 }
 
-// title 注入上限（token）——标题应是短语，64 token≈250 字符足够，超长一律截断。
+function hasExplicitEmptySelectionIntent(text: string): boolean {
+  return /["']?results?["']?\s*:\s*\[\s*\]/i.test(text)
+}
+
+// Titles should be short phrases; cap them so they cannot bypass per-memory content limits.
 const TITLE_MAX_TOKENS = 64
 
 function toRetrievedMemoryMatch(
@@ -423,15 +428,8 @@ function toRetrievedMemoryMatch(
   return {
     id: entry.memory.id,
     type: entry.memory.type,
-    // title 也纳入 token 截断——否则超长 title 绕过 perMemoryMaxTokens 直入 prompt（对抗实测）。
     title: truncateToTokens(entry.memory.title, TITLE_MAX_TOKENS),
     content: truncateToTokens(entry.memory.content, perMemoryMaxTokens),
     score: entry.score,
   }
-}
-
-function buildContentPreview(content: string, maxChars = 160): string {
-  const normalized = content.replace(/\s+/g, ' ').trim()
-  if (normalized.length <= maxChars) return normalized
-  return `${normalized.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`
 }
