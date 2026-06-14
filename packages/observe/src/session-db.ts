@@ -13,6 +13,7 @@ import type {
 } from '@zero-os/shared'
 import { normalizeReasoningEffort } from '@zero-os/shared'
 import { externalizeImageData } from './image-ref'
+import { initializeSessionDbSchema } from './session-db-schema'
 
 export interface SessionRow {
   id: string
@@ -81,6 +82,36 @@ interface RawBindingRow {
   updated_at: string
 }
 
+function toSessionRow(row: RawSessionRow): SessionRow {
+  return {
+    id: row.id,
+    source: row.source as SessionSource,
+    currentModel: row.current_model,
+    reasoningEffort: normalizeReasoningEffort(row.reasoning_effort),
+    modelHistory: JSON.parse(row.model_history_json) as ModelHistoryEntry[],
+    summary: row.summary ?? undefined,
+    tags: JSON.parse(row.tags_json) as string[],
+    channelName: row.channel_name ?? undefined,
+    channelId: row.channel_id ?? undefined,
+    participantId: row.participant_id ?? undefined,
+    agentConfigJson: row.agent_config_json ?? undefined,
+    systemPrompt: row.system_prompt ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+function toChannelSessionBinding(row: RawBindingRow): ChannelSessionBinding {
+  return {
+    source: row.source as SessionSource,
+    channelName: row.channel_name || undefined,
+    channelId: row.channel_id,
+    participantId: row.participant_id || undefined,
+    sessionId: row.session_id,
+    updatedAt: row.updated_at,
+  }
+}
+
 /**
  * SQLite-based session persistence for ZeRo OS.
  * Stores session metadata and conversation messages.
@@ -93,7 +124,7 @@ export class SessionDB {
     this.logsBasePath = dbPath === ':memory:' ? undefined : dirname(dbPath)
     this.db = new Database(dbPath, { create: true })
     this.configureConnection()
-    this.initSchema()
+    initializeSessionDbSchema(this.db)
   }
 
   static createInMemory(): SessionDB {
@@ -102,242 +133,6 @@ export class SessionDB {
 
   private configureConnection(): void {
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;')
-  }
-
-  private initSchema(): void {
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS sessions (
-        id TEXT PRIMARY KEY,
-        source TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active',
-        current_model TEXT NOT NULL,
-        reasoning_effort TEXT,
-        model_history_json TEXT NOT NULL DEFAULT '[]',
-        summary TEXT,
-        tags_json TEXT NOT NULL DEFAULT '[]',
-        channel_name TEXT,
-        channel_id TEXT,
-        participant_id TEXT,
-        agent_config_json TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      )
-    `)
-
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS session_messages (
-        session_id TEXT PRIMARY KEY,
-        messages_json TEXT NOT NULL DEFAULT '[]',
-        message_count INTEGER NOT NULL DEFAULT 0,
-        updated_at TEXT NOT NULL
-      )
-    `)
-
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS session_compaction_blocks (
-        session_id TEXT PRIMARY KEY,
-        blocks_json TEXT NOT NULL DEFAULT '[]',
-        block_count INTEGER NOT NULL DEFAULT 0,
-        updated_at TEXT NOT NULL
-      )
-    `)
-
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS channel_models (
-        source TEXT NOT NULL,
-        channel_name TEXT NOT NULL DEFAULT '',
-        channel_id TEXT NOT NULL,
-        participant_id TEXT NOT NULL DEFAULT '',
-        model TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        PRIMARY KEY (source, channel_name, channel_id, participant_id)
-      )
-    `)
-
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS channel_session_bindings (
-        source TEXT NOT NULL,
-        channel_name TEXT NOT NULL DEFAULT '',
-        channel_id TEXT NOT NULL,
-        participant_id TEXT NOT NULL DEFAULT '',
-        session_id TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        PRIMARY KEY (source, channel_name, channel_id, participant_id)
-      )
-    `)
-
-    // Migration: add system_prompt column
-    try {
-      this.db.run('ALTER TABLE sessions ADD COLUMN system_prompt TEXT')
-    } catch {
-      // Column already exists
-    }
-
-    try {
-      this.db.run('ALTER TABLE sessions ADD COLUMN channel_name TEXT')
-    } catch {
-      // Column already exists
-    }
-
-    try {
-      this.db.run('ALTER TABLE sessions ADD COLUMN participant_id TEXT')
-    } catch {
-      // Column already exists
-    }
-
-    try {
-      this.db.run('ALTER TABLE sessions ADD COLUMN reasoning_effort TEXT')
-    } catch {
-      // Column already exists
-    }
-
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)')
-    this.migrateParticipantScopedTables()
-
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_sessions_channel ON sessions(source, channel_id)')
-    this.db.run(
-      'CREATE INDEX IF NOT EXISTS idx_sessions_channel_instance ON sessions(source, channel_name, channel_id, participant_id)',
-    )
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at)')
-    this.db.run(
-      'CREATE INDEX IF NOT EXISTS idx_channel_session_bindings_session ON channel_session_bindings(session_id)',
-    )
-    this.db.run(
-      'CREATE INDEX IF NOT EXISTS idx_channel_session_bindings_updated ON channel_session_bindings(updated_at)',
-    )
-    this.db.run(
-      'CREATE INDEX IF NOT EXISTS idx_channel_models_updated ON channel_models(updated_at)',
-    )
-
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS schedules (
-        name TEXT PRIMARY KEY,
-        cron TEXT NOT NULL,
-        instruction TEXT NOT NULL,
-        model TEXT,
-        overlap_policy TEXT,
-        misfire_policy TEXT,
-        channel_source TEXT,
-        channel_name TEXT,
-        channel_id TEXT,
-        channel_participant_id TEXT,
-        delivery_channel_id TEXT,
-        one_shot INTEGER NOT NULL DEFAULT 0,
-        created_by TEXT NOT NULL DEFAULT 'runtime',
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      )
-    `)
-
-    try {
-      this.db.run('ALTER TABLE schedules ADD COLUMN channel_participant_id TEXT')
-    } catch {
-      // Column already exists
-    }
-
-    try {
-      this.db.run('ALTER TABLE schedules ADD COLUMN delivery_channel_id TEXT')
-    } catch {
-      // Column already exists
-    }
-
-    this.backfillLegacyBindings()
-  }
-
-  private migrateParticipantScopedTables(): void {
-    this.ensureParticipantPrimaryKey('channel_models', [
-      'source TEXT NOT NULL',
-      "channel_name TEXT NOT NULL DEFAULT ''",
-      'channel_id TEXT NOT NULL',
-      "participant_id TEXT NOT NULL DEFAULT ''",
-      'model TEXT NOT NULL',
-      'updated_at TEXT NOT NULL',
-      'PRIMARY KEY (source, channel_name, channel_id, participant_id)',
-    ])
-
-    this.ensureParticipantPrimaryKey('channel_session_bindings', [
-      'source TEXT NOT NULL',
-      "channel_name TEXT NOT NULL DEFAULT ''",
-      'channel_id TEXT NOT NULL',
-      "participant_id TEXT NOT NULL DEFAULT ''",
-      'session_id TEXT NOT NULL',
-      'updated_at TEXT NOT NULL',
-      'PRIMARY KEY (source, channel_name, channel_id, participant_id)',
-    ])
-  }
-
-  private ensureParticipantPrimaryKey(
-    table: 'channel_models' | 'channel_session_bindings',
-    columns: string[],
-  ): void {
-    const tableInfo = this.db.query(`PRAGMA table_info(${table})`).all() as Array<{
-      name: string
-      pk: number
-    }>
-    const participantColumn = tableInfo.find((column) => column.name === 'participant_id')
-    if (participantColumn && participantColumn.pk > 0) return
-
-    const tempTable = `${table}_participant_migration`
-    this.db.run(`DROP TABLE IF EXISTS ${tempTable}`)
-    this.db.run(`CREATE TABLE ${tempTable} (${columns.join(', ')})`)
-
-    const participantExpr = participantColumn ? "COALESCE(participant_id, '')" : "''"
-
-    if (table === 'channel_models') {
-      this.db.run(`
-        INSERT OR REPLACE INTO ${tempTable}
-          (source, channel_name, channel_id, participant_id, model, updated_at)
-        SELECT source, channel_name, channel_id, ${participantExpr}, model, updated_at
-        FROM ${table}
-      `)
-    } else {
-      this.db.run(`
-        INSERT OR REPLACE INTO ${tempTable}
-          (source, channel_name, channel_id, participant_id, session_id, updated_at)
-        SELECT source, channel_name, channel_id, ${participantExpr}, session_id, updated_at
-        FROM ${table}
-      `)
-    }
-
-    this.db.run(`DROP TABLE ${table}`)
-    this.db.run(`ALTER TABLE ${tempTable} RENAME TO ${table}`)
-  }
-
-  private backfillLegacyBindings(): void {
-    const existingBindings = this.db
-      .query('SELECT COUNT(*) AS count FROM channel_session_bindings')
-      .get() as { count: number } | null
-    if ((existingBindings?.count ?? 0) > 0) {
-      return
-    }
-
-    // Bootstrap v1 of the binding model from legacy status rows: only recoverable active/idle
-    // sessions participate, duplicates collapse to the newest row, and web is normalized to the
-    // singleton (web, web, default) binding.
-    this.db.run(`
-      WITH ranked AS (
-        SELECT
-          source,
-          CASE WHEN source = 'web' THEN 'web' ELSE COALESCE(channel_name, '') END AS bind_channel_name,
-          COALESCE(channel_id, CASE WHEN source = 'web' THEN 'default' END) AS bind_channel_id,
-          id AS session_id,
-          updated_at,
-          ROW_NUMBER() OVER (
-            PARTITION BY
-              source,
-              CASE WHEN source = 'web' THEN 'web' ELSE COALESCE(channel_name, '') END,
-              COALESCE(channel_id, CASE WHEN source = 'web' THEN 'default' END)
-            ORDER BY updated_at DESC, created_at DESC, id DESC
-          ) AS rn
-        FROM sessions
-        WHERE status IN ('active', 'idle')
-          AND (channel_id IS NOT NULL OR source = 'web')
-      )
-      INSERT INTO channel_session_bindings (source, channel_name, channel_id, participant_id, session_id, updated_at)
-      SELECT source, bind_channel_name, bind_channel_id, '', session_id, updated_at
-      FROM ranked
-      WHERE rn = 1 AND bind_channel_id IS NOT NULL
-    `)
   }
 
   /**
@@ -586,8 +381,7 @@ export class SessionDB {
    */
   deleteSession(sessionId: string): boolean {
     this.deleteBindingsForSession(sessionId)
-    this.db.run('DELETE FROM session_compaction_blocks WHERE session_id = ?', [sessionId])
-    this.db.run('DELETE FROM session_messages WHERE session_id = ?', [sessionId])
+    this.deleteSessionPayload(sessionId)
     const result = this.db.run('DELETE FROM sessions WHERE id = ?', [sessionId])
     return result.changes > 0
   }
@@ -632,34 +426,12 @@ export class SessionDB {
       .query(`SELECT * FROM schedules WHERE created_by = 'runtime'`)
       .all() as Array<Record<string, unknown>>
 
-    return rows.map((row) => {
-      const config: ScheduleConfig = {
-        name: row.name as string,
-        cron: row.cron as string,
-        instruction: row.instruction as string,
-        createdBy: 'runtime',
-      }
-      if (row.model) config.model = row.model as string
-      if (row.overlap_policy) {
-        config.overlapPolicy = JSON.parse(row.overlap_policy as string)
-      }
-      if (row.misfire_policy) config.misfirePolicy = row.misfire_policy as 'skip' | 'run_once'
-      if (row.one_shot) config.oneShot = true
-      if (row.channel_source && row.channel_name && row.channel_id) {
-        config.channel = {
-          source: row.channel_source as SessionSource,
-          channelName: row.channel_name as string,
-          channelId: row.channel_id as string,
-          participantId: row.channel_participant_id
-            ? (row.channel_participant_id as string)
-            : undefined,
-          deliveryChannelId: row.delivery_channel_id
-            ? (row.delivery_channel_id as string)
-            : undefined,
-        } as ScheduleChannelBinding
-      }
-      return config
-    })
+    return rows.map(toScheduleConfig)
+  }
+
+  private deleteSessionPayload(sessionId: string): void {
+    this.db.run('DELETE FROM session_compaction_blocks WHERE session_id = ?', [sessionId])
+    this.db.run('DELETE FROM session_messages WHERE session_id = ?', [sessionId])
   }
 
   close(): void {
@@ -667,32 +439,29 @@ export class SessionDB {
   }
 }
 
-function toSessionRow(row: RawSessionRow): SessionRow {
-  return {
-    id: row.id,
-    source: row.source as SessionSource,
-    currentModel: row.current_model,
-    reasoningEffort: normalizeReasoningEffort(row.reasoning_effort),
-    modelHistory: JSON.parse(row.model_history_json) as ModelHistoryEntry[],
-    summary: row.summary ?? undefined,
-    tags: JSON.parse(row.tags_json) as string[],
-    channelName: row.channel_name ?? undefined,
-    channelId: row.channel_id ?? undefined,
-    participantId: row.participant_id ?? undefined,
-    agentConfigJson: row.agent_config_json ?? undefined,
-    systemPrompt: row.system_prompt ?? undefined,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+function toScheduleConfig(row: Record<string, unknown>): ScheduleConfig {
+  const config: ScheduleConfig = {
+    name: row.name as string,
+    cron: row.cron as string,
+    instruction: row.instruction as string,
+    createdBy: 'runtime',
   }
-}
-
-function toChannelSessionBinding(row: RawBindingRow): ChannelSessionBinding {
-  return {
-    source: row.source as SessionSource,
-    channelName: row.channel_name || undefined,
-    channelId: row.channel_id,
-    participantId: row.participant_id || undefined,
-    sessionId: row.session_id,
-    updatedAt: row.updated_at,
+  if (row.model) config.model = row.model as string
+  if (row.overlap_policy) {
+    config.overlapPolicy = JSON.parse(row.overlap_policy as string)
   }
+  if (row.misfire_policy) config.misfirePolicy = row.misfire_policy as 'skip' | 'run_once'
+  if (row.one_shot) config.oneShot = true
+  if (row.channel_source && row.channel_name && row.channel_id) {
+    config.channel = {
+      source: row.channel_source as SessionSource,
+      channelName: row.channel_name as string,
+      channelId: row.channel_id as string,
+      participantId: row.channel_participant_id
+        ? (row.channel_participant_id as string)
+        : undefined,
+      deliveryChannelId: row.delivery_channel_id ? (row.delivery_channel_id as string) : undefined,
+    } as ScheduleChannelBinding
+  }
+  return config
 }

@@ -9,7 +9,7 @@ import type {
   RequestToolResultEntry,
   SnapshotEntry,
 } from './observability-store'
-import type { TraceEntry } from './trace'
+import type { TraceEntry } from './trace-types'
 import { asRecord, asString } from './utils'
 
 const MAX_DECISION_RATIONALE_LENGTH = 1500
@@ -133,7 +133,10 @@ function asCompressionDecisionContext(
   }
 }
 
-function truncateDecisionRationale(value: string): { rationale: string; truncated: boolean } {
+function truncateDecisionRationale(value: string): {
+  rationale: string
+  truncated: boolean
+} {
   if (value.length <= MAX_DECISION_RATIONALE_LENGTH) {
     return {
       rationale: value,
@@ -145,6 +148,65 @@ function truncateDecisionRationale(value: string): { rationale: string; truncate
     rationale: `${value.slice(0, MAX_DECISION_RATIONALE_LENGTH - 3)}...`,
     truncated: true,
   }
+}
+
+function sortByTs<T extends { ts: string }>(entries: T[]): T[] {
+  return entries.sort((left, right) => left.ts.localeCompare(right.ts))
+}
+
+function toMs(value?: string): number | undefined {
+  if (!value) return undefined
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function findNearestCompressionSpan(
+  entries: TraceEntry[],
+  snapshotEntry: TraceEntry,
+  usedCompressionSpanIds: Set<string>,
+): TraceEntry | undefined {
+  const snapshotStartMs = toMs(snapshotEntry.startTime)
+  if (snapshotStartMs === undefined) return undefined
+
+  const snapshotParentId = snapshotEntry.parentSpanId
+  const candidates = entries
+    .filter((entry) => {
+      if (usedCompressionSpanIds.has(entry.spanId)) return false
+      if (entry.sessionId !== snapshotEntry.sessionId) return false
+      if (entry.kind !== 'llm_request' || entry.name !== 'compression') return false
+      if (entry.status !== 'success') return false
+
+      const candidateEndMs = toMs(entry.endTime)
+      if (candidateEndMs === undefined || candidateEndMs > snapshotStartMs) return false
+
+      return snapshotStartMs - candidateEndMs <= 5_000
+    })
+    .sort((left, right) => {
+      const leftSharesParent =
+        snapshotParentId !== undefined &&
+        left.parentSpanId !== undefined &&
+        left.parentSpanId === snapshotParentId
+      const rightSharesParent =
+        snapshotParentId !== undefined &&
+        right.parentSpanId !== undefined &&
+        right.parentSpanId === snapshotParentId
+
+      if (leftSharesParent !== rightSharesParent) {
+        return leftSharesParent ? -1 : 1
+      }
+
+      const leftGap = snapshotStartMs - (toMs(left.endTime) ?? snapshotStartMs)
+      const rightGap = snapshotStartMs - (toMs(right.endTime) ?? snapshotStartMs)
+      if (leftGap !== rightGap) return leftGap - rightGap
+
+      return left.startTime.localeCompare(right.startTime)
+    })
+
+  const matched = candidates[0]
+  if (matched) {
+    usedCompressionSpanIds.add(matched.spanId)
+  }
+  return matched
 }
 
 function asToolCalls(value: unknown): RequestToolCallEntry[] {
@@ -230,65 +292,6 @@ function asMemoryInjections(value: unknown): RequestMemoryInjectionEntry[] | und
   )
 
   return normalized.length > 0 ? normalized : undefined
-}
-
-function sortByTs<T extends { ts: string }>(entries: T[]): T[] {
-  return entries.sort((left, right) => left.ts.localeCompare(right.ts))
-}
-
-function toMs(value?: string): number | undefined {
-  if (!value) return undefined
-  const parsed = Date.parse(value)
-  return Number.isFinite(parsed) ? parsed : undefined
-}
-
-function findNearestCompressionSpan(
-  entries: TraceEntry[],
-  snapshotEntry: TraceEntry,
-  usedCompressionSpanIds: Set<string>,
-): TraceEntry | undefined {
-  const snapshotStartMs = toMs(snapshotEntry.startTime)
-  if (snapshotStartMs === undefined) return undefined
-
-  const snapshotParentId = snapshotEntry.parentSpanId
-  const candidates = entries
-    .filter((entry) => {
-      if (usedCompressionSpanIds.has(entry.spanId)) return false
-      if (entry.sessionId !== snapshotEntry.sessionId) return false
-      if (entry.kind !== 'llm_request' || entry.name !== 'compression') return false
-      if (entry.status !== 'success') return false
-
-      const candidateEndMs = toMs(entry.endTime)
-      if (candidateEndMs === undefined || candidateEndMs > snapshotStartMs) return false
-
-      return snapshotStartMs - candidateEndMs <= 5_000
-    })
-    .sort((left, right) => {
-      const leftSharesParent =
-        snapshotParentId !== undefined &&
-        left.parentSpanId !== undefined &&
-        left.parentSpanId === snapshotParentId
-      const rightSharesParent =
-        snapshotParentId !== undefined &&
-        right.parentSpanId !== undefined &&
-        right.parentSpanId === snapshotParentId
-
-      if (leftSharesParent !== rightSharesParent) {
-        return leftSharesParent ? -1 : 1
-      }
-
-      const leftGap = snapshotStartMs - (toMs(left.endTime) ?? snapshotStartMs)
-      const rightGap = snapshotStartMs - (toMs(right.endTime) ?? snapshotStartMs)
-      if (leftGap !== rightGap) return leftGap - rightGap
-
-      return left.startTime.localeCompare(right.startTime)
-    })
-
-  const matched = candidates[0]
-  if (matched) {
-    usedCompressionSpanIds.add(matched.spanId)
-  }
-  return matched
 }
 
 export function projectSessionRequestsFromTraceEntries(entries: TraceEntry[]): RequestLogEntry[] {

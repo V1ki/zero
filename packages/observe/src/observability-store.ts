@@ -12,15 +12,22 @@ import {
   unlinkSync,
 } from 'node:fs'
 import { basename, dirname, join, relative } from 'node:path'
-import { getSessionLogRelativeDir, now } from '@zero-os/shared'
-import type { CompletionResponse, StopReason, ToolEvidence, ToolResultBlock } from '@zero-os/shared'
-import { type RunLogEntry, type TraceEntry, type TraceKind, collapseTraceEntries } from './trace'
+import {
+  type CompletionResponse,
+  type StopReason,
+  type ToolEvidence,
+  type ToolResultBlock,
+  getSessionLogRelativeDir,
+  now,
+} from '@zero-os/shared'
+import { collapseTraceEntries } from './trace'
 import {
   projectSessionClosuresFromTraceEntries,
   projectSessionDecisionsFromTraceEntries,
   projectSessionRequestsFromTraceEntries,
   projectSessionSnapshotsFromTraceEntries,
 } from './trace-projections'
+import type { RunLogEntry, TraceEntry, TraceKind } from './trace-types'
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
 
@@ -205,124 +212,42 @@ export interface SessionRunLogSummary {
  * Observability store for global events and trace-backed session projections.
  */
 export class ObservabilityStore {
-  private basePath: string
+  private files: ObservabilityFileStore
 
   constructor(basePath: string) {
-    this.basePath = basePath
-    this.ensureDir(basePath)
-    this.ensureDir(this.getSessionsRoot())
-    this.ensureDir(this.getCurrentSessionsRoot())
-  }
-
-  private ensureDir(dir: string): void {
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true })
-    }
-  }
-
-  private getSessionsRoot(): string {
-    return join(this.basePath, 'sessions')
-  }
-
-  private getCurrentSessionsRoot(): string {
-    return join(this.getSessionsRoot(), '_current')
-  }
-
-  private appendLine(file: string, data: unknown): void {
-    const filePath = join(this.basePath, file)
-    const dir = dirname(filePath)
-    this.ensureDir(dir)
-    appendFileSync(filePath, `${JSON.stringify(data)}\n`, 'utf-8')
-  }
-
-  private listSessionDirectories(): string[] {
-    const sessionsDir = this.getSessionsRoot()
-    if (!existsSync(sessionsDir)) return []
-
-    const sessionDirs: string[] = []
-    for (const dirent of readdirSync(sessionsDir, { withFileTypes: true })) {
-      if (dirent.name === '_active' || dirent.name === '_current' || !dirent.isDirectory()) {
-        continue
-      }
-
-      const entryPath = join(sessionsDir, dirent.name)
-      if (/^\d{4}-\d{2}-\d{2}$/.test(dirent.name)) {
-        for (const sessionDirent of readdirSync(entryPath, { withFileTypes: true })) {
-          if (!sessionDirent.isDirectory()) continue
-          sessionDirs.push(join(entryPath, sessionDirent.name))
-        }
-        continue
-      }
-
-      sessionDirs.push(entryPath)
-    }
-
-    return sessionDirs
-  }
-
-  private removePathIfExists(path: string): void {
-    try {
-      const stat = lstatSync(path)
-      if (stat.isDirectory() && !stat.isSymbolicLink()) {
-        rmSync(path, { recursive: true, force: true })
-        return
-      }
-      unlinkSync(path)
-    } catch {}
+    this.files = new ObservabilityFileStore(basePath)
   }
 
   syncSessionCurrentState(sessionId: string, isCurrent: boolean): void {
-    const currentLinkPath = join(this.getCurrentSessionsRoot(), sessionId)
-    const legacyLinkPath = join(this.getSessionsRoot(), '_active', sessionId)
-    if (!isCurrent) {
-      this.removePathIfExists(currentLinkPath)
-      this.removePathIfExists(legacyLinkPath)
-      return
-    }
-
-    const sessionDir = join(this.basePath, getSessionLogRelativeDir(sessionId))
-    this.ensureDir(sessionDir)
-    this.ensureDir(this.getCurrentSessionsRoot())
-
-    const target = relative(this.getCurrentSessionsRoot(), sessionDir)
-    try {
-      const currentTarget = readlinkSync(currentLinkPath)
-      if (currentTarget === target) return
-      this.removePathIfExists(currentLinkPath)
-    } catch {}
-
-    this.removePathIfExists(legacyLinkPath)
-
-    symlinkSync(target, currentLinkPath, 'dir')
+    this.files.syncSessionCurrentState(sessionId, isCurrent)
   }
 
   /**
    * Log a general event entry.
    */
   logEvent(entry: Omit<EventLogEntry, 'ts'>): void {
-    this.appendLine('events.jsonl', { ...entry, ts: now() })
+    this.files.appendLine('events.jsonl', { ...entry, ts: now() })
   }
 
   /**
    * General log entry.
    */
   log(level: LogLevel, event: string, data?: Record<string, unknown>): void {
-    this.appendLine('events.jsonl', { ts: now(), level, event, ...data })
+    this.files.appendLine('events.jsonl', { ts: now(), level, event, ...data })
   }
 
   /**
    * Read all entries from a JSONL file.
    */
   readEntries<T = unknown>(file: string): T[] {
-    return this.readJsonlFileSafely<T>(join(this.basePath, file))
+    return this.files.readEntries<T>(file)
   }
 
   /**
    * Read entries from a session-scoped JSONL file.
    */
   readSessionEntries<T = unknown>(sessionId: string, file: string): T[] {
-    const filePath = join(this.basePath, getSessionLogRelativeDir(sessionId), file)
-    return this.readJsonlFileSafely<T>(filePath)
+    return this.files.readSessionEntries<T>(sessionId, file)
   }
 
   readSessionRunLog(sessionId: string): RunLogEntry[] {
@@ -330,64 +255,21 @@ export class ObservabilityStore {
   }
 
   listSessionRunLogs(): SessionRunLogSummary[] {
-    const summaries: SessionRunLogSummary[] = []
-
-    for (const sessionDir of this.listSessionDirectories()) {
-      const runLogPath = join(sessionDir, 'run.log')
-      if (!existsSync(runLogPath)) continue
-
-      const entries = this.readJsonlFileSafely<RunLogEntry>(runLogPath)
-      const levels: Partial<Record<LogLevel, number>> = {}
-      const events: Record<string, number> = {}
-      let rawRequestCount = 0
-      let rawResponseCount = 0
-      let toolCallCount = 0
-      let errorCount = 0
-
-      for (const entry of entries) {
-        levels[entry.level] = (levels[entry.level] ?? 0) + 1
-        events[entry.event] = (events[entry.event] ?? 0) + 1
-        if (entry.event === 'llm_request.raw_request') rawRequestCount += 1
-        if (entry.event === 'llm_request.raw_response') rawResponseCount += 1
-        if (entry.event.startsWith('tool_call.')) toolCallCount += 1
-        if (entry.level === 'error') errorCount += 1
-      }
-
-      const sortedEntries = [...entries].sort((left, right) => left.ts.localeCompare(right.ts))
-      const first = sortedEntries[0]
-      const last = sortedEntries.at(-1)
-      const stat = statSync(runLogPath)
-
-      summaries.push({
-        sessionId: basename(sessionDir),
-        entryCount: entries.length,
-        sizeBytes: stat.size,
-        firstTs: first?.ts,
-        lastTs: last?.ts,
-        lastEvent: last?.event,
-        lastLevel: last?.level,
-        levels,
-        events,
-        rawRequestCount,
-        rawResponseCount,
-        toolCallCount,
-        errorCount,
-      })
-    }
-
-    return summaries.sort((left, right) => (right.lastTs ?? '').localeCompare(left.lastTs ?? ''))
+    return summarizeSessionRunLogs(this.files.listSessionDirectories(), (filePath) =>
+      this.files.readJsonlFile(filePath),
+    )
   }
 
   appendSessionJudge(sessionId: string, entry: unknown): void {
-    this.appendLine(join(getSessionLogRelativeDir(sessionId), 'llm-judge.jsonl'), entry)
+    this.files.appendSessionLine(sessionId, 'llm-judge.jsonl', entry)
   }
 
   readSessionJudges<T = Record<string, unknown>>(sessionId: string): T[] {
-    const filePath = join(this.basePath, getSessionLogRelativeDir(sessionId), 'llm-judge.jsonl')
-
-    return this.readJsonlFileSafely<T>(filePath).sort((left, right) =>
-      this.getSessionJudgeSortKey(right).localeCompare(this.getSessionJudgeSortKey(left)),
-    )
+    return this.files
+      .readSessionEntries<T>(sessionId, 'llm-judge.jsonl')
+      .sort((left, right) =>
+        this.getSessionJudgeSortKey(right).localeCompare(this.getSessionJudgeSortKey(left)),
+      )
   }
 
   /**
@@ -395,7 +277,7 @@ export class ObservabilityStore {
    */
   readSessionRequests(sessionId: string): RequestLogEntry[] {
     return projectSessionRequestsFromTraceEntries(this.readSessionTraceEntries(sessionId)).map(
-      (entry) => this.normalizeStoredRequestEntry(entry),
+      normalizeStoredRequestEntry,
     )
   }
 
@@ -435,7 +317,7 @@ export class ObservabilityStore {
 
     for (const entry of this.readAllTraceEntries()) {
       for (const projected of projectSessionRequestsFromTraceEntries([entry])) {
-        deduped.set(projected.id, this.normalizeStoredRequestEntry(projected))
+        deduped.set(projected.id, normalizeStoredRequestEntry(projected))
       }
     }
 
@@ -448,10 +330,10 @@ export class ObservabilityStore {
   readAllTraceEntries(): TraceEntry[] {
     const entries: TraceEntry[] = []
 
-    for (const sessionDir of this.listSessionDirectories()) {
+    for (const sessionDir of this.files.listSessionDirectories()) {
       entries.push(
         ...collapseTraceEntries(
-          this.readJsonlFileSafely<TraceEntry>(join(sessionDir, 'trace.jsonl')),
+          this.files.readSessionDirectoryEntries<TraceEntry>(sessionDir, 'trace.jsonl'),
         ),
       )
     }
@@ -474,18 +356,122 @@ export class ObservabilityStore {
     return Array.from(deduped.values()).sort((left, right) => left.ts.localeCompare(right.ts))
   }
 
-  /**
-   * @deprecated Use readJsonlFileSafely instead.
-   */
-  private readJsonlFile<T>(filePath: string): T[] {
-    if (!existsSync(filePath)) return []
-    const content = readFileSync(filePath, 'utf-8')
-    if (content.trim().length === 0) return []
-    return content
-      .trim()
-      .split('\n')
-      .filter((line) => line.length > 0)
-      .map((line) => JSON.parse(line) as T)
+  private getSessionJudgeSortKey(entry: unknown): string {
+    if (!entry || typeof entry !== 'object') return ''
+
+    const savedAt = (entry as { savedAt?: unknown }).savedAt
+    return typeof savedAt === 'string' ? savedAt : ''
+  }
+}
+
+class ObservabilityFileStore {
+  constructor(private readonly basePath: string) {
+    this.ensureDir(basePath)
+    this.ensureDir(this.getSessionsRoot())
+    this.ensureDir(this.getCurrentSessionsRoot())
+  }
+
+  appendLine(file: string, data: unknown): void {
+    const filePath = join(this.basePath, file)
+    const dir = dirname(filePath)
+    this.ensureDir(dir)
+    appendFileSync(filePath, `${JSON.stringify(data)}\n`, 'utf-8')
+  }
+
+  appendSessionLine(sessionId: string, file: string, data: unknown): void {
+    this.appendLine(join(getSessionLogRelativeDir(sessionId), file), data)
+  }
+
+  readEntries<T = unknown>(file: string): T[] {
+    return this.readJsonlFileSafely<T>(join(this.basePath, file))
+  }
+
+  readSessionEntries<T = unknown>(sessionId: string, file: string): T[] {
+    const filePath = join(this.basePath, getSessionLogRelativeDir(sessionId), file)
+    return this.readJsonlFileSafely<T>(filePath)
+  }
+
+  readSessionDirectoryEntries<T = unknown>(sessionDir: string, file: string): T[] {
+    return this.readJsonlFileSafely<T>(join(sessionDir, file))
+  }
+
+  readJsonlFile<T = unknown>(filePath: string): T[] {
+    return this.readJsonlFileSafely<T>(filePath)
+  }
+
+  listSessionDirectories(): string[] {
+    const sessionsDir = this.getSessionsRoot()
+    if (!existsSync(sessionsDir)) return []
+
+    const sessionDirs: string[] = []
+    for (const dirent of readdirSync(sessionsDir, { withFileTypes: true })) {
+      if (dirent.name === '_active' || dirent.name === '_current' || !dirent.isDirectory()) {
+        continue
+      }
+
+      const entryPath = join(sessionsDir, dirent.name)
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dirent.name)) {
+        for (const sessionDirent of readdirSync(entryPath, { withFileTypes: true })) {
+          if (!sessionDirent.isDirectory()) continue
+          sessionDirs.push(join(entryPath, sessionDirent.name))
+        }
+        continue
+      }
+
+      sessionDirs.push(entryPath)
+    }
+
+    return sessionDirs
+  }
+
+  syncSessionCurrentState(sessionId: string, isCurrent: boolean): void {
+    const currentLinkPath = join(this.getCurrentSessionsRoot(), sessionId)
+    const legacyLinkPath = join(this.getSessionsRoot(), '_active', sessionId)
+    if (!isCurrent) {
+      this.removePathIfExists(currentLinkPath)
+      this.removePathIfExists(legacyLinkPath)
+      return
+    }
+
+    const sessionDir = join(this.basePath, getSessionLogRelativeDir(sessionId))
+    this.ensureDir(sessionDir)
+    this.ensureDir(this.getCurrentSessionsRoot())
+
+    const target = relative(this.getCurrentSessionsRoot(), sessionDir)
+    try {
+      const currentTarget = readlinkSync(currentLinkPath)
+      if (currentTarget === target) return
+      this.removePathIfExists(currentLinkPath)
+    } catch {}
+
+    this.removePathIfExists(legacyLinkPath)
+
+    symlinkSync(target, currentLinkPath, 'dir')
+  }
+
+  private ensureDir(dir: string): void {
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true })
+    }
+  }
+
+  private getSessionsRoot(): string {
+    return join(this.basePath, 'sessions')
+  }
+
+  private getCurrentSessionsRoot(): string {
+    return join(this.getSessionsRoot(), '_current')
+  }
+
+  private removePathIfExists(path: string): void {
+    try {
+      const stat = lstatSync(path)
+      if (stat.isDirectory() && !stat.isSymbolicLink()) {
+        rmSync(path, { recursive: true, force: true })
+        return
+      }
+      unlinkSync(path)
+    } catch {}
   }
 
   private readJsonlFileSafely<T>(filePath: string): T[] {
@@ -505,116 +491,169 @@ export class ObservabilityStore {
 
     return entries
   }
+}
 
-  private getSessionJudgeSortKey(entry: unknown): string {
-    if (!entry || typeof entry !== 'object') return ''
+function normalizeStoredRequestEntry(entry: RequestLogEntry): RequestLogEntry {
+  return {
+    ...entry,
+    toolCalls: normalizeToolCalls(entry.toolCalls),
+    toolResults: normalizeToolResults(entry.toolResults),
+    queuedInjection: normalizeQueuedInjection(entry.queuedInjection),
+    memoryInjections: normalizeMemoryInjections(entry.memoryInjections),
+  }
+}
 
-    const savedAt = (entry as { savedAt?: unknown }).savedAt
-    return typeof savedAt === 'string' ? savedAt : ''
+function normalizeToolCalls(toolCalls: unknown): RequestToolCallEntry[] {
+  if (!Array.isArray(toolCalls)) return []
+
+  return toolCalls.filter((toolCall): toolCall is RequestToolCallEntry =>
+    Boolean(
+      toolCall &&
+        typeof toolCall === 'object' &&
+        typeof (toolCall as RequestToolCallEntry).id === 'string' &&
+        typeof (toolCall as RequestToolCallEntry).name === 'string' &&
+        (toolCall as RequestToolCallEntry).input &&
+        typeof (toolCall as RequestToolCallEntry).input === 'object' &&
+        !Array.isArray((toolCall as RequestToolCallEntry).input),
+    ),
+  )
+}
+
+function normalizeToolResults(toolResults: unknown): RequestToolResultEntry[] {
+  if (!Array.isArray(toolResults)) return []
+
+  return toolResults.filter((toolResult): toolResult is RequestToolResultEntry =>
+    Boolean(
+      toolResult &&
+        typeof toolResult === 'object' &&
+        (toolResult as RequestToolResultEntry).type === 'tool_result' &&
+        typeof (toolResult as RequestToolResultEntry).toolUseId === 'string' &&
+        typeof (toolResult as RequestToolResultEntry).content === 'string' &&
+        ((toolResult as RequestToolResultEntry).isError === undefined ||
+          typeof (toolResult as RequestToolResultEntry).isError === 'boolean') &&
+        ((toolResult as RequestToolResultEntry).outputSummary === undefined ||
+          typeof (toolResult as RequestToolResultEntry).outputSummary === 'string'),
+    ),
+  )
+}
+
+function normalizeQueuedInjection(
+  queuedInjection: unknown,
+): RequestQueuedInjectionEntry | undefined {
+  if (!queuedInjection || typeof queuedInjection !== 'object' || Array.isArray(queuedInjection)) {
+    return undefined
   }
 
-  private normalizeStoredRequestEntry(entry: RequestLogEntry): RequestLogEntry {
-    return {
-      ...entry,
-      toolCalls: this.normalizeToolCalls(entry.toolCalls),
-      toolResults: this.normalizeToolResults(entry.toolResults),
-      queuedInjection: this.normalizeQueuedInjection(entry.queuedInjection),
-      memoryInjections: this.normalizeMemoryInjections(entry.memoryInjections),
-    }
+  const count = (queuedInjection as RequestQueuedInjectionEntry).count
+  const formattedText = (queuedInjection as RequestQueuedInjectionEntry).formattedText
+  const messages = (queuedInjection as RequestQueuedInjectionEntry).messages
+
+  if (
+    typeof count !== 'number' ||
+    !Number.isFinite(count) ||
+    typeof formattedText !== 'string' ||
+    !Array.isArray(messages)
+  ) {
+    return undefined
   }
 
-  private normalizeToolCalls(toolCalls: unknown): RequestToolCallEntry[] {
-    if (!Array.isArray(toolCalls)) return []
-
-    return toolCalls.filter((toolCall): toolCall is RequestToolCallEntry =>
+  return {
+    count,
+    formattedText,
+    messages: messages.filter((message): message is RequestQueuedInjectionMessageEntry =>
       Boolean(
-        toolCall &&
-          typeof toolCall === 'object' &&
-          typeof (toolCall as RequestToolCallEntry).id === 'string' &&
-          typeof (toolCall as RequestToolCallEntry).name === 'string' &&
-          (toolCall as RequestToolCallEntry).input &&
-          typeof (toolCall as RequestToolCallEntry).input === 'object' &&
-          !Array.isArray((toolCall as RequestToolCallEntry).input),
+        message &&
+          typeof message === 'object' &&
+          typeof (message as RequestQueuedInjectionMessageEntry).timestamp === 'string' &&
+          typeof (message as RequestQueuedInjectionMessageEntry).content === 'string' &&
+          typeof (message as RequestQueuedInjectionMessageEntry).imageCount === 'number' &&
+          Number.isFinite((message as RequestQueuedInjectionMessageEntry).imageCount) &&
+          Array.isArray((message as RequestQueuedInjectionMessageEntry).mediaTypes) &&
+          (message as RequestQueuedInjectionMessageEntry).mediaTypes.every(
+            (mediaType) => typeof mediaType === 'string',
+          ),
       ),
-    )
+    ),
   }
+}
 
-  private normalizeToolResults(toolResults: unknown): RequestToolResultEntry[] {
-    if (!Array.isArray(toolResults)) return []
+function normalizeMemoryInjections(
+  memoryInjections: unknown,
+): RequestMemoryInjectionEntry[] | undefined {
+  if (!Array.isArray(memoryInjections)) return undefined
 
-    return toolResults.filter((toolResult): toolResult is RequestToolResultEntry =>
+  const normalized = memoryInjections.filter(
+    (memoryInjection): memoryInjection is RequestMemoryInjectionEntry =>
       Boolean(
-        toolResult &&
-          typeof toolResult === 'object' &&
-          (toolResult as RequestToolResultEntry).type === 'tool_result' &&
-          typeof (toolResult as RequestToolResultEntry).toolUseId === 'string' &&
-          typeof (toolResult as RequestToolResultEntry).content === 'string' &&
-          ((toolResult as RequestToolResultEntry).isError === undefined ||
-            typeof (toolResult as RequestToolResultEntry).isError === 'boolean') &&
-          ((toolResult as RequestToolResultEntry).outputSummary === undefined ||
-            typeof (toolResult as RequestToolResultEntry).outputSummary === 'string'),
+        memoryInjection &&
+          typeof memoryInjection === 'object' &&
+          ((memoryInjection as RequestMemoryInjectionEntry).layer === 'layer1' ||
+            (memoryInjection as RequestMemoryInjectionEntry).layer === 'layer2') &&
+          ((memoryInjection as RequestMemoryInjectionEntry).source === 'retrieved_memories' ||
+            (memoryInjection as RequestMemoryInjectionEntry).source === 'memory_hint') &&
+          typeof (memoryInjection as RequestMemoryInjectionEntry).formattedText === 'string',
       ),
-    )
+  )
+
+  return normalized.length > 0 ? normalized : undefined
+}
+
+function summarizeSessionRunLogs(
+  sessionDirs: string[],
+  readJsonlFileSafely: <T>(filePath: string) => T[],
+): SessionRunLogSummary[] {
+  const summaries: SessionRunLogSummary[] = []
+
+  for (const sessionDir of sessionDirs) {
+    const runLogPath = join(sessionDir, 'run.log')
+    if (!existsSync(runLogPath)) continue
+
+    summaries.push(summarizeSessionRunLog(sessionDir, runLogPath, readJsonlFileSafely))
   }
 
-  private normalizeQueuedInjection(
-    queuedInjection: unknown,
-  ): RequestQueuedInjectionEntry | undefined {
-    if (!queuedInjection || typeof queuedInjection !== 'object' || Array.isArray(queuedInjection)) {
-      return undefined
-    }
+  return summaries.sort((left, right) => (right.lastTs ?? '').localeCompare(left.lastTs ?? ''))
+}
 
-    const count = (queuedInjection as RequestQueuedInjectionEntry).count
-    const formattedText = (queuedInjection as RequestQueuedInjectionEntry).formattedText
-    const messages = (queuedInjection as RequestQueuedInjectionEntry).messages
+function summarizeSessionRunLog(
+  sessionDir: string,
+  runLogPath: string,
+  readJsonlFileSafely: <T>(filePath: string) => T[],
+): SessionRunLogSummary {
+  const entries = readJsonlFileSafely<RunLogEntry>(runLogPath)
+  const levels: Partial<Record<LogLevel, number>> = {}
+  const events: Record<string, number> = {}
+  let rawRequestCount = 0
+  let rawResponseCount = 0
+  let toolCallCount = 0
+  let errorCount = 0
 
-    if (
-      typeof count !== 'number' ||
-      !Number.isFinite(count) ||
-      typeof formattedText !== 'string' ||
-      !Array.isArray(messages)
-    ) {
-      return undefined
-    }
-
-    return {
-      count,
-      formattedText,
-      messages: messages.filter((message): message is RequestQueuedInjectionMessageEntry =>
-        Boolean(
-          message &&
-            typeof message === 'object' &&
-            typeof (message as RequestQueuedInjectionMessageEntry).timestamp === 'string' &&
-            typeof (message as RequestQueuedInjectionMessageEntry).content === 'string' &&
-            typeof (message as RequestQueuedInjectionMessageEntry).imageCount === 'number' &&
-            Number.isFinite((message as RequestQueuedInjectionMessageEntry).imageCount) &&
-            Array.isArray((message as RequestQueuedInjectionMessageEntry).mediaTypes) &&
-            (message as RequestQueuedInjectionMessageEntry).mediaTypes.every(
-              (mediaType) => typeof mediaType === 'string',
-            ),
-        ),
-      ),
-    }
+  for (const entry of entries) {
+    levels[entry.level] = (levels[entry.level] ?? 0) + 1
+    events[entry.event] = (events[entry.event] ?? 0) + 1
+    if (entry.event === 'llm_request.raw_request') rawRequestCount += 1
+    if (entry.event === 'llm_request.raw_response') rawResponseCount += 1
+    if (entry.event.startsWith('tool_call.')) toolCallCount += 1
+    if (entry.level === 'error') errorCount += 1
   }
 
-  private normalizeMemoryInjections(
-    memoryInjections: unknown,
-  ): RequestMemoryInjectionEntry[] | undefined {
-    if (!Array.isArray(memoryInjections)) return undefined
+  const sortedEntries = [...entries].sort((left, right) => left.ts.localeCompare(right.ts))
+  const first = sortedEntries[0]
+  const last = sortedEntries.at(-1)
+  const stat = statSync(runLogPath)
 
-    const normalized = memoryInjections.filter(
-      (memoryInjection): memoryInjection is RequestMemoryInjectionEntry =>
-        Boolean(
-          memoryInjection &&
-            typeof memoryInjection === 'object' &&
-            ((memoryInjection as RequestMemoryInjectionEntry).layer === 'layer1' ||
-              (memoryInjection as RequestMemoryInjectionEntry).layer === 'layer2') &&
-            ((memoryInjection as RequestMemoryInjectionEntry).source === 'retrieved_memories' ||
-              (memoryInjection as RequestMemoryInjectionEntry).source === 'memory_hint') &&
-            typeof (memoryInjection as RequestMemoryInjectionEntry).formattedText === 'string',
-        ),
-    )
-
-    return normalized.length > 0 ? normalized : undefined
+  return {
+    sessionId: basename(sessionDir),
+    entryCount: entries.length,
+    sizeBytes: stat.size,
+    firstTs: first?.ts,
+    lastTs: last?.ts,
+    lastEvent: last?.event,
+    lastLevel: last?.level,
+    levels,
+    events,
+    rawRequestCount,
+    rawResponseCount,
+    toolCallCount,
+    errorCount,
   }
 }

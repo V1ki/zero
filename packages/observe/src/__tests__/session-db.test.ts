@@ -1,9 +1,11 @@
+import type { Database } from 'bun:sqlite'
 import { afterEach, describe, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Message, Session as SessionData, TimelineCompactionBlock } from '@zero-os/shared'
 import { SessionDB } from '../session-db'
+import { backfillLegacyBindings } from '../session-db-schema'
 
 function expectDefined<T>(value: T | null | undefined): NonNullable<T> {
   expect(value).toBeDefined()
@@ -42,11 +44,7 @@ function makeMessages(count: number): Message[] {
 }
 
 type UnsafeSessionDb = {
-  db: {
-    run(sql: string, bindings?: unknown[]): unknown
-    query(sql: string): { get(...bindings: unknown[]): unknown }
-  }
-  backfillLegacyBindings(): void
+  db: Database
 }
 
 function insertLegacySession(
@@ -473,7 +471,7 @@ describe('SessionDB', () => {
       updatedAt: '2026-04-22T00:30:00.000Z',
     })
 
-    unsafe.backfillLegacyBindings()
+    backfillLegacyBindings(unsafe.db)
 
     expect(db.loadBindings()).toEqual([
       {

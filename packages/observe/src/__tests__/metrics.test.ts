@@ -1,8 +1,10 @@
+import type { Database } from 'bun:sqlite'
 import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MetricsDB } from '../metrics'
+import { migrateLegacyRequestsToUsageLedger } from '../metrics-schema'
 
 function expectDefined<T>(value: T | null | undefined): NonNullable<T> {
   expect(value).toBeDefined()
@@ -12,7 +14,7 @@ function expectDefined<T>(value: T | null | undefined): NonNullable<T> {
   return value
 }
 
-function recordRequest(
+function recordUsageRequest(
   db: MetricsDB,
   entry: {
     id: string
@@ -56,7 +58,7 @@ describe('MetricsDB', () => {
   test('initialize and record requests', () => {
     db = MetricsDB.createInMemory()
 
-    recordRequest(db, {
+    recordUsageRequest(db, {
       id: 'req_001',
       sessionId: 'sess_001',
       model: 'gpt-5.3-codex-medium',
@@ -68,7 +70,7 @@ describe('MetricsDB', () => {
       createdAt: new Date().toISOString(),
     })
 
-    recordRequest(db, {
+    recordUsageRequest(db, {
       id: 'req_002',
       sessionId: 'sess_001',
       model: 'gpt-5.3-codex-medium',
@@ -94,7 +96,7 @@ describe('MetricsDB', () => {
   })
 
   test('sessionStats returns cache metrics', () => {
-    recordRequest(db, {
+    recordUsageRequest(db, {
       id: 'req_session_cache_001',
       sessionId: 'sess_001',
       model: 'gpt-5.3-codex-medium',
@@ -203,7 +205,7 @@ describe('MetricsDB', () => {
     const cacheDb = MetricsDB.createInMemory()
     const createdAt = new Date().toISOString()
 
-    recordRequest(cacheDb, {
+    recordUsageRequest(cacheDb, {
       id: 'req_cache_001',
       sessionId: 'sess_002',
       model: 'claude-opus',
@@ -216,7 +218,7 @@ describe('MetricsDB', () => {
       durationMs: 800,
       createdAt,
     })
-    recordRequest(cacheDb, {
+    recordUsageRequest(cacheDb, {
       id: 'req_cache_002',
       sessionId: 'sess_003',
       model: 'gpt-5.3-codex-medium',
@@ -243,7 +245,7 @@ describe('MetricsDB', () => {
     const cacheDb = MetricsDB.createInMemory()
     const createdAt = new Date().toISOString()
 
-    recordRequest(cacheDb, {
+    recordUsageRequest(cacheDb, {
       id: 'req_cache_003',
       sessionId: 'sess_004',
       model: 'claude-opus',
@@ -270,7 +272,7 @@ describe('MetricsDB', () => {
     const cacheDb = MetricsDB.createInMemory()
     const createdAt = new Date().toISOString()
 
-    recordRequest(cacheDb, {
+    recordUsageRequest(cacheDb, {
       id: 'req_cache_004',
       sessionId: 'sess_005',
       model: 'gpt-5.3-codex-medium',
@@ -316,7 +318,7 @@ describe('MetricsDB', () => {
     const costDb = MetricsDB.createInMemory()
     const createdAt = new Date().toISOString()
 
-    recordRequest(costDb, {
+    recordUsageRequest(costDb, {
       id: 'req_cost_day_001',
       sessionId: 'sess_cost_001',
       model: 'gpt-5.3-codex-medium',
@@ -327,7 +329,7 @@ describe('MetricsDB', () => {
       durationMs: 1500,
       createdAt,
     })
-    recordRequest(costDb, {
+    recordUsageRequest(costDb, {
       id: 'req_cost_day_002',
       sessionId: 'sess_cost_002',
       model: 'claude-opus',
@@ -352,7 +354,7 @@ describe('MetricsDB', () => {
     const cacheDb = MetricsDB.createInMemory()
     const createdAt = new Date().toISOString()
 
-    recordRequest(cacheDb, {
+    recordUsageRequest(cacheDb, {
       id: 'req_cache_by_model_001',
       sessionId: 'sess_cache_by_model_001',
       model: 'claude-opus',
@@ -552,13 +554,7 @@ describe('MetricsDB', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'metrics-migrate-'))
     const migrationDb = new MetricsDB(join(tempDir, 'metrics.db'))
     const internals = migrationDb as unknown as {
-      db: {
-        run(sql: string, params?: unknown[]): void
-        query(sql: string): {
-          all(...params: unknown[]): Array<Record<string, unknown>>
-        }
-      }
-      migrateLegacyRequestsToUsageLedger(): void
+      db: Database
     }
     const boundary = '2026-04-01T00:00:00.123Z'
 
@@ -629,7 +625,7 @@ describe('MetricsDB', () => {
         ],
       )
 
-      internals.migrateLegacyRequestsToUsageLedger()
+      migrateLegacyRequestsToUsageLedger(internals.db)
 
       const rows = internals.db
         .query(

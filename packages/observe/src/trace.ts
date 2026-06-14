@@ -1,121 +1,28 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { generatePrefixedId, getSessionLogRelativeDir, now } from '@zero-os/shared'
+import { getSessionLogRelativeDir } from '@zero-os/shared'
+import { generatePrefixedId, now } from '@zero-os/shared'
 import { externalizeImageData } from './image-ref'
+import type {
+  RunLogEntry,
+  RunLogLevel,
+  StartSpanOptions,
+  TraceEntry,
+  TraceSpan,
+  TraceStatus,
+  UpdateSpanInput,
+} from './trace-types'
 
-export type TraceStatus = 'running' | 'success' | 'error'
-
-export type TraceKind =
-  | 'turn'
-  | 'llm_request'
-  | 'tool_call'
-  | 'context_compaction'
-  | 'sub_agent'
-  | 'snapshot'
-  | 'closure_decision'
-  | 'closure_failed'
-
-export interface TraceSpan {
-  id: string
-  parentId?: string
-  sessionId: string
-  kind: TraceKind
-  name: string
-  agentName?: string
-  startTime: string
-  endTime?: string
-  durationMs?: number
-  status: TraceStatus
-  data?: Record<string, unknown>
-  metadata?: Record<string, unknown>
-  children: TraceSpan[]
-}
-
-export interface TraceEntry {
-  spanId: string
-  parentSpanId?: string
-  sessionId: string
-  kind: TraceKind
-  name: string
-  agentName?: string
-  startTime: string
-  endTime?: string
-  durationMs?: number
-  status: TraceStatus
-  data?: Record<string, unknown>
-  metadata?: Record<string, unknown>
-}
-
-export type RunLogLevel = 'debug' | 'info' | 'warn' | 'error'
-
-export interface RunLogEntry {
-  ts: string
-  level: RunLogLevel
-  event: string
-  sessionId: string
-  spanId?: string
-  parentSpanId?: string
-  name?: string
-  agentName?: string
-  data?: Record<string, unknown>
-  metadata?: Record<string, unknown>
-}
-
-interface StartSpanOptions {
-  kind?: TraceKind
-  agentName?: string
-  data?: Record<string, unknown>
-  metadata?: Record<string, unknown>
-}
-
-interface UpdateSpanInput {
-  kind?: TraceKind
-  name?: string
-  agentName?: string
-  data?: Record<string, unknown>
-  metadata?: Record<string, unknown>
-}
-
-function mergeRecords(
-  current: Record<string, unknown> | undefined,
-  update: Record<string, unknown>,
-): Record<string, unknown> {
-  const next: Record<string, unknown> = { ...(current ?? {}) }
-
-  for (const [key, value] of Object.entries(update)) {
-    const existing = next[key]
-    if (
-      value &&
-      typeof value === 'object' &&
-      !Array.isArray(value) &&
-      existing &&
-      typeof existing === 'object' &&
-      !Array.isArray(existing)
-    ) {
-      next[key] = mergeRecords(
-        existing as Record<string, unknown>,
-        value as Record<string, unknown>,
-      )
-      continue
-    }
-
-    next[key] = value
-  }
-
-  return next
-}
-
-export function collapseTraceEntries(entries: TraceEntry[]): TraceEntry[] {
-  const latestEntries = new Map<string, TraceEntry>()
-
-  for (const entry of entries) {
-    latestEntries.set(`${entry.sessionId}:${entry.spanId}`, entry)
-  }
-
-  return Array.from(latestEntries.values()).sort((left, right) =>
-    left.startTime.localeCompare(right.startTime),
-  )
-}
+export type {
+  RunLogEntry,
+  RunLogLevel,
+  StartSpanOptions,
+  TraceEntry,
+  TraceKind,
+  TraceSpan,
+  TraceStatus,
+  UpdateSpanInput,
+} from './trace-types'
 
 /**
  * Trace recorder for tracking call chains across sessions and tools.
@@ -125,10 +32,10 @@ export function collapseTraceEntries(entries: TraceEntry[]): TraceEntry[] {
 export class Tracer {
   private spans: Map<string, TraceSpan> = new Map()
   private rootSpans: Map<string, TraceSpan> = new Map()
-  private basePath?: string
+  private logStore?: TraceLogStore
 
   constructor(basePath?: string) {
-    this.basePath = basePath
+    this.logStore = basePath ? new TraceLogStore(basePath) : undefined
   }
 
   /**
@@ -167,9 +74,7 @@ export class Tracer {
       this.rootSpans.set(span.id, span)
     }
 
-    if (this.basePath) {
-      this.appendTraceEntry(this.toTraceEntry(span))
-    }
+    this.logStore?.appendTraceEntry(this.toTraceEntry(span))
 
     return span
   }
@@ -185,18 +90,19 @@ export class Tracer {
     if (update.name) span.name = update.name
     if (update.agentName) span.agentName = update.agentName
     if (update.data) {
-      span.data = mergeRecords(span.data, this.preparePersistedValue(span.sessionId, update.data))
+      span.data = mergeTraceRecords(
+        span.data,
+        this.preparePersistedValue(span.sessionId, update.data),
+      )
     }
     if (update.metadata) {
-      span.metadata = mergeRecords(
+      span.metadata = mergeTraceRecords(
         span.metadata,
         this.preparePersistedValue(span.sessionId, update.metadata),
       )
     }
 
-    if (this.basePath) {
-      this.appendTraceEntry(this.toTraceEntry(span))
-    }
+    this.logStore?.appendTraceEntry(this.toTraceEntry(span))
   }
 
   /**
@@ -220,9 +126,7 @@ export class Tracer {
       }
     }
 
-    if (this.basePath) {
-      this.appendTraceEntry(this.toTraceEntry(span))
-    }
+    this.logStore?.appendTraceEntry(this.toTraceEntry(span))
   }
 
   /**
@@ -234,9 +138,9 @@ export class Tracer {
     event: string,
     data?: Record<string, unknown>,
   ): void {
-    if (!this.basePath) return
+    if (!this.logStore) return
 
-    this.appendRunLogEntry({
+    this.logStore.appendRunLogEntry({
       ts: now(),
       level,
       event,
@@ -256,7 +160,7 @@ export class Tracer {
    * Get all root spans for a session.
    */
   getSessionTraces(sessionId: string): TraceSpan[] {
-    if (!this.basePath) {
+    if (!this.logStore) {
       return Array.from(this.rootSpans.values()).filter((s) => s.sessionId === sessionId)
     }
 
@@ -267,14 +171,7 @@ export class Tracer {
    * Read all persisted trace entries for a session.
    */
   readSessionEntries(sessionId: string): TraceEntry[] {
-    if (!this.basePath) return []
-
-    const filePath = this.getTraceFilePath(sessionId)
-    if (existsSync(filePath)) {
-      return collapseTraceEntries(this.readJsonlFile<TraceEntry>(filePath))
-    }
-
-    return []
+    return this.logStore?.readSessionEntries(sessionId) ?? []
   }
 
   /**
@@ -283,39 +180,23 @@ export class Tracer {
    * and overlays any still-running in-memory spans.
    */
   exportSession(sessionId: string): TraceSpan[] {
-    if (!this.basePath) {
+    if (!this.logStore) {
       return this.getSessionTraces(sessionId)
     }
 
     const traces = new Map<string, TraceSpan>()
 
     for (const entry of this.readSessionEntries(sessionId)) {
-      traces.set(entry.spanId, this.entryToSpan(entry))
+      traces.set(entry.spanId, traceEntryToSpan(entry))
     }
 
     for (const span of this.spans.values()) {
       if (span.sessionId !== sessionId || span.endTime) continue
-      traces.set(span.id, this.cloneSpanWithoutChildren(span))
+      const cloned = cloneTraceSpanWithoutChildren(span)
+      traces.set(span.id, this.preparePersistedValue(span.sessionId, cloned))
     }
 
-    const roots: TraceSpan[] = []
-    for (const span of traces.values()) {
-      span.children = []
-    }
-
-    for (const span of traces.values()) {
-      if (span.parentId) {
-        const parent = traces.get(span.parentId)
-        if (parent) {
-          parent.children.push(span)
-          continue
-        }
-      }
-      roots.push(span)
-    }
-
-    this.sortTraceTree(roots)
-    return roots
+    return buildTraceTree(traces.values())
   }
 
   /**
@@ -326,19 +207,50 @@ export class Tracer {
     this.rootSpans.clear()
   }
 
-  private getTraceFilePath(sessionId: string): string {
-    return join(this.basePath as string, getSessionLogRelativeDir(sessionId), 'trace.jsonl')
+  private preparePersistedValue<T>(sessionId: string, value: T): T {
+    return this.logStore?.preparePersistedValue(sessionId, value) ?? value
   }
 
-  private appendTraceEntry(entry: TraceEntry): void {
-    if (!this.basePath) return
+  private toTraceEntry(span: TraceSpan): TraceEntry {
+    return traceSpanToEntry(span)
+  }
+}
 
+function mergeTraceRecords(
+  current: Record<string, unknown> | undefined,
+  update: Record<string, unknown>,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...(current ?? {}) }
+
+  for (const [key, value] of Object.entries(update)) {
+    const existing = next[key]
+    if (
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      existing &&
+      typeof existing === 'object' &&
+      !Array.isArray(existing)
+    ) {
+      next[key] = mergeTraceRecords(
+        existing as Record<string, unknown>,
+        value as Record<string, unknown>,
+      )
+      continue
+    }
+
+    next[key] = value
+  }
+
+  return next
+}
+
+class TraceLogStore {
+  constructor(private readonly basePath: string) {}
+
+  appendTraceEntry(entry: TraceEntry): void {
     const persistedEntry = this.preparePersistedValue(entry.sessionId, entry)
-    const filePath = join(
-      this.basePath,
-      getSessionLogRelativeDir(persistedEntry.sessionId),
-      'trace.jsonl',
-    )
+    const filePath = this.getTraceFilePath(persistedEntry.sessionId)
     mkdirSync(dirname(filePath), { recursive: true })
     appendFileSync(filePath, `${JSON.stringify(persistedEntry)}\n`, 'utf-8')
     this.appendRunLogEntry({
@@ -362,9 +274,7 @@ export class Tracer {
     })
   }
 
-  private appendRunLogEntry(entry: RunLogEntry): void {
-    if (!this.basePath) return
-
+  appendRunLogEntry(entry: RunLogEntry): void {
     const persistedEntry = this.preparePersistedValue(entry.sessionId, entry)
     const filePath = join(
       this.basePath,
@@ -375,8 +285,18 @@ export class Tracer {
     appendFileSync(filePath, `${JSON.stringify(persistedEntry)}\n`, 'utf-8')
   }
 
-  private preparePersistedValue<T>(sessionId: string, value: T): T {
+  readSessionEntries(sessionId: string): TraceEntry[] {
+    const filePath = this.getTraceFilePath(sessionId)
+    if (!existsSync(filePath)) return []
+    return collapseTraceEntries(this.readJsonlFile<TraceEntry>(filePath))
+  }
+
+  preparePersistedValue<T>(sessionId: string, value: T): T {
     return externalizeImageData(value, { logsBasePath: this.basePath, sessionId })
+  }
+
+  private getTraceFilePath(sessionId: string): string {
+    return join(this.basePath, getSessionLogRelativeDir(sessionId), 'trace.jsonl')
   }
 
   private readJsonlFile<T>(filePath: string): T[] {
@@ -396,67 +316,101 @@ export class Tracer {
 
     return entries
   }
+}
 
-  private toTraceEntry(span: TraceSpan): TraceEntry {
-    return {
-      spanId: span.id,
-      parentSpanId: span.parentId,
-      sessionId: span.sessionId,
-      kind: span.kind,
-      name: span.name,
-      agentName: span.agentName,
-      startTime: span.startTime,
-      endTime: span.endTime,
-      durationMs: span.durationMs,
-      status: span.status,
-      data: span.data,
-      metadata: span.metadata,
-    }
+function buildTraceTree(spans: Iterable<TraceSpan>): TraceSpan[] {
+  const traces = new Map<string, TraceSpan>()
+  for (const span of spans) {
+    span.children = []
+    traces.set(span.id, span)
   }
 
-  private entryToSpan(entry: TraceEntry): TraceSpan {
-    return {
-      id: entry.spanId,
-      parentId: entry.parentSpanId,
-      sessionId: entry.sessionId,
-      kind: entry.kind,
-      name: entry.name,
-      agentName: entry.agentName,
-      startTime: entry.startTime,
-      endTime: entry.endTime,
-      durationMs: entry.durationMs,
-      status: entry.status,
-      data: entry.data,
-      metadata: entry.metadata,
-      children: [],
-    }
-  }
-
-  private cloneSpanWithoutChildren(span: TraceSpan): TraceSpan {
-    const cloned = {
-      id: span.id,
-      parentId: span.parentId,
-      sessionId: span.sessionId,
-      kind: span.kind,
-      name: span.name,
-      agentName: span.agentName,
-      startTime: span.startTime,
-      endTime: span.endTime,
-      durationMs: span.durationMs,
-      status: span.status,
-      data: span.data ? { ...span.data } : undefined,
-      metadata: span.metadata ? { ...span.metadata } : undefined,
-      children: [],
-    }
-    return this.basePath ? this.preparePersistedValue(span.sessionId, cloned) : cloned
-  }
-
-  private sortTraceTree(spans: TraceSpan[]): void {
-    spans.sort((left, right) => left.startTime.localeCompare(right.startTime))
-    for (const span of spans) {
-      if (span.children.length > 0) {
-        this.sortTraceTree(span.children)
+  const roots: TraceSpan[] = []
+  for (const span of traces.values()) {
+    if (span.parentId) {
+      const parent = traces.get(span.parentId)
+      if (parent) {
+        parent.children.push(span)
+        continue
       }
+    }
+    roots.push(span)
+  }
+
+  sortTraceTree(roots)
+  return roots
+}
+
+export function collapseTraceEntries(entries: TraceEntry[]): TraceEntry[] {
+  const latestEntries = new Map<string, TraceEntry>()
+
+  for (const entry of entries) {
+    latestEntries.set(`${entry.sessionId}:${entry.spanId}`, entry)
+  }
+
+  return Array.from(latestEntries.values()).sort((left, right) =>
+    left.startTime.localeCompare(right.startTime),
+  )
+}
+
+function traceSpanToEntry(span: TraceSpan): TraceEntry {
+  return {
+    spanId: span.id,
+    parentSpanId: span.parentId,
+    sessionId: span.sessionId,
+    kind: span.kind,
+    name: span.name,
+    agentName: span.agentName,
+    startTime: span.startTime,
+    endTime: span.endTime,
+    durationMs: span.durationMs,
+    status: span.status,
+    data: span.data,
+    metadata: span.metadata,
+  }
+}
+
+function traceEntryToSpan(entry: TraceEntry): TraceSpan {
+  return {
+    id: entry.spanId,
+    parentId: entry.parentSpanId,
+    sessionId: entry.sessionId,
+    kind: entry.kind,
+    name: entry.name,
+    agentName: entry.agentName,
+    startTime: entry.startTime,
+    endTime: entry.endTime,
+    durationMs: entry.durationMs,
+    status: entry.status,
+    data: entry.data,
+    metadata: entry.metadata,
+    children: [],
+  }
+}
+
+function cloneTraceSpanWithoutChildren(span: TraceSpan): TraceSpan {
+  return {
+    id: span.id,
+    parentId: span.parentId,
+    sessionId: span.sessionId,
+    kind: span.kind,
+    name: span.name,
+    agentName: span.agentName,
+    startTime: span.startTime,
+    endTime: span.endTime,
+    durationMs: span.durationMs,
+    status: span.status,
+    data: span.data ? { ...span.data } : undefined,
+    metadata: span.metadata ? { ...span.metadata } : undefined,
+    children: [],
+  }
+}
+
+function sortTraceTree(spans: TraceSpan[]): void {
+  spans.sort((left, right) => left.startTime.localeCompare(right.startTime))
+  for (const span of spans) {
+    if (span.children.length > 0) {
+      sortTraceTree(span.children)
     }
   }
 }

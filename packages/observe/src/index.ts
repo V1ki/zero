@@ -1,3 +1,5 @@
+import type { SecretFilter } from '@zero-os/shared'
+
 export { ObservabilityStore } from './observability-store'
 export type {
   LogLevel,
@@ -43,16 +45,45 @@ export { Tracer } from './trace'
 export type {
   RunLogEntry,
   RunLogLevel,
+  StartSpanOptions,
   TraceEntry,
   TraceKind,
   TraceSpan,
   TraceStatus,
-} from './trace'
+  UpdateSpanInput,
+} from './trace-types'
 export {
   projectSessionDecisionsFromTraceEntries,
   projectSessionClosuresFromTraceEntries,
   projectSessionRequestsFromTraceEntries,
   projectSessionSnapshotsFromTraceEntries,
 } from './trace-projections'
-export { createFilteredWriter, filterLogEntry } from './secret-filter'
 export { asRecord, asString, flattenTraceSpans } from './utils'
+
+/**
+ * Wrap a writer so text is filtered before observe writes it.
+ */
+export function createFilteredWriter(
+  filter: SecretFilter,
+  writer: (text: string) => void,
+): (text: string) => void {
+  return (text: string) => {
+    writer(filter.filter(text))
+  }
+}
+
+/**
+ * Filter string fields in a log entry without mutating the original object.
+ */
+export function filterLogEntry<T extends Record<string, unknown>>(
+  filter: SecretFilter,
+  entry: T,
+): T {
+  const filtered = { ...entry }
+  for (const [key, value] of Object.entries(filtered)) {
+    if (typeof value === 'string') {
+      ;(filtered as Record<string, unknown>)[key] = filter.filter(value)
+    }
+  }
+  return filtered
+}
