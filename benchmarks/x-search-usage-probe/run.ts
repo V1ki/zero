@@ -3,11 +3,11 @@
 import { appendFile, mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Vault, getMasterKey } from '@zero-os/secrets'
-import { XPremiumTokenManager } from '../../apps/server/src/x-premium-oauth'
 import {
   getXPremiumBaseUrl,
   getXPremiumOAuthSessionRef,
-} from '../../apps/server/src/x-premium-provider'
+  XPremiumTokenManager,
+} from '../../apps/server/src/providers/x-premium'
 import {
   type ProbeRecord,
   buildXSearchProbePayload,
