@@ -5,6 +5,19 @@ import { toErrorMessage } from '@zero-os/shared'
 import { BaseTool } from './base'
 import { buildToolProcessEnv } from './process-env'
 
+interface CodexInput {
+  /** The instruction for Codex to execute — what code change to make. */
+  instruction: string
+  /** Working directory for the codex session. Defaults to projectRoot. */
+  workingDirectory?: string
+  /** Model slug to use (e.g. "gpt-5.5"). Defaults to ~/.codex/config.toml setting. */
+  model?: string
+  /** Additional directories to allow codex to access beyond the working directory. */
+  additionalDirectories?: string[]
+  /** Thread ID from a previous codex call to resume the conversation. Enables multi-turn workflows. */
+  resumeThreadId?: string
+}
+
 /**
  * Event and item types from Codex CLI's JSONL output.
  * Simplified from @openai/codex-sdk's type definitions.
@@ -21,34 +34,25 @@ interface CodexThreadEvent {
 interface CodexThreadItem {
   id: string
   type: string
-  // agent_message
   text?: string
-  // command_execution
   command?: string
   aggregated_output?: string
   exit_code?: number
   status?: string
-  // file_change
   changes?: Array<{ path: string; kind: string }>
-  // reasoning
-  // (uses text)
-  // error
   message?: string
-  // todo_list
   items?: Array<{ text: string; completed: boolean }>
 }
 
-interface CodexInput {
-  /** The instruction for Codex to execute — what code change to make. */
-  instruction: string
-  /** Working directory for the codex session. Defaults to projectRoot. */
-  workingDirectory?: string
-  /** Model slug to use (e.g. "gpt-5.5"). Defaults to ~/.codex/config.toml setting. */
-  model?: string
-  /** Additional directories to allow codex to access beyond the working directory. */
-  additionalDirectories?: string[]
-  /** Thread ID from a previous codex call to resume the conversation. Enables multi-turn workflows. */
-  resumeThreadId?: string
+interface CodexResult {
+  threadId: string | null
+  response: string
+  fileChanges: Array<{ path: string; kind: string }>
+  commands: Array<{ command: string; output: string; exitCode: number | null; status: string }>
+  reasoning: string[]
+  todos: Array<{ text: string; completed: boolean }>
+  errors: string[]
+  usage: { input_tokens: number; cached_input_tokens: number; output_tokens: number } | null
 }
 
 /**
@@ -103,17 +107,12 @@ export class CodexTool extends BaseTool {
   constructor(options?: { codexPath?: string; profile?: string }) {
     super()
     this.codexPath = options?.codexPath ?? 'codex'
-    this.profile = options?.profile ?? process.env['CODEX_PROFILE']
+    this.profile = options?.profile ?? process.env.CODEX_PROFILE
   }
 
   protected async execute(ctx: ToolContext, input: unknown): Promise<ToolResult> {
-    const {
-      instruction,
-      workingDirectory,
-      model,
-      additionalDirectories,
-      resumeThreadId,
-    } = input as CodexInput
+    const { instruction, workingDirectory, model, additionalDirectories, resumeThreadId } =
+      input as CodexInput
 
     const cwd = workingDirectory ?? ctx.projectRoot ?? ctx.workDir
 
@@ -158,7 +157,7 @@ export class CodexTool extends BaseTool {
         commands: result.commands.length,
         hasResponse: !!result.response,
       })
-      return this.formatResult(result)
+      return formatCodexToolResult(result)
     } catch (error) {
       const message = toErrorMessage(error)
       return {
@@ -182,16 +181,7 @@ export class CodexTool extends BaseTool {
         stdio: ['pipe', 'pipe', 'pipe'],
       })
 
-      const result: CodexResult = {
-        threadId: null,
-        response: '',
-        fileChanges: [],
-        commands: [],
-        reasoning: [],
-        todos: [],
-        errors: [],
-        usage: null,
-      }
+      const result = createEmptyCodexResult()
 
       const stderrChunks: string[] = []
       let settled = false
@@ -200,12 +190,17 @@ export class CodexTool extends BaseTool {
         stderrChunks.push(data.toString())
       })
 
-      const rl = createInterface({ input: child.stdout!, crlfDelay: Number.POSITIVE_INFINITY })
+      if (!child.stdout || !child.stdin) {
+        reject(new Error('Failed to open codex stdio streams'))
+        return
+      }
+
+      const rl = createInterface({ input: child.stdout, crlfDelay: Number.POSITIVE_INFINITY })
 
       rl.on('line', (line: string) => {
         try {
           const event = JSON.parse(line) as CodexThreadEvent
-          this.processEvent(event, result)
+          processCodexEvent(event, result)
         } catch {
           // Non-JSON line, ignore
         }
@@ -234,162 +229,164 @@ export class CodexTool extends BaseTool {
 
       // Send instruction via stdin (new session) or skip (resume — prompt is in CLI args)
       if (instruction !== null) {
-        child.stdin!.write(instruction)
+        child.stdin.write(instruction)
       }
-      child.stdin!.end()
+      child.stdin.end()
     })
-  }
-
-  private processEvent(event: CodexThreadEvent, result: CodexResult): void {
-    switch (event.type) {
-      case 'thread.started':
-        result.threadId = event.thread_id ?? null
-        break
-
-      case 'turn.completed':
-        if (event.usage) {
-          result.usage = event.usage
-        }
-        break
-
-      case 'turn.failed':
-        if (event.error) {
-          result.errors.push(event.error.message)
-        }
-        break
-
-      case 'error':
-        if (event.message) {
-          result.errors.push(event.message)
-        }
-        break
-
-      case 'item.completed':
-        if (event.item) {
-          this.processItem(event.item, result)
-        }
-        break
-    }
-  }
-
-  private processItem(item: CodexThreadItem, result: CodexResult): void {
-    switch (item.type) {
-      case 'agent_message':
-        if (item.text) {
-          result.response = item.text
-        }
-        break
-
-      case 'file_change':
-        if (item.changes) {
-          for (const change of item.changes) {
-            result.fileChanges.push({ path: change.path, kind: change.kind })
-          }
-        }
-        break
-
-      case 'command_execution':
-        result.commands.push({
-          command: item.command ?? '',
-          output: item.aggregated_output ?? '',
-          exitCode: item.exit_code ?? null,
-          status: item.status ?? 'completed',
-        })
-        break
-
-      case 'reasoning':
-        if (item.text) {
-          result.reasoning.push(item.text)
-        }
-        break
-
-      case 'todo_list':
-        if (item.items) {
-          result.todos = item.items
-        }
-        break
-
-      case 'error':
-        if (item.message) {
-          result.errors.push(item.message)
-        }
-        break
-    }
-  }
-
-  private formatResult(result: CodexResult): ToolResult {
-    const sections: string[] = []
-
-    // Agent response
-    if (result.response) {
-      sections.push(`## Response\n${result.response}`)
-    }
-
-    // File changes
-    if (result.fileChanges.length > 0) {
-      const changeLines = result.fileChanges.map((c) => `- [${c.kind}] ${c.path}`)
-      sections.push(`## File Changes\n${changeLines.join('\n')}`)
-    }
-
-    // Commands executed
-    if (result.commands.length > 0) {
-      const cmdLines = result.commands.map((c) => {
-        const status = c.exitCode === 0 ? '✓' : c.exitCode !== null ? `✗ (exit ${c.exitCode})` : '…'
-        const output = c.output ? `\n${c.output.slice(0, 500)}` : ''
-        return `- ${status} \`${c.command}\`${output}`
-      })
-      sections.push(`## Commands\n${cmdLines.join('\n')}`)
-    }
-
-    // Errors
-    if (result.errors.length > 0) {
-      sections.push(`## Errors\n${result.errors.join('\n')}`)
-    }
-
-    // Thread ID — enables resume in subsequent calls
-    if (result.threadId) {
-      sections.push(`## Thread\nthreadId: ${result.threadId}`)
-    }
-
-    // Usage
-    if (result.usage) {
-      sections.push(
-        `## Token Usage\nInput: ${result.usage.input_tokens} (cached: ${result.usage.cached_input_tokens}), Output: ${result.usage.output_tokens}`,
-      )
-    }
-
-    const output = sections.join('\n\n')
-    const artifacts = result.fileChanges.map((c) => c.path)
-
-    // Build summary
-    const summaryParts: string[] = []
-    if (result.fileChanges.length > 0) {
-      summaryParts.push(`${result.fileChanges.length} file(s) changed`)
-    }
-    if (result.commands.length > 0) {
-      summaryParts.push(`${result.commands.length} command(s) run`)
-    }
-    if (result.errors.length > 0) {
-      summaryParts.push(`${result.errors.length} error(s)`)
-    }
-    const summary = summaryParts.length > 0 ? summaryParts.join(', ') : 'Codex completed'
-
-    return {
-      success: result.errors.length === 0,
-      output,
-      outputSummary: summary,
-      artifacts: artifacts.length > 0 ? artifacts : undefined,
-    }
   }
 }
 
-interface CodexResult {
-  threadId: string | null
-  response: string
-  fileChanges: Array<{ path: string; kind: string }>
-  commands: Array<{ command: string; output: string; exitCode: number | null; status: string }>
-  reasoning: string[]
-  todos: Array<{ text: string; completed: boolean }>
-  errors: string[]
-  usage: { input_tokens: number; cached_input_tokens: number; output_tokens: number } | null
+function createEmptyCodexResult(): CodexResult {
+  return {
+    threadId: null,
+    response: '',
+    fileChanges: [],
+    commands: [],
+    reasoning: [],
+    todos: [],
+    errors: [],
+    usage: null,
+  }
+}
+
+function processCodexEvent(event: CodexThreadEvent, result: CodexResult): void {
+  switch (event.type) {
+    case 'thread.started':
+      result.threadId = event.thread_id ?? null
+      break
+
+    case 'turn.completed':
+      if (event.usage) {
+        result.usage = event.usage
+      }
+      break
+
+    case 'turn.failed':
+      if (event.error) {
+        result.errors.push(event.error.message)
+      }
+      break
+
+    case 'error':
+      if (event.message) {
+        result.errors.push(event.message)
+      }
+      break
+
+    case 'item.completed':
+      if (event.item) {
+        processCodexItem(event.item, result)
+      }
+      break
+  }
+}
+
+function processCodexItem(item: CodexThreadItem, result: CodexResult): void {
+  switch (item.type) {
+    case 'agent_message':
+      if (item.text) {
+        result.response = item.text
+      }
+      break
+
+    case 'file_change':
+      if (item.changes) {
+        for (const change of item.changes) {
+          result.fileChanges.push({ path: change.path, kind: change.kind })
+        }
+      }
+      break
+
+    case 'command_execution':
+      result.commands.push({
+        command: item.command ?? '',
+        output: item.aggregated_output ?? '',
+        exitCode: item.exit_code ?? null,
+        status: item.status ?? 'completed',
+      })
+      break
+
+    case 'reasoning':
+      if (item.text) {
+        result.reasoning.push(item.text)
+      }
+      break
+
+    case 'todo_list':
+      if (item.items) {
+        result.todos = item.items
+      }
+      break
+
+    case 'error':
+      if (item.message) {
+        result.errors.push(item.message)
+      }
+      break
+  }
+}
+
+function formatCodexToolResult(result: CodexResult): ToolResult {
+  const sections: string[] = []
+
+  if (result.response) {
+    sections.push(`## Response\n${result.response}`)
+  }
+
+  if (result.fileChanges.length > 0) {
+    const changeLines = result.fileChanges.map((change) => `- [${change.kind}] ${change.path}`)
+    sections.push(`## File Changes\n${changeLines.join('\n')}`)
+  }
+
+  if (result.commands.length > 0) {
+    const cmdLines = result.commands.map((command) => {
+      const status =
+        command.exitCode === 0
+          ? '✓'
+          : command.exitCode !== null
+            ? `✗ (exit ${command.exitCode})`
+            : '…'
+      const output = command.output ? `\n${command.output.slice(0, 500)}` : ''
+      return `- ${status} \`${command.command}\`${output}`
+    })
+    sections.push(`## Commands\n${cmdLines.join('\n')}`)
+  }
+
+  if (result.errors.length > 0) {
+    sections.push(`## Errors\n${result.errors.join('\n')}`)
+  }
+
+  if (result.threadId) {
+    sections.push(`## Thread\nthreadId: ${result.threadId}`)
+  }
+
+  if (result.usage) {
+    sections.push(
+      `## Token Usage\nInput: ${result.usage.input_tokens} (cached: ${result.usage.cached_input_tokens}), Output: ${result.usage.output_tokens}`,
+    )
+  }
+
+  const output = sections.join('\n\n')
+  const artifacts = result.fileChanges.map((change) => change.path)
+
+  return {
+    success: result.errors.length === 0,
+    output,
+    outputSummary: buildCodexSummary(result),
+    artifacts: artifacts.length > 0 ? artifacts : undefined,
+  }
+}
+
+function buildCodexSummary(result: CodexResult): string {
+  const summaryParts: string[] = []
+  if (result.fileChanges.length > 0) {
+    summaryParts.push(`${result.fileChanges.length} file(s) changed`)
+  }
+  if (result.commands.length > 0) {
+    summaryParts.push(`${result.commands.length} command(s) run`)
+  }
+  if (result.errors.length > 0) {
+    summaryParts.push(`${result.errors.length} error(s)`)
+  }
+  return summaryParts.length > 0 ? summaryParts.join(', ') : 'Codex completed'
 }

@@ -5,7 +5,7 @@ import type { MetricsDB } from '@zero-os/observe'
 import type { ToolContext, ToolResult } from '@zero-os/shared'
 import { generateId } from '@zero-os/shared'
 import { Agent, type AgentConfig, type AgentContext, type AgentObservability } from '../agent/agent'
-import { buildSubAgentPrompt } from '../agent/prompt'
+import { buildSystemPrompt } from '../agent/prompt'
 import { loadRoles, resolveRole } from '../agent/roles'
 import { BaseTool } from './base'
 import { supportsToolForModel } from './capabilities'
@@ -17,8 +17,6 @@ interface SpawnAgentInput {
   label?: string
   mode?: 'standard' | 'interactive'
   role?: string
-  agent_type?: string
-  preset?: string
   agentInstruction?: string
   tools?: string[]
   model?: string
@@ -47,16 +45,7 @@ export class SpawnAgentTool extends BaseTool {
       },
       role: {
         type: 'string',
-        description:
-          'Optional role ID alias for agent_type/preset. For backward compatibility, if no matching role exists and no agentInstruction is provided, this value is used as the agent instruction.',
-      },
-      agent_type: {
-        type: 'string',
         description: 'Optional role ID to use for the sub-agent.',
-      },
-      preset: {
-        type: 'string',
-        description: 'Backward-compatible alias for agent_type.',
       },
       agentInstruction: {
         type: 'string',
@@ -105,18 +94,14 @@ export class SpawnAgentTool extends BaseTool {
       }
     }
 
-    const { instruction, label, mode, role, agent_type, preset, agentInstruction, tools, model } =
+    const { instruction, label, mode, role, agentInstruction, tools, model } =
       input as SpawnAgentInput
     const trimmedInstruction = instruction.trim()
     const roles = await loadRoles(ctx.projectRoot ?? process.cwd())
-    const requestedRoleId = preset?.trim() || agent_type?.trim() || role?.trim()
+    const requestedRoleId = role?.trim()
     const roleDefinition = requestedRoleId ? resolveRole(requestedRoleId, roles) : undefined
-    const legacyRoleInstruction =
-      !preset?.trim() && !agent_type?.trim() && requestedRoleId && !roleDefinition
-        ? requestedRoleId
-        : undefined
 
-    if ((preset?.trim() || agent_type?.trim()) && requestedRoleId && !roleDefinition) {
+    if (requestedRoleId && !roleDefinition) {
       return {
         success: false,
         output: `Unknown sub-agent role: ${requestedRoleId}`,
@@ -127,13 +112,8 @@ export class SpawnAgentTool extends BaseTool {
     const resolvedAgentInstruction =
       agentInstruction?.trim() ||
       roleDefinition?.agentInstruction ||
-      legacyRoleInstruction ||
       'You are a focused sub-agent. Execute the assigned task and report back.'
-    const agentLabel =
-      label?.trim() ||
-      roleDefinition?.name ||
-      (legacyRoleInstruction ? role?.trim() : undefined) ||
-      'SubAgent'
+    const agentLabel = label?.trim() || roleDefinition?.name || 'SubAgent'
 
     const requestedModel = model?.trim() || roleDefinition?.model
     const resolvedModel = requestedModel
@@ -211,11 +191,16 @@ export class SpawnAgentTool extends BaseTool {
     }
 
     const agent = new Agent(agentConfig, adapter, scopedRegistry, toolContext, agentObs)
-    const systemPrompt = buildSubAgentPrompt(
-      toolDefinitions,
-      trimmedInstruction,
-      resolvedAgentInstruction,
-    )
+    const systemPrompt = buildSystemPrompt({
+      agentName: agentLabel,
+      agentDescription: resolvedAgentInstruction,
+      tools: toolDefinitions,
+      globalIdentity: '',
+      agentIdentity: '',
+      workspacePath: subWorkDir,
+      projectRoot: ctx.projectRoot,
+      promptMode: agentConfig.promptMode,
+    })
     const agentContext: AgentContext = {
       systemPrompt,
       conversationHistory: [],

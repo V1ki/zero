@@ -2,7 +2,7 @@ import { existsSync, readdirSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { readYaml, toErrorMessage } from '@zero-os/shared'
 import type { PromptMode } from '@zero-os/shared'
-import { readString, readStringArray } from '../utils/yaml'
+import { readString, readStringArray } from '../yaml'
 
 export interface RoleDefinition {
   name: string

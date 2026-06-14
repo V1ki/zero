@@ -10,17 +10,13 @@ export { WriteTool } from './tool/write'
 export { EditTool } from './tool/edit'
 export { BashTool } from './tool/bash'
 export { FetchTool } from './tool/fetch'
-export { MemoryTool } from './tool/memory'
-export { MemorySearchTool } from './tool/memory-search'
-export { MemoryReadTool } from './tool/memory-read'
+export { MemoryReadTool, MemorySearchTool, MemoryTool } from './tool/memory'
 export { ScheduleTool } from './tool/schedule'
 export { CodexTool } from './tool/codex'
 export { XSearchTool } from './tool/x-search'
 export type { XSearchCredential, XSearchCredentialProvider } from './tool/x-search'
 export { SpawnAgentTool } from './tool/spawn-agent'
-export { WaitAgentTool } from './tool/wait-agent'
-export { CloseAgentTool } from './tool/close-agent'
-export { SendInputTool } from './tool/send-input'
+export { CloseAgentTool, SendInputTool, WaitAgentTool } from './tool/subagent'
 export { ToolRegistry } from './tool/registry'
 
 // Agent
@@ -60,7 +56,7 @@ export {
 export type { Command, CommandArgs, CommandContext, CommandResult } from './command'
 
 // Skill
-export { loadSkills } from './skill/loader'
+export { loadSkills } from './skill'
 
 // Bootstrap
 export { loadBootstrapFiles, hasSoulFile } from './bootstrap/loader'
@@ -73,15 +69,17 @@ export {
 // Context Engineering
 export {
   buildSystemPrompt,
-  buildSubAgentPrompt,
-  buildSkillsBlock,
   buildSkillCatalog,
-  buildDynamicContext,
-  buildSkillReminder,
   buildSafetyBlock,
   buildToolCallStyleBlock,
   buildRuntimeBlock,
   buildBootstrapContextBlock,
+} from './agent/prompt'
+export {
+  buildDynamicContext,
+  buildRetrievedMemoriesBlock,
+  buildSkillReminder,
+  wrapMemoryInjection,
 } from './agent/prompt'
 export { allocateBudget, shouldCompress } from './agent/budget'
 export { truncateToolOutput } from './agent/truncate'

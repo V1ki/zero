@@ -1,16 +1,12 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { join } from 'node:path'
-import { ModelRouter } from '@zero-os/model'
+import type { ModelRouter } from '@zero-os/model'
 import { type ObservabilityStore, SessionDB } from '@zero-os/observe'
 import type { Message, Session as SessionData } from '@zero-os/shared'
-import { loadConfig } from '../../config/loader'
 import { ToolRegistry } from '../../tool/registry'
 import { SessionManager } from '../manager'
 import { Session } from '../session'
-import { createTestProjectRoot } from './test-helpers'
+import { createTestModelRouter, createTestProjectRoot } from './test-helpers'
 
-const config = loadConfig(join(process.cwd(), '.zero', 'config.yaml'))
-const secrets = new Map<string, string>([['openai_codex_api_key', 'sk-test-placeholder']])
 const testProject = createTestProjectRoot('zero-session-persistence-')
 
 function expectDefined<T>(value: T | null | undefined): NonNullable<T> {
@@ -52,8 +48,7 @@ describe('Session Persistence', () => {
 
   test('setup', () => {
     sessionDb = SessionDB.createInMemory()
-    modelRouter = new ModelRouter(config, secrets)
-    modelRouter.init()
+    modelRouter = createTestModelRouter()
     toolRegistry = new ToolRegistry()
   })
 
@@ -392,11 +387,14 @@ describe('Session Persistence', () => {
     )
     const session = manager.getOrCreateForChannel('feishu', 'chat_drain_ok', 'feishu').session
     const internal = session as unknown as {
-      mutex: { acquire(ownerId: string): Promise<void>; release(ownerId: string): void }
+      turnRuntime: {
+        acquireTurn(lockId: string): Promise<string>
+        releaseTurn(lockId: string): void
+      }
     }
 
-    await internal.mutex.acquire('drain-ok')
-    setTimeout(() => internal.mutex.release('drain-ok'), 10)
+    await internal.turnRuntime.acquireTurn('drain-ok')
+    setTimeout(() => internal.turnRuntime.releaseTurn('drain-ok'), 10)
 
     await expect(manager.drainAndCollectInterrupted(100)).resolves.toEqual([])
   })
@@ -414,10 +412,13 @@ describe('Session Persistence', () => {
       'telegram',
     ).session
     const internal = session as unknown as {
-      mutex: { acquire(ownerId: string): Promise<void>; release(ownerId: string): void }
+      turnRuntime: {
+        acquireTurn(lockId: string): Promise<string>
+        releaseTurn(lockId: string): void
+      }
     }
 
-    await internal.mutex.acquire('drain-timeout')
+    await internal.turnRuntime.acquireTurn('drain-timeout')
 
     const interrupted = await manager.drainAndCollectInterrupted(20)
     expect(interrupted).toEqual([
@@ -429,7 +430,7 @@ describe('Session Persistence', () => {
       },
     ])
 
-    internal.mutex.release('drain-timeout')
+    internal.turnRuntime.releaseTurn('drain-timeout')
   })
 
   test('SessionManager DB query proxies work', () => {

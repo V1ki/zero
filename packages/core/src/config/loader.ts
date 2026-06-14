@@ -9,7 +9,7 @@ import type {
   ModelPricing,
   SystemConfig,
 } from '@zero-os/shared'
-import { readString } from '../utils/yaml'
+import { readString } from '../yaml'
 
 /**
  * Load ZeRo OS system configuration from .zero/config.yaml.

@@ -9,6 +9,11 @@ import { FuseListChecker } from '../config/fuse-list'
 import { BaseTool } from './base'
 import { buildToolProcessEnv } from './process-env'
 
+const PIPE_GRACE_MS = 1000
+const FORCE_KILL_GRACE_MS = 750
+const DEFAULT_ABORT_MESSAGE = 'Command aborted by user from Session Detail.'
+const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
+
 interface BashInput {
   command: string
   description?: string
@@ -18,22 +23,134 @@ interface BashInput {
   stdinAppendNewline?: boolean
 }
 
-const PIPE_GRACE_MS = 1000
-const FORCE_KILL_GRACE_MS = 750
-const DEFAULT_ABORT_MESSAGE = 'Command aborted by user from Session Detail.'
-const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
-
 interface ResolvedBashSecret {
   ref: string
   value: string
   envName?: string
 }
 
+type BashSecretResolution =
+  | { success: true; env: Record<string, string>; stdin?: string; secrets: ResolvedBashSecret[] }
+  | { success: false; result: ToolResult }
+
 function formatExitCode(exitCode: number): string {
   return `Exit code: ${exitCode}`
 }
 
-function buildOutput(stdout: string, stderr: string, abortMessage?: string): string {
+function commandLabel(command: string, usesSecretRefs: boolean): string {
+  return usesSecretRefs ? 'command with secret references' : command.slice(0, 80)
+}
+
+function resolveBashSecretInputs(ctx: ToolContext, input: BashInput): BashSecretResolution {
+  if (!hasSecretInput(input)) {
+    return { success: true, env: {}, secrets: [] }
+  }
+
+  if (!ctx.secretResolver) {
+    return {
+      success: false,
+      result: {
+        success: false,
+        output: 'Secret references require a secretResolver in the tool context',
+        outputSummary: 'No secret resolver',
+      },
+    }
+  }
+
+  if (!ctx.secretFilter) {
+    return {
+      success: false,
+      result: {
+        success: false,
+        output: 'Secret references require a secretFilter in the tool context',
+        outputSummary: 'No secret filter',
+      },
+    }
+  }
+
+  const env: Record<string, string> = {}
+  const secrets: ResolvedBashSecret[] = []
+
+  for (const [envName, ref] of Object.entries(input.envSecrets ?? {})) {
+    if (!ENV_NAME_PATTERN.test(envName)) {
+      return {
+        success: false,
+        result: {
+          success: false,
+          output: `Invalid environment variable name for envSecrets: ${envName}`,
+          outputSummary: 'Invalid secret env name',
+        },
+      }
+    }
+    if (typeof ref !== 'string') {
+      return {
+        success: false,
+        result: {
+          success: false,
+          output: `Secret reference for ${envName} must be a string`,
+          outputSummary: 'Invalid secret reference',
+        },
+      }
+    }
+
+    const resolved = resolveBashSecret(ctx, ref)
+    if (!resolved.success) return resolved
+
+    env[envName] = resolved.value
+    secrets.push({ ref: ref.trim(), value: resolved.value, envName })
+  }
+
+  let stdin: string | undefined
+  if (input.stdinSecretRef) {
+    const resolved = resolveBashSecret(ctx, input.stdinSecretRef)
+    if (!resolved.success) return resolved
+
+    stdin = input.stdinAppendNewline === false ? resolved.value : `${resolved.value}\n`
+    secrets.push({ ref: input.stdinSecretRef.trim(), value: resolved.value })
+  }
+
+  return { success: true, env, stdin, secrets }
+}
+
+function hasSecretInput(input: BashInput): boolean {
+  return (
+    (input.envSecrets && Object.keys(input.envSecrets).length > 0) || Boolean(input.stdinSecretRef)
+  )
+}
+
+function resolveBashSecret(
+  ctx: ToolContext,
+  ref: string,
+): { success: true; value: string } | { success: false; result: ToolResult } {
+  const trimmedRef = ref.trim()
+  if (!trimmedRef) {
+    return {
+      success: false,
+      result: {
+        success: false,
+        output: 'Secret reference cannot be empty',
+        outputSummary: 'Empty secret reference',
+      },
+    }
+  }
+
+  const value = ctx.secretResolver?.(trimmedRef)
+  if (!value) {
+    return {
+      success: false,
+      result: {
+        success: false,
+        output: `Secret reference "${trimmedRef}" not found in vault`,
+        outputSummary: 'Secret reference not found',
+      },
+    }
+  }
+
+  ctx.secretFilter?.addSecret(trimmedRef, value)
+  return { success: true, value }
+}
+
+function buildBashOutput(stdout: string, stderr: string, abortMessage?: string): string {
   const trimmedStdout = stdout.trimEnd()
   const trimmedStderr = stderr.trimEnd()
 
@@ -83,7 +200,7 @@ function createStreamCapture(stream?: ReadableStream<Uint8Array> | number | null
         }
       }
     } catch {
-      // Best effort — cancellation and subprocess teardown can end the stream abruptly.
+      // Best effort: cancellation and subprocess teardown can end the stream abruptly.
     } finally {
       flushDecoder()
     }
@@ -113,16 +230,6 @@ function tryKillProcess(proc: ReturnType<typeof Bun.spawn>, signal?: NodeJS.Sign
   } catch {
     // Ignore cases where the process already exited.
   }
-}
-
-function hasSecretInput(input: BashInput): boolean {
-  return (
-    (input.envSecrets && Object.keys(input.envSecrets).length > 0) || Boolean(input.stdinSecretRef)
-  )
-}
-
-function commandLabel(command: string, usesSecretRefs: boolean): string {
-  return usesSecretRefs ? 'command with secret references' : command.slice(0, 80)
 }
 
 function isWebWritableStream(stream: unknown): stream is WritableStream<Uint8Array> {
@@ -214,121 +321,10 @@ export class BashTool extends BaseTool {
     this.fuseChecker.check(command)
   }
 
-  private resolveSecret(
-    ctx: ToolContext,
-    ref: string,
-  ): { success: true; value: string } | { success: false; result: ToolResult } {
-    const trimmedRef = ref.trim()
-    if (!trimmedRef) {
-      return {
-        success: false,
-        result: {
-          success: false,
-          output: 'Secret reference cannot be empty',
-          outputSummary: 'Empty secret reference',
-        },
-      }
-    }
-
-    const value = ctx.secretResolver?.(trimmedRef)
-    if (!value) {
-      return {
-        success: false,
-        result: {
-          success: false,
-          output: `Secret reference "${trimmedRef}" not found in vault`,
-          outputSummary: 'Secret reference not found',
-        },
-      }
-    }
-
-    ctx.secretFilter?.addSecret(trimmedRef, value)
-    return { success: true, value }
-  }
-
-  private resolveSecretInputs(
-    ctx: ToolContext,
-    input: BashInput,
-  ):
-    | { success: true; env: Record<string, string>; stdin?: string; secrets: ResolvedBashSecret[] }
-    | {
-        success: false
-        result: ToolResult
-      } {
-    if (!hasSecretInput(input)) {
-      return { success: true, env: {}, secrets: [] }
-    }
-
-    if (!ctx.secretResolver) {
-      return {
-        success: false,
-        result: {
-          success: false,
-          output: 'Secret references require a secretResolver in the tool context',
-          outputSummary: 'No secret resolver',
-        },
-      }
-    }
-
-    if (!ctx.secretFilter) {
-      return {
-        success: false,
-        result: {
-          success: false,
-          output: 'Secret references require a secretFilter in the tool context',
-          outputSummary: 'No secret filter',
-        },
-      }
-    }
-
-    const env: Record<string, string> = {}
-    const secrets: ResolvedBashSecret[] = []
-
-    for (const [envName, ref] of Object.entries(input.envSecrets ?? {})) {
-      if (!ENV_NAME_PATTERN.test(envName)) {
-        return {
-          success: false,
-          result: {
-            success: false,
-            output: `Invalid environment variable name for envSecrets: ${envName}`,
-            outputSummary: 'Invalid secret env name',
-          },
-        }
-      }
-      if (typeof ref !== 'string') {
-        return {
-          success: false,
-          result: {
-            success: false,
-            output: `Secret reference for ${envName} must be a string`,
-            outputSummary: 'Invalid secret reference',
-          },
-        }
-      }
-
-      const resolved = this.resolveSecret(ctx, ref)
-      if (!resolved.success) return resolved
-
-      env[envName] = resolved.value
-      secrets.push({ ref: ref.trim(), value: resolved.value, envName })
-    }
-
-    let stdin: string | undefined
-    if (input.stdinSecretRef) {
-      const resolved = this.resolveSecret(ctx, input.stdinSecretRef)
-      if (!resolved.success) return resolved
-
-      stdin = input.stdinAppendNewline === false ? resolved.value : `${resolved.value}\n`
-      secrets.push({ ref: input.stdinSecretRef.trim(), value: resolved.value })
-    }
-
-    return { success: true, env, stdin, secrets }
-  }
-
   protected async execute(ctx: ToolContext, input: unknown): Promise<ToolResult> {
     const bashInput = input as BashInput
     const { command, timeout = 120_000 } = bashInput
-    const resolvedSecrets = this.resolveSecretInputs(ctx, bashInput)
+    const resolvedSecrets = resolveBashSecretInputs(ctx, bashInput)
     if (!resolvedSecrets.success) return resolvedSecrets.result
 
     const usesSecretRefs = resolvedSecrets.secrets.length > 0
@@ -447,7 +443,7 @@ export class BashTool extends BaseTool {
       await Promise.allSettled([stdoutCapture.cancel(), stderrCapture.cancel()])
     }
 
-    const output = buildOutput(
+    const output = buildBashOutput(
       stdoutCapture.getText(),
       stderrCapture.getText(),
       finalCause === 'abort' ? (abortMessage ?? DEFAULT_ABORT_MESSAGE) : undefined,

@@ -10,8 +10,8 @@ import { BaseTool } from '../../tool/base'
 import { BashTool } from '../../tool/bash'
 import { ReadTool } from '../../tool/read'
 import { ToolRegistry } from '../../tool/registry'
-import { createTestProjectRoot } from './test-helpers'
 import { Session } from '../session'
+import { createTestProjectRoot, setSessionAgentForTest } from './test-helpers'
 
 const API_KEY = 'sk-test-placeholder'
 const tempDirs: string[] = []
@@ -70,7 +70,11 @@ function createRegistry(): ToolRegistry {
   return registry
 }
 
-function createTempObservability(): { dir: string; observability: ObservabilityStore; tracer: Tracer } {
+function createTempObservability(): {
+  dir: string
+  observability: ObservabilityStore
+  tracer: Tracer
+} {
   const dir = mkdtempSync(join(tmpdir(), 'zero-snapshot-session-'))
   tempDirs.push(dir)
   return {
@@ -92,18 +96,7 @@ function makeMessage(sessionId: string, role: 'user' | 'assistant', text: string
 }
 
 function installFakeAgent(session: Session): void {
-  const mutableSession = session as unknown as {
-    agent: {
-      run: (
-        context: unknown,
-        userMessage: string,
-        images: unknown,
-        onNewMessage?: (message: Message) => void,
-      ) => Promise<Message[]>
-    }
-  }
-
-  mutableSession.agent = {
+  setSessionAgentForTest(session, {
     run: async (
       _context: unknown,
       userMessage: string,
@@ -116,26 +109,11 @@ function installFakeAgent(session: Session): void {
       onNewMessage?.(assistant)
       return [user, assistant]
     },
-  }
+  })
 }
 
 function installTurnCapturingAgent(session: Session, turnIndexes: number[]): void {
-  const mutableSession = session as unknown as {
-    agent: {
-      run: (
-        context: unknown,
-        userMessage: string,
-        images: unknown,
-        onNewMessage?: (message: Message) => void,
-        onTextDelta?: unknown,
-        shouldInterrupt?: unknown,
-        getQueuedMessages?: unknown,
-        requestLogMeta?: { turnIndex?: number; userMessageEntry?: Message },
-      ) => Promise<Message[]>
-    }
-  }
-
-  mutableSession.agent = {
+  setSessionAgentForTest(session, {
     run: async (
       _context: unknown,
       userMessage: string,
@@ -153,7 +131,7 @@ function installTurnCapturingAgent(session: Session, turnIndexes: number[]): voi
       onNewMessage?.(assistant)
       return [user, assistant]
     },
-  }
+  })
 }
 
 afterEach(() => {
@@ -170,12 +148,11 @@ afterAll(() => {
 describe('Session snapshot lifecycle', () => {
   test('first handled message writes a complete session_start snapshot', async () => {
     const { observability, tracer } = createTempObservability()
-    const session = new Session(
-      'web',
-      createRouter(),
-      createRegistry(),
-      { observability, tracer, projectRoot: testProject.projectRoot },
-    )
+    const session = new Session('web', createRouter(), createRegistry(), {
+      observability,
+      tracer,
+      projectRoot: testProject.projectRoot,
+    })
     session.initAgent({ name: 'snapshot-agent', agentInstruction: 'Test snapshot prompt' })
     installFakeAgent(session)
 
@@ -216,12 +193,11 @@ describe('Session snapshot lifecycle', () => {
 
   test('prompt-only changes write a context_updated snapshot', async () => {
     const { observability, tracer } = createTempObservability()
-    const session = new Session(
-      'web',
-      createRouter(),
-      createRegistry(),
-      { observability, tracer, projectRoot: testProject.projectRoot },
-    )
+    const session = new Session('web', createRouter(), createRegistry(), {
+      observability,
+      tracer,
+      projectRoot: testProject.projectRoot,
+    })
     session.initAgent({ name: 'snapshot-agent', agentInstruction: 'First prompt' })
     installFakeAgent(session)
 
@@ -242,12 +218,11 @@ describe('Session snapshot lifecycle', () => {
 
   test('switchModel writes a complete model_switch snapshot', async () => {
     const { observability, tracer } = createTempObservability()
-    const session = new Session(
-      'web',
-      createRouter(),
-      createRegistry(),
-      { observability, tracer, projectRoot: testProject.projectRoot },
-    )
+    const session = new Session('web', createRouter(), createRegistry(), {
+      observability,
+      tracer,
+      projectRoot: testProject.projectRoot,
+    })
     session.initAgent({ name: 'snapshot-agent', agentInstruction: 'Test snapshot prompt' })
     installFakeAgent(session)
 
@@ -335,12 +310,11 @@ describe('Session snapshot lifecycle', () => {
 
   test('uses trace-only snapshot persistence when tracer is available', async () => {
     const { dir, observability, tracer } = createTempObservability()
-    const session = new Session(
-      'web',
-      createRouter(),
-      createRegistry(),
-      { observability, tracer, projectRoot: testProject.projectRoot },
-    )
+    const session = new Session('web', createRouter(), createRegistry(), {
+      observability,
+      tracer,
+      projectRoot: testProject.projectRoot,
+    })
     session.initAgent({ name: 'snapshot-agent', agentInstruction: 'Test snapshot prompt' })
     installFakeAgent(session)
 

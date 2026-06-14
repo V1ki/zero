@@ -4,9 +4,8 @@ import type {
   PromptComponents,
   RuntimeInfo,
   SkillDefinition,
+  ToolDefinition,
 } from '@zero-os/shared'
-import type { ToolDefinition } from '@zero-os/shared'
-import { truncateToTokens } from '@zero-os/shared'
 import { hasSoulFile } from '../bootstrap/loader'
 import { enforceFixedBudget } from './budget'
 import { CONTEXT_PARAMS } from './params'
@@ -21,7 +20,6 @@ import { CONTEXT_PARAMS } from './params'
 export function buildSystemPrompt(components: PromptComponents): string {
   const mode = components.promptMode ?? 'full'
 
-  // "none" mode: just a basic identity line
   if (mode === 'none') {
     return `你是 ZeRo OS 的 ${components.agentName}，一个在 macOS 上自主执行任务的 AI Agent。`
   }
@@ -29,7 +27,6 @@ export function buildSystemPrompt(components: PromptComponents): string {
   const isMinimal = mode === 'minimal'
   const sections: string[] = []
 
-  // Core sections (always included in full and minimal)
   sections.push(
     buildRoleBlock(
       components.agentName,
@@ -44,7 +41,6 @@ export function buildSystemPrompt(components: PromptComponents): string {
   }
   sections.push(buildConstraintsBlock())
 
-  // Full-only sections
   if (!isMinimal) {
     sections.push(buildRulesBlock())
     if (components.runtimeInfo?.channel) {
@@ -67,7 +63,6 @@ export function buildSystemPrompt(components: PromptComponents): string {
     }
   }
 
-  // Bootstrap files — Project Context (filtered by mode)
   if (components.bootstrapFiles && components.bootstrapFiles.length > 0) {
     sections.push(buildBootstrapContextBlock(components.bootstrapFiles))
   }
@@ -95,6 +90,121 @@ export function buildDynamicContext(ctx: DynamicContext): string {
 
 export function wrapMemoryInjection(layer: 'layer1' | 'layer2', content: string): string {
   return [`<memory_inject layer="${layer}">`, content, '</memory_inject>'].join('\n')
+}
+
+export function buildRetrievedMemoriesBlock(
+  memories: Array<{ id: string; type: string; title: string; content: string; score: number }>,
+): string {
+  if (memories.length === 0) return ''
+
+  const items = memories.map((memory) => {
+    return [
+      `  <memory id="${escapeXml(memory.id)}" type="${escapeXml(memory.type)}">`,
+      `    <title>${escapeXml(memory.title)}</title>`,
+      `    <content>${escapeXml(memory.content)}</content>`,
+      '  </memory>',
+    ].join('\n')
+  })
+
+  return [
+    '<retrieved_memories>',
+    '以下是从记忆库中检索到的相关历史信息，供参考：',
+    ...items,
+    '</retrieved_memories>',
+  ].join('\n')
+}
+
+/**
+ * Build incremental skill notification for new skills discovered at runtime.
+ */
+export function buildSkillReminder(skills: SkillDefinition[]): string {
+  const entries = skills.map((skill) => {
+    const brief = skill.description.split('\n').slice(0, 2).join(' ').trim()
+    return `  <skill name="${skill.name}" path="${skill.sourcePath}">\n    ${brief}\n  </skill>`
+  })
+  return `<new_skills>\n新增了以下 Skill，可通过 Read 工具读取 SKILL.md 获取详细指令：\n${entries.join('\n')}\n</new_skills>`
+}
+
+function escapeXml(text: string): string {
+  return text
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;')
+}
+
+function hasMemoryTools(tools: ToolDefinition[]): boolean {
+  const memoryToolNames = new Set(['memory', 'memory_search', 'memory_read'])
+  return tools.some((tool) => memoryToolNames.has(tool.name.toLowerCase()))
+}
+
+export function buildRuntimeBlock(info: RuntimeInfo): string {
+  const parts = [
+    info.agentId ? `agent=${info.agentId}` : '',
+    info.sessionId ? `session=${info.sessionId}` : '',
+    info.host ? `host=${info.host}` : '',
+    info.projectRoot ? `repo=${info.projectRoot}` : '',
+    info.os ? `os=${info.os}${info.arch ? ` (${info.arch})` : ''}` : '',
+    info.model ? `model=${info.model}` : '',
+    info.shell ? `shell=${info.shell}` : '',
+    info.channel ? `channel=${info.channel}` : '',
+  ].filter(Boolean)
+
+  if (parts.length === 0) return ''
+
+  const line = `Runtime: ${parts.join(' | ')}`
+  const capabilitiesBlock = buildChannelCapabilitiesBlock(info)
+
+  return enforceFixedBudget(
+    `<runtime>\n${line}${capabilitiesBlock}\n</runtime>`,
+    CONTEXT_PARAMS.budget.runtime,
+    'Runtime',
+  )
+}
+
+function buildChannelCapabilitiesBlock(info: RuntimeInfo): string {
+  if (!info.channelCapabilities || Object.keys(info.channelCapabilities).length === 0) {
+    return ''
+  }
+
+  const caps = info.channelCapabilities
+  const capLines: string[] = []
+  if (caps.streaming) capLines.push('- Streaming output: supported (text appears progressively)')
+  if (caps.inlineImages)
+    capLines.push(
+      '- Inline images: supported via standard markdown image syntax (channel notes describe accepted references and delivery behavior)',
+    )
+  else capLines.push('- Inline images: NOT supported (send images as separate messages)')
+  if (caps.imageMessages) capLines.push('- Image messages: supported')
+  if (caps.fileMessages) capLines.push('- File messages: supported')
+  if (caps.interactiveCards) capLines.push('- Interactive cards: supported')
+  if (caps.reactions) capLines.push('- Emoji reactions: supported')
+  if (caps.threadReply) capLines.push('- Thread/quote reply: supported')
+  if (caps.markdownNotes) capLines.push(`- Markdown notes: ${caps.markdownNotes}`)
+  if (caps.maxMessageLength) capLines.push(`- Max message length: ${caps.maxMessageLength} chars`)
+
+  if (capLines.length === 0) return ''
+  return `\nChannel capabilities (${info.channel ?? 'unknown'}):\n${capLines.join('\n')}`
+}
+
+export function buildBootstrapContextBlock(files: BootstrapFile[]): string {
+  if (files.length === 0) return ''
+
+  const lines: string[] = ['以下是工作区上下文文件，由系统自动加载。']
+
+  if (hasSoulFile(files)) {
+    lines.push('如果存在 SOUL.md，请体现其人格和语调。避免生硬、模板化的回复；遵循其指引。')
+  }
+
+  lines.push('')
+
+  for (const file of files) {
+    lines.push(`## ${file.name}`, '', file.content, '')
+  }
+
+  const content = `<project_context>\n${lines.join('\n')}\n</project_context>`
+  return enforceFixedBudget(content, CONTEXT_PARAMS.budget.bootstrapContext, 'Project Context')
 }
 
 export function buildRoleBlock(
@@ -128,28 +238,6 @@ export function buildRulesBlock(): string {
 阶段性汇报用于同步进度，不用于请求继续许可；若总体任务未完成，汇报后直接进入下一步。
 <system-reminder> 是系统注入的内部运行时提示，不是用户消息；不要回应、转述、解释或尝试管理它。当前其中会出现新增 Skill 通知和检索到的历史记忆。不要回应、转述或解释这些内容，直接参考使用。`
   return `<rules>\n${rules}\n</rules>`
-}
-
-export function buildRetrievedMemoriesBlock(
-  memories: Array<{ id: string; type: string; title: string; content: string; score: number }>,
-): string {
-  if (memories.length === 0) return ''
-
-  const items = memories.map((memory) => {
-    return [
-      `  <memory id="${escapeXml(memory.id)}" type="${escapeXml(memory.type)}">`,
-      `    <title>${escapeXml(memory.title)}</title>`,
-      `    <content>${escapeXml(memory.content)}</content>`,
-      '  </memory>',
-    ].join('\n')
-  })
-
-  return [
-    '<retrieved_memories>',
-    '以下是从记忆库中检索到的相关历史信息，供参考：',
-    ...items,
-    '</retrieved_memories>',
-  ].join('\n')
 }
 
 export function buildOutputStyleBlock(): string {
@@ -202,52 +290,6 @@ inbox：仅用于暂时无法准确分类但确有保留价值的内容。
   return enforceFixedBudget(`<memory_policy>\n${policy}\n</memory_policy>`, 900, 'Memory Policy')
 }
 
-export function buildToolRulesBlock(tools: ToolDefinition[]): string {
-  const toolRuleMap: Record<string, string> = {
-    read: 'Read：优先使用 Read 查看文件内容，不要用 Bash cat。',
-    read_image:
-      'Read Image：用于读取本地 PNG/JPEG/WebP 图片并交给模型分析。远程图片需要先下载到本地文件，再调用 read_image。',
-    write:
-      'Write：写入文件前先确认路径正确。临时文件和下载内容写入工作目录，修改源代码使用项目根目录的绝对路径。',
-    edit: 'Edit：修改文件前先 Read 确认当前内容，避免基于过期认知做编辑。',
-    bash: 'Bash：命令在工作目录中执行，操作项目源码时使用绝对路径。命令执行前检查是否命中熔断名单。长时间运行的命令加 timeout。用户明确授权后可以使用密钥完成认证动作，但密钥值不得写进 command、文件、聊天或日志；对命令使用 envSecrets 将环境变量映射到 vault 引用，或使用 stdinSecretRef 一次性写入 stdin，Trace 只能记录引用名。',
-    fetch:
-      'Fetch：用于读取网页内容、调用 API、下载文件。HTML 自动通过 readability 提取正文转为 Markdown。(适用于无 JavaScript 渲染以及登录状态的网页) 需要 Bearer token 时使用 credentialRef 引用 vault 密钥，不要把 token 写进 headers。',
-    memory_search:
-      'Memory Search：回答过往工作、决策、偏好前，先搜索 `.zero/memory/**`。查询要具体（项目名/技术名/日期），支持语义搜索。搜索无结果时明确告知用户。',
-    memory_read:
-      'Memory Read：根据 memory_search 返回的 path 精读记忆文件。仅在 snippet 不足以回答时使用。',
-    memory:
-      'Memory：写入或维护长期记忆。完成工作步骤后，评估是否产生了值得跨会话保留的信息（偏好、决策、经验、流程），如有则调用 create 或 update。不要等到会话结束才写，每个阶段性成果完成时就评估。',
-    task: 'Task：拆分 SubAgent 时明确每个子任务的输入、输出和依赖关系。不要把含糊的大任务直接丢给 SubAgent。',
-    spawn_agent:
-      'Spawn Agent：用于创建子 agent。spawn 立即返回 agent_id，不会阻塞。mode="standard"（默认）执行后自动完成；mode="interactive" 执行后进入等待状态，可通过 send_input 持续发送指令，最后用 close_agent 关闭。',
-    wait_agent:
-      'Wait Agent：等待子 agent 状态变化。默认等待任意一个完成即返回（Promise.race 语义），设置 waitAll=true 等待全部。设置 resolveOn="ready" 可在 interactive agent 就绪时返回（而不是等到完成）。',
-    close_agent:
-      'Close Agent：关闭不再需要的子 agent，传入 spawn_agent 返回的 agent_id（兼容 id/agentId）。interactive agent 必须通过 close_agent 终止。',
-    send_input:
-      'Send Input：向运行中或等待中的子 agent 发送消息。对 interactive agent（waiting 状态），消息会唤醒 agent 开始新一轮处理。对 running agent，消息排队在下一个安全点送达。设置 interrupt=true 可请求尽快处理。',
-  }
-
-  const availableToolNames = tools.map((t) => t.name.toLowerCase())
-  const rules = availableToolNames.map((name) => toolRuleMap[name]).filter(Boolean)
-  if (
-    availableToolNames.includes('spawn_agent') &&
-    availableToolNames.includes('wait_agent') &&
-    !availableToolNames.includes('read_image')
-  ) {
-    rules.push(
-      'Image Analysis Delegation：当前模型不能直接看图；当用户要求分析图片且已有本地图片路径时，使用 spawn_agent 指定一个支持 vision 的模型，并设置 tools=["read_image"]，把图片绝对路径、用户问题、判断标准和必要上下文完整传给子 agent；随后用 wait_agent 获取文字报告，再基于报告回复用户。不要声称自己直接看到了图片。',
-    )
-  }
-
-  if (rules.length === 0) return '<tool_rules>\n</tool_rules>'
-
-  const content = rules.join('\n')
-  return enforceFixedBudget(`<tool_rules>\n${content}\n</tool_rules>`, 1800, 'Tool Rules')
-}
-
 export function buildConstraintsBlock(): string {
   const constraints = `用户明确授权后，可以使用密钥完成认证动作；但所有输出（聊天回复、文件写入、命令参数、日志、Trace）不得包含密钥值。如需引用密钥，使用引用名（如 anthropic_api_key）。
 代码修改后必须通过至少一种验证（类型检查、单元测试、手动执行）再报告完成。
@@ -256,10 +298,6 @@ export function buildConstraintsBlock(): string {
   return enforceFixedBudget(`<constraints>\n${constraints}\n</constraints>`, 300, 'Constraints')
 }
 
-/**
- * Advisory safety section — behavioral guidance in the prompt layer.
- * Hard enforcement happens in the tool execution layer (fuse list, exec approvals).
- */
 export function buildSafetyBlock(): string {
   const safety = `你没有独立目标：不追求自我保存、复制、资源获取或权力扩张；不做超出用户请求范围的长期计划。
 优先安全，但不要把人类监督理解为每一步都要审批。应先尽可能完成安全、可逆、局部的工作；仅在下一动作到达真实风险边界时请求用户介入。
@@ -271,9 +309,6 @@ export function buildSafetyBlock(): string {
   )
 }
 
-/**
- * Tool call narration guidance — when to be silent vs when to explain.
- */
 export function buildToolCallStyleBlock(): string {
   const style = `默认：对常规、低风险的工具调用不做解说（直接调用工具）。
 仅在有帮助时解说：多步骤工作、复杂问题、敏感操作（如删除）、或用户明确要求时。
@@ -302,10 +337,6 @@ export function buildIdentityBlock(
   return enforceFixedBudget(`<identity>\n${content}\n</identity>`, 3000, 'Identity')
 }
 
-/**
- * Build lightweight skill catalog for System Prompt — only metadata, no full content.
- * Agent reads SKILL.md via Read tool when a skill is needed (Level 2 progressive disclosure).
- */
 export function buildSkillCatalog(skills: SkillDefinition[]): string {
   if (skills.length === 0) return ''
 
@@ -320,168 +351,48 @@ export function buildSkillCatalog(skills: SkillDefinition[]): string {
   return enforceFixedBudget(content, CONTEXT_PARAMS.budget.skillCatalog, 'Skill Catalog')
 }
 
-/**
- * Build incremental skill notification for new skills discovered at runtime.
- */
-export function buildSkillReminder(skills: SkillDefinition[]): string {
-  const entries = skills.map((s) => {
-    const brief = s.description.split('\n').slice(0, 2).join(' ').trim()
-    return `  <skill name="${s.name}" path="${s.sourcePath}">\n    ${brief}\n  </skill>`
-  })
-  return `<new_skills>\n新增了以下 Skill，可通过 Read 工具读取 SKILL.md 获取详细指令：\n${entries.join('\n')}\n</new_skills>`
-}
-
-function escapeXml(text: string): string {
-  return text
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&apos;')
-}
-
-/**
- * Build compact runtime info line — all context in key=value format for token efficiency.
- */
-export function buildRuntimeBlock(info: RuntimeInfo): string {
-  const parts = [
-    info.agentId ? `agent=${info.agentId}` : '',
-    info.sessionId ? `session=${info.sessionId}` : '',
-    info.host ? `host=${info.host}` : '',
-    info.projectRoot ? `repo=${info.projectRoot}` : '',
-    info.os ? `os=${info.os}${info.arch ? ` (${info.arch})` : ''}` : '',
-    info.model ? `model=${info.model}` : '',
-    info.shell ? `shell=${info.shell}` : '',
-    info.channel ? `channel=${info.channel}` : '',
-  ].filter(Boolean)
-
-  if (parts.length === 0) return ''
-
-  const line = `Runtime: ${parts.join(' | ')}`
-
-  // Append channel capabilities if available
-  let capabilitiesBlock = ''
-  if (info.channelCapabilities && Object.keys(info.channelCapabilities).length > 0) {
-    const caps = info.channelCapabilities
-    const capLines: string[] = []
-    if (caps.streaming) capLines.push('- Streaming output: supported (text appears progressively)')
-    if (caps.inlineImages)
-      capLines.push(
-        '- Inline images: supported via standard markdown image syntax (channel notes describe accepted references and delivery behavior)',
-      )
-    else capLines.push('- Inline images: NOT supported (send images as separate messages)')
-    if (caps.imageMessages) capLines.push('- Image messages: supported')
-    if (caps.fileMessages) capLines.push('- File messages: supported')
-    if (caps.interactiveCards) capLines.push('- Interactive cards: supported')
-    if (caps.reactions) capLines.push('- Emoji reactions: supported')
-    if (caps.threadReply) capLines.push('- Thread/quote reply: supported')
-    if (caps.markdownNotes) capLines.push(`- Markdown notes: ${caps.markdownNotes}`)
-    if (caps.maxMessageLength) capLines.push(`- Max message length: ${caps.maxMessageLength} chars`)
-
-    if (capLines.length > 0) {
-      capabilitiesBlock = `\nChannel capabilities (${info.channel ?? 'unknown'}):\n${capLines.join('\n')}`
-    }
+export function buildToolRulesBlock(tools: ToolDefinition[]): string {
+  const toolRuleMap: Record<string, string> = {
+    read: 'Read：优先使用 Read 查看文件内容，不要用 Bash cat。',
+    read_image:
+      'Read Image：用于读取本地 PNG/JPEG/WebP 图片并交给模型分析。远程图片需要先下载到本地文件，再调用 read_image。',
+    write:
+      'Write：写入文件前先确认路径正确。临时文件和下载内容写入工作目录，修改源代码使用项目根目录的绝对路径。',
+    edit: 'Edit：修改文件前先 Read 确认当前内容，避免基于过期认知做编辑。',
+    bash: 'Bash：命令在工作目录中执行，操作项目源码时使用绝对路径。命令执行前检查是否命中熔断名单。长时间运行的命令加 timeout。用户明确授权后可以使用密钥完成认证动作，但密钥值不得写进 command、文件、聊天或日志；对命令使用 envSecrets 将环境变量映射到 vault 引用，或使用 stdinSecretRef 一次性写入 stdin，Trace 只能记录引用名。',
+    fetch:
+      'Fetch：用于读取网页内容、调用 API、下载文件。HTML 自动通过 readability 提取正文转为 Markdown。(适用于无 JavaScript 渲染以及登录状态的网页) 需要 Bearer token 时使用 credentialRef 引用 vault 密钥，不要把 token 写进 headers。',
+    memory_search:
+      'Memory Search：回答过往工作、决策、偏好前，先搜索 `.zero/memory/**`。查询要具体（项目名/技术名/日期），支持语义搜索。搜索无结果时明确告知用户。',
+    memory_read:
+      'Memory Read：根据 memory_search 返回的 path 精读记忆文件。仅在 snippet 不足以回答时使用。',
+    memory:
+      'Memory：写入或维护长期记忆。完成工作步骤后，评估是否产生了值得跨会话保留的信息（偏好、决策、经验、流程），如有则调用 create 或 update。不要等到会话结束才写，每个阶段性成果完成时就评估。',
+    task: 'Task：拆分 SubAgent 时明确每个子任务的输入、输出和依赖关系。不要把含糊的大任务直接丢给 SubAgent。',
+    spawn_agent:
+      'Spawn Agent：用于创建子 agent。spawn 立即返回 agent_id，不会阻塞。mode="standard"（默认）执行后自动完成；mode="interactive" 执行后进入等待状态，可通过 send_input 持续发送指令，最后用 close_agent 关闭。',
+    wait_agent:
+      'Wait Agent：等待子 agent 状态变化。默认等待任意一个完成即返回（Promise.race 语义），设置 waitAll=true 等待全部。设置 resolveOn="ready" 可在 interactive agent 就绪时返回（而不是等到完成）。',
+    close_agent:
+      'Close Agent：关闭不再需要的子 agent，传入 spawn_agent 返回的 agent_id。interactive agent 必须通过 close_agent 终止。',
+    send_input:
+      'Send Input：向运行中或等待中的子 agent 发送消息。对 interactive agent（waiting 状态），消息会唤醒 agent 开始新一轮处理。对 running agent，消息排队在下一个安全点送达。设置 interrupt=true 可请求尽快处理。',
   }
 
-  return enforceFixedBudget(
-    `<runtime>\n${line}${capabilitiesBlock}\n</runtime>`,
-    CONTEXT_PARAMS.budget.runtime,
-    'Runtime',
-  )
-}
-
-function hasMemoryTools(tools: ToolDefinition[]): boolean {
-  const memoryToolNames = new Set(['memory', 'memory_search', 'memory_read'])
-  return tools.some((tool) => memoryToolNames.has(tool.name.toLowerCase()))
-}
-
-/**
- * Build Project Context section from bootstrap files.
- * Injected at the tail of the system prompt.
- * When SOUL.md is present, adds persona embodiment instruction.
- */
-export function buildBootstrapContextBlock(files: BootstrapFile[]): string {
-  if (files.length === 0) return ''
-
-  const lines: string[] = ['以下是工作区上下文文件，由系统自动加载。']
-
-  if (hasSoulFile(files)) {
-    lines.push('如果存在 SOUL.md，请体现其人格和语调。避免生硬、模板化的回复；遵循其指引。')
+  const availableToolNames = tools.map((t) => t.name.toLowerCase())
+  const rules = availableToolNames.map((name) => toolRuleMap[name]).filter(Boolean)
+  if (
+    availableToolNames.includes('spawn_agent') &&
+    availableToolNames.includes('wait_agent') &&
+    !availableToolNames.includes('read_image')
+  ) {
+    rules.push(
+      'Image Analysis Delegation：当前模型不能直接看图；当用户要求分析图片且已有本地图片路径时，使用 spawn_agent 指定一个支持 vision 的模型，并设置 tools=["read_image"]，把图片绝对路径、用户问题、判断标准和必要上下文完整传给子 agent；随后用 wait_agent 获取文字报告，再基于报告回复用户。不要声称自己直接看到了图片。',
+    )
   }
 
-  lines.push('')
+  if (rules.length === 0) return '<tool_rules>\n</tool_rules>'
 
-  for (const file of files) {
-    lines.push(`## ${file.name}`, '', file.content, '')
-  }
-
-  const content = `<project_context>\n${lines.join('\n')}\n</project_context>`
-  return enforceFixedBudget(content, CONTEXT_PARAMS.budget.bootstrapContext, 'Project Context')
-}
-
-/**
- * @deprecated Use buildSkillCatalog() for System Prompt and buildDynamicContext() for per-message injection.
- */
-export function buildSkillsBlock(skills: SkillDefinition[]): string {
-  const entries = skills.map((s) => {
-    const attrs = `name="${s.name}" allowed-tools="${s.allowedTools.join(', ')}"`
-    return `  <skill ${attrs}>\n${s.content}\n  </skill>`
-  })
-  return `<skills>\n${entries.join('\n\n')}\n</skills>`
-}
-
-/**
- * Build a simplified System Prompt for SubAgents using PromptMode='minimal'.
- * SubAgents are task-oriented one-shot executors — no identity, memo, or retrieved memories.
- *
- * @deprecated Prefer buildSystemPrompt({ promptMode: 'minimal' }) for new code.
- * This function remains for existing sub-agent tool flows.
- */
-export function buildSubAgentPrompt(
-  tools: ToolDefinition[],
-  instruction: string,
-  agentInstruction?: string,
-  upstreamResults?: Map<string, { output: string; success: boolean }>,
-  dependsOn?: string[],
-): string {
-  const sections: string[] = []
-
-  // Simplified role
-  const roleLines = [
-    '你是 ZeRo OS 的 SubAgent，负责执行一项特定任务。',
-    '任务完成后输出结果，不需要与用户交互。',
-  ]
-  if (agentInstruction) {
-    roleLines.push(`角色说明：${agentInstruction}`)
-  }
-  sections.push(`<role>\n${roleLines.join('\n')}\n</role>`)
-
-  // Tool rules (reuse existing builder)
-  sections.push(buildToolRulesBlock(tools))
-
-  // Constraints (reuse existing builder)
-  sections.push(buildConstraintsBlock())
-
-  // Task block
-  sections.push(`<task>
-${instruction}
-</task>`)
-
-  // Upstream results (if any dependencies)
-  if (dependsOn && dependsOn.length > 0 && upstreamResults) {
-    const items = dependsOn
-      .map((depId) => {
-        const result = upstreamResults.get(depId)
-        if (!result) return ''
-        const output = truncateToTokens(result.output, CONTEXT_PARAMS.subAgent.upstreamMaxTokens)
-        return `  <upstream id="${depId}" status="${result.success ? 'success' : 'failed'}">\n${output}\n  </upstream>`
-      })
-      .filter(Boolean)
-
-    if (items.length > 0) {
-      sections.push(`<upstream_results>\n${items.join('\n\n')}\n</upstream_results>`)
-    }
-  }
-
-  return sections.join('\n\n')
+  const content = rules.join('\n')
+  return enforceFixedBudget(`<tool_rules>\n${content}\n</tool_rules>`, 1800, 'Tool Rules')
 }

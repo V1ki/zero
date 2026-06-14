@@ -21,7 +21,19 @@ interface MemoryInput {
   updates?: Record<string, unknown>
 }
 
+interface MemorySearchInput {
+  query: string
+  maxResults?: number
+}
+
+interface MemoryReadInput {
+  path: string
+  from?: number
+  lines?: number
+}
+
 const LIVE_DOC_SEP = '\n\n---\n\n'
+const DEFAULT_SEARCH_TYPES = ALL_MEMORY_TYPES
 
 // P3a: 有界 section append —— 新写入作为新小节追加；超字符上界则丢最旧小节，防活文档无限膨胀。
 // 去重按"小节级全等"（不用 includes 子串判定，避免短句误吞）；单节自身超界时硬截断兜底。
@@ -266,4 +278,176 @@ export class MemoryTool extends BaseTool {
       },
     }
   }
+}
+
+export class MemorySearchTool extends BaseTool {
+  name = 'memory_search'
+  description =
+    '搜索 `.zero/memory/**` 中的相关记忆片段。回答过往工作、决策、偏好、待办前优先使用。'
+  parameters = {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Search query for relevant memories' },
+      maxResults: { type: 'number', description: 'Maximum results to return' },
+    },
+    required: ['query'],
+  }
+
+  protected async execute(ctx: ToolContext, input: unknown): Promise<ToolResult> {
+    const { query, maxResults } = input as MemorySearchInput
+
+    if (!ctx.memoryRetriever) {
+      return {
+        success: false,
+        output: 'Memory retriever not available',
+        outputSummary: 'Memory retriever not configured',
+      }
+    }
+
+    const results = ctx.memoryRetriever.retrieveScored
+      ? await ctx.memoryRetriever.retrieveScored(query, {
+          topN: maxResults ?? 5,
+          types: DEFAULT_SEARCH_TYPES,
+          confidenceThreshold: 0,
+          sessionId: ctx.sessionId,
+        })
+      : (
+          await ctx.memoryRetriever.retrieve(query, {
+            topN: maxResults ?? 5,
+            types: DEFAULT_SEARCH_TYPES,
+            confidenceThreshold: 0,
+            sessionId: ctx.sessionId,
+          })
+        ).map((memory) => ({
+          memory,
+          score: 0,
+          scoreBreakdown: {
+            keyword: 0,
+            recency: 0,
+          },
+        }))
+
+    if (results.length === 0) {
+      return {
+        success: true,
+        output: `No relevant memories found for query: ${query}`,
+        outputSummary: 'No relevant memories found',
+      }
+    }
+
+    const output = results
+      .map((entry, index) => {
+        const path =
+          ctx.memoryStore?.getRelativePath?.(entry.memory.type, entry.memory.id) ??
+          `${entry.memory.type}/${entry.memory.id}`
+        const snippet = truncateSnippet(entry.memory.content)
+        return [
+          `${index + 1}. [${entry.memory.type}] ${entry.memory.title}`,
+          `   id: ${entry.memory.id}`,
+          `   path: ${path}`,
+          `   score: ${formatScore(entry.score)} (${formatScoreBreakdown(entry.scoreBreakdown)})`,
+          `   age: ${formatAge(entry.memory.updatedAt)}`,
+          `   snippet: ${snippet}`,
+        ].join('\n')
+      })
+      .join('\n\n')
+
+    return {
+      success: true,
+      output,
+      outputSummary: `Found ${results.length} relevant memories`,
+    }
+  }
+}
+
+export class MemoryReadTool extends BaseTool {
+  name = 'memory_read'
+  description =
+    '按 path 读取 `.zero/memory/**` 下的记忆文件，可选 from/lines 窗口。memo.md 不在此工具范围内。'
+  parameters = {
+    type: 'object',
+    properties: {
+      path: {
+        type: 'string',
+        description: 'Project-relative or memory-relative path under .zero/memory',
+      },
+      from: { type: 'number', description: 'Start line (1-indexed)' },
+      lines: { type: 'number', description: 'Number of lines to read' },
+    },
+    required: ['path'],
+  }
+
+  protected async execute(ctx: ToolContext, input: unknown): Promise<ToolResult> {
+    const { path, from, lines } = input as MemoryReadInput
+
+    if (!ctx.memoryStore?.readByPath) {
+      return {
+        success: false,
+        output: 'Memory store read access not available',
+        outputSummary: 'Memory store read access not configured',
+      }
+    }
+
+    const result = ctx.memoryStore.readByPath(path, { from, lines })
+    if (!result) {
+      return {
+        success: false,
+        output: `Invalid memory path: ${path}`,
+        outputSummary: 'Invalid memory path',
+      }
+    }
+
+    const range =
+      from !== undefined || lines !== undefined
+        ? `\nRange: from=${Math.max(1, Math.floor(from ?? 1))}${lines !== undefined ? ` lines=${Math.max(0, Math.floor(lines))}` : ''}`
+        : ''
+
+    return {
+      success: true,
+      output: `Path: ${result.path}${range}\n\n${result.text}`,
+      outputSummary: result.text
+        ? `Read memory file ${result.path}`
+        : `Memory file empty or missing: ${result.path}`,
+    }
+  }
+}
+
+function truncateSnippet(content: string, maxLength = 240): string {
+  const normalized = content.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= maxLength) return normalized
+  return `${normalized.slice(0, maxLength - 1)}…`
+}
+
+function formatScore(value: number): string {
+  return value.toFixed(2)
+}
+
+function formatScoreBreakdown(breakdown: {
+  keyword: number
+  recency: number
+  vector?: number
+}): string {
+  const parts = []
+  if (breakdown.vector !== undefined) {
+    parts.push(`vector: ${formatScore(breakdown.vector)}`)
+  }
+  parts.push(`keyword: ${formatScore(breakdown.keyword)}`)
+  parts.push(`recency: ${formatScore(breakdown.recency)}`)
+  return parts.join(', ')
+}
+
+function formatAge(updatedAt: string): string {
+  const diffMs = Date.now() - new Date(updatedAt).getTime()
+  if (!Number.isFinite(diffMs) || diffMs <= 0) return '0m'
+
+  const minutes = Math.floor(diffMs / 60_000)
+  if (minutes < 60) return `${minutes}m`
+
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h`
+
+  const days = Math.floor(hours / 24)
+  if (days < 30) return `${days}d`
+
+  return `${Math.floor(days / 30)}mo`
 }

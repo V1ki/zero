@@ -1,19 +1,23 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import type { MemoryRetriever } from '@zero-os/memory'
-import { ModelRouter, TrackedAdapter, type ProviderAdapter, type ResolvedModel } from '@zero-os/model'
+import {
+  ModelRouter,
+  type ProviderAdapter,
+  type ResolvedModel,
+  TrackedAdapter,
+} from '@zero-os/model'
 import { MetricsDB, Tracer, flattenTraceSpans } from '@zero-os/observe'
 import type {
   CompletionRequest,
   CompletionResponse,
   MemorySearchOptions,
-  Message,
   Session as SessionData,
   StreamEvent,
   SystemConfig,
 } from '@zero-os/shared'
 import { ToolRegistry } from '../../tool/registry'
-import { createTestProjectRoot } from './test-helpers'
 import { Session } from '../session'
+import { createTestProjectRoot, setSessionAgentForTest } from './test-helpers'
 
 const API_KEY = 'sk-test-placeholder'
 const testProject = createTestProjectRoot('zero-session-memory-retrieval-')
@@ -289,23 +293,25 @@ describe('Session memory retrieval', () => {
         }
       | undefined
     ;(session as unknown as { activeModel: ResolvedModel }).activeModel = fakeResolvedModel
-    ;(
-      session as unknown as {
-        agent: {
-          run: (
-            context: { dynamicContext?: string },
-            userMessage: string,
-            images?: unknown,
-            onNewMessage?: (message: Message) => void,
-          ) => Promise<Message[]>
-        }
-      }
-    ).agent = {
-      async run(context, _userMessage, _images, _onNewMessage) {
+    setSessionAgentForTest(session, {
+      async run(
+        context: {
+          dynamicContext?: string
+          injectedMemoryIds?: Map<string, string>
+          requestMemoryInjections?: Array<{
+            layer: 'layer1' | 'layer2'
+            source: 'retrieved_memories' | 'memory_hint'
+            formattedText: string
+          }>
+        },
+        _userMessage: string,
+        _images?: unknown,
+        _onNewMessage?: unknown,
+      ) {
         capturedContext = context
         return []
       },
-    }
+    })
 
     await session.handleMessage('分析这个链接 https://x.com/openai/status/123')
 
@@ -450,23 +456,12 @@ describe('Session memory retrieval', () => {
       injectedMemoryIds?: Map<string, string>
     }> = []
     ;(session as unknown as { activeModel: ResolvedModel }).activeModel = fakeResolvedModel
-    ;(
-      session as unknown as {
-        agent: {
-          run: (
-            context: { dynamicContext?: string },
-            userMessage: string,
-            images?: unknown,
-            onNewMessage?: (message: Message) => void,
-          ) => Promise<Message[]>
-        }
-      }
-    ).agent = {
-      async run(context) {
+    setSessionAgentForTest(session, {
+      async run(context: { dynamicContext?: string; injectedMemoryIds?: Map<string, string> }) {
         capturedContexts.push(context)
         return []
       },
-    }
+    })
 
     await session.handleMessage('第一次分析这个链接 https://x.com/openai/status/1')
     await session.handleMessage('第二次分析这个链接 https://x.com/openai/status/2')
@@ -561,23 +556,12 @@ describe('Session memory retrieval', () => {
         }
       | undefined
     ;(session as unknown as { activeModel: ResolvedModel }).activeModel = fakeResolvedModel
-    ;(
-      session as unknown as {
-        agent: {
-          run: (
-            context: { dynamicContext?: string; injectedMemoryIds?: Map<string, string> },
-            userMessage: string,
-            images?: unknown,
-            onNewMessage?: (message: Message) => void,
-          ) => Promise<Message[]>
-        }
-      }
-    ).agent = {
-      async run(context) {
+    setSessionAgentForTest(session, {
+      async run(context: { dynamicContext?: string; injectedMemoryIds?: Map<string, string> }) {
         capturedContext = context
         return []
       },
-    }
+    })
 
     await session.handleMessage('恢复后的会话继续分析这个链接 https://x.com/openai/status/123')
 

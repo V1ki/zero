@@ -72,12 +72,6 @@ export type ContextCompactor = (
   input: ContextCompactionModelInput,
 ) => Promise<ContextCompactionModelOutput | undefined>
 
-const timelineCompactionStrategyVersion = 'timeline_compaction_block_v3'
-const deterministicFallbackPromptVersion = 'context_compaction_deterministic_fallback_v1'
-const timelineRecompactStrategy = 'semantic_recompact_raw_history_v1'
-const timelineRecompactBoundaryReason =
-  'Recompacted active timeline blocks from original raw messages and tool evidence because the projected prompt was still block-heavy or oversized.'
-
 export interface EpisodeCompactionTraceEpisode {
   id: string
   status: EpisodeCompaction['status']
@@ -138,6 +132,616 @@ export interface EpisodeCompactionTraceEvent {
   modelAttempts?: number
   supersedesBlockIds?: string[]
   supersededByBlockId?: string
+}
+
+export function reduceHistoricalToolOutput(
+  messages: Message[],
+  turnBoundaries: number[],
+): Message[] {
+  // Assign turn indices by scanning from the end.
+  const turnAgeMap = buildTurnAgeMap(messages, turnBoundaries)
+
+  return messages.map((msg, idx) => {
+    if (msg.role !== 'user') return msg
+    const hasToolResult = msg.content.some((b) => b.type === 'tool_result')
+    if (!hasToolResult) return msg
+
+    const age = turnAgeMap.get(idx) ?? turnBoundaries.length
+    const newContent = msg.content.map((block) => {
+      if (block.type !== 'tool_result') return block
+
+      // Already at maximum truncation; never re-process.
+      if (block.truncationLevel === 'status') return block
+
+      if (age <= CONTEXT_PARAMS.history.fullRetainTurns) {
+        if (!block.truncationLevel) block.truncationLevel = 'full'
+        return block
+      }
+
+      if (block.truncationLevel === 'summary' && age <= CONTEXT_PARAMS.history.summaryRetainTurns) {
+        return block
+      }
+
+      if (age <= CONTEXT_PARAMS.history.summaryRetainTurns) {
+        const summarized = summarizeToolResult(block)
+        block.content = summarized.content
+        block.contentItems = undefined
+        block.truncationLevel = 'summary'
+        return block
+      }
+
+      const statusOnly = statusOnlyToolResult(block)
+      block.content = statusOnly.content
+      block.contentItems = undefined
+      block.truncationLevel = 'status'
+      return block
+    })
+
+    return { ...msg, content: newContent }
+  })
+}
+
+function reducePromptToolOutputs(messages: Message[], turnBoundaries: number[]): Message[] {
+  return reduceToolOutputsUnderPromptPressure(reduceHistoricalToolOutput(messages, turnBoundaries))
+}
+
+function findTurnBoundaries(messages: Message[]): number[] {
+  const turnBoundaries: number[] = []
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (startsTopLevelTurn(msg)) {
+      turnBoundaries.push(i)
+    }
+  }
+  return turnBoundaries
+}
+
+function buildTurnAgeMap(messages: Message[], turnBoundaries: number[]): Map<number, number> {
+  const turnAgeMap = new Map<number, number>()
+  for (let t = 0; t < turnBoundaries.length; t++) {
+    const startIdx = turnBoundaries[t]
+    const endIdx = t === 0 ? messages.length : turnBoundaries[t - 1]
+    for (let i = startIdx; i < endIdx; i++) {
+      turnAgeMap.set(i, t)
+    }
+  }
+
+  if (turnBoundaries.length > 0) {
+    const oldestTurnStart = turnBoundaries[turnBoundaries.length - 1]
+    for (let i = 0; i < oldestTurnStart; i++) {
+      turnAgeMap.set(i, turnBoundaries.length)
+    }
+  }
+
+  return turnAgeMap
+}
+
+function hashText(value: string): string {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+function stableJsonLength(value: unknown): number {
+  return JSON.stringify(value).length
+}
+
+function truncateOneLine(value: string, maxChars: number): string {
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  return normalized.length > maxChars ? `${normalized.slice(0, maxChars)}...` : normalized
+}
+
+function findContainingTurnStart(messages: Message[], messageIndex: number): number {
+  for (let index = messageIndex; index >= 0; index--) {
+    if (startsTopLevelTurn(messages[index])) return index
+  }
+  return 0
+}
+
+function findContainingTurnEnd(messages: Message[], turnStart: number): number {
+  for (let index = turnStart + 1; index < messages.length; index++) {
+    if (startsTopLevelTurn(messages[index])) return index
+  }
+  return messages.length
+}
+
+function isToolIoBlock(block: ContentBlock): boolean {
+  return block.type === 'tool_use' || block.type === 'tool_result'
+}
+
+function extractCurrentGoal(messages: Message[]): string {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]
+    if (!startsTopLevelTurn(message)) continue
+    const text = message.content
+      .flatMap((block) => (block.type === 'text' ? [block.text.trim()] : []))
+      .find((value) => value.length > 0)
+    if (text) return text.length > 240 ? `${text.slice(0, 240)}...` : text
+  }
+  return 'Continue the current session task.'
+}
+
+function startsTopLevelTurn(message: Message): boolean {
+  return (
+    message.role === 'user' &&
+    message.messageType === 'message' &&
+    message.content.some((block) => block.type === 'text')
+  )
+}
+
+/**
+ * Estimate total tokens in a conversation history.
+ */
+export function estimateConversationTokens(messages: Message[]): number {
+  let total = 0
+  for (const msg of messages) {
+    total += estimateMessageTokens(msg.content)
+    total += 4 // overhead per message (role, metadata)
+  }
+  return total
+}
+
+function reduceToolOutputsUnderPromptPressure(messages: Message[]): Message[] {
+  if (JSON.stringify(messages).length <= CONTEXT_PARAMS.history.promptPressureCharsThreshold) {
+    return messages
+  }
+
+  const toolResults: ToolResultBlock[] = []
+  for (const message of messages) {
+    if (message.role !== 'user') continue
+    for (const block of message.content) {
+      if (block.type === 'tool_result') toolResults.push(block)
+    }
+  }
+
+  const fullRetain = CONTEXT_PARAMS.history.promptPressureFullToolResults
+  const summaryRetain = CONTEXT_PARAMS.history.promptPressureSummaryToolResults
+  for (let index = 0; index < toolResults.length; index++) {
+    const block = toolResults[index]
+    const age = toolResults.length - 1 - index
+    if (block.truncationLevel === 'status') continue
+    if (age < fullRetain) {
+      if (!block.truncationLevel) block.truncationLevel = 'full'
+      continue
+    }
+
+    if (age < fullRetain + summaryRetain) {
+      const summarized = summarizeToolResult(block)
+      block.content = summarized.content
+      block.contentItems = undefined
+      block.truncationLevel = 'summary'
+      continue
+    }
+
+    const statusOnly = statusOnlyToolResult(block)
+    block.content = statusOnly.content
+    block.contentItems = undefined
+    block.truncationLevel = 'status'
+  }
+
+  return messages
+}
+
+function summarizeToolResult(block: ToolResultBlock): ToolResultBlock {
+  const summary =
+    block.outputSummary ?? block.content.slice(0, CONTEXT_PARAMS.history.summaryMaxChars)
+  const truncated = summary.length < block.content.length ? `${summary}...` : summary
+  return { ...block, content: truncated, contentItems: undefined, truncationLevel: 'summary' }
+}
+
+function statusOnlyToolResult(block: ToolResultBlock): ToolResultBlock {
+  if (block.isError) {
+    const errorSnippet = block.content.slice(0, 100)
+    return {
+      ...block,
+      content: `\u2717 failed: ${errorSnippet}`,
+      contentItems: undefined,
+      truncationLevel: 'status',
+    }
+  }
+  return { ...block, content: '\u2713 success', contentItems: undefined, truncationLevel: 'status' }
+}
+
+const TIMELINE_RECOMPACT_STRATEGY = 'semantic_recompact_raw_history_v1'
+const TIMELINE_RECOMPACT_BOUNDARY_REASON =
+  'Recompacted active timeline blocks from original raw messages and tool evidence because the projected prompt was still block-heavy or oversized.'
+const timelineCompactionStrategyVersion = 'timeline_compaction_block_v3'
+const deterministicFallbackPromptVersion = 'context_compaction_deterministic_fallback_v1'
+
+async function buildTimelineCompactionBlock(params: {
+  messages: Message[]
+  segment: Message[]
+  options: {
+    workDir: string
+    sessionId: string
+    contextCompactor?: ContextCompactor
+  }
+  skippedUnfinishedToolUseIds: string[]
+  generation?: number
+  supersedesBlockIds?: string[]
+  strategyOverride?: string
+  boundaryReasonOverride?: string
+}): Promise<TimelineCompactionBlock | undefined> {
+  const episode = buildEpisodeCompaction(params.segment, params.options)
+  const coveredMessageIds = params.segment.map((message) => message.id)
+  const coveredMessageIdSet = new Set(coveredMessageIds)
+  const retainedMessages = params.messages.filter((message) => !coveredMessageIdSet.has(message.id))
+  const currentGoal = extractCurrentGoal(params.messages)
+  const workingState = buildWorkingStateCompaction({
+    currentGoal,
+    retainedMessages,
+    episodes: [episode],
+  })
+  const workingStateSummary = formatWorkingState(workingState)
+  const strategyVersion = timelineCompactionStrategyVersion
+  const blockId = buildTimelineCompactionBlockId(
+    params.options.sessionId,
+    coveredMessageIds[0],
+    strategyVersion,
+    params.generation,
+  )
+  const modelOutput =
+    (await params.options.contextCompactor?.({
+      sessionId: params.options.sessionId,
+      blockId,
+      strategyVersion,
+      currentGoal,
+      segment: params.segment,
+      retainedMessages,
+      episode,
+      workingStateSummary,
+    })) ??
+    buildDeterministicFallbackCompaction({
+      sessionId: params.options.sessionId,
+      blockId,
+      strategyVersion,
+      currentGoal,
+      episode,
+      workingStateSummary,
+    })
+
+  return buildTimelineCompactionBlockFromEpisode({
+    ...params,
+    episode,
+    retainedMessages,
+    currentGoal,
+    workingStateSummary,
+    modelOutput,
+  })
+}
+
+function normalizeTimelineCompactionBlocks(
+  blocks: TimelineCompactionBlock[] | undefined,
+  sessionId: string,
+): TimelineCompactionBlock[] {
+  return sortTimelineCompactionBlocks(
+    (blocks ?? []).filter((block) => block.sessionId === sessionId && block.status === 'active'),
+  )
+}
+
+function projectTimelineCompactionBlocks(
+  messages: Message[],
+  blocks: TimelineCompactionBlock[],
+  sessionId: string,
+): Message[] {
+  const activeBlocks = normalizeTimelineCompactionBlocks(blocks, sessionId)
+  if (activeBlocks.length === 0) return messages
+
+  const blocksByFirstMessageId = new Map<string, TimelineCompactionBlock>()
+  const coveredMessageIds = new Set<string>()
+  for (const block of activeBlocks) {
+    const firstMessageId = block.coveredMessageIds[0]
+    if (firstMessageId) blocksByFirstMessageId.set(firstMessageId, block)
+    for (const messageId of block.coveredMessageIds) {
+      coveredMessageIds.add(messageId)
+    }
+  }
+
+  const projected: Message[] = []
+  for (const message of messages) {
+    const block = blocksByFirstMessageId.get(message.id)
+    if (block) {
+      projected.push({
+        id: block.id,
+        sessionId: block.sessionId,
+        role: 'user',
+        messageType: 'message',
+        content: [{ type: 'text', text: block.summary }],
+        createdAt: block.coveredRange.startCreatedAt,
+      })
+    }
+    if (coveredMessageIds.has(message.id)) continue
+    projected.push(message)
+  }
+
+  return projected
+}
+
+function projectTimelineCompactionBlocksForPrompt(
+  messages: Message[],
+  blocks: TimelineCompactionBlock[],
+  sessionId: string,
+): Message[] {
+  const projected = projectTimelineCompactionBlocks(messages, blocks, sessionId)
+  return reducePromptToolOutputs(projected, findTurnBoundaries(projected))
+}
+
+function sortTimelineCompactionBlocks(
+  blocks: TimelineCompactionBlock[],
+): TimelineCompactionBlock[] {
+  return [...blocks].sort((left, right) => {
+    const time = left.coveredRange.startCreatedAt.localeCompare(right.coveredRange.startCreatedAt)
+    return time === 0 ? left.id.localeCompare(right.id) : time
+  })
+}
+
+function buildTimelineCompactionBlockFromEpisode(params: {
+  messages: Message[]
+  segment: Message[]
+  options: {
+    workDir: string
+    sessionId: string
+  }
+  skippedUnfinishedToolUseIds: string[]
+  generation?: number
+  supersedesBlockIds?: string[]
+  strategyOverride?: string
+  boundaryReasonOverride?: string
+  episode: EpisodeCompaction
+  retainedMessages: Message[]
+  currentGoal: string
+  workingStateSummary: string
+  modelOutput: ContextCompactionModelOutput
+}): TimelineCompactionBlock {
+  const episode = params.episode
+  const coveredMessageIds = params.segment.map((message) => message.id)
+  const createdAt = now()
+  const updatedAt = now()
+  const strategyVersion = timelineCompactionStrategyVersion
+  const blockId = buildTimelineCompactionBlockId(
+    params.options.sessionId,
+    coveredMessageIds[0],
+    strategyVersion,
+    params.generation,
+  )
+  const evidence = episode.evidence
+  const evidenceChars = evidence.reduce((total, item) => total + item.chars, 0)
+  const evidenceBytes = evidence.reduce((total, item) => total + item.bytes, 0)
+  const promptMessages = buildTimelineCompactionPromptMessages({
+    blockId,
+    sessionId: params.options.sessionId,
+    segment: params.segment,
+    episode,
+    workingStateSummary: params.workingStateSummary,
+    createdAt,
+    updatedAt,
+    strategyVersion,
+    modelOutput: params.modelOutput,
+    strategy: params.strategyOverride ?? episode.boundaryStrategy,
+    boundaryReason: params.boundaryReasonOverride ?? episode.boundaryReason,
+  })
+
+  return {
+    id: blockId,
+    sessionId: params.options.sessionId,
+    status: 'active',
+    strategy: params.strategyOverride ?? episode.boundaryStrategy,
+    strategyVersion,
+    boundaryReason: params.boundaryReasonOverride ?? episode.boundaryReason,
+    summary: promptMessages[0].content
+      .flatMap((block) => (block.type === 'text' ? [block.text] : []))
+      .join('\n'),
+    workingStateSummary: params.workingStateSummary,
+    coveredMessageIds,
+    coveredRange: {
+      startMessageId: params.segment[0]?.id ?? blockId,
+      endMessageId: params.segment.at(-1)?.id ?? blockId,
+      startCreatedAt: params.segment[0]?.createdAt ?? createdAt,
+      endCreatedAt: params.segment.at(-1)?.createdAt ?? updatedAt,
+    },
+    coveredMessageCount: coveredMessageIds.length,
+    toolUseIds: episode.toolUseIds,
+    evidence,
+    evidenceCount: evidence.length,
+    evidenceChars,
+    evidenceBytes,
+    rawCharsMovedToEvidence: evidenceChars,
+    skippedUnfinishedToolUseIds: params.skippedUnfinishedToolUseIds,
+    episodeFullRetainTurns: CONTEXT_PARAMS.history.episodeFullRetainTurns,
+    promptCharsBefore: stableJsonLength(params.messages),
+    promptCharsAfter: stableJsonLength(promptMessages),
+    tokensBefore: estimateConversationTokens(params.messages),
+    tokensAfter: estimateConversationTokens(promptMessages),
+    createdAt,
+    updatedAt,
+    generation: params.generation ?? 1,
+    episodes: [episode],
+    topics: params.modelOutput.topics,
+    validation: params.modelOutput.validation,
+    model: params.modelOutput.model,
+    supersedesBlockIds: params.supersedesBlockIds,
+  }
+}
+
+function buildTimelineCompactionBlockId(
+  sessionId: string,
+  firstMessageId: string | undefined,
+  strategyVersion: string,
+  generation = 1,
+): string {
+  return `timeline_compaction_${hashText(
+    `${sessionId}:${firstMessageId ?? 'empty'}:${strategyVersion}:${generation}`,
+  ).slice(0, 16)}`
+}
+
+function buildTimelineCompactionPromptMessages(params: {
+  blockId: string
+  sessionId: string
+  segment: Message[]
+  episode: EpisodeCompaction
+  workingStateSummary: string
+  createdAt: string
+  updatedAt: string
+  strategyVersion: string
+  modelOutput: ContextCompactionModelOutput
+  strategy: string
+  boundaryReason: string
+}): Message[] {
+  const summary = [
+    `<timeline_compaction_block id="${params.blockId}" status="${params.episode.status}">`,
+    `covered_messages: ${params.segment.length}`,
+    `covered_range: ${params.segment[0]?.id ?? 'unknown'}..${params.segment.at(-1)?.id ?? 'unknown'}`,
+    `covered_created_at: ${params.segment[0]?.createdAt ?? 'unknown'}..${params.segment.at(-1)?.createdAt ?? 'unknown'}`,
+    `generated_at: ${params.updatedAt}`,
+    `strategy: ${params.strategy}`,
+    `strategy_version: ${params.strategyVersion}`,
+    `boundary_reason: ${params.boundaryReason}`,
+    params.modelOutput.model?.promptVersion
+      ? `prompt_version: ${params.modelOutput.model.promptVersion}`
+      : '',
+    params.modelOutput.validation
+      ? `validation_status: ${params.modelOutput.validation.status}`
+      : '',
+    params.modelOutput.topics ? `topic_count: ${params.modelOutput.topics.length}` : '',
+    'trace: context_compaction timeline_compaction_block',
+    formatContextCompactionSummary(params.episode, params.modelOutput),
+    'working_state:',
+    params.workingStateSummary,
+    '</timeline_compaction_block>',
+  ].join('\n')
+
+  return [
+    {
+      id: params.blockId,
+      sessionId: params.sessionId,
+      role: 'user',
+      messageType: 'message',
+      content: [{ type: 'text', text: summary }],
+      createdAt: params.createdAt,
+    },
+  ]
+}
+
+function buildDeterministicFallbackCompaction(params: {
+  sessionId: string
+  blockId: string
+  strategyVersion: string
+  currentGoal: string
+  episode: EpisodeCompaction
+  workingStateSummary: string
+}): ContextCompactionModelOutput {
+  const topicStatus = params.episode.status === 'blocked' ? 'blocked' : 'unknown'
+  const evidence = params.episode.evidence
+    .slice(0, CONTEXT_PARAMS.history.episodePromptEvidenceLimit)
+    .map(
+      (item) =>
+        `${item.toolName}:${item.toolUseId}:${item.kind} path=${item.path} chars=${item.chars}`,
+    )
+  const fallbackWarning =
+    'semantic_compaction_unavailable; deterministic fallback preserved evidence pointers'
+
+  return {
+    summary: [
+      `Deterministic fallback for ${params.episode.messageIds.length} older messages in ${params.sessionId} because semantic context compaction did not return usable output.`,
+      `block_id=${params.blockId} strategy_version=${params.strategyVersion}`,
+      params.episode.summary,
+    ]
+      .filter((item) => item.trim().length > 0)
+      .join('\n'),
+    topics: [
+      {
+        id: 'T1',
+        title: truncateOneLine(params.episode.goal || 'Compacted historical work', 100),
+        status: topicStatus,
+        summary: truncateOneLine(params.episode.summary, 1000),
+        sourceMessageRefs: [],
+        sourceMessageIds: params.episode.messageIds,
+        toolRefs: [],
+        toolUseIds: params.episode.toolUseIds,
+        confirmedFacts: params.episode.confirmedFacts,
+        currentState: [
+          `current_goal=${truncateOneLine(params.currentGoal || 'unknown', 240)}`,
+          'Use retained recent turns as the authoritative high-fidelity context.',
+          'Read evidence paths only when exact raw tool IO is needed.',
+        ],
+        openQuestions: params.episode.blockers,
+        nextActions: [
+          'Continue from the retained recent turn; do not replay full historical tool IO.',
+        ],
+        evidence,
+        needsRawReview: params.episode.evidence.length > 0,
+      },
+    ],
+    confirmedFacts: params.episode.confirmedFacts,
+    currentState: [
+      'Semantic compaction was unavailable; this block is an evidence-preserving deterministic fallback.',
+      params.workingStateSummary,
+    ],
+    openQuestions: params.episode.blockers,
+    nextActions: ['Continue from retained recent turns.'],
+    doNotInfer: [
+      'Do not treat this deterministic fallback as a full semantic summary.',
+      'Do not claim raw tool output was reviewed unless an evidence path is opened.',
+    ],
+    keyEvidence: evidence,
+    validation: {
+      status: 'legacy',
+      promptVersion: deterministicFallbackPromptVersion,
+      topicCount: 1,
+      expectedToolRefs: [],
+      coveredToolRefs: [],
+      invalidToolRefs: [],
+      missingToolRefs: [],
+      expectedMessageRefs: [],
+      coveredMessageRefs: [],
+      invalidMessageRefs: [],
+      errors: [],
+      warnings: [fallbackWarning],
+    },
+    model: {
+      promptVersion: deterministicFallbackPromptVersion,
+      primaryModel: 'local',
+      primaryProvider: 'deterministic',
+      usedModel: 'deterministic-fallback',
+      usedProvider: 'local',
+      attempts: 0,
+    },
+  }
+}
+
+function formatContextCompactionSummary(
+  episode: EpisodeCompaction,
+  modelOutput: ContextCompactionModelOutput,
+): string {
+  const source =
+    modelOutput.model?.usedModel === 'deterministic-fallback' ? 'deterministic_fallback' : 'model'
+  const lines = [
+    `<context_compaction_summary source="${source}">`,
+    'summary:',
+    modelOutput.summary,
+    'topics:',
+    ...(modelOutput.topics ?? []).map(
+      (topic) =>
+        `- ${topic.id} [${topic.status}] ${topic.title}: ${truncateOneLine(topic.summary, 280)}`,
+    ),
+    'confirmed_facts:',
+    ...(modelOutput.confirmedFacts ?? episode.confirmedFacts).map((item) => `- ${item}`),
+    'current_state:',
+    ...(modelOutput.currentState ?? []).map((item) => `- ${item}`),
+    'open_questions_or_blockers:',
+    ...(modelOutput.openQuestions ?? episode.blockers).map((item) => `- ${item}`),
+    'next_actions:',
+    ...(modelOutput.nextActions ?? []).map((item) => `- ${item}`),
+    'do_not_infer:',
+    ...(modelOutput.doNotInfer ?? []).map((item) => `- ${item}`),
+    'key_evidence:',
+    ...(modelOutput.keyEvidence ?? episode.needsRawReview).map((item) => `- ${item}`),
+    'evidence_manifest:',
+    ...episode.evidence.map(
+      (item) =>
+        `- ${item.toolName}:${item.toolUseId}:${item.kind} path=${item.path} chars=${item.chars} sha256=${item.sha256.slice(0, 12)}`,
+    ),
+    '</context_compaction_summary>',
+  ]
+  return lines.filter((line) => line.trim().length > 0).join('\n')
 }
 
 export function sanitizeConversationHistoryForSignedThinkingToolUse(
@@ -325,150 +929,6 @@ export async function prepareConversationHistoryWithCompaction(
   return reducePromptToolOutputs(prepared.cleaned, prepared.turnBoundaries)
 }
 
-function prepareConversationHistoryBase(
-  messages: Message[],
-  options: ConversationHistoryOptions,
-): { cleaned: Message[]; turnBoundaries: number[] } | undefined {
-  if (messages.length === 0) return undefined
-
-  const promptHistory = messages.filter((message) => message.messageType !== 'notification')
-
-  // Merge queued messages that break tool_use → tool_result pairing
-  const paired = mergeInterleavedQueuedMessages(promptHistory)
-  const cleaned = options.requireThinkingForToolUse
-    ? sanitizeConversationHistoryForSignedThinkingToolUse(paired)
-    : paired
-
-  const turnBoundaries = findTurnBoundaries(cleaned)
-  return { cleaned, turnBoundaries }
-}
-
-function reduceHistoricalToolOutput(messages: Message[], turnBoundaries: number[]): Message[] {
-  // Assign turn indices by scanning from the end
-  const turnAgeMap = buildTurnAgeMap(messages, turnBoundaries)
-  // turnBoundaries[0] = most recent user text message index (turn 0)
-
-  return messages.map((msg, idx) => {
-    if (msg.role !== 'user') return msg
-    const hasToolResult = msg.content.some((b) => b.type === 'tool_result')
-    if (!hasToolResult) return msg
-
-    const age = turnAgeMap.get(idx) ?? turnBoundaries.length
-    const newContent = msg.content.map((block) => {
-      if (block.type !== 'tool_result') return block
-
-      // Already at maximum truncation — never re-process
-      if (block.truncationLevel === 'status') return block
-
-      // Recent turns: mark as full, no truncation
-      if (age <= CONTEXT_PARAMS.history.fullRetainTurns) {
-        if (!block.truncationLevel) block.truncationLevel = 'full'
-        return block
-      }
-
-      // Already summarized and still in summary range — skip
-      if (block.truncationLevel === 'summary' && age <= CONTEXT_PARAMS.history.summaryRetainTurns) {
-        return block
-      }
-
-      // Needs summary truncation
-      if (age <= CONTEXT_PARAMS.history.summaryRetainTurns) {
-        const summarized = summarizeToolResult(block)
-        block.content = summarized.content
-        block.contentItems = undefined
-        block.truncationLevel = 'summary'
-        return block
-      }
-
-      // Needs status-only truncation
-      const statusOnly = statusOnlyToolResult(block)
-      block.content = statusOnly.content
-      block.contentItems = undefined
-      block.truncationLevel = 'status'
-      return block
-    })
-
-    return { ...msg, content: newContent }
-  })
-}
-
-function reducePromptToolOutputs(messages: Message[], turnBoundaries: number[]): Message[] {
-  return reduceToolOutputsUnderPromptPressure(reduceHistoricalToolOutput(messages, turnBoundaries))
-}
-
-function reduceToolOutputsUnderPromptPressure(messages: Message[]): Message[] {
-  if (JSON.stringify(messages).length <= CONTEXT_PARAMS.history.promptPressureCharsThreshold) {
-    return messages
-  }
-
-  const toolResults: ToolResultBlock[] = []
-  for (const message of messages) {
-    if (message.role !== 'user') continue
-    for (const block of message.content) {
-      if (block.type === 'tool_result') toolResults.push(block)
-    }
-  }
-
-  const fullRetain = CONTEXT_PARAMS.history.promptPressureFullToolResults
-  const summaryRetain = CONTEXT_PARAMS.history.promptPressureSummaryToolResults
-  for (let index = 0; index < toolResults.length; index++) {
-    const block = toolResults[index]
-    const age = toolResults.length - 1 - index
-    if (block.truncationLevel === 'status') continue
-    if (age < fullRetain) {
-      if (!block.truncationLevel) block.truncationLevel = 'full'
-      continue
-    }
-
-    if (age < fullRetain + summaryRetain) {
-      const summarized = summarizeToolResult(block)
-      block.content = summarized.content
-      block.contentItems = undefined
-      block.truncationLevel = 'summary'
-      continue
-    }
-
-    const statusOnly = statusOnlyToolResult(block)
-    block.content = statusOnly.content
-    block.contentItems = undefined
-    block.truncationLevel = 'status'
-  }
-
-  return messages
-}
-
-function findTurnBoundaries(messages: Message[]): number[] {
-  const turnBoundaries: number[] = []
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i]
-    if (startsTopLevelTurn(msg)) {
-      turnBoundaries.push(i)
-    }
-  }
-  return turnBoundaries
-}
-
-function buildTurnAgeMap(messages: Message[], turnBoundaries: number[]): Map<number, number> {
-  // Build a map: message index -> turn age (distance from most recent turn)
-  const turnAgeMap = new Map<number, number>()
-  for (let t = 0; t < turnBoundaries.length; t++) {
-    const startIdx = turnBoundaries[t]
-    const endIdx = t === 0 ? messages.length : turnBoundaries[t - 1]
-    for (let i = startIdx; i < endIdx; i++) {
-      turnAgeMap.set(i, t)
-    }
-  }
-  // Messages before the oldest identified turn get max age
-  if (turnBoundaries.length > 0) {
-    const oldestTurnStart = turnBoundaries[turnBoundaries.length - 1]
-    for (let i = 0; i < oldestTurnStart; i++) {
-      turnAgeMap.set(i, turnBoundaries.length)
-    }
-  }
-
-  return turnAgeMap
-}
-
 async function compactEpisodeHistoryAsync(
   messages: Message[],
   turnBoundaries: number[],
@@ -485,14 +945,14 @@ async function compactEpisodeHistoryAsync(
   if (plan.candidateSegments.length === 0) {
     const recompactPlan = planTimelineRecompaction(messages, plan.activeExistingBlocks)
     if (recompactPlan && options.contextCompactor) {
-      const recompactBlock = await buildTimelineCompactionBlockAsync({
+      const recompactBlock = await buildTimelineCompactionBlock({
         messages,
         segment: recompactPlan.segment,
         options,
         skippedUnfinishedToolUseIds: plan.skippedUnfinishedToolUseIds,
         generation: recompactPlan.generation,
         supersedesBlockIds: plan.activeExistingBlocks.map((block) => block.id),
-        strategyOverride: timelineRecompactStrategy,
+        strategyOverride: TIMELINE_RECOMPACT_STRATEGY,
         boundaryReasonOverride: recompactPlan.reason,
       })
       if (recompactBlock) {
@@ -528,7 +988,7 @@ async function compactEpisodeHistoryAsync(
 
   const createdBlocks: TimelineCompactionBlock[] = []
   for (const segment of plan.candidateSegments) {
-    const block = await buildTimelineCompactionBlockAsync({
+    const block = await buildTimelineCompactionBlock({
       messages,
       segment,
       options,
@@ -542,14 +1002,14 @@ async function compactEpisodeHistoryAsync(
     ...createdBlocks,
   ])
   if (recompactPlan) {
-    const recompactBlock = await buildTimelineCompactionBlockAsync({
+    const recompactBlock = await buildTimelineCompactionBlock({
       messages,
       segment: recompactPlan.segment,
       options,
       skippedUnfinishedToolUseIds: plan.skippedUnfinishedToolUseIds,
       generation: recompactPlan.generation,
       supersedesBlockIds: plan.activeExistingBlocks.map((block) => block.id),
-      strategyOverride: timelineRecompactStrategy,
+      strategyOverride: TIMELINE_RECOMPACT_STRATEGY,
       boundaryReasonOverride: recompactPlan.reason,
     })
     if (recompactBlock) {
@@ -571,47 +1031,6 @@ async function compactEpisodeHistoryAsync(
   }
 
   return finalizeEpisodeCompaction(messages, options, plan.activeExistingBlocks, createdBlocks, [])
-}
-
-function planEpisodeCompaction(
-  messages: Message[],
-  turnBoundaries: number[],
-  options: {
-    sessionId: string
-    timelineCompactionBlocks?: TimelineCompactionBlock[]
-  },
-): {
-  activeExistingBlocks: TimelineCompactionBlock[]
-  candidateSegments: Message[][]
-  skippedUnfinishedToolUseIds: string[]
-} {
-  const activeExistingBlocks = normalizeTimelineCompactionBlocks(
-    options.timelineCompactionBlocks,
-    options.sessionId,
-  )
-
-  if (turnBoundaries.length <= CONTEXT_PARAMS.history.episodeFullRetainTurns + 1) {
-    return { activeExistingBlocks, candidateSegments: [], skippedUnfinishedToolUseIds: [] }
-  }
-
-  const alreadyCoveredMessageIds = new Set(
-    activeExistingBlocks.flatMap((block) => block.coveredMessageIds),
-  )
-  const turnAgeMap = buildTurnAgeMap(messages, turnBoundaries)
-  const compactable = new Set<number>()
-  for (let index = 0; index < messages.length; index++) {
-    const age = turnAgeMap.get(index) ?? turnBoundaries.length
-    if (age <= CONTEXT_PARAMS.history.episodeFullRetainTurns) continue
-    if (alreadyCoveredMessageIds.has(messages[index].id)) continue
-    compactable.add(index)
-  }
-
-  const skippedUnfinishedToolUseIds = removeUnfinishedToolTurns(messages, compactable)
-  const candidateSegments = collectCompactableSegments(messages, compactable).filter(
-    shouldCompactSegment,
-  )
-
-  return { activeExistingBlocks, candidateSegments, skippedUnfinishedToolUseIds }
 }
 
 function finalizeEpisodeCompaction(
@@ -681,16 +1100,59 @@ function finalizeEpisodeCompaction(
   return projectedMessages
 }
 
+interface EpisodeCompactionPlan {
+  activeExistingBlocks: TimelineCompactionBlock[]
+  candidateSegments: Message[][]
+  skippedUnfinishedToolUseIds: string[]
+}
+
+interface TimelineRecompactionPlan {
+  segment: Message[]
+  generation: number
+  reason: string
+}
+
+function planEpisodeCompaction(
+  messages: Message[],
+  turnBoundaries: number[],
+  options: {
+    sessionId: string
+    timelineCompactionBlocks?: TimelineCompactionBlock[]
+  },
+): EpisodeCompactionPlan {
+  const activeExistingBlocks = normalizeTimelineCompactionBlocks(
+    options.timelineCompactionBlocks,
+    options.sessionId,
+  )
+
+  if (turnBoundaries.length <= CONTEXT_PARAMS.history.episodeFullRetainTurns + 1) {
+    return { activeExistingBlocks, candidateSegments: [], skippedUnfinishedToolUseIds: [] }
+  }
+
+  const alreadyCoveredMessageIds = new Set(
+    activeExistingBlocks.flatMap((block) => block.coveredMessageIds),
+  )
+  const turnAgeMap = buildTurnAgeMap(messages, turnBoundaries)
+  const compactable = new Set<number>()
+  for (let index = 0; index < messages.length; index++) {
+    const age = turnAgeMap.get(index) ?? turnBoundaries.length
+    if (age <= CONTEXT_PARAMS.history.episodeFullRetainTurns) continue
+    if (alreadyCoveredMessageIds.has(messages[index].id)) continue
+    compactable.add(index)
+  }
+
+  const skippedUnfinishedToolUseIds = removeUnfinishedToolTurns(messages, compactable)
+  const candidateSegments = collectCompactableSegments(messages, compactable).filter(
+    shouldCompactSegment,
+  )
+
+  return { activeExistingBlocks, candidateSegments, skippedUnfinishedToolUseIds }
+}
+
 function planTimelineRecompaction(
   messages: Message[],
   activeBlocks: TimelineCompactionBlock[],
-):
-  | {
-      segment: Message[]
-      generation: number
-      reason: string
-    }
-  | undefined {
+): TimelineRecompactionPlan | undefined {
   const sortedBlocks = sortTimelineCompactionBlocks(activeBlocks)
   if (sortedBlocks.length <= 1) return undefined
 
@@ -713,7 +1175,7 @@ function planTimelineRecompaction(
 
   const generation = Math.max(...sortedBlocks.map((block) => block.generation ?? 1)) + 1
   const reason = [
-    timelineRecompactBoundaryReason,
+    TIMELINE_RECOMPACT_BOUNDARY_REASON,
     `active_block_count=${sortedBlocks.length}`,
     `projected_chars=${projectedChars}`,
     `threshold_blocks=${CONTEXT_PARAMS.history.timelineRecompactBlockCountThreshold}`,
@@ -765,437 +1227,6 @@ function hasBlockingSignal(message: Message): boolean {
   )
 }
 
-function normalizeTimelineCompactionBlocks(
-  blocks: TimelineCompactionBlock[] | undefined,
-  sessionId: string,
-): TimelineCompactionBlock[] {
-  return sortTimelineCompactionBlocks(
-    (blocks ?? []).filter((block) => block.sessionId === sessionId && block.status === 'active'),
-  )
-}
-
-async function buildTimelineCompactionBlockAsync(params: {
-  messages: Message[]
-  segment: Message[]
-  options: {
-    workDir: string
-    sessionId: string
-    contextCompactor?: ContextCompactor
-  }
-  skippedUnfinishedToolUseIds: string[]
-  generation?: number
-  supersedesBlockIds?: string[]
-  strategyOverride?: string
-  boundaryReasonOverride?: string
-}): Promise<TimelineCompactionBlock | undefined> {
-  const episode = buildEpisodeCompaction(params.segment, params.options)
-  const coveredMessageIds = params.segment.map((message) => message.id)
-  const coveredMessageIdSet = new Set(coveredMessageIds)
-  const retainedMessages = params.messages.filter((message) => !coveredMessageIdSet.has(message.id))
-  const currentGoal = extractCurrentGoal(params.messages)
-  const workingState = buildWorkingStateCompaction({
-    currentGoal,
-    retainedMessages,
-    episodes: [episode],
-  })
-  const workingStateSummary = formatWorkingState(workingState)
-  const strategyVersion = timelineCompactionStrategyVersion
-  const blockId = buildTimelineCompactionBlockId(
-    params.options.sessionId,
-    coveredMessageIds[0],
-    strategyVersion,
-    params.generation,
-  )
-  const modelOutput =
-    (await params.options.contextCompactor?.({
-      sessionId: params.options.sessionId,
-      blockId,
-      strategyVersion,
-      currentGoal,
-      segment: params.segment,
-      retainedMessages,
-      episode,
-      workingStateSummary,
-    })) ??
-    buildDeterministicFallbackCompaction({
-      sessionId: params.options.sessionId,
-      blockId,
-      strategyVersion,
-      currentGoal,
-      episode,
-      workingStateSummary,
-    })
-
-  return buildTimelineCompactionBlockFromEpisode({
-    ...params,
-    episode,
-    retainedMessages,
-    currentGoal,
-    workingStateSummary,
-    modelOutput,
-  })
-}
-
-function buildTimelineCompactionBlockFromEpisode(params: {
-  messages: Message[]
-  segment: Message[]
-  options: {
-    workDir: string
-    sessionId: string
-  }
-  skippedUnfinishedToolUseIds: string[]
-  generation?: number
-  supersedesBlockIds?: string[]
-  strategyOverride?: string
-  boundaryReasonOverride?: string
-  episode: EpisodeCompaction
-  retainedMessages: Message[]
-  currentGoal: string
-  workingStateSummary: string
-  modelOutput: ContextCompactionModelOutput
-}): TimelineCompactionBlock {
-  const episode = params.episode
-  const coveredMessageIds = params.segment.map((message) => message.id)
-  const createdAt = now()
-  const updatedAt = now()
-  const strategyVersion = timelineCompactionStrategyVersion
-  const blockId = buildTimelineCompactionBlockId(
-    params.options.sessionId,
-    coveredMessageIds[0],
-    strategyVersion,
-    params.generation,
-  )
-  const evidence = episode.evidence
-  const evidenceChars = evidence.reduce((total, item) => total + item.chars, 0)
-  const evidenceBytes = evidence.reduce((total, item) => total + item.bytes, 0)
-  const promptMessages = buildTimelineCompactionPromptMessages(
-    blockId,
-    params.options.sessionId,
-    params.segment,
-    episode,
-    params.workingStateSummary,
-    createdAt,
-    updatedAt,
-    strategyVersion,
-    params.modelOutput,
-    params.strategyOverride ?? episode.boundaryStrategy,
-    params.boundaryReasonOverride ?? episode.boundaryReason,
-  )
-
-  return {
-    id: blockId,
-    sessionId: params.options.sessionId,
-    status: 'active',
-    strategy: params.strategyOverride ?? episode.boundaryStrategy,
-    strategyVersion,
-    boundaryReason: params.boundaryReasonOverride ?? episode.boundaryReason,
-    summary: promptMessages[0].content
-      .flatMap((block) => (block.type === 'text' ? [block.text] : []))
-      .join('\n'),
-    workingStateSummary: params.workingStateSummary,
-    coveredMessageIds,
-    coveredRange: {
-      startMessageId: params.segment[0]?.id ?? blockId,
-      endMessageId: params.segment.at(-1)?.id ?? blockId,
-      startCreatedAt: params.segment[0]?.createdAt ?? createdAt,
-      endCreatedAt: params.segment.at(-1)?.createdAt ?? updatedAt,
-    },
-    coveredMessageCount: coveredMessageIds.length,
-    toolUseIds: episode.toolUseIds,
-    evidence,
-    evidenceCount: evidence.length,
-    evidenceChars,
-    evidenceBytes,
-    rawCharsMovedToEvidence: evidenceChars,
-    skippedUnfinishedToolUseIds: params.skippedUnfinishedToolUseIds,
-    episodeFullRetainTurns: CONTEXT_PARAMS.history.episodeFullRetainTurns,
-    promptCharsBefore: stableJsonLength(params.messages),
-    promptCharsAfter: stableJsonLength(promptMessages),
-    tokensBefore: estimateConversationTokens(params.messages),
-    tokensAfter: estimateConversationTokens(promptMessages),
-    createdAt,
-    updatedAt,
-    generation: params.generation ?? 1,
-    episodes: [episode],
-    topics: params.modelOutput.topics,
-    validation: params.modelOutput.validation,
-    model: params.modelOutput.model,
-    supersedesBlockIds: params.supersedesBlockIds,
-  }
-}
-
-function buildTimelineCompactionBlockId(
-  sessionId: string,
-  firstMessageId: string | undefined,
-  strategyVersion: string,
-  generation = 1,
-): string {
-  return `timeline_compaction_${hashText(
-    `${sessionId}:${firstMessageId ?? 'empty'}:${strategyVersion}:${generation}`,
-  ).slice(0, 16)}`
-}
-
-function buildTimelineCompactionPromptMessages(
-  blockId: string,
-  sessionId: string,
-  segment: Message[],
-  episode: EpisodeCompaction,
-  workingStateSummary: string,
-  createdAt: string,
-  updatedAt: string,
-  strategyVersion: string,
-  modelOutput: ContextCompactionModelOutput,
-  strategy: string,
-  boundaryReason: string,
-): Message[] {
-  const summary = [
-    `<timeline_compaction_block id="${blockId}" status="${episode.status}">`,
-    `covered_messages: ${segment.length}`,
-    `covered_range: ${segment[0]?.id ?? 'unknown'}..${segment.at(-1)?.id ?? 'unknown'}`,
-    `covered_created_at: ${segment[0]?.createdAt ?? 'unknown'}..${segment.at(-1)?.createdAt ?? 'unknown'}`,
-    `generated_at: ${updatedAt}`,
-    `strategy: ${strategy}`,
-    `strategy_version: ${strategyVersion}`,
-    `boundary_reason: ${boundaryReason}`,
-    modelOutput.model?.promptVersion ? `prompt_version: ${modelOutput.model.promptVersion}` : '',
-    modelOutput.validation ? `validation_status: ${modelOutput.validation.status}` : '',
-    modelOutput.topics ? `topic_count: ${modelOutput.topics.length}` : '',
-    'trace: context_compaction timeline_compaction_block',
-    formatContextCompactionSummary(episode, modelOutput),
-    'working_state:',
-    workingStateSummary,
-    '</timeline_compaction_block>',
-  ].join('\n')
-
-  return [
-    {
-      id: blockId,
-      sessionId,
-      role: 'user',
-      messageType: 'message',
-      content: [{ type: 'text', text: summary }],
-      createdAt,
-    },
-  ]
-}
-
-function formatContextCompactionSummary(
-  episode: EpisodeCompaction,
-  modelOutput: ContextCompactionModelOutput,
-): string {
-  const facts = modelOutput.confirmedFacts ?? []
-  const blockers = modelOutput.openQuestions ?? episode.blockers
-  const source =
-    modelOutput.model?.promptVersion === deterministicFallbackPromptVersion
-      ? 'deterministic_fallback'
-      : 'model'
-  return [
-    `<context_compaction_summary source="${source}">`,
-    'summary:',
-    modelOutput.summary.trim(),
-    'topics:',
-    ...formatTopicPromptList(modelOutput.topics ?? []),
-    'confirmed_facts:',
-    ...formatPromptList(facts, 8),
-    'user_constraints:',
-    ...formatPromptList(modelOutput.userConstraints ?? [], 8),
-    'decisions:',
-    ...formatPromptList(modelOutput.decisions ?? [], 8),
-    'current_state:',
-    ...formatPromptList(modelOutput.currentState ?? [], 8),
-    'open_questions_or_blockers:',
-    ...formatPromptList(blockers, 6),
-    'next_actions:',
-    ...formatPromptList(modelOutput.nextActions ?? [], 6),
-    'do_not_infer:',
-    ...formatPromptList(modelOutput.doNotInfer ?? [], 6),
-    'key_evidence:',
-    ...formatPromptList(modelOutput.keyEvidence ?? [], 10),
-    'evidence_manifest:',
-    ...formatEvidenceManifest(episode),
-    '</context_compaction_summary>',
-  ].join('\n')
-}
-
-function buildDeterministicFallbackCompaction(params: {
-  sessionId: string
-  blockId: string
-  strategyVersion: string
-  currentGoal: string
-  episode: EpisodeCompaction
-  workingStateSummary: string
-}): ContextCompactionModelOutput {
-  const topicStatus = params.episode.status === 'blocked' ? 'blocked' : 'unknown'
-  const evidence = params.episode.evidence
-    .slice(0, CONTEXT_PARAMS.history.episodePromptEvidenceLimit)
-    .map(
-      (item) =>
-        `${item.toolName}:${item.toolUseId}:${item.kind} path=${item.path} chars=${item.chars}`,
-    )
-  const fallbackWarning =
-    'semantic_compaction_unavailable; deterministic fallback preserved evidence pointers'
-
-  return {
-    summary: [
-      `Deterministic fallback for ${params.episode.messageIds.length} older messages in ${params.sessionId} because semantic context compaction did not return usable output.`,
-      `block_id=${params.blockId} strategy_version=${params.strategyVersion}`,
-      params.episode.summary,
-    ]
-      .filter((item) => item.trim().length > 0)
-      .join('\n'),
-    topics: [
-      {
-        id: 'T1',
-        title: truncateOneLine(params.episode.goal || 'Compacted historical work', 100),
-        status: topicStatus,
-        summary: truncateOneLine(params.episode.summary, 1000),
-        sourceMessageRefs: [],
-        sourceMessageIds: params.episode.messageIds,
-        toolRefs: [],
-        toolUseIds: params.episode.toolUseIds,
-        confirmedFacts: params.episode.confirmedFacts,
-        currentState: [
-          `current_goal=${truncateOneLine(params.currentGoal || 'unknown', 240)}`,
-          'Use retained recent turns as the authoritative high-fidelity context.',
-          'Read evidence paths only when exact raw tool IO is needed.',
-        ],
-        openQuestions: params.episode.blockers,
-        nextActions: [
-          'Continue from the retained recent turn; do not replay full historical tool IO.',
-        ],
-        evidence,
-        needsRawReview: params.episode.evidence.length > 0,
-      },
-    ],
-    confirmedFacts: params.episode.confirmedFacts,
-    currentState: [
-      'Semantic compaction was unavailable; this block is an evidence-preserving deterministic fallback.',
-      params.workingStateSummary,
-    ],
-    openQuestions: params.episode.blockers,
-    nextActions: ['Continue from retained recent turns.'],
-    doNotInfer: [
-      'Do not treat this deterministic fallback as a full semantic summary.',
-      'Do not claim raw tool output was reviewed unless an evidence path is opened.',
-    ],
-    keyEvidence: evidence,
-    validation: {
-      status: 'legacy',
-      promptVersion: deterministicFallbackPromptVersion,
-      topicCount: 1,
-      expectedToolRefs: [],
-      coveredToolRefs: [],
-      invalidToolRefs: [],
-      missingToolRefs: [],
-      expectedMessageRefs: [],
-      coveredMessageRefs: [],
-      invalidMessageRefs: [],
-      errors: [],
-      warnings: [fallbackWarning],
-    },
-    model: {
-      promptVersion: deterministicFallbackPromptVersion,
-      primaryModel: 'local',
-      primaryProvider: 'deterministic',
-      usedModel: 'deterministic-fallback',
-      usedProvider: 'local',
-      attempts: 0,
-    },
-  }
-}
-
-function formatTopicPromptList(topics: TimelineCompactionTopic[]): string[] {
-  if (topics.length === 0) return ['- none']
-  return topics.slice(0, 10).map((topic) => {
-    const refs = topic.sourceMessageRefs.join(',') || topic.sourceMessageIds.join(',') || 'none'
-    const tools = topic.toolRefs.join(',') || topic.toolUseIds.join(',') || 'none'
-    return `- ${topic.id} status=${topic.status} messages=${refs} tools=${tools} title=${truncateOneLine(
-      topic.title,
-      100,
-    )}: ${truncateOneLine(topic.summary, 260)}`
-  })
-}
-
-function formatEvidenceManifest(episode: EpisodeCompaction): string[] {
-  const limit = CONTEXT_PARAMS.history.episodePromptEvidenceLimit
-  const items = episode.evidence
-    .slice(0, limit)
-    .map(
-      (item) =>
-        `- ${item.toolName}:${item.toolUseId}:${item.kind} path=${item.path} chars=${item.chars} sha256=${item.sha256.slice(0, 12)} summary=${truncateOneLine(item.summary ?? 'captured', 140)}`,
-    )
-  const omitted = episode.evidence.length - items.length
-  if (omitted > 0) items.push(`- omitted_evidence_count=${omitted}`)
-  return items.length > 0 ? items : ['- none']
-}
-
-function formatPromptList(items: string[], limit: number): string[] {
-  const formatted = items
-    .map((item) => truncateOneLine(item, 260))
-    .filter((item) => item.length > 0)
-    .slice(0, limit)
-    .map((item) => `- ${item}`)
-  const omitted = items.length - formatted.length
-  if (omitted > 0) formatted.push(`- omitted_count=${omitted}`)
-  return formatted.length > 0 ? formatted : ['- none']
-}
-
-function projectTimelineCompactionBlocks(
-  messages: Message[],
-  blocks: TimelineCompactionBlock[],
-  sessionId: string,
-): Message[] {
-  const activeBlocks = normalizeTimelineCompactionBlocks(blocks, sessionId)
-  if (activeBlocks.length === 0) return messages
-
-  const blocksByFirstMessageId = new Map<string, TimelineCompactionBlock>()
-  const coveredMessageIds = new Set<string>()
-  for (const block of activeBlocks) {
-    const firstMessageId = block.coveredMessageIds[0]
-    if (firstMessageId) blocksByFirstMessageId.set(firstMessageId, block)
-    for (const messageId of block.coveredMessageIds) {
-      coveredMessageIds.add(messageId)
-    }
-  }
-
-  const projected: Message[] = []
-  for (const message of messages) {
-    const block = blocksByFirstMessageId.get(message.id)
-    if (block) {
-      projected.push({
-        id: block.id,
-        sessionId: block.sessionId,
-        role: 'user',
-        messageType: 'message',
-        content: [{ type: 'text', text: block.summary }],
-        createdAt: block.coveredRange.startCreatedAt,
-      })
-    }
-    if (coveredMessageIds.has(message.id)) continue
-    projected.push(message)
-  }
-
-  return projected
-}
-
-function projectTimelineCompactionBlocksForPrompt(
-  messages: Message[],
-  blocks: TimelineCompactionBlock[],
-  sessionId: string,
-): Message[] {
-  const projected = projectTimelineCompactionBlocks(messages, blocks, sessionId)
-  return reducePromptToolOutputs(projected, findTurnBoundaries(projected))
-}
-
-function sortTimelineCompactionBlocks(
-  blocks: TimelineCompactionBlock[],
-): TimelineCompactionBlock[] {
-  return [...blocks].sort((left, right) => {
-    const time = left.coveredRange.startCreatedAt.localeCompare(right.coveredRange.startCreatedAt)
-    return time === 0 ? left.id.localeCompare(right.id) : time
-  })
-}
-
 function removeUnfinishedToolTurns(messages: Message[], compactable: Set<number>): string[] {
   const toolUseIds = new Map<string, number>()
   const toolResultIds = new Set<string>()
@@ -1224,7 +1255,7 @@ function removeUnfinishedToolTurns(messages: Message[], compactable: Set<number>
 
 function buildEpisodeCompactionTraceEvent(params: {
   sessionId: string
-  lifecycle: TimelineCompactionBlockLifecycle
+  lifecycle: EpisodeCompactionTraceEvent['lifecycle']
   block: TimelineCompactionBlock
   messagesBefore: Message[]
   messagesAfter: Message[]
@@ -1302,85 +1333,20 @@ function buildEpisodeCompactionTraceEvent(params: {
   }
 }
 
-function hashText(value: string): string {
-  return createHash('sha256').update(value).digest('hex')
-}
+function prepareConversationHistoryBase(
+  messages: Message[],
+  options: ConversationHistoryOptions,
+): { cleaned: Message[]; turnBoundaries: number[] } | undefined {
+  if (messages.length === 0) return undefined
 
-function stableJsonLength(value: unknown): number {
-  return JSON.stringify(value).length
-}
+  const promptHistory = messages.filter((message) => message.messageType !== 'notification')
 
-function truncateOneLine(value: string, maxChars: number): string {
-  const normalized = value.replace(/\s+/g, ' ').trim()
-  return normalized.length > maxChars ? `${normalized.slice(0, maxChars)}...` : normalized
-}
+  // Merge queued messages that break tool_use → tool_result pairing
+  const paired = mergeInterleavedQueuedMessages(promptHistory)
+  const cleaned = options.requireThinkingForToolUse
+    ? sanitizeConversationHistoryForSignedThinkingToolUse(paired)
+    : paired
 
-function findContainingTurnStart(messages: Message[], messageIndex: number): number {
-  for (let index = messageIndex; index >= 0; index--) {
-    if (startsTopLevelTurn(messages[index])) return index
-  }
-  return 0
-}
-
-function findContainingTurnEnd(messages: Message[], turnStart: number): number {
-  for (let index = turnStart + 1; index < messages.length; index++) {
-    if (startsTopLevelTurn(messages[index])) return index
-  }
-  return messages.length
-}
-
-function isToolIoBlock(block: ContentBlock): boolean {
-  return block.type === 'tool_use' || block.type === 'tool_result'
-}
-
-function extractCurrentGoal(messages: Message[]): string {
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const message = messages[index]
-    if (!startsTopLevelTurn(message)) continue
-    const text = message.content
-      .flatMap((block) => (block.type === 'text' ? [block.text.trim()] : []))
-      .find((value) => value.length > 0)
-    if (text) return text.length > 240 ? `${text.slice(0, 240)}...` : text
-  }
-  return 'Continue the current session task.'
-}
-
-function startsTopLevelTurn(message: Message): boolean {
-  return (
-    message.role === 'user' &&
-    message.messageType === 'message' &&
-    message.content.some((block) => block.type === 'text')
-  )
-}
-
-function summarizeToolResult(block: ToolResultBlock): ToolResultBlock {
-  const summary =
-    block.outputSummary ?? block.content.slice(0, CONTEXT_PARAMS.history.summaryMaxChars)
-  const truncated = summary.length < block.content.length ? `${summary}...` : summary
-  return { ...block, content: truncated, contentItems: undefined, truncationLevel: 'summary' }
-}
-
-function statusOnlyToolResult(block: ToolResultBlock): ToolResultBlock {
-  if (block.isError) {
-    const errorSnippet = block.content.slice(0, 100)
-    return {
-      ...block,
-      content: `\u2717 failed: ${errorSnippet}`,
-      contentItems: undefined,
-      truncationLevel: 'status',
-    }
-  }
-  return { ...block, content: '\u2713 success', contentItems: undefined, truncationLevel: 'status' }
-}
-
-/**
- * Estimate total tokens in a conversation history.
- */
-export function estimateConversationTokens(messages: Message[]): number {
-  let total = 0
-  for (const msg of messages) {
-    total += estimateMessageTokens(msg.content)
-    total += 4 // overhead per message (role, metadata)
-  }
-  return total
+  const turnBoundaries = findTurnBoundaries(cleaned)
+  return { cleaned, turnBoundaries }
 }

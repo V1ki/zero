@@ -6,7 +6,7 @@ import { BashTool } from '../../tool/bash'
 import { ReadTool } from '../../tool/read'
 import { ToolRegistry } from '../../tool/registry'
 import { SessionManager } from '../manager'
-import { createTestProjectRoot } from './test-helpers'
+import { createTestProjectRoot, getSessionAgentForTest } from './test-helpers'
 
 const API_KEY = 'sk-c6c02cbd0c25473f97f9be0da6070f6d'
 
@@ -87,8 +87,8 @@ function makeMessage(
 }
 
 function seedMeaningfulSession(session: unknown): void {
-  const typedSession = session as { messages: Message[] }
-  typedSession.messages.push(
+  const typedSession = session as { conversation: { messages: Message[] } }
+  typedSession.conversation.messages.push(
     makeMessage(
       'user',
       '请帮我把这次部署失败的问题排查清楚，我需要知道根因、修复步骤和回归验证方式，还希望你把这次处理里用到的关键判断依据、检查命令和复盘结论都整理出来。',
@@ -509,22 +509,14 @@ describe('SessionManager', () => {
       agentInstruction: 'Test closure model updates.',
     })
 
-    const currentAgent = (
-      current as unknown as {
-        agent: { closureAdapter: ProviderAdapter } | null
-      }
-    ).agent
+    const currentAgent = getSessionAgentForTest<{ closureAdapter: ProviderAdapter }>(current)
     expect(currentAgent?.closureAdapter).toBe(
       router.resolveModel('openai-codex/gpt-5.3-codex-medium')?.adapter,
     )
 
     manager.setTaskClosureModel('openai-codex/gpt-5.4-medium')
 
-    const refreshedAgent = (
-      current as unknown as {
-        agent: { closureAdapter: ProviderAdapter } | null
-      }
-    ).agent
+    const refreshedAgent = getSessionAgentForTest<{ closureAdapter: ProviderAdapter }>(current)
     expect(refreshedAgent?.closureAdapter).toBe(
       router.resolveModel('openai-codex/gpt-5.4-medium')?.adapter,
     )
@@ -534,11 +526,7 @@ describe('SessionManager', () => {
       name: 'manager-test-agent-next',
       agentInstruction: 'Test future closure model updates.',
     })
-    const futureAgent = (
-      future as unknown as {
-        agent: { closureAdapter: ProviderAdapter } | null
-      }
-    ).agent
+    const futureAgent = getSessionAgentForTest<{ closureAdapter: ProviderAdapter }>(future)
     expect(futureAgent?.closureAdapter).toBe(
       router.resolveModel('openai-codex/gpt-5.4-medium')?.adapter,
     )

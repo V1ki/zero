@@ -6,6 +6,7 @@ import { BashTool } from '../../tool/bash'
 import { ReadTool } from '../../tool/read'
 import { ToolRegistry } from '../../tool/registry'
 import { Session } from '../session'
+import { setSessionAgentControlForTest } from './test-helpers'
 
 const config: SystemConfig = {
   providers: {
@@ -59,9 +60,9 @@ describe('Session sub-agent snapshot helpers', () => {
         endedAt: 2,
       },
     ]
-    ;(session as unknown as { agentControl: { getSnapshot(): AgentSnapshot[] } }).agentControl = {
+    setSessionAgentControlForTest(session, {
       getSnapshot: () => snapshot,
-    }
+    })
 
     expect(session.getSubAgentSnapshot()).toEqual(snapshot)
   })
@@ -81,15 +82,11 @@ describe('Session sub-agent snapshot helpers', () => {
     ]
 
     let restored: AgentSnapshot[] | undefined
-    ;(
-      session as unknown as {
-        agentControl: { restoreSnapshot(entries: AgentSnapshot[]): void }
-      }
-    ).agentControl = {
-      restoreSnapshot: (entries) => {
+    setSessionAgentControlForTest(session, {
+      restoreSnapshot: (entries: AgentSnapshot[]) => {
         restored = entries
       },
-    }
+    })
 
     session.restoreSubAgentSnapshot(snapshot)
 

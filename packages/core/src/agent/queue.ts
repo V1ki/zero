@@ -1,4 +1,5 @@
-import type { ContentBlock, Message } from '@zero-os/shared'
+import type { ContentBlock, ControlKind, Message } from '@zero-os/shared'
+import { generateId, now } from '@zero-os/shared'
 import { CONTEXT_PARAMS } from './params'
 
 export interface QueuedMessage {
@@ -24,6 +25,22 @@ export interface QueuedInjectionTrace {
 export interface QueuedMessageInjectionResult {
   message: Message
   trace?: QueuedInjectionTrace
+}
+
+export function buildLoopUserMessage(options: {
+  sessionId: string
+  text: string
+  controlKind: ControlKind
+}): Message {
+  return {
+    id: generateId(),
+    sessionId: options.sessionId,
+    role: 'user',
+    messageType: 'control',
+    controlKind: options.controlKind,
+    content: [{ type: 'text', text: options.text }],
+    createdAt: now(),
+  }
 }
 
 /**
@@ -120,7 +137,10 @@ export function injectQueuedMessagesWithTrace(
   const trace = buildQueuedInjectionTrace(queued)
   if (!trace) return { message: lastUserMsg }
 
-  const newContent: ContentBlock[] = [...lastUserMsg.content, { type: 'text', text: trace.formattedText }]
+  const newContent: ContentBlock[] = [
+    ...lastUserMsg.content,
+    { type: 'text', text: trace.formattedText },
+  ]
 
   for (const q of queued) {
     if (q.images?.length) {

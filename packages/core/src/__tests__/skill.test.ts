@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { buildSkillCatalog, buildSkillsBlock } from '../../agent/prompt'
-import { loadSkills } from '../loader'
+import { buildSkillCatalog } from '../agent/prompt'
+import { loadSkills } from '../skill'
 
 const TEST_DIR = join(import.meta.dir, '__fixtures__', 'skills')
 
@@ -113,41 +113,6 @@ Minimal skill.
     expect(minimal.description).toBe('')
 
     rmSync(join(TEST_DIR, 'minimal'), { recursive: true })
-  })
-})
-
-describe('buildSkillsBlock (deprecated)', () => {
-  it('renders skills as XML', () => {
-    const skills = loadSkills(TEST_DIR)
-    const block = buildSkillsBlock(skills)
-    expect(block).toContain('<skills>')
-    expect(block).toContain('</skills>')
-    expect(block).toContain('<skill name="browser" allowed-tools="bash">')
-    expect(block).toContain('# Browser Skill')
-  })
-
-  it('renders multiple skills', () => {
-    const block = buildSkillsBlock([
-      {
-        name: 'a',
-        description: 'Skill A',
-        allowedTools: ['bash'],
-        content: 'Content A',
-        sourcePath: '/a/SKILL.md',
-      },
-      {
-        name: 'b',
-        description: 'Skill B',
-        allowedTools: ['read', 'write'],
-        content: 'Content B',
-        sourcePath: '/b/SKILL.md',
-      },
-    ])
-    expect(block).toContain('name="a"')
-    expect(block).toContain('name="b"')
-    expect(block).toContain('allowed-tools="read, write"')
-    expect(block).toContain('Content A')
-    expect(block).toContain('Content B')
   })
 })
 

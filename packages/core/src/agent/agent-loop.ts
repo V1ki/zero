@@ -131,6 +131,281 @@ export interface AgentLoopHooks {
   ): boolean | 'break' | { action: 'continue'; continuationMessage: Message }
 }
 
+interface StreamErrorDetails {
+  message: string
+  status?: number
+  requestId?: string
+  errorType?: string
+}
+
+interface CompleteFromStreamOptions {
+  adapter: ProviderAdapter
+  request: CompletionRequest
+  ctx: LoopIterationContext
+  onTextDelta?: (
+    delta: string,
+    meta: { role: 'assistant'; turnId: string },
+    ctx: LoopIterationContext,
+  ) => void
+}
+
+async function completeFromStream({
+  adapter,
+  request,
+  ctx,
+  onTextDelta,
+}: CompleteFromStreamOptions): Promise<CompletionResponse> {
+  const stream = adapter.stream({ ...request, stream: true })
+  const turnId = generatePrefixedId('turn')
+  const responseId = generatePrefixedId('resp')
+
+  const textParts: string[] = []
+  const reasoningParts: string[] = []
+  const reasoningSignatureParts: string[] = []
+  const toolCalls = new Map<string, { id: string; name: string; args: string }>()
+
+  let currentToolId: string | null = null
+  let stopReason: CompletionResponse['stopReason'] = 'end_turn'
+  let usage = { input: 0, output: 0 }
+  let model = request.model ?? 'unknown'
+
+  for await (const event of stream) {
+    if (event.type === 'text_delta') {
+      const data = toRecord(event.data)
+      const delta = typeof data.text === 'string' ? data.text : ''
+      if (!delta) continue
+      textParts.push(delta)
+      onTextDelta?.(delta, { role: 'assistant', turnId }, ctx)
+      continue
+    }
+
+    if (event.type === 'reasoning_delta') {
+      const data = toRecord(event.data)
+      const delta = typeof data.text === 'string' ? data.text : ''
+      if (!delta) continue
+      reasoningParts.push(delta)
+      continue
+    }
+
+    if (event.type === 'reasoning_signature') {
+      const data = toRecord(event.data)
+      const signature = typeof data.signature === 'string' ? data.signature : ''
+      if (!signature) continue
+      reasoningSignatureParts.push(signature)
+      continue
+    }
+
+    if (event.type === 'tool_use_start') {
+      const data = toRecord(event.data)
+      const id = typeof data.id === 'string' ? data.id : generatePrefixedId('toolu')
+      const name = typeof data.name === 'string' ? data.name : 'unknown_tool'
+      currentToolId = id
+      toolCalls.set(id, { id, name, args: '' })
+      continue
+    }
+
+    if (event.type === 'tool_use_delta') {
+      const data = toRecord(event.data)
+      const chunk = typeof data.arguments === 'string' ? data.arguments : ''
+      if (!chunk) continue
+
+      const explicitId = typeof data.id === 'string' ? data.id : null
+      const targetId = explicitId ?? currentToolId
+      if (!targetId) continue
+
+      if (!toolCalls.has(targetId)) {
+        toolCalls.set(targetId, { id: targetId, name: 'unknown_tool', args: '' })
+      }
+
+      const existing = toolCalls.get(targetId)
+      if (existing) {
+        existing.args += chunk
+      }
+      continue
+    }
+
+    if (event.type === 'tool_use_end') {
+      const data = toRecord(event.data)
+      const endedId: string | null = typeof data.id === 'string' ? data.id : currentToolId
+      if (endedId) {
+        currentToolId = endedId === currentToolId ? null : currentToolId
+      }
+      continue
+    }
+
+    if (event.type === 'done') {
+      const data = toRecord(event.data)
+      stopReason = mapFinishReason(
+        typeof data.finishReason === 'string' ? data.finishReason : undefined,
+      )
+      usage = extractUsage(data.usage) ?? usage
+      if (typeof data.model === 'string') {
+        model = data.model
+      }
+      continue
+    }
+
+    if (event.type === 'error') {
+      const data = toRecord(event.data)
+      throw new Error(typeof data.message === 'string' ? data.message : 'Unknown streaming error')
+    }
+  }
+
+  const content: ContentBlock[] = []
+  const reasoningContent = reasoningParts.length > 0 ? reasoningParts.join('') : undefined
+  const reasoningSignature =
+    reasoningSignatureParts.length > 0 ? reasoningSignatureParts.join('') : undefined
+  if (adapter.apiType === 'anthropic-deepseek' && reasoningContent && reasoningSignature) {
+    content.push({
+      type: 'thinking',
+      thinking: reasoningContent,
+      signature: reasoningSignature,
+    })
+  }
+
+  if (textParts.length > 0) {
+    content.push({ type: 'text', text: textParts.join('') })
+  }
+
+  for (const toolCall of toolCalls.values()) {
+    let input: Record<string, unknown>
+    try {
+      input = safeParseToolInput(toolCall.args)
+    } catch (error) {
+      input = {
+        __parse_error: error instanceof Error ? error.message : 'Malformed tool input JSON',
+      }
+    }
+
+    if (Object.keys(input).length === 0 && !toolCall.args.trim()) {
+      input = {
+        __parse_error: `Tool arguments empty (likely truncated by max_tokens, stopReason=${stopReason})`,
+      }
+    }
+
+    content.push({
+      type: 'tool_use',
+      id: toolCall.id,
+      name: toolCall.name,
+      input,
+    })
+  }
+
+  if (content.some((block) => block.type === 'tool_use')) {
+    stopReason = 'tool_use'
+  }
+
+  return {
+    id: responseId,
+    content,
+    stopReason,
+    usage,
+    model,
+    reasoningContent,
+  }
+}
+
+function getStreamErrorDetails(streamErr: unknown): StreamErrorDetails {
+  const data = toRecord(streamErr)
+  const message = toErrorMessage(streamErr)
+  const anthropicPayload = parseAnthropicStreamErrorPayload(message)
+
+  return {
+    message,
+    status: toNumber(data.status),
+    requestId:
+      typeof data.request_id === 'string'
+        ? data.request_id
+        : typeof data.requestId === 'string'
+          ? data.requestId
+          : anthropicPayload?.requestId,
+    errorType: typeof data.error_type === 'string' ? data.error_type : anthropicPayload?.errorType,
+  }
+}
+
+function isTransientStreamError(errorDetails: StreamErrorDetails): boolean {
+  const transientTypes = ['overloaded_error', 'api_error']
+  const transientStatuses = [429, 503, 529]
+  if (errorDetails.errorType && transientTypes.includes(errorDetails.errorType)) return true
+  if (errorDetails.status && transientStatuses.includes(errorDetails.status)) return true
+  return false
+}
+
+function shouldSkipStreamFallback(apiType: string): boolean {
+  return apiType === 'anthropic_messages' || apiType === 'anthropic-deepseek'
+}
+
+function mapFinishReason(reason?: string): CompletionResponse['stopReason'] {
+  if (!reason) return 'end_turn'
+  if (reason === 'tool_use' || reason === 'tool_calls') return 'tool_use'
+  if (reason === 'max_tokens' || reason === 'length') return 'max_tokens'
+  return 'end_turn'
+}
+
+function safeParseToolInput(raw: string): Record<string, unknown> {
+  if (!raw.trim()) return {}
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {}
+  } catch {
+    throw new Error(
+      `Failed to parse tool input JSON (${raw.length} chars, likely truncated by max_tokens)`,
+    )
+  }
+}
+
+function extractUsage(value: unknown): CompletionResponse['usage'] | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const data = value as Record<string, unknown>
+  const input = toNumber(data.input) ?? toNumber(data.input_tokens)
+  const output = toNumber(data.output) ?? toNumber(data.output_tokens)
+  if (input === undefined && output === undefined) return undefined
+
+  return {
+    input: input ?? 0,
+    output: output ?? 0,
+    cacheWrite: toNumber(data.cacheWrite) ?? toNumber(data.cache_creation_input_tokens),
+    cacheRead: toNumber(data.cacheRead) ?? toNumber(data.cache_read_input_tokens),
+    reasoning: toNumber(data.reasoning) ?? toNumber(data.reasoning_tokens),
+  }
+}
+
+function toNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function toRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
+}
+
+function parseAnthropicStreamErrorPayload(
+  message: string,
+): { requestId?: string; errorType?: string } | undefined {
+  if (!message.startsWith('{')) {
+    return undefined
+  }
+
+  try {
+    const parsed = JSON.parse(message)
+    if (!parsed || typeof parsed !== 'object') {
+      return undefined
+    }
+
+    const data = parsed as Record<string, unknown>
+    const nested = toRecord(data.error)
+    const requestId = typeof data.request_id === 'string' ? data.request_id : undefined
+    const errorType = typeof nested.type === 'string' ? nested.type : undefined
+
+    if (!requestId && !errorType && data.type !== 'error') {
+      return undefined
+    }
+
+    return { requestId, errorType }
+  } catch {
+    return undefined
+  }
+}
+
 export class AgentLoop {
   private config: AgentLoopConfig
   private hooks: AgentLoopHooks
@@ -242,7 +517,12 @@ export class AgentLoop {
         continue
       }
 
-      const { toolResultBlocks, failedToolAttempts } = await this.executeToolCalls(response, ctx)
+      const { toolResultBlocks, failedToolAttempts } = await executeAgentLoopToolCalls({
+        response,
+        config: this.config,
+        hooks: this.hooks,
+        ctx,
+      })
       const processed = this.hooks.processToolResults
         ? await this.hooks.processToolResults(toolResultBlocks, failedToolAttempts, ctx)
         : { toolResultBlocks }
@@ -376,484 +656,239 @@ export class AgentLoop {
     request: CompletionRequest,
     ctx: LoopIterationContext,
   ): Promise<CompletionResponse> {
-    this.hooks.onCompletionStart?.(request, ctx)
-    const startedAt = Date.now()
+    return completeAgentLoopRequest({
+      config: this.config,
+      hooks: this.hooks,
+      request,
+      ctx,
+    })
+  }
+}
 
+interface CompleteAgentLoopRequestOptions {
+  config: AgentLoopConfig
+  hooks: AgentLoopHooks
+  request: CompletionRequest
+  ctx: LoopIterationContext
+}
+
+async function completeAgentLoopRequest({
+  config,
+  hooks,
+  request,
+  ctx,
+}: CompleteAgentLoopRequestOptions): Promise<CompletionResponse> {
+  hooks.onCompletionStart?.(request, ctx)
+  const startedAt = Date.now()
+
+  try {
+    const response =
+      config.stream === false
+        ? await config.adapter.complete({ ...request, stream: false })
+        : await completeWithStreamFallback({ config, hooks, request, ctx })
+
+    hooks.onCompletionEnd?.(request, response, Date.now() - startedAt, ctx)
+    return response
+  } catch (error) {
+    hooks.onCompletionError?.(request, error, Date.now() - startedAt, ctx)
+    throw error
+  }
+}
+
+async function completeWithStreamFallback({
+  config,
+  hooks,
+  request,
+  ctx,
+}: CompleteAgentLoopRequestOptions): Promise<CompletionResponse> {
+  const maxStreamRetries = 1
+  const maxTransientRetries = 3
+  let lastStreamErr: unknown
+  let transientAttempts = 0
+  let emptyStreamAttempts = 0
+
+  for (let attempt = 0; attempt <= maxStreamRetries + maxTransientRetries; attempt++) {
     try {
-      const response =
-        this.config.stream === false
-          ? await this.config.adapter.complete({ ...request, stream: false })
-          : await this.completeWithStreamFallback(request, ctx)
+      const streamed = await completeFromStream({
+        adapter: config.adapter,
+        request,
+        ctx,
+        onTextDelta: hooks.onTextDelta,
+      })
+      if (streamed.content.length === 0) {
+        if (emptyStreamAttempts < maxStreamRetries) {
+          emptyStreamAttempts++
+          config.logger.warn('llm_stream_empty_retry', {
+            sessionId: config.sessionId,
+            apiType: config.adapter.apiType,
+            attempt: emptyStreamAttempts,
+          })
+          continue
+        }
 
-      this.hooks.onCompletionEnd?.(request, response, Date.now() - startedAt, ctx)
-      return response
-    } catch (error) {
-      this.hooks.onCompletionError?.(request, error, Date.now() - startedAt, ctx)
-      throw error
+        if (!shouldSkipStreamFallback(config.adapter.apiType)) {
+          config.logger.warn('llm_stream_empty_fallback_to_complete', {
+            sessionId: config.sessionId,
+            apiType: config.adapter.apiType,
+          })
+          return await config.adapter.complete({ ...request, stream: false })
+        }
+
+        return streamed
+      }
+      return streamed
+    } catch (streamErr) {
+      lastStreamErr = streamErr
+      const errorDetails = getStreamErrorDetails(streamErr)
+
+      if (transientAttempts < maxTransientRetries && isTransientStreamError(errorDetails)) {
+        transientAttempts++
+        const delay = resolveTransientRetryDelay(config, transientAttempts)
+        config.logger.warn('llm_stream_transient_retry', {
+          sessionId: config.sessionId,
+          apiType: config.adapter.apiType,
+          error: errorDetails.message,
+          errorType: errorDetails.errorType,
+          status: errorDetails.status,
+          requestId: errorDetails.requestId,
+          attempt: transientAttempts,
+          maxRetries: maxTransientRetries,
+          delayMs: delay,
+        })
+        await new Promise((resolve) => setTimeout(resolve, delay))
+        continue
+      }
+
+      const fallbackSkipped = shouldSkipStreamFallback(config.adapter.apiType)
+      config.logger.warn('llm_stream_fallback_to_complete', {
+        sessionId: config.sessionId,
+        apiType: config.adapter.apiType,
+        error: errorDetails.message,
+        status: errorDetails.status,
+        requestId: errorDetails.requestId,
+        fallbackSkipped,
+      })
+      if (fallbackSkipped) {
+        throw streamErr
+      }
+
+      return await config.adapter.complete({ ...request, stream: false })
     }
   }
 
-  private async executeToolCalls(
-    response: CompletionResponse,
-    ctx: LoopIterationContext,
-  ): Promise<{ toolResultBlocks: ContentBlock[]; failedToolAttempts: FailedToolAttempt[] }> {
-    const toolResultBlocks: ContentBlock[] = []
-    const failedToolAttempts: FailedToolAttempt[] = []
+  throw lastStreamErr
+}
 
-    for (const block of response.content) {
-      if (block.type !== 'tool_use') continue
+function resolveTransientRetryDelay(config: AgentLoopConfig, attempt: number): number {
+  return config.transientRetryDelayMs?.(attempt) ?? Math.min(5_000 * 2 ** (attempt - 1), 60_000)
+}
 
-      this.hooks.onToolCallStart?.(block.name, block.id, block.input, ctx)
-      const startedAt = Date.now()
+interface AgentLoopToolExecutionResult {
+  toolResultBlocks: ContentBlock[]
+  failedToolAttempts: FailedToolAttempt[]
+}
 
-      const malformedInputError =
-        typeof block.input.__parse_error === 'string' ? block.input.__parse_error : undefined
+async function executeAgentLoopToolCalls(options: {
+  response: CompletionResponse
+  config: AgentLoopConfig
+  hooks: AgentLoopHooks
+  ctx: LoopIterationContext
+}): Promise<AgentLoopToolExecutionResult> {
+  const toolResultBlocks: ContentBlock[] = []
+  const failedToolAttempts: FailedToolAttempt[] = []
 
-      if (malformedInputError) {
-        const result = this.buildToolFailure(
-          `Tool input JSON was malformed (likely truncated by max_tokens). ${malformedInputError}. Please retry with shorter content or split into multiple calls.`,
-        )
-        toolResultBlocks.push(this.buildToolResultBlock(block.id, result))
-        this.hooks.onToolCallEnd?.(
-          block.name,
-          block.id,
-          block.input,
-          result,
-          Date.now() - startedAt,
-          ctx,
-        )
-        continue
-      }
+  for (const block of options.response.content) {
+    if (block.type !== 'tool_use') continue
 
-      if (!this.config.toolExecutor.has(block.name)) {
-        const result = this.buildToolFailure(`Unknown tool: ${block.name}`)
-        toolResultBlocks.push(this.buildToolResultBlock(block.id, result))
-        this.hooks.onToolCallEnd?.(
-          block.name,
-          block.id,
-          block.input,
-          result,
-          Date.now() - startedAt,
-          ctx,
-        )
-        continue
-      }
+    options.hooks.onToolCallStart?.(block.name, block.id, block.input, options.ctx)
+    const startedAt = Date.now()
 
-      let result: ToolExecutionResult
-      try {
-        result = await this.config.toolExecutor.execute(block.name, block.id, block.input)
-      } catch (error) {
-        const errorMessage = toErrorMessage(error)
-        result = {
-          success: false,
-          output: errorMessage,
-          outputSummary: `Tool execution failed: ${errorMessage.slice(0, 100)}`,
-        }
-      }
+    const malformedInputError =
+      typeof block.input.__parse_error === 'string' ? block.input.__parse_error : undefined
 
-      if (!result.success) {
-        failedToolAttempts.push({
-          toolUseId: block.id,
-          toolName: block.name,
-          input: block.input,
-          output: result.output,
-          outputSummary: result.outputSummary,
-        })
-      }
-
-      toolResultBlocks.push(this.buildToolResultBlock(block.id, result))
-      this.hooks.onToolCallEnd?.(
+    if (malformedInputError) {
+      const result = buildToolFailure(
+        `Tool input JSON was malformed (likely truncated by max_tokens). ${malformedInputError}. Please retry with shorter content or split into multiple calls.`,
+      )
+      toolResultBlocks.push(buildToolResultBlock(block.id, result))
+      options.hooks.onToolCallEnd?.(
         block.name,
         block.id,
         block.input,
         result,
         Date.now() - startedAt,
-        ctx,
+        options.ctx,
       )
+      continue
     }
 
-    return { toolResultBlocks, failedToolAttempts }
-  }
-
-  private buildToolResultBlock(toolUseId: string, result: ToolExecutionResult): ContentBlock {
-    return {
-      type: 'tool_result',
-      toolUseId,
-      content: result.output,
-      ...(result.contentItems && result.contentItems.length > 0
-        ? { contentItems: result.contentItems }
-        : {}),
-      isError: !result.success,
-      outputSummary: result.outputSummary,
+    if (!options.config.toolExecutor.has(block.name)) {
+      const result = buildToolFailure(`Unknown tool: ${block.name}`)
+      toolResultBlocks.push(buildToolResultBlock(block.id, result))
+      options.hooks.onToolCallEnd?.(
+        block.name,
+        block.id,
+        block.input,
+        result,
+        Date.now() - startedAt,
+        options.ctx,
+      )
+      continue
     }
-  }
 
-  private buildToolFailure(message: string): ToolExecutionResult {
-    return {
-      success: false,
-      output: message,
-      outputSummary: message,
+    let result: ToolExecutionResult
+    try {
+      result = await options.config.toolExecutor.execute(block.name, block.id, block.input)
+    } catch (error) {
+      const errorMessage = toErrorMessage(error)
+      result = {
+        success: false,
+        output: errorMessage,
+        outputSummary: `Tool execution failed: ${errorMessage.slice(0, 100)}`,
+      }
     }
-  }
 
-  private isTransientError(errorDetails: {
-    message: string
-    status?: number
-    errorType?: string
-  }): boolean {
-    const transientTypes = ['overloaded_error', 'api_error']
-    const transientStatuses = [429, 503, 529]
-    if (errorDetails.errorType && transientTypes.includes(errorDetails.errorType)) return true
-    if (errorDetails.status && transientStatuses.includes(errorDetails.status)) return true
-    return false
-  }
+    if (!result.success) {
+      failedToolAttempts.push({
+        toolUseId: block.id,
+        toolName: block.name,
+        input: block.input,
+        output: result.output,
+        outputSummary: result.outputSummary,
+      })
+    }
 
-  private transientRetryDelayMs(attempt: number): number {
-    return (
-      this.config.transientRetryDelayMs?.(attempt) ?? Math.min(5_000 * 2 ** (attempt - 1), 60_000)
+    toolResultBlocks.push(buildToolResultBlock(block.id, result))
+    options.hooks.onToolCallEnd?.(
+      block.name,
+      block.id,
+      block.input,
+      result,
+      Date.now() - startedAt,
+      options.ctx,
     )
   }
 
-  private async completeWithStreamFallback(
-    request: CompletionRequest,
-    ctx: LoopIterationContext,
-  ): Promise<CompletionResponse> {
-    const maxStreamRetries = 1
-    const maxTransientRetries = 3
-    let lastStreamErr: unknown
-    let transientAttempts = 0
-    let emptyStreamAttempts = 0
+  return { toolResultBlocks, failedToolAttempts }
+}
 
-    for (let attempt = 0; attempt <= maxStreamRetries + maxTransientRetries; attempt++) {
-      try {
-        const streamed = await this.completeFromStream(request, ctx)
-        if (streamed.content.length === 0) {
-          if (emptyStreamAttempts < maxStreamRetries) {
-            emptyStreamAttempts++
-            this.config.logger.warn('llm_stream_empty_retry', {
-              sessionId: this.config.sessionId,
-              apiType: this.config.adapter.apiType,
-              attempt: emptyStreamAttempts,
-            })
-            continue
-          }
-
-          // Non-Anthropic adapters: try non-streaming fallback
-          if (!this.shouldSkipStreamFallback(new Error('stream returned empty content'))) {
-            this.config.logger.warn('llm_stream_empty_fallback_to_complete', {
-              sessionId: this.config.sessionId,
-              apiType: this.config.adapter.apiType,
-            })
-            return await this.config.adapter.complete({ ...request, stream: false })
-          }
-
-          // Anthropic: return empty response, let agent loop handle via onEmptyResponse
-          return streamed
-        }
-        return streamed
-      } catch (streamErr) {
-        lastStreamErr = streamErr
-        const errorDetails = this.getStreamErrorDetails(streamErr)
-
-        if (transientAttempts < maxTransientRetries && this.isTransientError(errorDetails)) {
-          transientAttempts++
-          const delay = this.transientRetryDelayMs(transientAttempts)
-          this.config.logger.warn('llm_stream_transient_retry', {
-            sessionId: this.config.sessionId,
-            apiType: this.config.adapter.apiType,
-            error: errorDetails.message,
-            errorType: errorDetails.errorType,
-            status: errorDetails.status,
-            requestId: errorDetails.requestId,
-            attempt: transientAttempts,
-            maxRetries: maxTransientRetries,
-            delayMs: delay,
-          })
-          await new Promise((resolve) => setTimeout(resolve, delay))
-          continue
-        }
-
-        const fallbackSkipped = this.shouldSkipStreamFallback(streamErr)
-        this.config.logger.warn('llm_stream_fallback_to_complete', {
-          sessionId: this.config.sessionId,
-          apiType: this.config.adapter.apiType,
-          error: errorDetails.message,
-          status: errorDetails.status,
-          requestId: errorDetails.requestId,
-          fallbackSkipped,
-        })
-        if (fallbackSkipped) {
-          throw streamErr
-        }
-
-        return await this.config.adapter.complete({ ...request, stream: false })
-      }
-    }
-
-    throw lastStreamErr
+function buildToolResultBlock(toolUseId: string, result: ToolExecutionResult): ContentBlock {
+  return {
+    type: 'tool_result',
+    toolUseId,
+    content: result.output,
+    ...(result.contentItems && result.contentItems.length > 0
+      ? { contentItems: result.contentItems }
+      : {}),
+    isError: !result.success,
+    outputSummary: result.outputSummary,
   }
+}
 
-  private async completeFromStream(
-    request: CompletionRequest,
-    ctx: LoopIterationContext,
-  ): Promise<CompletionResponse> {
-    const stream = this.config.adapter.stream({ ...request, stream: true })
-    const turnId = generatePrefixedId('turn')
-    const responseId = generatePrefixedId('resp')
-
-    const textParts: string[] = []
-    const reasoningParts: string[] = []
-    const reasoningSignatureParts: string[] = []
-    const toolCalls = new Map<string, { id: string; name: string; args: string }>()
-
-    let currentToolId: string | null = null
-    let stopReason: CompletionResponse['stopReason'] = 'end_turn'
-    let usage = { input: 0, output: 0 }
-    let model = request.model ?? 'unknown'
-
-    for await (const event of stream) {
-      if (event.type === 'text_delta') {
-        const data = this.toRecord(event.data)
-        const delta = typeof data.text === 'string' ? data.text : ''
-        if (!delta) continue
-        textParts.push(delta)
-        this.hooks.onTextDelta?.(delta, { role: 'assistant', turnId }, ctx)
-        continue
-      }
-
-      if (event.type === 'reasoning_delta') {
-        const data = this.toRecord(event.data)
-        const delta = typeof data.text === 'string' ? data.text : ''
-        if (!delta) continue
-        reasoningParts.push(delta)
-        continue
-      }
-
-      if (event.type === 'reasoning_signature') {
-        const data = this.toRecord(event.data)
-        const signature = typeof data.signature === 'string' ? data.signature : ''
-        if (!signature) continue
-        reasoningSignatureParts.push(signature)
-        continue
-      }
-
-      if (event.type === 'tool_use_start') {
-        const data = this.toRecord(event.data)
-        const id = typeof data.id === 'string' ? data.id : generatePrefixedId('toolu')
-        const name = typeof data.name === 'string' ? data.name : 'unknown_tool'
-        currentToolId = id
-        toolCalls.set(id, { id, name, args: '' })
-        continue
-      }
-
-      if (event.type === 'tool_use_delta') {
-        const data = this.toRecord(event.data)
-        const chunk = typeof data.arguments === 'string' ? data.arguments : ''
-        if (!chunk) continue
-
-        const explicitId = typeof data.id === 'string' ? data.id : null
-        const targetId = explicitId ?? currentToolId
-        if (!targetId) continue
-
-        if (!toolCalls.has(targetId)) {
-          toolCalls.set(targetId, { id: targetId, name: 'unknown_tool', args: '' })
-        }
-
-        const existing = toolCalls.get(targetId)
-        if (existing) {
-          existing.args += chunk
-        }
-        continue
-      }
-
-      if (event.type === 'tool_use_end') {
-        const data = this.toRecord(event.data)
-        const endedId: string | null = typeof data.id === 'string' ? data.id : currentToolId
-        if (endedId) {
-          currentToolId = endedId === currentToolId ? null : currentToolId
-        }
-        continue
-      }
-
-      if (event.type === 'done') {
-        const data = this.toRecord(event.data)
-        stopReason = this.mapFinishReason(
-          typeof data.finishReason === 'string' ? data.finishReason : undefined,
-        )
-        usage = this.extractUsage(data.usage) ?? usage
-        if (typeof data.model === 'string') {
-          model = data.model
-        }
-        continue
-      }
-
-      if (event.type === 'error') {
-        const data = this.toRecord(event.data)
-        throw new Error(typeof data.message === 'string' ? data.message : 'Unknown streaming error')
-      }
-    }
-
-    const content: ContentBlock[] = []
-    const reasoningContent = reasoningParts.length > 0 ? reasoningParts.join('') : undefined
-    const reasoningSignature =
-      reasoningSignatureParts.length > 0 ? reasoningSignatureParts.join('') : undefined
-    if (
-      this.config.adapter.apiType === 'anthropic-deepseek' &&
-      reasoningContent &&
-      reasoningSignature
-    ) {
-      content.push({
-        type: 'thinking',
-        thinking: reasoningContent,
-        signature: reasoningSignature,
-      })
-    }
-
-    if (textParts.length > 0) {
-      content.push({ type: 'text', text: textParts.join('') })
-    }
-
-    for (const toolCall of toolCalls.values()) {
-      let input: Record<string, unknown>
-      try {
-        input = this.safeParseToolInput(toolCall.args)
-      } catch (error) {
-        input = {
-          __parse_error: error instanceof Error ? error.message : 'Malformed tool input JSON',
-        }
-      }
-
-      if (Object.keys(input).length === 0 && !toolCall.args.trim()) {
-        input = {
-          __parse_error: `Tool arguments empty (likely truncated by max_tokens, stopReason=${stopReason})`,
-        }
-      }
-
-      content.push({
-        type: 'tool_use',
-        id: toolCall.id,
-        name: toolCall.name,
-        input,
-      })
-    }
-
-    if (content.some((block) => block.type === 'tool_use')) {
-      stopReason = 'tool_use'
-    }
-
-    return {
-      id: responseId,
-      content,
-      stopReason,
-      usage,
-      model,
-      reasoningContent,
-    }
-  }
-
-  private mapFinishReason(reason?: string): CompletionResponse['stopReason'] {
-    if (!reason) return 'end_turn'
-    if (reason === 'tool_use' || reason === 'tool_calls') return 'tool_use'
-    if (reason === 'max_tokens' || reason === 'length') return 'max_tokens'
-    return 'end_turn'
-  }
-
-  private safeParseToolInput(raw: string): Record<string, unknown> {
-    if (!raw.trim()) return {}
-    try {
-      const parsed = JSON.parse(raw)
-      return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {}
-    } catch {
-      throw new Error(
-        `Failed to parse tool input JSON (${raw.length} chars, likely truncated by max_tokens)`,
-      )
-    }
-  }
-
-  private extractUsage(value: unknown): CompletionResponse['usage'] | undefined {
-    if (!value || typeof value !== 'object') return undefined
-    const data = value as Record<string, unknown>
-    const input = this.toNumber(data.input) ?? this.toNumber(data.input_tokens)
-    const output = this.toNumber(data.output) ?? this.toNumber(data.output_tokens)
-    if (input === undefined && output === undefined) return undefined
-
-    return {
-      input: input ?? 0,
-      output: output ?? 0,
-      cacheWrite: this.toNumber(data.cacheWrite) ?? this.toNumber(data.cache_creation_input_tokens),
-      cacheRead: this.toNumber(data.cacheRead) ?? this.toNumber(data.cache_read_input_tokens),
-      reasoning: this.toNumber(data.reasoning) ?? this.toNumber(data.reasoning_tokens),
-    }
-  }
-
-  private toNumber(value: unknown): number | undefined {
-    return typeof value === 'number' && Number.isFinite(value) ? value : undefined
-  }
-
-  private toRecord(value: unknown): Record<string, unknown> {
-    return value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
-  }
-
-  private getStreamErrorDetails(streamErr: unknown): {
-    message: string
-    status?: number
-    requestId?: string
-    errorType?: string
-  } {
-    const data = this.toRecord(streamErr)
-    const message = toErrorMessage(streamErr)
-    const anthropicPayload = this.parseAnthropicStreamErrorPayload(message)
-
-    return {
-      message,
-      status: this.toNumber(data.status),
-      requestId:
-        typeof data.request_id === 'string'
-          ? data.request_id
-          : typeof data.requestId === 'string'
-            ? data.requestId
-            : anthropicPayload?.requestId,
-      errorType:
-        typeof data.error_type === 'string' ? data.error_type : anthropicPayload?.errorType,
-    }
-  }
-
-  private shouldSkipStreamFallback(_streamErr: unknown): boolean {
-    if (
-      this.config.adapter.apiType === 'anthropic_messages' ||
-      this.config.adapter.apiType === 'anthropic-deepseek'
-    ) {
-      return true
-    }
-
-    return false
-  }
-
-  private parseAnthropicStreamErrorPayload(
-    message: string,
-  ): { requestId?: string; errorType?: string } | undefined {
-    if (!message.startsWith('{')) {
-      return undefined
-    }
-
-    try {
-      const parsed = JSON.parse(message)
-      if (!parsed || typeof parsed !== 'object') {
-        return undefined
-      }
-
-      const data = parsed as Record<string, unknown>
-      const nested = this.toRecord(data.error)
-      const requestId = typeof data.request_id === 'string' ? data.request_id : undefined
-      const errorType = typeof nested.type === 'string' ? nested.type : undefined
-
-      if (!requestId && !errorType && data.type !== 'error') {
-        return undefined
-      }
-
-      return { requestId, errorType }
-    } catch {
-      return undefined
-    }
+function buildToolFailure(message: string): ToolExecutionResult {
+  return {
+    success: false,
+    output: message,
+    outputSummary: message,
   }
 }

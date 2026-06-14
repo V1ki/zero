@@ -6,8 +6,8 @@ import type { Message, SystemConfig } from '@zero-os/shared'
 import { BashTool } from '../../tool/bash'
 import { ReadTool } from '../../tool/read'
 import { ToolRegistry } from '../../tool/registry'
-import { createTestProjectRoot } from './test-helpers'
 import { Session } from '../session'
+import { createTestProjectRoot } from './test-helpers'
 
 const API_KEY = 'sk-test-placeholder'
 const testProject = createTestProjectRoot('zero-session-memory-eval-')
@@ -130,7 +130,11 @@ describe('Session.evaluateSessionMemory', () => {
       }
     ).handleMessage = async (prompt) => {
       capturedPrompt = prompt
-      ;(session as unknown as { messages: Message[] }).messages.push(
+      ;(
+        session as unknown as {
+          conversation: { messages: Message[] }
+        }
+      ).conversation.messages.push(
         makeStoredMessage('user', prompt),
         makeStoredMessage('assistant', '无需记忆'),
       )
@@ -158,7 +162,6 @@ describe('Session.evaluateSessionMemory', () => {
       name: 'session-eval-test',
       agentInstruction: 'You are a helpful assistant. Reply briefly.',
     })
-
     ;(
       session as unknown as {
         handleMessage: () => Promise<Message[]>

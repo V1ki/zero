@@ -16,6 +16,8 @@ import type {
 import { BaseTool } from '../../tool/base'
 import { ToolRegistry } from '../../tool/registry'
 import { Agent, type AgentContext } from '../agent'
+import { createAgentLoopHooks } from '../agent-hooks'
+import { AgentTraceRecorder } from '../agent-trace'
 import type { QueuedMessage } from '../queue'
 import { buildTaskClosurePrompt } from '../task-closure'
 
@@ -1258,36 +1260,24 @@ describe('Agent task closure gate', () => {
     const registry = new ToolRegistry()
     const adapter = new MemoryNudgeAdapter('skip')
     const tracer = new Tracer()
-    const agent = new Agent(
-      { name: 'test-agent', agentInstruction: 'Test prompt' },
-      adapter,
-      registry,
-      createToolContext(),
-      { tracer },
-    )
+    const config = { name: 'test-agent', agentInstruction: 'Test prompt' }
+    const toolContext = createToolContext()
+    const obs = { tracer }
+    const traceRecorder = new AgentTraceRecorder({
+      sessionId: toolContext.sessionId,
+      agentName: config.name,
+      logger: toolContext.logger,
+      tracer,
+    })
 
     let interruptChecks = 0
     let drained = false
-    const hooks = (
-      agent as unknown as {
-        createHooks: (options: {
-          context: AgentContext
-          userMessage: string
-          onNewMessage?: (msg: Message) => void
-          onTextDelta?: (delta: string, meta: { role: 'assistant'; turnId: string }) => void
-          shouldInterrupt?: () => boolean
-          getQueuedMessages?: () => QueuedMessage[]
-          turnIndex: number
-          rootSpanId?: string
-          system: string
-          executionState: {
-            currentRequestId?: string
-            currentTraceSpanId?: string
-          }
-          requestPurposeRef: { current: import('@zero-os/observe').UsagePurpose }
-        }) => ReturnType<Agent['createHooks']>
-      }
-    ).createHooks({
+    const hooks = createAgentLoopHooks({
+      config,
+      adapter,
+      closureAdapter: adapter,
+      toolContext,
+      obs,
       context: createContext(registry),
       userMessage: '完成一个需要先查再总结的任务',
       shouldInterrupt: () => {
@@ -1299,9 +1289,9 @@ describe('Agent task closure gate', () => {
         return [{ content: '顺便核验更早一小时的窗口', timestamp: '2026-03-30T06:02:00.000Z' }]
       },
       turnIndex: 1,
-      system: 'Test prompt',
       executionState: {},
       requestPurposeRef: { current: 'agent_loop' },
+      traceRecorder,
     })
 
     const assistantMessage: Message = {

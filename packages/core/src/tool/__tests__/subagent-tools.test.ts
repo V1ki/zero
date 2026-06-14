@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { AgentControlHandle } from '@zero-os/shared'
-import { CloseAgentTool } from '../close-agent'
-import { WaitAgentTool } from '../wait-agent'
+import { CloseAgentTool, WaitAgentTool } from '../subagent'
 
 const ctx = {
   sessionId: 'test_subagent_tools_session',
@@ -14,7 +13,7 @@ const ctx = {
 }
 
 describe('WaitAgentTool', () => {
-  test('accepts wait_all alias', async () => {
+  test('waitAll routes to waitAll', async () => {
     let called: 'waitAny' | 'waitAll' | 'waitReady' | undefined
     const tool = new WaitAgentTool()
     const agentControl = {
@@ -38,7 +37,7 @@ describe('WaitAgentTool', () => {
         ...ctx,
         agentControl,
       },
-      { ids: ['agent_123'], wait_all: true },
+      { ids: ['agent_123'], waitAll: true },
     )
 
     expect(result.success).toBe(true)
@@ -85,7 +84,7 @@ describe('WaitAgentTool', () => {
 })
 
 describe('CloseAgentTool', () => {
-  test('accepts agent_id alias from spawn_agent output', async () => {
+  test('closes agent_id from spawn_agent output', async () => {
     let closedId: string | undefined
     const tool = new CloseAgentTool()
     const agentControl = {
@@ -106,5 +105,29 @@ describe('CloseAgentTool', () => {
 
     expect(result.success).toBe(true)
     expect(closedId).toBe('agent_456')
+  })
+
+  test('rejects legacy agentId aliases', async () => {
+    let closedId: string | undefined
+    const tool = new CloseAgentTool()
+    const agentControl = {
+      getTraceSpanId: () => undefined,
+      close: (agentId: string) => {
+        closedId = agentId
+        return { state: 'closed' }
+      },
+    } as unknown as AgentControlHandle
+
+    const result = await tool.run(
+      {
+        ...ctx,
+        agentControl,
+      },
+      { agentId: 'agent_456' },
+    )
+
+    expect(result.success).toBe(false)
+    expect(result.output).toContain('missing required fields: [agent_id]')
+    expect(closedId).toBeUndefined()
   })
 })

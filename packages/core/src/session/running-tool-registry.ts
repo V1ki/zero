@@ -1,10 +1,12 @@
 import type {
+  Message,
   RunningToolAbortRequestStatus,
   RunningToolHandle,
   RunningToolRegistry,
   RunningToolState,
   RunningToolTerminalMetadata,
 } from '@zero-os/shared'
+import { findToolNameByUseId } from './session-messages'
 
 class SessionRunningToolHandle implements RunningToolHandle {
   readonly toolUseId: string
@@ -76,4 +78,19 @@ export class SessionRunningToolRegistry implements RunningToolRegistry {
   get(toolUseId: string): RunningToolHandle | undefined {
     return this.entries.get(toolUseId)
   }
+}
+
+export function requestSessionRunningToolAbort(options: {
+  registry: SessionRunningToolRegistry
+  messages: Message[]
+  toolUseId: string
+  reason?: string
+}): RunningToolAbortRequestStatus {
+  const liveEntry = options.registry.get(options.toolUseId)
+  if (liveEntry) {
+    return liveEntry.requestAbort(options.reason)
+  }
+
+  const toolName = findToolNameByUseId(options.messages, options.toolUseId)
+  return toolName === 'bash' ? 'already_finished' : 'not_abortable'
 }

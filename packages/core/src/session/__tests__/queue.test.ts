@@ -17,8 +17,8 @@ import { Agent } from '../../agent/agent'
 import type { QueuedMessage } from '../../agent/queue'
 import { BaseTool } from '../../tool/base'
 import { ToolRegistry } from '../../tool/registry'
-import { createTestProjectRoot } from './test-helpers'
 import { Session } from '../session'
+import { createTestProjectRoot, setSessionAgentForTest } from './test-helpers'
 
 const API_KEY = 'sk-test-placeholder'
 const testProject = createTestProjectRoot('zero-session-queue-')
@@ -58,6 +58,14 @@ function createDeferred<T = void>() {
     resolve = res
   })
   return { promise, resolve }
+}
+
+function pushSessionMessages(session: Session, ...messages: Message[]): void {
+  ;(
+    session as unknown as {
+      conversation: { messages: Message[] }
+    }
+  ).conversation.messages.push(...messages)
 }
 
 function createTextResponse(id: string, text: string): CompletionResponse {
@@ -214,11 +222,9 @@ function attachCustomAgent(
   adapter: ProviderAdapter,
 ): void {
   session.initAgent({ name: 'queue-agent', agentInstruction: 'queue test agent' })
-  ;(session as unknown as { agent: Agent }).agent = new Agent(
-    { name: 'queue-agent', agentInstruction: 'queue test agent' },
-    adapter,
-    registry,
-    {
+  setSessionAgentForTest(
+    session,
+    new Agent({ name: 'queue-agent', agentInstruction: 'queue test agent' }, adapter, registry, {
       sessionId: session.data.id,
       workDir: join(testProject.projectRoot, '.zero', 'workspace', 'queue-agent'),
       logger: {
@@ -226,7 +232,7 @@ function attachCustomAgent(
         warn: () => {},
         error: () => {},
       },
-    },
+    }),
   )
 }
 
@@ -246,11 +252,7 @@ function makeMessage(
   }
 }
 
-function makeToolUseMessage(
-  sessionId: string,
-  toolUseId: string,
-  toolName = 'hold',
-): Message {
+function makeToolUseMessage(sessionId: string, toolUseId: string, toolName = 'hold'): Message {
   return {
     id: generateId(),
     sessionId,
@@ -341,21 +343,7 @@ describe('Session queue handling', () => {
     const release = createDeferred<void>()
     let shouldInterrupt: (() => boolean) | undefined
     let getQueuedMessages: (() => QueuedMessage[]) | undefined
-    ;(
-      session as unknown as {
-        agent: {
-          run: (
-            context: unknown,
-            userMessage: string,
-            images: unknown,
-            onNewMessage?: (message: Message) => void,
-            onTextDelta?: unknown,
-            shouldInterrupt?: () => boolean,
-            getQueuedMessages?: () => QueuedMessage[],
-          ) => Promise<Message[]>
-        }
-      }
-    ).agent = {
+    setSessionAgentForTest(session, {
       run: async (
         _context: unknown,
         _userMessage: string,
@@ -371,7 +359,7 @@ describe('Session queue handling', () => {
         await release.promise
         return []
       },
-    }
+    })
 
     const turnPromise = session.handleMessage('start work')
     await ready.promise
@@ -458,22 +446,7 @@ describe('Session queue handling', () => {
     restored.initAgent({ name: 'queue-agent', agentInstruction: 'queue test agent' })
 
     const turnIndexes: number[] = []
-    ;(
-      restored as unknown as {
-        agent: {
-          run: (
-            context: unknown,
-            userMessage: string,
-            images: unknown,
-            onNewMessage?: (message: Message) => void,
-            onTextDelta?: unknown,
-            shouldInterrupt?: () => boolean,
-            getQueuedMessages?: () => QueuedMessage[],
-            requestLogMeta?: { turnIndex?: number; userMessageEntry?: Message },
-          ) => Promise<Message[]>
-        }
-      }
-    ).agent = {
+    setSessionAgentForTest(restored, {
       run: async (
         _context: unknown,
         userMessage: string,
@@ -491,7 +464,7 @@ describe('Session queue handling', () => {
         onNewMessage?.(assistant)
         return [user, assistant]
       },
-    }
+    })
 
     await restored.handleMessage('next turn')
 
@@ -519,22 +492,7 @@ describe('Session queue handling', () => {
     restored.initAgent({ name: 'queue-agent', agentInstruction: 'queue test agent' })
 
     const turnIndexes: number[] = []
-    ;(
-      restored as unknown as {
-        agent: {
-          run: (
-            context: unknown,
-            userMessage: string,
-            images: unknown,
-            onNewMessage?: (message: Message) => void,
-            onTextDelta?: unknown,
-            shouldInterrupt?: () => boolean,
-            getQueuedMessages?: () => QueuedMessage[],
-            requestLogMeta?: { turnIndex?: number; userMessageEntry?: Message },
-          ) => Promise<Message[]>
-        }
-      }
-    ).agent = {
+    setSessionAgentForTest(restored, {
       run: async (
         _context: unknown,
         userMessage: string,
@@ -552,7 +510,7 @@ describe('Session queue handling', () => {
         onNewMessage?.(assistant)
         return [user, assistant]
       },
-    }
+    })
 
     await restored.handleMessage('next turn')
 
@@ -572,7 +530,12 @@ describe('Session queue handling', () => {
         makeMessage(seed.data.id, 'user', 'message', 'first turn'),
         makeMessage(seed.data.id, 'assistant', 'message', 'reply'),
         {
-          ...makeMessage(seed.data.id, 'user', 'control', '<system_notice>continue</system_notice>'),
+          ...makeMessage(
+            seed.data.id,
+            'user',
+            'control',
+            '<system_notice>continue</system_notice>',
+          ),
           controlKind: 'task_closure',
         },
       ],
@@ -583,22 +546,7 @@ describe('Session queue handling', () => {
     restored.initAgent({ name: 'queue-agent', agentInstruction: 'queue test agent' })
 
     const turnIndexes: number[] = []
-    ;(
-      restored as unknown as {
-        agent: {
-          run: (
-            context: unknown,
-            userMessage: string,
-            images: unknown,
-            onNewMessage?: (message: Message) => void,
-            onTextDelta?: unknown,
-            shouldInterrupt?: () => boolean,
-            getQueuedMessages?: () => QueuedMessage[],
-            requestLogMeta?: { turnIndex?: number; userMessageEntry?: Message },
-          ) => Promise<Message[]>
-        }
-      }
-    ).agent = {
+    setSessionAgentForTest(restored, {
       run: async (
         _context: unknown,
         userMessage: string,
@@ -616,7 +564,7 @@ describe('Session queue handling', () => {
         onNewMessage?.(assistant)
         return [user, assistant]
       },
-    }
+    })
 
     await restored.handleMessage('next turn')
 
@@ -630,22 +578,7 @@ describe('Session queue handling', () => {
     session.initAgent({ name: 'queue-agent', agentInstruction: 'queue test agent' })
 
     let capturedUserMessage: Message | undefined
-    ;(
-      session as unknown as {
-        agent: {
-          run: (
-            context: unknown,
-            userMessage: string,
-            images: unknown,
-            onNewMessage?: (message: Message) => void,
-            onTextDelta?: unknown,
-            shouldInterrupt?: () => boolean,
-            getQueuedMessages?: () => QueuedMessage[],
-            requestLogMeta?: { turnIndex?: number; userMessageEntry?: Message },
-          ) => Promise<Message[]>
-        }
-      }
-    ).agent = {
+    setSessionAgentForTest(session, {
       run: async (
         _context: unknown,
         _userMessage: string,
@@ -662,7 +595,7 @@ describe('Session queue handling', () => {
         onNewMessage?.(assistant)
         return capturedUserMessage ? [capturedUserMessage, assistant] : [assistant]
       },
-    }
+    })
 
     await session.handleMessage('prebuilt user message')
 
@@ -690,19 +623,7 @@ describe('Session queue handling', () => {
     session.initAgent({ name: 'queue-agent', agentInstruction: 'queue test agent' })
     const assistantToolUseMessage = makeToolUseMessage(session.data.id, 'call_hold_1')
     const toolResultMessage = makeToolResultMessage(session.data.id, 'call_hold_1', 'tool result')
-
-    ;(
-      session as unknown as {
-        agent: {
-          run: (
-            context: unknown,
-            userMessage: string,
-            images: unknown,
-            onNewMessage?: (message: Message) => void,
-          ) => Promise<Message[]>
-        }
-      }
-    ).agent = {
+    setSessionAgentForTest(session, {
       run: async (
         _context: unknown,
         userMessage: string,
@@ -711,12 +632,16 @@ describe('Session queue handling', () => {
       ) => {
         const userMessageForThisTurn = makeMessage(session.data.id, 'user', 'message', userMessage)
         onNewMessage?.(userMessageForThisTurn)
-        completedTurnMessages.push(userMessageForThisTurn, assistantToolUseMessage, toolResultMessage)
+        completedTurnMessages.push(
+          userMessageForThisTurn,
+          assistantToolUseMessage,
+          toolResultMessage,
+        )
         onNewMessage?.(assistantToolUseMessage)
         onNewMessage?.(toolResultMessage)
         throw new Error('provider overloaded')
       },
-    }
+    })
 
     let error: unknown
     try {
@@ -729,9 +654,7 @@ describe('Session queue handling', () => {
     expect(session.getMessages()).toEqual(completedTurnMessages)
 
     const rollbackUpdate = events.find(
-      (event) =>
-        event.topic === 'session:update' &&
-        event.data.event === 'message_partial_failure',
+      (event) => event.topic === 'session:update' && event.data.event === 'message_partial_failure',
     )
     expect(rollbackUpdate?.data.event).toBe('message_partial_failure')
     expect(rollbackUpdate?.data.sessionId).toBe(session.data.id)
@@ -757,25 +680,18 @@ describe('Session queue handling', () => {
 
     const userMessage = makeMessage(session.data.id, 'user', 'message', 'hello')
     const queuedMessage = makeMessage(session.data.id, 'user', 'queued', 'queued follow-up')
-
-    ;(
-      session as unknown as {
-        agent: {
-          run: (
-            context: unknown,
-            userMessage: string,
-            images: unknown,
-            onNewMessage?: (message: Message) => void,
-          ) => Promise<Message[]>
-        }
-      }
-    ).agent = {
-      run: async (_context: unknown, _userMessage: string, _images: unknown, onNewMessage?: (message: Message) => void) => {
+    setSessionAgentForTest(session, {
+      run: async (
+        _context: unknown,
+        _userMessage: string,
+        _images: unknown,
+        onNewMessage?: (message: Message) => void,
+      ) => {
         onNewMessage?.(userMessage)
         onNewMessage?.(queuedMessage)
         throw new Error('provider overloaded')
       },
-    }
+    })
 
     let error: unknown
     try {
@@ -801,7 +717,7 @@ describe('Session queue handling', () => {
     })
     const first = makeMessage(session.data.id, 'user', 'message', 'keep me')
     const second = makeMessage(session.data.id, 'user', 'control', 'remove me')
-    ;(session as unknown as { messages: Message[] }).messages.push(first, second)
+    pushSessionMessages(session, first, second)
 
     const result = session.rollbackTailMessages(1)
 
@@ -841,7 +757,7 @@ describe('Session queue handling', () => {
       ...makeMessage(session.data.id, 'user', 'control', 'remove empty retry'),
       controlKind: 'empty_retry' as const,
     }
-    ;(session as unknown as { messages: Message[] }).messages.push(first, second)
+    pushSessionMessages(session, first, second)
 
     const result = session.rollbackTailMessages(1, {
       dryRun: false,
@@ -866,8 +782,7 @@ describe('Session queue handling', () => {
     expect(sessionDb.loadSessionMessages(session.data.id)).toEqual([first])
     expect(
       events.find(
-        (event) =>
-          event.topic === 'session:update' && event.data.event === 'message_tail_rollback',
+        (event) => event.topic === 'session:update' && event.data.event === 'message_tail_rollback',
       ),
     ).toMatchObject({
       data: {
@@ -884,7 +799,7 @@ describe('Session queue handling', () => {
       projectRoot: testProject.projectRoot,
     })
     const message = makeMessage(session.data.id, 'user', 'message', 'keep me')
-    ;(session as unknown as { messages: Message[] }).messages.push(message)
+    pushSessionMessages(session, message)
     ;(session as unknown as { isTurnInProgress: () => boolean }).isTurnInProgress = () => true
 
     const result = session.rollbackTailMessages(1, { dryRun: false })
@@ -922,18 +837,7 @@ describe('Session queue handling', () => {
 
     const ready = createDeferred<void>()
     const release = createDeferred<void>()
-    ;(
-      session as unknown as {
-        agent: {
-          run: (
-            context: unknown,
-            userMessage: string,
-            images: unknown,
-            onNewMessage?: (message: Message) => void,
-          ) => Promise<Message[]>
-        }
-      }
-    ).agent = {
+    setSessionAgentForTest(session, {
       run: async (
         _context: unknown,
         userMessage: string,
@@ -945,7 +849,7 @@ describe('Session queue handling', () => {
         await release.promise
         return []
       },
-    }
+    })
 
     const turnPromise = session.handleMessage('start work')
     await ready.promise

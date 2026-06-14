@@ -307,6 +307,60 @@ describe('SpawnAgentTool', () => {
     })
   })
 
+  test('rejects unknown sub-agent roles instead of treating them as instructions', async () => {
+    const registry = createToolRegistry()
+    const tool = new SpawnAgentTool(createStubRouter(new StaticResponseAdapter()), registry)
+    let spawned = false
+    const agentControl = {
+      spawn: () => {
+        spawned = true
+        return { agentId: 'agent_ignored', label: 'Ignored' }
+      },
+    } as unknown as AgentControlHandle
+
+    const result = await tool.run(
+      {
+        ...ctx,
+        agentControl,
+      },
+      {
+        instruction: 'Inspect the workspace.',
+        role: 'missing-role',
+      },
+    )
+
+    expect(result.success).toBe(false)
+    expect(result.output).toBe('Unknown sub-agent role: missing-role')
+    expect(spawned).toBe(false)
+  })
+
+  test('uses agentInstruction for custom sub-agent prompts', async () => {
+    const registry = createToolRegistry()
+    const tool = new SpawnAgentTool(createStubRouter(new StaticResponseAdapter()), registry)
+    let receivedPrompt = ''
+    const agentControl = {
+      spawn: (_agent: unknown, context: { systemPrompt: string }) => {
+        receivedPrompt = context.systemPrompt
+        return { agentId: 'agent_custom', label: 'CustomAgent' }
+      },
+    } as unknown as AgentControlHandle
+
+    const result = await tool.run(
+      {
+        ...ctx,
+        agentControl,
+      },
+      {
+        instruction: 'Inspect the workspace.',
+        label: 'CustomAgent',
+        agentInstruction: 'Use a custom investigation style.',
+      },
+    )
+
+    expect(result.success).toBe(true)
+    expect(receivedPrompt).toContain('Use a custom investigation style.')
+  })
+
   test('filters blocked tools from explicit allowlists', () => {
     const registry = createToolRegistry()
     registry.register(new NamedTool('spawn_agent'))

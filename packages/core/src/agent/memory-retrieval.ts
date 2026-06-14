@@ -1,6 +1,9 @@
-import { type RetrievedMemoryMatch, runMemoryRetrievalAgentDetailed } from '@zero-os/memory'
-import { computeCost } from '@zero-os/model'
-import type { ProviderAdapter } from '@zero-os/model'
+import {
+  type MemoryRetrievalAgentRun,
+  type RetrievedMemoryMatch,
+  runMemoryRetrievalAgentDetailed,
+} from '@zero-os/memory'
+import { type ProviderAdapter, computeCost } from '@zero-os/model'
 import type { Tracer } from '@zero-os/observe'
 import type {
   LoopRunner,
@@ -32,15 +35,79 @@ interface RetrieveMemoriesWithDecisionOptions {
   previouslyInjectedIds?: Map<string, string>
   logger: ToolLogger
   failureEvent: string
-  trace?: {
-    tracer?: Pick<Tracer, 'startSpan' | 'updateSpan' | 'endSpan' | 'getSpan'>
-    agentName?: string
-    providerName?: string
-    modelLabel?: string
-    pricing?: ModelPricing
-    secretFilter?: SecretFilter
-    spanName: string
-    metadata?: Record<string, unknown>
+  trace?: MemoryRetrievalTraceOptions
+}
+
+export interface MemoryRetrievalTraceOptions {
+  tracer?: Pick<Tracer, 'startSpan' | 'updateSpan' | 'endSpan' | 'getSpan'>
+  agentName?: string
+  providerName?: string
+  modelLabel?: string
+  pricing?: ModelPricing
+  secretFilter?: SecretFilter
+  spanName: string
+  metadata?: Record<string, unknown>
+}
+
+export async function retrieveMemoriesWithDecision({
+  adapter,
+  sessionId,
+  reasoningEffort,
+  memoryRetriever,
+  identitySummary = '',
+  userMessage,
+  previouslyInjectedIds,
+  logger,
+  failureEvent,
+  trace,
+}: RetrieveMemoriesWithDecisionOptions): Promise<RetrievedMemoryMatch[] | undefined> {
+  if (!memoryRetriever) return undefined
+  if (userMessage.trim().length < 5) return undefined
+
+  const traceSpanId = startMemoryRetrievalTrace(sessionId, trace)
+
+  try {
+    const result = await runMemoryRetrievalAgentDetailed({
+      runLoop: createLoopRunner(adapter, sessionId, logger, reasoningEffort),
+      memoryRetriever: {
+        retrieve: (query, options) =>
+          memoryRetriever.retrieve(query, {
+            ...options,
+            sessionId,
+          }),
+        retrieveScored: memoryRetriever.retrieveScored
+          ? (query, options) =>
+              memoryRetriever.retrieveScored?.(query, {
+                ...options,
+                sessionId,
+              }) ?? Promise.resolve([])
+          : undefined,
+      },
+      identitySummary,
+      userMessage,
+      previouslyInjectedIds,
+      config: {
+        topN: CONTEXT_PARAMS.retrieval.topN,
+        confidenceThreshold: CONTEXT_PARAMS.retrieval.confidenceThreshold,
+        minScore: CONTEXT_PARAMS.retrieval.minScore,
+        perMemoryMaxTokens: CONTEXT_PARAMS.retrieval.perMemoryMaxTokens,
+        maxSelectedMemories: CONTEXT_PARAMS.retrieval.agentMaxSelectedMemories,
+        agentMaxIterations: CONTEXT_PARAMS.retrieval.agentMaxIterations,
+        agentMaxOutputTokens: CONTEXT_PARAMS.retrieval.agentMaxOutputTokens,
+      },
+    })
+
+    recordMemoryRetrievalTraceResult({ trace, traceSpanId, userMessage, result })
+
+    return result.memories
+  } catch (error) {
+    recordMemoryRetrievalTraceError({ trace, traceSpanId, error })
+    logger.warn(failureEvent, {
+      message: error instanceof Error ? error.message : String(error),
+    })
+    return undefined
+  } finally {
+    finishMemoryRetrievalTrace(trace, traceSpanId)
   }
 }
 
@@ -121,147 +188,92 @@ export function createLoopRunner(
   }
 }
 
-export async function retrieveMemoriesWithDecision({
-  adapter,
-  sessionId,
-  reasoningEffort,
-  memoryRetriever,
-  identitySummary = '',
-  userMessage,
-  previouslyInjectedIds,
-  logger,
-  failureEvent,
-  trace,
-}: RetrieveMemoriesWithDecisionOptions): Promise<RetrievedMemoryMatch[] | undefined> {
-  if (!memoryRetriever) return undefined
-  if (userMessage.trim().length < 5) return undefined
-
-  const traceSpan = trace?.tracer?.startSpan(sessionId, trace.spanName, undefined, {
+function startMemoryRetrievalTrace(
+  sessionId: string,
+  trace: MemoryRetrievalTraceOptions | undefined,
+): string | undefined {
+  return trace?.tracer?.startSpan(sessionId, trace.spanName, undefined, {
     kind: 'llm_request',
     agentName: trace.agentName,
     metadata: {
       purpose: 'memory_retrieval_decision',
       ...trace.metadata,
     },
+  })?.id
+}
+
+function recordMemoryRetrievalTraceResult(options: {
+  trace: MemoryRetrievalTraceOptions | undefined
+  traceSpanId: string | undefined
+  userMessage: string
+  result: MemoryRetrievalAgentRun
+}): void {
+  const { result, trace, traceSpanId } = options
+  if (!traceSpanId) return
+
+  const safeUserMessage = sanitizeText(options.userMessage, trace?.secretFilter)
+  const safeFinalText = sanitizeText(result.finalText, trace?.secretFilter)
+  const selectedMemories = result.selectedMemories.map((memory) => ({
+    ...memory,
+    title: sanitizeText(memory.title, trace?.secretFilter),
+  }))
+
+  trace?.tracer?.updateSpan(traceSpanId, {
+    data: {
+      memoryRetrievalDecision: {
+        model: trace?.modelLabel ?? 'unknown',
+        provider: trace?.providerName ?? 'unknown',
+        prompt: safeUserMessage,
+        response: safeFinalText,
+        need: result.queries.length > 0,
+        queries: result.queries,
+        tokens: result.usage,
+        cost: computeCost(result.usage, trace?.pricing),
+        durationMs: result.durationMs,
+        searches: sanitizeSearches(result.searches, trace?.secretFilter),
+        selectedMemoryIds: result.selectedMemoryIds,
+        selectedMemories,
+        usedFallbackSelection: result.usedFallbackSelection,
+      },
+    },
+    metadata: {
+      need: result.queries.length > 0,
+      queryCount: result.queries.length,
+      searchCount: result.searches.length,
+      selectedCount: result.selectedMemoryIds.length,
+    },
   })
-  const traceSpanId = traceSpan?.id
+}
 
-  try {
-    const result = await runMemoryRetrievalAgentDetailed({
-      runLoop: createLoopRunner(adapter, sessionId, logger, reasoningEffort),
-      memoryRetriever: {
-        retrieve: (query, options) =>
-          memoryRetriever.retrieve(query, {
-            ...options,
-            sessionId,
-          }),
-        retrieveScored: memoryRetriever.retrieveScored
-          ? (query, options) =>
-              memoryRetriever.retrieveScored?.(query, {
-                ...options,
-                sessionId,
-              }) ?? Promise.resolve([])
-          : undefined,
-      },
-      identitySummary,
-      userMessage,
-      previouslyInjectedIds,
-      config: {
-        topN: CONTEXT_PARAMS.retrieval.topN,
-        confidenceThreshold: CONTEXT_PARAMS.retrieval.confidenceThreshold,
-        minScore: CONTEXT_PARAMS.retrieval.minScore,
-        perMemoryMaxTokens: CONTEXT_PARAMS.retrieval.perMemoryMaxTokens,
-        maxSelectedMemories: CONTEXT_PARAMS.retrieval.agentMaxSelectedMemories,
-        agentMaxIterations: CONTEXT_PARAMS.retrieval.agentMaxIterations,
-        agentMaxOutputTokens: CONTEXT_PARAMS.retrieval.agentMaxOutputTokens,
-      },
-    })
+function recordMemoryRetrievalTraceError(options: {
+  trace: MemoryRetrievalTraceOptions | undefined
+  traceSpanId: string | undefined
+  error: unknown
+}): void {
+  if (!options.traceSpanId) return
+  options.trace?.tracer?.updateSpan(options.traceSpanId, {
+    metadata: {
+      error: options.error instanceof Error ? options.error.message : String(options.error),
+    },
+  })
+  options.trace?.tracer?.endSpan(options.traceSpanId, 'error')
+}
 
-    const safeUserMessage = sanitizeText(userMessage, trace?.secretFilter)
-    const safeFinalText = sanitizeText(result.finalText, trace?.secretFilter)
-    const selectedMemories = result.selectedMemories.map((memory) => ({
-      ...memory,
-      title: sanitizeText(memory.title, trace?.secretFilter),
-    }))
-
-    if (traceSpanId) {
-      trace?.tracer?.updateSpan(traceSpanId, {
-        data: {
-          memoryRetrievalDecision: {
-            model: trace?.modelLabel ?? 'unknown',
-            provider: trace?.providerName ?? 'unknown',
-            prompt: safeUserMessage,
-            response: safeFinalText,
-            need: result.queries.length > 0,
-            queries: result.queries,
-            tokens: result.usage,
-            cost: computeCost(result.usage, trace?.pricing),
-            durationMs: result.durationMs,
-            searches: sanitizeSearches(result.searches, trace?.secretFilter),
-            selectedMemoryIds: result.selectedMemoryIds,
-            selectedMemories,
-            usedFallbackSelection: result.usedFallbackSelection,
-          },
-        },
-        metadata: {
-          need: result.queries.length > 0,
-          queryCount: result.queries.length,
-          searchCount: result.searches.length,
-          selectedCount: result.selectedMemoryIds.length,
-        },
-      })
-    }
-
-    return result.memories
-  } catch (error) {
-    if (traceSpanId) {
-      trace?.tracer?.updateSpan(traceSpanId, {
-        metadata: {
-          error: error instanceof Error ? error.message : String(error),
-        },
-      })
-      trace?.tracer?.endSpan(traceSpanId, 'error')
-    }
-
-    logger.warn(failureEvent, {
-      message: error instanceof Error ? error.message : String(error),
-    })
-    return undefined
-  } finally {
-    if (traceSpanId) {
-      const current = trace?.tracer?.getSpan?.(traceSpanId)
-      if (current && !current.endTime) {
-        trace?.tracer?.endSpan(traceSpanId, 'success')
-      }
-    }
+function finishMemoryRetrievalTrace(
+  trace: MemoryRetrievalTraceOptions | undefined,
+  traceSpanId: string | undefined,
+): void {
+  if (!traceSpanId) return
+  const current = trace?.tracer?.getSpan?.(traceSpanId)
+  if (current && !current.endTime) {
+    trace?.tracer?.endSpan(traceSpanId, 'success')
   }
 }
 
 function sanitizeSearches(
-  searches: Array<{
-    query: string
-    mode: 'scored' | 'basic'
-    options: {
-      topN: number
-      confidenceThreshold: number
-      minScore: number
-    }
-    resultCount: number
-    results: Array<{
-      id: string
-      type: string
-      title: string
-      contentPreview: string
-      score: number
-      scoreBreakdown: {
-        keyword: number
-        recency: number
-        vector?: number
-      }
-    }>
-  }>,
+  searches: MemoryRetrievalAgentRun['searches'],
   secretFilter?: SecretFilter,
-) {
+): MemoryRetrievalAgentRun['searches'] {
   return searches.map((search) => ({
     ...search,
     query: sanitizeText(search.query, secretFilter),

@@ -5,14 +5,17 @@ import { ModelRouter } from '@zero-os/model'
 import type { Message, SystemConfig } from '@zero-os/shared'
 import { BaseTool } from '../../tool/base'
 import { BashTool } from '../../tool/bash'
-import { MemoryReadTool } from '../../tool/memory-read'
-import { MemorySearchTool } from '../../tool/memory-search'
+import { MemoryReadTool, MemorySearchTool } from '../../tool/memory'
 import { ReadTool } from '../../tool/read'
 import { ReadImageTool } from '../../tool/read-image'
 import { ToolRegistry } from '../../tool/registry'
 import { SessionManager } from '../manager'
 import { Session } from '../session'
-import { createTestProjectRoot } from './test-helpers'
+import {
+  createTestProjectRoot,
+  getSessionAgentForTest,
+  setSessionAgentForTest,
+} from './test-helpers'
 
 const API_KEY = 'sk-c6c02cbd0c25473f97f9be0da6070f6d'
 const CLAUDE_OAUTH_JSON = JSON.stringify({
@@ -221,38 +224,23 @@ describe('Session', () => {
       | undefined
     let capturedImages: unknown
     let capturedUserMessage: Message | undefined
-    ;(
-      session as unknown as {
-        agent: {
-          run: (
-            context: { imageDelegationFiles?: Array<{ path: string; mediaType: string }> },
-            userMessage: string,
-            images: unknown,
-            onNewMessage?: (message: Message) => void,
-            onTextDelta?: unknown,
-            shouldInterrupt?: unknown,
-            getQueuedMessages?: unknown,
-            requestLogMeta?: { userMessageEntry?: Message },
-          ) => Promise<Message[]>
-        }
-      }
-    ).agent = {
+    setSessionAgentForTest(session, {
       run: async (
-        context,
-        _userMessage,
-        images,
-        _onNewMessage,
-        _onTextDelta,
-        _shouldInterrupt,
-        _getQueuedMessages,
-        requestLogMeta,
+        context: { imageDelegationFiles?: Array<{ path: string; mediaType: string }> },
+        _userMessage: string,
+        images: unknown,
+        _onNewMessage?: (message: Message) => void,
+        _onTextDelta?: unknown,
+        _shouldInterrupt?: unknown,
+        _getQueuedMessages?: unknown,
+        requestLogMeta?: { userMessageEntry?: Message },
       ) => {
         capturedContext = context
         capturedImages = images
         capturedUserMessage = requestLogMeta?.userMessageEntry
         return []
       },
-    }
+    })
 
     await session.handleMessage('', {
       images: [
@@ -348,17 +336,13 @@ describe('Session', () => {
       agentInstruction: 'You are a helpful assistant. Reply briefly.',
     })
 
-    const agent = (
-      session as unknown as {
-        agent: {
-          closureAdapter: unknown
-          obs?: {
-            closureModelLabel?: string
-            closureProviderName?: string
-          }
-        } | null
+    const agent = getSessionAgentForTest<{
+      closureAdapter: unknown
+      obs?: {
+        closureModelLabel?: string
+        closureProviderName?: string
       }
-    ).agent
+    }>(session)
     expect(agent).toBeDefined()
     expect(agent?.closureAdapter).toBe(router.resolveModel('openai-codex/gpt-5.4-medium')?.adapter)
     expect(agent?.obs?.closureModelLabel).toBe('openai-codex/gpt-5.4-medium')
@@ -378,16 +362,12 @@ describe('Session', () => {
       agentInstruction: 'You are a helpful assistant. Reply briefly.',
     })
 
-    const agent = (
-      session as unknown as {
-        agent: {
-          contextCompactionAdapter: unknown
-          obs?: {
-            contextCompactionModelLabel?: string
-          }
-        } | null
+    const agent = getSessionAgentForTest<{
+      contextCompactionAdapter: unknown
+      obs?: {
+        contextCompactionModelLabel?: string
       }
-    ).agent
+    }>(session)
     expect(agent).toBeDefined()
     expect(agent?.contextCompactionAdapter).toBe(
       router.resolveModel('openai-codex/gpt-5.4-medium')?.adapter,

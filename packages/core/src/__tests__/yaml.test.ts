@@ -63,11 +63,7 @@ describe('readStringArray', () => {
   })
 
   it('filters out non-string elements from the array', () => {
-    expect(readStringArray({ tags: ['a', 42, 'b', true, 'c'] }, 'tags')).toEqual([
-      'a',
-      'b',
-      'c',
-    ])
+    expect(readStringArray({ tags: ['a', 42, 'b', true, 'c'] }, 'tags')).toEqual(['a', 'b', 'c'])
   })
 
   it('filters out empty and whitespace-only strings', () => {

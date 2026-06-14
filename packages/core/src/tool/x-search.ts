@@ -1,6 +1,12 @@
 import type { ToolContext, ToolResult } from '@zero-os/shared'
 import { BaseTool } from './base'
 
+const DEFAULT_XAI_BASE_URL = 'https://api.x.ai/v1'
+const DEFAULT_X_SEARCH_MODEL = 'grok-4.20-reasoning'
+const DEFAULT_TIMEOUT_MS = 180_000
+const DEFAULT_MAX_RETRIES = 2
+const MAX_HANDLES = 10
+
 export interface XSearchCredential {
   bearerToken: string
   authorizationScheme?: string
@@ -32,11 +38,17 @@ interface XSearchToolOptions {
   maxRetries?: number
 }
 
-const DEFAULT_XAI_BASE_URL = 'https://api.x.ai/v1'
-const DEFAULT_X_SEARCH_MODEL = 'grok-4.20-reasoning'
-const DEFAULT_TIMEOUT_MS = 180_000
-const DEFAULT_MAX_RETRIES = 2
-const MAX_HANDLES = 10
+interface PreparedXSearchRequest {
+  model: string
+  payload: Record<string, unknown>
+}
+
+interface XSearchClientOptions {
+  fetchFn: typeof fetch
+  defaultBaseUrl: string
+  timeoutMs: number
+  maxRetries: number
+}
 
 export class XSearchTool extends BaseTool {
   kind = 'built-in' as const
@@ -87,20 +99,21 @@ export class XSearchTool extends BaseTool {
   }
 
   private credentialProvider?: XSearchCredentialProvider
-  private fetchFn: typeof fetch
+  private client: XSearchClient
   private defaultBaseUrl: string
   private defaultModel: string
-  private timeoutMs: number
-  private maxRetries: number
 
   constructor(options: XSearchToolOptions = {}) {
     super()
     this.credentialProvider = options.credentialProvider
-    this.fetchFn = options.fetchFn ?? fetch
     this.defaultBaseUrl = options.defaultBaseUrl ?? DEFAULT_XAI_BASE_URL
     this.defaultModel = options.defaultModel ?? DEFAULT_X_SEARCH_MODEL
-    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
-    this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES
+    this.client = new XSearchClient({
+      fetchFn: options.fetchFn ?? fetch,
+      defaultBaseUrl: this.defaultBaseUrl,
+      timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      maxRetries: options.maxRetries ?? DEFAULT_MAX_RETRIES,
+    })
   }
 
   protected async execute(ctx: ToolContext, input: unknown): Promise<ToolResult> {
@@ -134,67 +147,27 @@ export class XSearchTool extends BaseTool {
       }
     }
 
-    const toolDef: Record<string, unknown> = { type: 'x_search' }
-    if (allowedHandles.length > 0) toolDef.allowed_x_handles = allowedHandles
-    if (excludedHandles.length > 0) toolDef.excluded_x_handles = excludedHandles
-    if (parsed.from_date?.trim()) toolDef.from_date = parsed.from_date.trim()
-    if (parsed.to_date?.trim()) toolDef.to_date = parsed.to_date.trim()
-    if (parsed.enable_image_understanding) toolDef.enable_image_understanding = true
-    if (parsed.enable_video_understanding) toolDef.enable_video_understanding = true
-
-    const model = normalizeModelName(parsed.model?.trim() || this.defaultModel)
-    const payload = {
-      model,
-      input: [{ role: 'user', content: query }],
-      tools: [toolDef],
-      store: false,
-    }
-
-    const response = await this.postWithRetries(credential, payload)
-    if (!response.ok) {
-      const error = await this.readErrorMessage(response)
-      return {
-        success: false,
-        output: JSON.stringify(
-          {
-            success: false,
-            provider: 'xai',
-            tool: 'x_search',
-            error,
-            status: response.status,
-          },
-          null,
-          2,
-        ),
-        outputSummary: `x_search failed: ${response.status} ${error}`.slice(0, 200),
-      }
-    }
-
-    const data = (await this.readJson(response)) as Record<string, unknown>
-    const answer = extractResponseText(data)
-    const citations = Array.isArray(data.citations) ? data.citations : []
-    const inlineCitations = extractInlineCitations(data)
-    const output = JSON.stringify(
-      {
-        success: true,
-        provider: 'xai',
-        credential_source: credential.source ?? 'xai',
-        tool: 'x_search',
-        model,
-        query,
-        answer,
-        citations,
-        inline_citations: inlineCitations,
-      },
-      null,
-      2,
+    const request = buildXSearchRequest(
+      parsed,
+      query,
+      allowedHandles,
+      excludedHandles,
+      this.defaultModel,
     )
 
-    return {
-      success: true,
-      output,
-      outputSummary: summarizeXSearchResult(answer, citations.length + inlineCitations.length),
+    const response = await this.client.postWithRetries(credential, request.payload)
+    if (!response.ok) {
+      const error = await this.client.readErrorMessage(response)
+      return formatXSearchError(response.status, error)
     }
+
+    const data = toXSearchResponseRecord(await this.client.readJson(response))
+    return formatXSearchSuccess({
+      credential,
+      data,
+      model: request.model,
+      query,
+    })
   }
 
   private async resolveCredential(ctx: ToolContext): Promise<XSearchCredential | undefined> {
@@ -211,8 +184,72 @@ export class XSearchTool extends BaseTool {
       source: 'xai-api-key',
     }
   }
+}
 
-  private async postWithRetries(
+function buildXSearchRequest(
+  parsed: XSearchInput,
+  query: string,
+  allowedHandles: string[],
+  excludedHandles: string[],
+  defaultModel: string,
+): PreparedXSearchRequest {
+  const toolDef: Record<string, unknown> = { type: 'x_search' }
+  if (allowedHandles.length > 0) toolDef.allowed_x_handles = allowedHandles
+  if (excludedHandles.length > 0) toolDef.excluded_x_handles = excludedHandles
+  if (parsed.from_date?.trim()) toolDef.from_date = parsed.from_date.trim()
+  if (parsed.to_date?.trim()) toolDef.to_date = parsed.to_date.trim()
+  if (parsed.enable_image_understanding) toolDef.enable_image_understanding = true
+  if (parsed.enable_video_understanding) toolDef.enable_video_understanding = true
+
+  const model = normalizeModelName(parsed.model?.trim() || defaultModel)
+  return {
+    model,
+    payload: {
+      model,
+      input: [{ role: 'user', content: query }],
+      tools: [toolDef],
+      store: false,
+    },
+  }
+}
+
+function normalizeHandles(value: unknown, fieldName: string): string[] {
+  if (value === undefined || value === null) return []
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an array of strings`)
+  }
+
+  const handles = value
+    .map((item) =>
+      String(item ?? '')
+        .trim()
+        .replace(/^@+/, ''),
+    )
+    .filter((item) => item.length > 0)
+  if (handles.length > MAX_HANDLES) {
+    throw new Error(`${fieldName} supports at most ${MAX_HANDLES} handles`)
+  }
+  return handles
+}
+
+function normalizeModelName(model: string): string {
+  return model.startsWith('x-premium/') ? model.slice('x-premium/'.length) : model
+}
+
+class XSearchClient {
+  private fetchFn: typeof fetch
+  private defaultBaseUrl: string
+  private timeoutMs: number
+  private maxRetries: number
+
+  constructor(options: XSearchClientOptions) {
+    this.fetchFn = options.fetchFn
+    this.defaultBaseUrl = options.defaultBaseUrl
+    this.timeoutMs = options.timeoutMs
+    this.maxRetries = options.maxRetries
+  }
+
+  async postWithRetries(
     credential: XSearchCredential,
     payload: Record<string, unknown>,
   ): Promise<Response> {
@@ -232,6 +269,30 @@ export class XSearchTool extends BaseTool {
     }
 
     throw lastError instanceof Error ? lastError : new Error('x_search request failed')
+  }
+
+  readJson(response: Response): Promise<unknown> {
+    return withTimeout(response.json(), this.timeoutMs, 'x_search response body')
+  }
+
+  async readErrorMessage(response: Response): Promise<string> {
+    const text = await withTimeout(response.text(), this.timeoutMs, 'x_search error body')
+    if (!text.trim()) return response.statusText
+
+    try {
+      const payload = JSON.parse(text) as Record<string, unknown>
+      const code = typeof payload.code === 'string' ? payload.code.trim() : ''
+      const error =
+        typeof payload.error === 'string'
+          ? payload.error.trim()
+          : typeof payload.message === 'string'
+            ? payload.message.trim()
+            : ''
+      if (code && error && !error.includes(code)) return `${code}: ${error}`
+      return error || code || text.slice(0, 500)
+    } catch {
+      return text.slice(0, 500)
+    }
   }
 
   private post(credential: XSearchCredential, payload: Record<string, unknown>): Promise<Response> {
@@ -256,30 +317,6 @@ export class XSearchTool extends BaseTool {
       () => controller.abort(),
     )
   }
-
-  private readJson(response: Response): Promise<unknown> {
-    return withTimeout(response.json(), this.timeoutMs, 'x_search response body')
-  }
-
-  private async readErrorMessage(response: Response): Promise<string> {
-    const text = await withTimeout(response.text(), this.timeoutMs, 'x_search error body')
-    if (!text.trim()) return response.statusText
-
-    try {
-      const payload = JSON.parse(text) as Record<string, unknown>
-      const code = typeof payload.code === 'string' ? payload.code.trim() : ''
-      const error =
-        typeof payload.error === 'string'
-          ? payload.error.trim()
-          : typeof payload.message === 'string'
-            ? payload.message.trim()
-            : ''
-      if (code && error && !error.includes(code)) return `${code}: ${error}`
-      return error || code || text.slice(0, 500)
-    } catch {
-      return text.slice(0, 500)
-    }
-  }
 }
 
 function withTimeout<T>(
@@ -301,27 +338,58 @@ function withTimeout<T>(
   })
 }
 
-function normalizeHandles(value: unknown, fieldName: string): string[] {
-  if (value === undefined || value === null) return []
-  if (!Array.isArray(value)) {
-    throw new Error(`${fieldName} must be an array of strings`)
+function formatXSearchError(status: number, error: string): ToolResult {
+  return {
+    success: false,
+    output: JSON.stringify(
+      {
+        success: false,
+        provider: 'xai',
+        tool: 'x_search',
+        error,
+        status,
+      },
+      null,
+      2,
+    ),
+    outputSummary: `x_search failed: ${status} ${error}`.slice(0, 200),
   }
-
-  const handles = value
-    .map((item) =>
-      String(item ?? '')
-        .trim()
-        .replace(/^@+/, ''),
-    )
-    .filter((item) => item.length > 0)
-  if (handles.length > MAX_HANDLES) {
-    throw new Error(`${fieldName} supports at most ${MAX_HANDLES} handles`)
-  }
-  return handles
 }
 
-function normalizeModelName(model: string): string {
-  return model.startsWith('x-premium/') ? model.slice('x-premium/'.length) : model
+function formatXSearchSuccess(input: {
+  credential: XSearchCredential
+  data: Record<string, unknown>
+  model: string
+  query: string
+}): ToolResult {
+  const answer = extractResponseText(input.data)
+  const citations = Array.isArray(input.data.citations) ? input.data.citations : []
+  const inlineCitations = extractInlineCitations(input.data)
+  const output = JSON.stringify(
+    {
+      success: true,
+      provider: 'xai',
+      credential_source: input.credential.source ?? 'xai',
+      tool: 'x_search',
+      model: input.model,
+      query: input.query,
+      answer,
+      citations,
+      inline_citations: inlineCitations,
+    },
+    null,
+    2,
+  )
+
+  return {
+    success: true,
+    output,
+    outputSummary: summarizeXSearchResult(answer, citations.length + inlineCitations.length),
+  }
+}
+
+function toXSearchResponseRecord(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {}
 }
 
 function extractResponseText(payload: Record<string, unknown>): string {

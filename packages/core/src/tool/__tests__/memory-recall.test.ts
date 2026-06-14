@@ -9,8 +9,7 @@ import {
   MemoryStore,
   VectorIndex,
 } from '@zero-os/memory'
-import { MemoryReadTool } from '../memory-read'
-import { MemorySearchTool } from '../memory-search'
+import { MemoryReadTool, MemorySearchTool } from '../memory'
 
 let testDir = ''
 

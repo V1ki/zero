@@ -1,12 +1,9 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { join } from 'node:path'
-import { ModelRouter } from '@zero-os/model'
 import { SessionDB } from '@zero-os/observe'
 import type { Message } from '@zero-os/shared'
-import type { AgentControl } from '../../agent/agent-control'
-import { loadConfig } from '../../config/loader'
 import { ToolRegistry } from '../../tool/registry'
 import { SessionManager } from '../manager'
+import { createTestModelRouter, getSessionAgentControlForTest } from './test-helpers'
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -37,9 +34,6 @@ function createAgent(options?: { text?: string; delayMs?: number; error?: string
   }
 }
 
-const config = loadConfig(join(process.cwd(), '.zero', 'config.yaml'))
-const secrets = new Map<string, string>([['openai_codex_api_key', 'sk-test-placeholder']])
-
 describe('sub-agent restart recovery', () => {
   let sessionDb: SessionDB
 
@@ -49,30 +43,32 @@ describe('sub-agent restart recovery', () => {
 
   test('drain snapshot can restore completed agents and fail interrupted running agents', async () => {
     sessionDb = SessionDB.createInMemory()
-    const modelRouter = new ModelRouter(config, secrets)
-    modelRouter.init()
+    const modelRouter = createTestModelRouter()
     const toolRegistry = new ToolRegistry()
 
     const manager = new SessionManager(modelRouter, toolRegistry, { sessionDb }, sessionDb)
     const session = manager.getOrCreateForChannel('telegram', 'chat_restart', 'telegram').session
+    const agentControl = getSessionAgentControlForTest(session)
     const internal = session as unknown as {
-      agentControl: AgentControl
-      mutex: { acquire(ownerId: string): Promise<void>; release(ownerId: string): void }
+      turnRuntime: {
+        acquireTurn(lockId: string): Promise<string>
+        releaseTurn(lockId: string): void
+      }
     }
 
-    const completed = internal.agentControl.spawn(
+    const completed = agentControl.spawn(
       createAgent({ text: 'completed output', delayMs: 5 }),
       { systemPrompt: 'test', conversationHistory: [], tools: [] },
       'complete task',
       { label: 'completed-agent' },
     )
-    const failed = internal.agentControl.spawn(
+    const failed = agentControl.spawn(
       createAgent({ error: 'agent failed', delayMs: 5 }),
       { systemPrompt: 'test', conversationHistory: [], tools: [] },
       'fail task',
       { label: 'failed-agent' },
     )
-    const running = internal.agentControl.spawn(
+    const running = agentControl.spawn(
       createAgent({ text: 'slow output', delayMs: 100 }),
       { systemPrompt: 'test', conversationHistory: [], tools: [] },
       'slow task',
@@ -82,7 +78,7 @@ describe('sub-agent restart recovery', () => {
       throw new Error('expected spawn success')
     }
 
-    await internal.mutex.acquire('restart-test')
+    await internal.turnRuntime.acquireTurn('restart-test')
     await sleep(20)
 
     const interrupted = await manager.drainAndCollectInterrupted(10)
@@ -118,18 +114,18 @@ describe('sub-agent restart recovery', () => {
       ]),
     )
 
-    internal.agentControl.close(running.agentId)
-    internal.mutex.release('restart-test')
+    agentControl.close(running.agentId)
+    internal.turnRuntime.releaseTurn('restart-test')
 
     const restoredManager = new SessionManager(modelRouter, toolRegistry, { sessionDb }, sessionDb)
     restoredManager.restoreFromDB()
 
     const restoredSession = restoredManager.get(session.data.id)
     expect(restoredSession).toBeDefined()
+    if (!restoredSession) throw new Error('expected restored session')
     restoredSession?.restoreSubAgentSnapshot(interrupted[0]?.subAgents ?? [])
 
-    const restoredControl = (restoredSession as unknown as { agentControl: AgentControl })
-      .agentControl
+    const restoredControl = getSessionAgentControlForTest(restoredSession)
 
     expect(restoredControl.getStatus(completed.agentId)).toEqual({
       state: 'completed',
@@ -186,8 +182,7 @@ describe('sub-agent restart recovery', () => {
 
   test('drain snapshot marks waiting interactive agents as failed on restore', async () => {
     sessionDb = SessionDB.createInMemory()
-    const modelRouter = new ModelRouter(config, secrets)
-    modelRouter.init()
+    const modelRouter = createTestModelRouter()
     const toolRegistry = new ToolRegistry()
 
     const manager = new SessionManager(modelRouter, toolRegistry, { sessionDb }, sessionDb)
@@ -196,12 +191,15 @@ describe('sub-agent restart recovery', () => {
       'chat_restart_waiting',
       'telegram',
     ).session
+    const agentControl = getSessionAgentControlForTest(session)
     const internal = session as unknown as {
-      agentControl: AgentControl
-      mutex: { acquire(ownerId: string): Promise<void>; release(ownerId: string): void }
+      turnRuntime: {
+        acquireTurn(lockId: string): Promise<string>
+        releaseTurn(lockId: string): void
+      }
     }
 
-    const waiting = internal.agentControl.spawn(
+    const waiting = agentControl.spawn(
       createAgent({ text: 'interactive ready' }),
       { systemPrompt: 'test', conversationHistory: [], tools: [] },
       'interactive task',
@@ -211,8 +209,8 @@ describe('sub-agent restart recovery', () => {
       throw new Error('expected spawn success')
     }
 
-    await internal.agentControl.waitReady([waiting.agentId], 100)
-    await internal.mutex.acquire('restart-test-waiting')
+    await agentControl.waitReady([waiting.agentId], 100)
+    await internal.turnRuntime.acquireTurn('restart-test-waiting')
 
     const interrupted = await manager.drainAndCollectInterrupted(10)
     expect(interrupted).toHaveLength(1)
@@ -229,16 +227,16 @@ describe('sub-agent restart recovery', () => {
       ]),
     )
 
-    internal.agentControl.close(waiting.agentId)
-    internal.mutex.release('restart-test-waiting')
+    agentControl.close(waiting.agentId)
+    internal.turnRuntime.releaseTurn('restart-test-waiting')
 
     const restoredManager = new SessionManager(modelRouter, toolRegistry, { sessionDb }, sessionDb)
     restoredManager.restoreFromDB()
     const restoredSession = restoredManager.get(session.data.id)
+    if (!restoredSession) throw new Error('expected restored session')
     restoredSession?.restoreSubAgentSnapshot(interrupted[0]?.subAgents ?? [])
 
-    const restoredControl = (restoredSession as unknown as { agentControl: AgentControl })
-      .agentControl
+    const restoredControl = getSessionAgentControlForTest(restoredSession)
 
     expect(restoredControl.getStatus(waiting.agentId)).toEqual({
       state: 'failed',

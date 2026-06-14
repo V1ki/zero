@@ -1,7 +1,7 @@
 import { estimateTokens } from '@zero-os/shared'
 import type { ToolEvidence } from '@zero-os/shared'
-import { persistToolResultEvidence } from './evidence'
 import { CONTEXT_PARAMS } from './params'
+import { persistToolResultEvidence } from './tool-evidence'
 
 const TOOL_OUTPUT_LIMITS: Record<string, number> = {
   read: CONTEXT_PARAMS.toolOutput.read,

@@ -2,22 +2,20 @@ import { describe, expect, test } from 'bun:test'
 import {
   buildBootstrapContextBlock,
   buildConstraintsBlock,
-  buildDynamicContext,
   buildExecutionModeBlock,
   buildIdentityBlock,
   buildMemoryPolicyBlock,
   buildOutputStyleBlock,
-  buildRetrievedMemoriesBlock,
   buildRoleBlock,
   buildRulesBlock,
   buildRuntimeBlock,
   buildSafetyBlock,
   buildSkillCatalog,
-  buildSkillReminder,
   buildSystemPrompt,
   buildToolCallStyleBlock,
   buildToolRulesBlock,
 } from '../prompt'
+import { buildDynamicContext, buildRetrievedMemoriesBlock, buildSkillReminder } from '../prompt'
 
 const makeTool = (name: string): import('@zero-os/shared').ToolDefinition => ({
   name,
@@ -183,7 +181,6 @@ describe('buildToolRulesBlock', () => {
     expect(result).toContain('tools=["read_image"]')
     expect(result).toContain('不要声称自己直接看到了图片')
   })
-
 })
 
 describe('buildConstraintsBlock', () => {
