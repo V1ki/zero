@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'bun:test'
 import { join } from 'node:path'
-import type Anthropic from '@anthropic-ai/sdk'
 import type { CompletionRequest, ContentBlock, Message } from '@zero-os/shared'
 import { generateId, now } from '@zero-os/shared'
 import { AnthropicAdapter } from '../adapters/anthropic'
+import { convertAnthropicMessages, convertAnthropicTools } from '../adapters/anthropic'
 
 /**
  * Anthropic adapter tests.
@@ -98,8 +98,6 @@ interface AnthropicAdapterTestHarness {
       stream?: () => never
     }
   }
-  convertMessages(req: CompletionRequest): Anthropic.MessageParam[]
-  convertTools(tools: CompletionRequest['tools']): Anthropic.Tool[] | undefined
   mapStopReason(reason: string | null): string
   parseContent(content: Array<Record<string, unknown>>): ContentBlock[]
   extractReasoningContent(content: Array<Record<string, unknown>>): string | undefined
@@ -151,7 +149,7 @@ describe('Anthropic Adapter (Pure Logic)', () => {
   test('convertMessages correctly handles text messages', () => {
     const messages: Message[] = [makeMessage('user', 'Hello'), makeMessage('assistant', 'Hi there')]
 
-    const converted = getAnthropicHarness(adapter).convertMessages({
+    const converted = convertAnthropicMessages({
       messages,
     } as CompletionRequest) as unknown as ConvertedAnthropicMessage[]
     expect(converted).toHaveLength(2)
@@ -177,7 +175,7 @@ describe('Anthropic Adapter (Pure Logic)', () => {
       },
     ]
 
-    const converted = getAnthropicHarness(adapter).convertMessages({
+    const converted = convertAnthropicMessages({
       messages,
     } as CompletionRequest) as unknown as ConvertedAnthropicMessage[]
 
@@ -229,7 +227,7 @@ describe('Anthropic Adapter (Pure Logic)', () => {
       },
     ]
 
-    const converted = getAnthropicHarness(adapter).convertMessages({
+    const converted = convertAnthropicMessages({
       messages,
     } as CompletionRequest) as unknown as ConvertedAnthropicMessage[]
 
@@ -309,7 +307,7 @@ describe('Anthropic Adapter (Pure Logic)', () => {
       },
     ]
 
-    const converted = getAnthropicHarness(adapter).convertMessages({
+    const converted = convertAnthropicMessages({
       messages,
     } as CompletionRequest)
     const payload = JSON.stringify(converted)
@@ -329,10 +327,7 @@ describe('Anthropic Adapter (Pure Logic)', () => {
         parameters: { type: 'object', properties: { expr: { type: 'string' } } },
       },
     ]
-    const converted = expectDefined(
-      getAnthropicHarness(adapter).convertTools(tools),
-      'expected converted tools',
-    )
+    const converted = expectDefined(convertAnthropicTools(tools), 'expected converted tools')
     expect(converted).toHaveLength(1)
     expect(converted[0].name).toBe('calculator')
     expect(converted[0].description).toBe('Calculate math')
@@ -343,8 +338,8 @@ describe('Anthropic Adapter (Pure Logic)', () => {
   })
 
   test('convertTools returns undefined for empty array', () => {
-    expect(getAnthropicHarness(adapter).convertTools([])).toBeUndefined()
-    expect(getAnthropicHarness(adapter).convertTools(undefined)).toBeUndefined()
+    expect(convertAnthropicTools([])).toBeUndefined()
+    expect(convertAnthropicTools(undefined)).toBeUndefined()
   })
 
   test('mapStopReason maps Anthropic stop reasons correctly', () => {

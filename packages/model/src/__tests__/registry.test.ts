@@ -231,11 +231,15 @@ describe('ModelRegistry', () => {
     const resolved = registry.resolve('x-premium/grok-4.3')
     const adapter = resolved?.adapter as
       | {
-          oauthTokenRefresher?: unknown
+          transport?: {
+            options?: {
+              oauthTokenRefresher?: unknown
+            }
+          }
         }
       | undefined
 
-    expect(adapter?.oauthTokenRefresher).toBe(refresher)
+    expect(adapter?.transport?.options?.oauthTokenRefresher).toBe(refresher)
     expect(resolved?.adapter.apiType).toBe('x_responses')
   })
 

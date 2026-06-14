@@ -11,9 +11,11 @@ import { generateId, now } from '@zero-os/shared'
 import { getMasterKey } from '../../../secrets/src/keychain'
 import { Vault } from '../../../secrets/src/vault'
 import { AnthropicAdapter } from '../adapters/anthropic'
-import { AnthropicDeepSeekAdapter } from '../adapters/anthropic-deepseek'
+import { convertAnthropicMessages } from '../adapters/anthropic'
+import { AnthropicDeepSeekAdapter } from '../adapters/anthropic'
 import type { ProviderAdapter } from '../adapters/base'
 import { OpenAIChatAdapter } from '../adapters/openai-chat'
+import { convertOpenAIChatMessages } from '../adapters/openai-chat'
 import { OpenAIResponsesAdapter } from '../adapters/openai-resp'
 import { ModelRouter } from '../router'
 import { collectStream } from '../stream'
@@ -28,14 +30,6 @@ type ChatMessageLike = {
 type AnthropicMessageLike = {
   role: string
   content: Array<Record<string, unknown>>
-}
-
-interface OpenAIChatAdapterTestHarness {
-  convertMessages(req: CompletionRequest): ChatMessageLike[]
-}
-
-interface AnthropicAdapterTestHarness {
-  convertMessages(req: CompletionRequest): AnthropicMessageLike[]
 }
 
 interface AnthropicFamilyProvider {
@@ -92,12 +86,12 @@ const HAS_DEEPSEEK = Boolean(DEEPSEEK_API_KEY)
 const HAS_ANTHROPIC_FAMILY = HAS_DEEPSEEK || HAS_ANTHROPIC
 const providerHealth = new Map<string, Promise<boolean>>()
 
-function getOpenAIChatHarness(instance: OpenAIChatAdapter): OpenAIChatAdapterTestHarness {
-  return instance as unknown as OpenAIChatAdapterTestHarness
+function convertAnthropic(req: CompletionRequest): AnthropicMessageLike[] {
+  return convertAnthropicMessages(req) as unknown as AnthropicMessageLike[]
 }
 
-function getAnthropicHarness(instance: AnthropicAdapter): AnthropicAdapterTestHarness {
-  return instance as unknown as AnthropicAdapterTestHarness
+function convertOpenAIChat(req: CompletionRequest): ChatMessageLike[] {
+  return convertOpenAIChatMessages(req) as unknown as ChatMessageLike[]
 }
 
 function requireSecret(
@@ -466,7 +460,7 @@ describe.skipIf(!HAS_VAULT)('Cross-provider Integration (Real API)', () => {
           ).toBe(true)
         }
 
-        const converted = getOpenAIChatHarness(openai).convertMessages({
+        const converted = convertOpenAIChat({
           ...makeStreamingRequest(history.messages, CONTINUATION_SYSTEM_PROMPT),
           stream: false,
         })
@@ -517,7 +511,7 @@ describe.skipIf(!HAS_VAULT)('Cross-provider Integration (Real API)', () => {
       if (history.toolUses.length > 0) {
         expect(history.toolUses.every((toolUse) => toolUse.id.startsWith('call_'))).toBe(true)
 
-        const converted = getAnthropicHarness(anthropic).convertMessages({
+        const converted = convertAnthropic({
           ...makeStreamingRequest(history.messages, CONTINUATION_SYSTEM_PROMPT),
           stream: false,
         })

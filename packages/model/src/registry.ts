@@ -5,8 +5,7 @@ import type {
   ProviderConfig,
   SystemConfig,
 } from '@zero-os/shared'
-import { AnthropicAdapter } from './adapters/anthropic'
-import { AnthropicDeepSeekAdapter } from './adapters/anthropic-deepseek'
+import { AnthropicAdapter, AnthropicDeepSeekAdapter } from './adapters/anthropic'
 import type { AdapterConfig, OAuthTokenRefresher, ProviderAdapter } from './adapters/base'
 import { ModelPoolAdapter, type ModelPoolAdapterMember } from './adapters/model-pool'
 import { OpenAIChatAdapter } from './adapters/openai-chat'
@@ -52,18 +51,16 @@ export interface ModelRegistryOptions {
   providerRecoveryResolver?: ProviderRecoveryResolver
 }
 
+type ResolvedPoolMember = ResolvedModel & { label: string; priority: number }
+
 /**
  * Model Registry - parses config and creates adapters on demand.
  */
 export class ModelRegistry {
   private providers: Map<string, ProviderConfig> = new Map()
   private modelPools: Map<string, ModelPoolConfig> = new Map()
-  private adapters: Map<string, ProviderAdapter> = new Map()
-  private poolAdapters: Map<string, ProviderAdapter> = new Map()
-  private secrets: Map<string, string>
-  private secretGetter: SecretGetter
-  private oauthRefreshers: Record<string, OAuthTokenRefresher | undefined>
-  private usageRecorder?: UsageRecorder
+  private adapterFactory: ModelAdapterFactory
+  private poolResolver: ModelPoolResolver
   private providerHealth: ProviderHealthRegistry
 
   constructor(
@@ -71,19 +68,27 @@ export class ModelRegistry {
     secrets: Map<string, string>,
     options: ModelRegistryOptions = {},
   ) {
-    this.secrets = secrets
-    this.secretGetter = options.secretGetter ?? ((ref) => this.secrets.get(ref))
-    this.oauthRefreshers = options.oauthRefreshers ?? {}
-    this.usageRecorder = options.usageRecorder
     this.providerHealth =
       options.providerHealth ??
       new ProviderHealthRegistry({ recoveryResolver: options.providerRecoveryResolver })
+    const secretGetter: SecretGetter = options.secretGetter ?? ((ref) => secrets.get(ref))
+    this.adapterFactory = new ModelAdapterFactory({
+      secretGetter,
+      oauthRefreshers: options.oauthRefreshers ?? {},
+      usageRecorder: options.usageRecorder,
+    })
     for (const [name, provider] of Object.entries(config.providers)) {
       this.providers.set(name, provider)
     }
     for (const [name, pool] of Object.entries(config.modelPools ?? {})) {
       this.modelPools.set(name, pool)
     }
+    this.poolResolver = new ModelPoolResolver({
+      modelPools: this.modelPools,
+      providerHealth: this.providerHealth,
+      resolvePhysicalModel: (modelRef) => this.resolvePhysicalModel(modelRef),
+      resolvePhysicalModelLabel: (modelRef) => this.resolvePhysicalModelLabel(modelRef),
+    })
   }
 
   /**
@@ -91,7 +96,7 @@ export class ModelRegistry {
    * Searches across all providers.
    */
   resolve(modelName: string): ResolvedModel | undefined {
-    const pool = this.resolveModelPool(modelName)
+    const pool = this.poolResolver.resolve(modelName)
     if (pool) return pool
     return this.resolvePhysicalModel(modelName)
   }
@@ -107,11 +112,11 @@ export class ModelRegistry {
           qualifiedName === modelName ||
           qualifiedModelId === modelName
         ) {
-          const adapter = this.getOrCreateAdapter(providerName, name, provider, model)
+          const adapter = this.adapterFactory.getOrCreate(providerName, name, provider, model)
           return {
             providerName,
             modelName: name,
-            modelConfig: this.enrichPricing(model),
+            modelConfig: this.adapterFactory.enrichPricing(model),
             providerConfig: provider,
             adapter,
           }
@@ -137,11 +142,11 @@ export class ModelRegistry {
           model.tags.some((t) => t.toLowerCase().includes(lower))
 
         if (matches) {
-          const adapter = this.getOrCreateAdapter(providerName, name, provider, model)
+          const adapter = this.adapterFactory.getOrCreate(providerName, name, provider, model)
           results.push({
             providerName,
             modelName: name,
-            modelConfig: this.enrichPricing(model),
+            modelConfig: this.adapterFactory.enrichPricing(model),
             providerConfig: provider,
             adapter,
           })
@@ -182,25 +187,7 @@ export class ModelRegistry {
   }
 
   listModelPools(): ListedModelPool[] {
-    return Array.from(this.modelPools.entries())
-      .map(([poolName, pool]): ListedModelPool | null => {
-        const [providerName, ...modelParts] = poolName.split('/')
-        const modelName = modelParts.join('/')
-        if (!providerName || !modelName) return null
-        return {
-          providerName,
-          modelName,
-          name: poolName,
-          strategy: pool.strategy,
-          members: pool.members
-            .map((member, index) => ({
-              model: this.resolvePhysicalModelLabel(member.model) ?? member.model,
-              priority: member.priority ?? index,
-            }))
-            .sort((left, right) => left.priority - right.priority),
-        }
-      })
-      .filter((pool): pool is ListedModelPool => pool !== null)
+    return this.poolResolver.list()
   }
 
   private resolvePhysicalModelLabel(modelRef: string): string | undefined {
@@ -224,84 +211,27 @@ export class ModelRegistry {
   getProviderHealth(): ProviderHealthRegistry {
     return this.providerHealth
   }
+}
 
-  private resolveModelPool(modelName: string): ResolvedModel | undefined {
-    const exactPool = this.modelPools.get(modelName)
-    if (exactPool) {
-      return this.buildResolvedPool(modelName, exactPool)
-    }
+interface ModelAdapterFactoryOptions {
+  secretGetter: SecretGetter
+  oauthRefreshers: Record<string, OAuthTokenRefresher | undefined>
+  usageRecorder?: UsageRecorder
+}
 
-    if (modelName.includes('/')) {
-      return undefined
-    }
+class ModelAdapterFactory {
+  private adapters: Map<string, ProviderAdapter> = new Map()
+  private secretGetter: SecretGetter
+  private oauthRefreshers: Record<string, OAuthTokenRefresher | undefined>
+  private usageRecorder?: UsageRecorder
 
-    const matches = Array.from(this.modelPools.entries()).filter(([poolName]) => {
-      return poolName.split('/').at(-1) === modelName
-    })
-    if (matches.length !== 1) return undefined
-    return this.buildResolvedPool(matches[0][0], matches[0][1])
+  constructor(options: ModelAdapterFactoryOptions) {
+    this.secretGetter = options.secretGetter
+    this.oauthRefreshers = options.oauthRefreshers
+    this.usageRecorder = options.usageRecorder
   }
 
-  private buildResolvedPool(poolName: string, pool: ModelPoolConfig): ResolvedModel | undefined {
-    const members = this.resolvePoolMembers(pool)
-    const first = members[0]
-    if (!first) return undefined
-
-    const [providerName, ...modelParts] = poolName.split('/')
-    const modelName = modelParts.join('/')
-    if (!providerName || !modelName) return undefined
-
-    return {
-      providerName,
-      modelName,
-      modelConfig: first.modelConfig,
-      providerConfig: first.providerConfig,
-      adapter: this.getOrCreatePoolAdapter(poolName, pool, members),
-    }
-  }
-
-  private resolvePoolMembers(
-    pool: ModelPoolConfig,
-  ): Array<ResolvedModel & { label: string; priority: number }> {
-    return pool.members
-      .map((member, index) => {
-        const resolved = this.resolvePhysicalModel(member.model)
-        if (!resolved) return null
-        return {
-          ...resolved,
-          label: this.formatModelLabel(resolved.providerName, resolved.modelName),
-          priority: member.priority ?? index,
-        }
-      })
-      .filter(
-        (member): member is ResolvedModel & { label: string; priority: number } => member !== null,
-      )
-  }
-
-  private getOrCreatePoolAdapter(
-    poolName: string,
-    pool: ModelPoolConfig,
-    members: Array<ResolvedModel & { label: string; priority: number }>,
-  ): ProviderAdapter {
-    const adapter = this.poolAdapters.get(poolName)
-    if (adapter) return adapter
-
-    const poolMembers: ModelPoolAdapterMember[] = members.map((member) => ({
-      label: member.label,
-      providerName: member.providerName,
-      modelName: member.modelName,
-      adapter: member.adapter,
-      priority: member.priority,
-    }))
-    const next = new ModelPoolAdapter(poolName, poolMembers, this.providerHealth, {
-      sticky: pool.strategy !== 'priority_failover',
-      quotaAware: pool.strategy === 'sticky_quota_aware_failover',
-    })
-    this.poolAdapters.set(poolName, next)
-    return next
-  }
-
-  private getOrCreateAdapter(
+  getOrCreate(
     providerName: string,
     modelName: string,
     provider: ProviderConfig,
@@ -347,10 +277,7 @@ export class ModelRegistry {
     return adapter
   }
 
-  /**
-   * Inject fallback pricing when config has no explicit pricing.
-   */
-  private enrichPricing(model: ModelConfig): ModelConfig {
+  enrichPricing(model: ModelConfig): ModelConfig {
     if (model.pricing) return model
     const fallback = LiteLLMPricing.getInstance()?.lookup(model.modelId)
     if (!fallback) return model
@@ -377,8 +304,124 @@ export class ModelRegistry {
         throw new Error(`Unsupported API type: ${apiType}`)
     }
   }
+}
 
-  private formatModelLabel(providerName: string, modelName: string): string {
-    return `${providerName}/${modelName}`
+interface ModelPoolResolverOptions {
+  modelPools: Map<string, ModelPoolConfig>
+  providerHealth: ProviderHealthRegistry
+  resolvePhysicalModel: (modelRef: string) => ResolvedModel | undefined
+  resolvePhysicalModelLabel: (modelRef: string) => string | undefined
+}
+
+class ModelPoolResolver {
+  private modelPools: Map<string, ModelPoolConfig>
+  private poolAdapters: Map<string, ProviderAdapter> = new Map()
+  private providerHealth: ProviderHealthRegistry
+  private resolvePhysicalModel: (modelRef: string) => ResolvedModel | undefined
+  private resolvePhysicalModelLabel: (modelRef: string) => string | undefined
+
+  constructor(options: ModelPoolResolverOptions) {
+    this.modelPools = options.modelPools
+    this.providerHealth = options.providerHealth
+    this.resolvePhysicalModel = options.resolvePhysicalModel
+    this.resolvePhysicalModelLabel = options.resolvePhysicalModelLabel
   }
+
+  resolve(modelName: string): ResolvedModel | undefined {
+    const exactPool = this.modelPools.get(modelName)
+    if (exactPool) {
+      return this.buildResolvedPool(modelName, exactPool)
+    }
+
+    if (modelName.includes('/')) {
+      return undefined
+    }
+
+    const matches = Array.from(this.modelPools.entries()).filter(([poolName]) => {
+      return poolName.split('/').at(-1) === modelName
+    })
+    if (matches.length !== 1) return undefined
+    return this.buildResolvedPool(matches[0][0], matches[0][1])
+  }
+
+  list(): ListedModelPool[] {
+    return Array.from(this.modelPools.entries())
+      .map(([poolName, pool]): ListedModelPool | null => {
+        const [providerName, ...modelParts] = poolName.split('/')
+        const modelName = modelParts.join('/')
+        if (!providerName || !modelName) return null
+        return {
+          providerName,
+          modelName,
+          name: poolName,
+          strategy: pool.strategy,
+          members: pool.members
+            .map((member, index) => ({
+              model: this.resolvePhysicalModelLabel(member.model) ?? member.model,
+              priority: member.priority ?? index,
+            }))
+            .sort((left, right) => left.priority - right.priority),
+        }
+      })
+      .filter((pool): pool is ListedModelPool => pool !== null)
+  }
+
+  private buildResolvedPool(poolName: string, pool: ModelPoolConfig): ResolvedModel | undefined {
+    const members = this.resolvePoolMembers(pool)
+    const first = members[0]
+    if (!first) return undefined
+
+    const [providerName, ...modelParts] = poolName.split('/')
+    const modelName = modelParts.join('/')
+    if (!providerName || !modelName) return undefined
+
+    return {
+      providerName,
+      modelName,
+      modelConfig: first.modelConfig,
+      providerConfig: first.providerConfig,
+      adapter: this.getOrCreatePoolAdapter(poolName, pool, members),
+    }
+  }
+
+  private resolvePoolMembers(pool: ModelPoolConfig): ResolvedPoolMember[] {
+    return pool.members
+      .map((member, index) => {
+        const resolved = this.resolvePhysicalModel(member.model)
+        if (!resolved) return null
+        return {
+          ...resolved,
+          label: formatModelLabel(resolved.providerName, resolved.modelName),
+          priority: member.priority ?? index,
+        }
+      })
+      .filter((member): member is ResolvedPoolMember => member !== null)
+  }
+
+  private getOrCreatePoolAdapter(
+    poolName: string,
+    pool: ModelPoolConfig,
+    members: ResolvedPoolMember[],
+  ): ProviderAdapter {
+    const adapter = this.poolAdapters.get(poolName)
+    if (adapter) return adapter
+
+    const poolMembers: ModelPoolAdapterMember[] = members.map((member) => ({
+      label: member.label,
+      providerName: member.providerName,
+      modelName: member.modelName,
+      adapter: member.adapter,
+      priority: member.priority,
+    }))
+    const next = new ModelPoolAdapter(poolName, poolMembers, this.providerHealth, {
+      sticky: pool.strategy !== 'priority_failover',
+      quotaAware: pool.strategy === 'sticky_quota_aware_failover',
+    })
+    this.poolAdapters.set(poolName, next)
+    return next
+  }
+}
+
+function formatModelLabel(providerName: string, modelName: string): string {
+  return `${providerName}/${modelName}`
 }

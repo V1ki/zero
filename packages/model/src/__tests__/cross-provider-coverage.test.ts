@@ -1,9 +1,17 @@
 import { describe, expect, test } from 'bun:test'
 import type { CompletionRequest, Message, SystemConfig } from '@zero-os/shared'
 import { generateId, now } from '@zero-os/shared'
+import type OpenAI from 'openai'
 import { AnthropicAdapter } from '../adapters/anthropic'
+import { convertAnthropicMessages } from '../adapters/anthropic'
 import { OpenAIChatAdapter } from '../adapters/openai-chat'
+import { convertOpenAIChatMessages } from '../adapters/openai-chat'
+import { mapOpenAIChatStopReason, parseOpenAIChatUsage } from '../adapters/openai-chat'
 import { OpenAIResponsesAdapter } from '../adapters/openai-resp'
+import { parseChatGptCompletionEvents } from '../adapters/openai-resp-chatgpt-events'
+import { buildOpenAIResponsesInput } from '../adapters/openai-resp-input'
+import { parseOpenAIResponse } from '../adapters/openai-resp-parse'
+import { parseOpenAIResponseUsage } from '../adapters/openai-resp-parse'
 import { ModelRouter } from '../router'
 import { collectStream } from '../stream'
 
@@ -43,12 +51,7 @@ interface AnthropicHarness {
       create: (params: Record<string, unknown>) => Promise<unknown>
     }
   }
-  convertMessages(req: CompletionRequest): AnthropicMessageLike[]
   buildSystem(system?: string): Array<{ type: string; text: string }> | undefined
-}
-
-interface OpenAIChatHarness {
-  convertMessages(req: CompletionRequest): ChatMessageLike[]
 }
 
 interface OpenAIResponsesHarness {
@@ -57,7 +60,6 @@ interface OpenAIResponsesHarness {
       create: (params: Record<string, unknown>) => Promise<unknown>
     }
   } | null
-  buildInput(req: CompletionRequest): ResponsesInputItemLike[]
   buildChatGptBody(req: CompletionRequest): {
     instructions?: string
     input: ResponsesInputItemLike[]
@@ -68,12 +70,16 @@ function getAnthropicHarness(instance: AnthropicAdapter): AnthropicHarness {
   return instance as unknown as AnthropicHarness
 }
 
-function getOpenAIChatHarness(instance: OpenAIChatAdapter): OpenAIChatHarness {
-  return instance as unknown as OpenAIChatHarness
+function convertAnthropic(req: CompletionRequest): AnthropicMessageLike[] {
+  return convertAnthropicMessages(req) as unknown as AnthropicMessageLike[]
 }
 
 function getResponsesHarness(instance: OpenAIResponsesAdapter): OpenAIResponsesHarness {
   return instance as unknown as OpenAIResponsesHarness
+}
+
+function convertOpenAIChat(req: CompletionRequest): ChatMessageLike[] {
+  return convertOpenAIChatMessages(req) as unknown as ChatMessageLike[]
 }
 
 function makeMessage(role: 'user' | 'assistant', content: Message['content']): Message {
@@ -192,9 +198,7 @@ describe('Cross-provider system prompt and instructions fidelity', () => {
   })
 
   test('OpenAI Chat injects the system prompt as a leading system message', () => {
-    const adapter = createOpenAIChatAdapter()
-
-    const converted = getOpenAIChatHarness(adapter).convertMessages(
+    const converted = convertOpenAIChat(
       makeRequest([makeTextMessage('user', 'Inspect the repository.')], 'Stay concise.'),
     )
 
@@ -216,7 +220,6 @@ describe('Cross-provider system prompt and instructions fidelity', () => {
 
 describe('Cross-provider dangling tool state and tool_result normalization', () => {
   test('Anthropic drops dangling tool_use while preserving assistant text', () => {
-    const adapter = createAnthropicAdapter()
     const danglingId = `toolu_${generateId()}`
     const messages = [
       makeTextMessage('user', 'Start'),
@@ -227,7 +230,7 @@ describe('Cross-provider dangling tool state and tool_result normalization', () 
       makeTextMessage('user', 'Continue without reusing the interrupted call.'),
     ]
 
-    const converted = getAnthropicHarness(adapter).convertMessages(makeRequest(messages))
+    const converted = convertAnthropic(makeRequest(messages))
 
     expect(converted).toEqual([
       { role: 'user', content: [{ type: 'text', text: 'Start' }] },
@@ -243,7 +246,6 @@ describe('Cross-provider dangling tool state and tool_result normalization', () 
   })
 
   test('OpenAI Chat drops dangling tool_use while preserving assistant text', () => {
-    const adapter = createOpenAIChatAdapter()
     const danglingId = `call_${generateId()}`
     const messages = [
       makeTextMessage('user', 'Start'),
@@ -254,7 +256,7 @@ describe('Cross-provider dangling tool state and tool_result normalization', () 
       makeTextMessage('user', 'Continue without reusing the interrupted call.'),
     ]
 
-    const converted = getOpenAIChatHarness(adapter).convertMessages(makeRequest(messages))
+    const converted = convertOpenAIChat(makeRequest(messages))
 
     expect(converted).toEqual([
       { role: 'user', content: 'Start' },
@@ -264,7 +266,6 @@ describe('Cross-provider dangling tool state and tool_result normalization', () 
   })
 
   test('OpenAI Responses drops dangling tool_use while preserving assistant text', () => {
-    const adapter = createOpenAIResponsesAdapter()
     const danglingId = `call_${generateId()}`
     const messages = [
       makeTextMessage('user', 'Start'),
@@ -275,7 +276,7 @@ describe('Cross-provider dangling tool state and tool_result normalization', () 
       makeTextMessage('user', 'Continue without reusing the interrupted call.'),
     ]
 
-    const input = getResponsesHarness(adapter).buildInput(makeRequest(messages))
+    const input = buildOpenAIResponsesInput(makeRequest(messages)) as ResponsesInputItemLike[]
 
     expect(input).toEqual([
       { role: 'user', content: 'Start' },
@@ -285,7 +286,6 @@ describe('Cross-provider dangling tool state and tool_result normalization', () 
   })
 
   test('Anthropic preserves empty tool_result fallback text and is_error flag', () => {
-    const adapter = createAnthropicAdapter()
     const toolId = `toolu_${generateId()}`
     const messages = [
       makeTextMessage('user', 'Run the task'),
@@ -303,7 +303,7 @@ describe('Cross-provider dangling tool state and tool_result normalization', () 
       ]),
     ]
 
-    const converted = getAnthropicHarness(adapter).convertMessages(makeRequest(messages))
+    const converted = convertAnthropic(makeRequest(messages))
 
     expect(converted[2]).toEqual({
       role: 'user',
@@ -336,12 +336,10 @@ describe('Cross-provider dangling tool state and tool_result normalization', () 
       ]),
     ]
 
-    const chatConverted = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(
+    const chatConverted = convertOpenAIChat(makeRequest(messages))
+    const responsesConverted = buildOpenAIResponsesInput(
       makeRequest(messages),
-    )
-    const responsesConverted = getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(
-      makeRequest(messages),
-    )
+    ) as ResponsesInputItemLike[]
 
     expect(chatConverted[2]).toEqual({
       role: 'tool',
@@ -365,15 +363,9 @@ describe('Cross-provider multimodal preservation', () => {
       ]),
     ]
 
-    const anthropic = getAnthropicHarness(createAnthropicAdapter()).convertMessages(
-      makeRequest(messages),
-    )
-    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(
-      makeRequest(messages),
-    )
-    const responses = getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(
-      makeRequest(messages),
-    )
+    const anthropic = convertAnthropic(makeRequest(messages))
+    const chat = convertOpenAIChat(makeRequest(messages))
+    const responses = buildOpenAIResponsesInput(makeRequest(messages)) as ResponsesInputItemLike[]
 
     expect(anthropic[0]).toEqual({
       role: 'user',
@@ -599,14 +591,10 @@ describe('Cross-provider stop reason mapping', () => {
   })
 
   test('OpenAI Chat mapStopReason maps provider reasons to unified semantics', () => {
-    const adapter = createOpenAIChatAdapter() as unknown as {
-      mapStopReason(reason: string | null): string
-    }
-
-    expect(adapter.mapStopReason('stop')).toBe('end_turn')
-    expect(adapter.mapStopReason('tool_calls')).toBe('tool_use')
-    expect(adapter.mapStopReason('length')).toBe('max_tokens')
-    expect(adapter.mapStopReason('something_else')).toBe('end_turn')
+    expect(mapOpenAIChatStopReason('stop')).toBe('end_turn')
+    expect(mapOpenAIChatStopReason('tool_calls')).toBe('tool_use')
+    expect(mapOpenAIChatStopReason('length')).toBe('max_tokens')
+    expect(mapOpenAIChatStopReason('something_else')).toBe('end_turn')
   })
 
   test('OpenAI Chat complete overrides stop reason to tool_use when tool_calls are present', async () => {
@@ -657,39 +645,39 @@ describe('Cross-provider stop reason mapping', () => {
   })
 
   test('OpenAI Responses parseResponse maps function_call output to tool_use and normal output to end_turn', () => {
-    const adapter = createOpenAIResponsesAdapter() as unknown as {
-      parseResponse(response: Record<string, unknown>): {
-        stopReason: string
-      }
-    }
-
-    const withToolCall = adapter.parseResponse({
-      id: 'resp_fc',
-      model: 'gpt-responses-test',
-      status: 'completed',
-      output: [
-        {
-          type: 'function_call',
-          id: 'fc_1',
-          call_id: 'call_1',
-          name: 'read_file',
-          arguments: '{"path":"AGENTS.md"}',
-        },
-      ],
-      usage: { input_tokens: 10, output_tokens: 3 },
-    })
-    const withoutToolCall = adapter.parseResponse({
-      id: 'resp_text',
-      model: 'gpt-responses-test',
-      status: 'completed',
-      output: [
-        {
-          type: 'message',
-          content: [{ type: 'output_text', text: 'Done.' }],
-        },
-      ],
-      usage: { input_tokens: 10, output_tokens: 3 },
-    })
+    const withToolCall = parseOpenAIResponse(
+      {
+        id: 'resp_fc',
+        model: 'gpt-responses-test',
+        status: 'completed',
+        output: [
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            call_id: 'call_1',
+            name: 'read_file',
+            arguments: '{"path":"AGENTS.md"}',
+          },
+        ],
+        usage: { input_tokens: 10, output_tokens: 3 },
+      } as OpenAI.Responses.Response,
+      'gpt-responses-test',
+    )
+    const withoutToolCall = parseOpenAIResponse(
+      {
+        id: 'resp_text',
+        model: 'gpt-responses-test',
+        status: 'completed',
+        output: [
+          {
+            type: 'message',
+            content: [{ type: 'output_text', text: 'Done.' }],
+          },
+        ],
+        usage: { input_tokens: 10, output_tokens: 3 },
+      } as OpenAI.Responses.Response,
+      'gpt-responses-test',
+    )
 
     expect(withToolCall.stopReason).toBe('tool_use')
     expect(withoutToolCall.stopReason).toBe('end_turn')
@@ -739,28 +727,26 @@ describe('Cross-provider stop reason mapping', () => {
         },
       },
     }
-    const responses = createOpenAIResponsesAdapter() as unknown as {
-      parseResponse(response: Record<string, unknown>): {
-        stopReason: string
-      }
-    }
 
     const chatResult = await chat.complete(makeRequest([makeTextMessage('user', 'Read AGENTS.md')]))
-    const responsesResult = responses.parseResponse({
-      id: 'resp_consistent',
-      model: 'gpt-responses-test',
-      status: 'completed',
-      output: [
-        {
-          type: 'function_call',
-          id: 'fc_consistent_1',
-          call_id: 'call_consistent_1',
-          name: 'read_file',
-          arguments: '{"path":"AGENTS.md"}',
-        },
-      ],
-      usage: { input_tokens: 7, output_tokens: 2 },
-    })
+    const responsesResult = parseOpenAIResponse(
+      {
+        id: 'resp_consistent',
+        model: 'gpt-responses-test',
+        status: 'completed',
+        output: [
+          {
+            type: 'function_call',
+            id: 'fc_consistent_1',
+            call_id: 'call_consistent_1',
+            name: 'read_file',
+            arguments: '{"path":"AGENTS.md"}',
+          },
+        ],
+        usage: { input_tokens: 7, output_tokens: 2 },
+      } as OpenAI.Responses.Response,
+      'gpt-responses-test',
+    )
 
     expect(anthropic.mapStopReason('tool_use')).toBe('tool_use')
     expect(chatResult.stopReason).toBe('tool_use')
@@ -797,74 +783,68 @@ describe('Cross-provider reasoning / thinking behavior', () => {
   })
 
   test('OpenAI Responses parseChatGptCompletion extracts reasoning summary text from SSE events', () => {
-    const adapter = createOpenAIResponsesAdapter('chatgpt') as unknown as {
-      parseChatGptCompletion(events: Array<Record<string, unknown>>): {
-        reasoningContent?: string
-      }
-    }
-
-    const result = adapter.parseChatGptCompletion([
-      {
-        type: 'response.reasoning_summary_text.delta',
-        item_id: 'rs_1',
-        summary_index: 0,
-        delta: 'First summary sentence. ',
-      },
-      {
-        type: 'response.reasoning_summary_text.done',
-        item_id: 'rs_1',
-        summary_index: 0,
-        text: 'First summary sentence. Second summary sentence.',
-      },
-      {
-        type: 'response.completed',
-        response: {
-          id: 'resp_reasoning',
-          model: 'gpt-responses-test',
-          usage: { input_tokens: 11, output_tokens: 5 },
+    const result = parseChatGptCompletionEvents(
+      [
+        {
+          type: 'response.reasoning_summary_text.delta',
+          item_id: 'rs_1',
+          summary_index: 0,
+          delta: 'First summary sentence. ',
         },
-      },
-    ])
+        {
+          type: 'response.reasoning_summary_text.done',
+          item_id: 'rs_1',
+          summary_index: 0,
+          text: 'First summary sentence. Second summary sentence.',
+        },
+        {
+          type: 'response.completed',
+          response: {
+            id: 'resp_reasoning',
+            model: 'gpt-responses-test',
+            usage: { input_tokens: 11, output_tokens: 5 },
+          },
+        },
+      ],
+      'gpt-responses-test',
+    )
 
     expect(result.reasoningContent).toBe('First summary sentence.')
   })
 
   test('unified message content blocks do not include a reasoning type', () => {
-    const adapter = createOpenAIResponsesAdapter() as unknown as {
-      parseResponse(response: Record<string, unknown>): {
-        content: Array<{ type: string }>
-        reasoningContent?: string
-      }
-    }
-
-    const result = adapter.parseResponse({
-      id: 'resp_reasoning_blocks',
-      model: 'gpt-responses-test',
-      status: 'completed',
-      output: [
-        {
-          type: 'reasoning',
-          id: 'rs_1',
-          summary: [{ text: 'Internal summary.' }],
-        },
-        {
-          type: 'message',
-          content: [{ type: 'output_text', text: 'Visible answer.' }],
-        },
-        {
-          type: 'function_call',
-          id: 'fc_2',
-          call_id: 'call_2',
-          name: 'read_file',
-          arguments: '{"path":"AGENTS.md"}',
-        },
-      ],
-      usage: { input_tokens: 8, output_tokens: 4 },
-    })
+    const result = parseOpenAIResponse(
+      {
+        id: 'resp_reasoning_blocks',
+        model: 'gpt-responses-test',
+        status: 'completed',
+        output: [
+          {
+            type: 'reasoning',
+            id: 'rs_1',
+            summary: [{ text: 'Internal summary.' }],
+          },
+          {
+            type: 'message',
+            content: [{ type: 'output_text', text: 'Visible answer.' }],
+          },
+          {
+            type: 'function_call',
+            id: 'fc_2',
+            call_id: 'call_2',
+            name: 'read_file',
+            arguments: '{"path":"AGENTS.md"}',
+          },
+        ],
+        usage: { input_tokens: 8, output_tokens: 4 },
+      } as OpenAI.Responses.Response,
+      'gpt-responses-test',
+    )
 
     expect(result.reasoningContent).toBe('Internal summary.')
-    expect(result.content.map((block) => block.type)).toEqual(['text', 'tool_use'])
-    expect(result.content.some((block) => block.type === 'reasoning')).toBe(false)
+    const contentTypes = result.content.map((block) => String(block.type))
+    expect(contentTypes).toEqual(['text', 'tool_use'])
+    expect(contentTypes).not.toContain('reasoning')
   })
 
   test('collectStream returns content and usage only, without reasoningContent', async () => {
@@ -958,12 +938,8 @@ describe('Cross-provider token usage normalization', () => {
   })
 
   test('OpenAI Chat parseUsage normalizes prompt and completion tokens plus cached prompt tokens', () => {
-    const adapter = createOpenAIChatAdapter() as unknown as {
-      parseUsage(usage: Record<string, unknown>): Record<string, unknown>
-    }
-
     expect(
-      adapter.parseUsage({
+      parseOpenAIChatUsage({
         prompt_tokens: 100,
         completion_tokens: 25,
         prompt_tokens_details: {
@@ -980,12 +956,8 @@ describe('Cross-provider token usage normalization', () => {
   })
 
   test('OpenAI Chat parseUsage extracts reasoning tokens when present', () => {
-    const adapter = createOpenAIChatAdapter() as unknown as {
-      parseUsage(usage: Record<string, unknown>): Record<string, unknown>
-    }
-
     expect(
-      adapter.parseUsage({
+      parseOpenAIChatUsage({
         prompt_tokens: 100,
         completion_tokens: 25,
         prompt_tokens_details: {
@@ -1006,12 +978,8 @@ describe('Cross-provider token usage normalization', () => {
   })
 
   test('OpenAI Responses parseUsage normalizes input and output tokens plus cached prompt tokens', () => {
-    const adapter = createOpenAIResponsesAdapter() as unknown as {
-      parseUsage(usage: Record<string, unknown>): Record<string, unknown>
-    }
-
     expect(
-      adapter.parseUsage({
+      parseOpenAIResponseUsage({
         input_tokens: 100,
         output_tokens: 25,
         input_tokens_details: {
@@ -1051,17 +1019,11 @@ describe('Cross-provider token usage normalization', () => {
         }),
       },
     }
-    const chat = createOpenAIChatAdapter() as unknown as {
-      parseUsage(usage: Record<string, unknown>): Record<string, unknown>
-    }
-    const responses = createOpenAIResponsesAdapter() as unknown as {
-      parseUsage(usage: Record<string, unknown>): Record<string, unknown>
-    }
 
     const usageResults = [
       (await anthropic.complete(makeRequest([makeTextMessage('user', 'Ping')]))).usage,
-      chat.parseUsage({ prompt_tokens: 9, completion_tokens: 4 }),
-      responses.parseUsage({ input_tokens: 9, output_tokens: 4 }),
+      parseOpenAIChatUsage({ prompt_tokens: 9, completion_tokens: 4 }),
+      parseOpenAIResponseUsage({ input_tokens: 9, output_tokens: 4 }),
     ]
 
     for (const usage of usageResults) {
@@ -1094,15 +1056,9 @@ describe('Cross-provider multimodal and tool mixed scenarios', () => {
       ]),
     ]
 
-    const anthropic = getAnthropicHarness(createAnthropicAdapter()).convertMessages(
-      makeRequest(messages),
-    )
-    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(
-      makeRequest(messages),
-    )
-    const responses = getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(
-      makeRequest(messages),
-    )
+    const anthropic = convertAnthropic(makeRequest(messages))
+    const chat = convertOpenAIChat(makeRequest(messages))
+    const responses = buildOpenAIResponsesInput(makeRequest(messages)) as ResponsesInputItemLike[]
 
     expect(anthropic[1]).toEqual({
       role: 'user',
@@ -1196,15 +1152,9 @@ describe('Cross-provider multimodal and tool mixed scenarios', () => {
       ]),
     ]
 
-    const anthropic = getAnthropicHarness(createAnthropicAdapter()).convertMessages(
-      makeRequest(messages),
-    )
-    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(
-      makeRequest(messages),
-    )
-    const responses = getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(
-      makeRequest(messages),
-    )
+    const anthropic = convertAnthropic(makeRequest(messages))
+    const chat = convertOpenAIChat(makeRequest(messages))
+    const responses = buildOpenAIResponsesInput(makeRequest(messages)) as ResponsesInputItemLike[]
 
     expect(anthropic[1]).toEqual({
       role: 'user',
@@ -1300,15 +1250,9 @@ describe('Cross-provider multimodal and tool mixed scenarios', () => {
       ]),
     ]
 
-    const anthropic = getAnthropicHarness(createAnthropicAdapter()).convertMessages(
-      makeRequest(messages),
-    )
-    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(
-      makeRequest(messages),
-    )
-    const responses = getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(
-      makeRequest(messages),
-    )
+    const anthropic = convertAnthropic(makeRequest(messages))
+    const chat = convertOpenAIChat(makeRequest(messages))
+    const responses = buildOpenAIResponsesInput(makeRequest(messages)) as ResponsesInputItemLike[]
 
     expect(anthropic).toEqual([
       {
@@ -1413,15 +1357,9 @@ describe('Cross-provider multimodal and tool mixed scenarios', () => {
       ]),
     ]
 
-    const anthropic = getAnthropicHarness(createAnthropicAdapter()).convertMessages(
-      makeRequest(messages),
-    )
-    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(
-      makeRequest(messages),
-    )
-    const responses = getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(
-      makeRequest(messages),
-    )
+    const anthropic = convertAnthropic(makeRequest(messages))
+    const chat = convertOpenAIChat(makeRequest(messages))
+    const responses = buildOpenAIResponsesInput(makeRequest(messages)) as ResponsesInputItemLike[]
 
     expect(
       (anthropic[0].content as Array<Record<string, unknown>>).filter((b) => b.type === 'image'),
@@ -1451,12 +1389,8 @@ describe('Cross-provider half-completed turn resilience', () => {
       ]),
     ]
 
-    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(
-      makeRequest(messages),
-    )
-    const responses = getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(
-      makeRequest(messages),
-    )
+    const chat = convertOpenAIChat(makeRequest(messages))
+    const responses = buildOpenAIResponsesInput(makeRequest(messages)) as ResponsesInputItemLike[]
 
     expect(chat).toEqual([
       { role: 'user', content: 'Start' },
@@ -1480,12 +1414,8 @@ describe('Cross-provider half-completed turn resilience', () => {
       makeMessage('user', [{ type: 'tool_result', toolUseId: pairedId, content: 'paired result' }]),
     ]
 
-    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(
-      makeRequest(messages),
-    )
-    const responses = getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(
-      makeRequest(messages),
-    )
+    const chat = convertOpenAIChat(makeRequest(messages))
+    const responses = buildOpenAIResponsesInput(makeRequest(messages)) as ResponsesInputItemLike[]
 
     expect(chat).toEqual([
       { role: 'user', content: 'Start' },
@@ -1525,35 +1455,25 @@ describe('Cross-provider half-completed turn resilience', () => {
       makeTextMessage('assistant', 'Second assistant turn'),
     ]
 
-    expect(() =>
-      getAnthropicHarness(createAnthropicAdapter()).convertMessages(makeRequest(messages)),
-    ).not.toThrow()
-    expect(() =>
-      getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(makeRequest(messages)),
-    ).not.toThrow()
-    expect(() =>
-      getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(makeRequest(messages)),
-    ).not.toThrow()
+    expect(() => convertAnthropic(makeRequest(messages))).not.toThrow()
+    expect(() => convertOpenAIChat(makeRequest(messages))).not.toThrow()
+    expect(() => buildOpenAIResponsesInput(makeRequest(messages))).not.toThrow()
   })
 
   test('all adapters tolerate assistant messages with empty content', () => {
     const messages = [makeTextMessage('user', 'Start'), makeMessage('assistant', [])]
 
-    expect(
-      getAnthropicHarness(createAnthropicAdapter()).convertMessages(makeRequest(messages)),
-    ).toEqual([
+    expect(convertAnthropic(makeRequest(messages))).toEqual([
       { role: 'user', content: [{ type: 'text', text: 'Start' }] },
       { role: 'assistant', content: [] },
     ])
-    expect(
-      getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(makeRequest(messages)),
-    ).toEqual([
+    expect(convertOpenAIChat(makeRequest(messages))).toEqual([
       { role: 'user', content: 'Start' },
       { role: 'assistant', content: '' },
     ])
-    expect(
-      getResponsesHarness(createOpenAIResponsesAdapter()).buildInput(makeRequest(messages)),
-    ).toEqual([{ role: 'user', content: 'Start' }])
+    expect(buildOpenAIResponsesInput(makeRequest(messages))).toEqual([
+      { role: 'user', content: 'Start' },
+    ])
   })
 })
 
@@ -1641,12 +1561,8 @@ describe('Cross-provider fallback and history continuity', () => {
       makeTextMessage('assistant', 'Here is the result.'),
     ]
 
-    const anthropic = getAnthropicHarness(createAnthropicAdapter()).convertMessages(
-      makeRequest(messages),
-    )
-    const chat = getOpenAIChatHarness(createOpenAIChatAdapter()).convertMessages(
-      makeRequest(messages),
-    )
+    const anthropic = convertAnthropic(makeRequest(messages))
+    const chat = convertOpenAIChat(makeRequest(messages))
 
     expect(anthropic).toHaveLength(4)
     expect(chat).toEqual([

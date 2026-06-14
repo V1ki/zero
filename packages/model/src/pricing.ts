@@ -2,15 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ModelPricing } from '@zero-os/shared'
 
-const LITELLM_URL =
-  'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'
-
-const CACHE_FILE = 'litellm_pricing.json'
-const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000 // 24 hours
-const FETCH_TIMEOUT_MS = 15_000
-
-/** Per-token entry from LiteLLM's JSON */
-interface LiteLLMEntry {
+export interface LiteLLMEntry {
   input_cost_per_token?: number
   output_cost_per_token?: number
   cache_creation_input_token_cost?: number
@@ -18,7 +10,12 @@ interface LiteLLMEntry {
   [key: string]: unknown
 }
 
-/** Known provider prefixes used by LiteLLM */
+const LITELLM_URL =
+  'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'
+
+const CACHE_FILE = 'litellm_pricing.json'
+const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000 // 24 hours
+const FETCH_TIMEOUT_MS = 15_000
 const LITELLM_PREFIXES = [
   'anthropic/',
   'openai/',
@@ -28,64 +25,6 @@ const LITELLM_PREFIXES = [
   'mistral/',
   'deepseek/',
 ] as const
-
-/**
- * Convert LiteLLM per-token pricing to our per-million-token ModelPricing.
- */
-export function convertPricing(entry: LiteLLMEntry): ModelPricing | null {
-  const input = entry.input_cost_per_token
-  const output = entry.output_cost_per_token
-  if (input == null || output == null) return null
-
-  const pricing: ModelPricing = {
-    input: input * 1_000_000,
-    output: output * 1_000_000,
-  }
-
-  if (entry.cache_creation_input_token_cost != null) {
-    pricing.cacheWrite = entry.cache_creation_input_token_cost * 1_000_000
-  }
-  if (entry.cache_read_input_token_cost != null) {
-    pricing.cacheRead = entry.cache_read_input_token_cost * 1_000_000
-  }
-
-  return pricing
-}
-
-/**
- * Find a matching entry in the LiteLLM data for a given model ID.
- *
- * Strategy (by priority):
- * 1. Exact match
- * 2. Add a known litellm provider prefix (anthropic/, openai/, etc.)
- * 3. Strip our own provider prefix and retry exact + prefixed
- */
-export function findEntry(
-  data: Record<string, LiteLLMEntry>,
-  modelId: string,
-): LiteLLMEntry | null {
-  // 1. Exact match
-  if (data[modelId]) return data[modelId]
-
-  // 2. Try with litellm provider prefix
-  for (const prefix of LITELLM_PREFIXES) {
-    const key = `${prefix}${modelId}`
-    if (data[key]) return data[key]
-  }
-
-  // 3. Strip our provider prefix (e.g. "my-provider/claude-opus-4-6" → "claude-opus-4-6")
-  const slashIdx = modelId.indexOf('/')
-  if (slashIdx > 0) {
-    const bare = modelId.slice(slashIdx + 1)
-    if (data[bare]) return data[bare]
-    for (const prefix of LITELLM_PREFIXES) {
-      const key = `${prefix}${bare}`
-      if (data[key]) return data[key]
-    }
-  }
-
-  return null
-}
 
 /**
  * LiteLLM Pricing — singleton that loads model pricing from LiteLLM's
@@ -198,4 +137,48 @@ export class LiteLLMPricing {
       // Network failure — keep existing data (if any) or stay null
     }
   }
+}
+
+export function convertPricing(entry: LiteLLMEntry): ModelPricing | null {
+  const input = entry.input_cost_per_token
+  const output = entry.output_cost_per_token
+  if (input == null || output == null) return null
+
+  const pricing: ModelPricing = {
+    input: input * 1_000_000,
+    output: output * 1_000_000,
+  }
+
+  if (entry.cache_creation_input_token_cost != null) {
+    pricing.cacheWrite = entry.cache_creation_input_token_cost * 1_000_000
+  }
+  if (entry.cache_read_input_token_cost != null) {
+    pricing.cacheRead = entry.cache_read_input_token_cost * 1_000_000
+  }
+
+  return pricing
+}
+
+export function findEntry(
+  data: Record<string, LiteLLMEntry>,
+  modelId: string,
+): LiteLLMEntry | null {
+  if (data[modelId]) return data[modelId]
+
+  for (const prefix of LITELLM_PREFIXES) {
+    const key = `${prefix}${modelId}`
+    if (data[key]) return data[key]
+  }
+
+  const slashIdx = modelId.indexOf('/')
+  if (slashIdx > 0) {
+    const bare = modelId.slice(slashIdx + 1)
+    if (data[bare]) return data[bare]
+    for (const prefix of LITELLM_PREFIXES) {
+      const key = `${prefix}${bare}`
+      if (data[key]) return data[key]
+    }
+  }
+
+  return null
 }

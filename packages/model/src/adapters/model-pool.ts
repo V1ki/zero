@@ -1,9 +1,6 @@
 import type { CompletionRequest, CompletionResponse, StreamEvent } from '@zero-os/shared'
-import type {
-  ProviderHealthRecord,
-  ProviderHealthRegistry,
-  ProviderHealthState,
-} from '../provider-health'
+import type { ProviderHealthRegistry } from '../provider-health'
+import type { ProviderHealthRecord } from '../provider-health'
 import type { ProviderAdapter } from './base'
 
 export interface ModelPoolAdapterMember {
@@ -14,40 +11,44 @@ export interface ModelPoolAdapterMember {
   priority: number
 }
 
+export interface ModelPoolAdapterOptions {
+  sticky: boolean
+  quotaAware: boolean
+  onMemberSelected?: (event: {
+    logicalLabel: string
+    sessionId?: string
+    member: ModelPoolAdapterMember
+  }) => void
+  onMemberFailed?: (event: {
+    logicalLabel: string
+    member: ModelPoolAdapterMember
+    failure: RetryablePoolFailure
+    record?: ProviderHealthRecord
+    error: unknown
+  }) => void
+}
+
 type RetryablePoolFailure = 'quota_limited' | 'auth_error' | 'temporary_unavailable'
 
 export class ModelPoolAdapter implements ProviderAdapter {
   readonly apiType = 'model_pool'
-  private stickyMembers = new Map<string, string>()
+  private readonly selector: ModelPoolMemberSelector
 
   constructor(
     private readonly logicalLabel: string,
     private readonly members: ModelPoolAdapterMember[],
     private readonly health: ProviderHealthRegistry,
-    private readonly options: {
-      sticky: boolean
-      quotaAware: boolean
-      onMemberSelected?: (event: {
-        logicalLabel: string
-        sessionId?: string
-        member: ModelPoolAdapterMember
-      }) => void
-      onMemberFailed?: (event: {
-        logicalLabel: string
-        member: ModelPoolAdapterMember
-        failure: RetryablePoolFailure
-        record?: ProviderHealthRecord
-        error: unknown
-      }) => void
-    },
-  ) {}
+    private readonly options: ModelPoolAdapterOptions,
+  ) {
+    this.selector = new ModelPoolMemberSelector(logicalLabel, members, health, options)
+  }
 
   async complete(req: CompletionRequest): Promise<CompletionResponse> {
     const excluded = new Set<string>()
     let lastError: unknown
 
     while (excluded.size < this.members.length) {
-      const member = await this.selectMember(req, excluded)
+      const member = await this.selector.select(req, excluded)
       if (!member) break
 
       try {
@@ -63,7 +64,10 @@ export class ModelPoolAdapter implements ProviderAdapter {
       }
     }
 
-    throw lastError ?? this.createNoAvailableProvidersError()
+    throw (
+      lastError ??
+      createNoAvailableModelPoolProvidersError(this.logicalLabel, this.members, this.health)
+    )
   }
 
   async *stream(req: CompletionRequest): AsyncIterable<StreamEvent> {
@@ -71,7 +75,7 @@ export class ModelPoolAdapter implements ProviderAdapter {
     let lastError: unknown
 
     while (excluded.size < this.members.length) {
-      const member = await this.selectMember(req, excluded)
+      const member = await this.selector.select(req, excluded)
       if (!member) break
       let yielded = false
 
@@ -91,11 +95,14 @@ export class ModelPoolAdapter implements ProviderAdapter {
       }
     }
 
-    throw lastError ?? this.createNoAvailableProvidersError()
+    throw (
+      lastError ??
+      createNoAvailableModelPoolProvidersError(this.logicalLabel, this.members, this.health)
+    )
   }
 
   async healthCheck(): Promise<boolean> {
-    for (const member of this.sortedMembers()) {
+    for (const member of this.selector.sortedMembers()) {
       if (!(await this.health.isAvailable(member.providerName, member.modelName))) continue
       try {
         if (await member.adapter.healthCheck()) return true
@@ -104,7 +111,41 @@ export class ModelPoolAdapter implements ProviderAdapter {
     return false
   }
 
-  private async selectMember(
+  private forMember(req: CompletionRequest): CompletionRequest {
+    return { ...req, model: undefined }
+  }
+
+  private async markMemberFailure(
+    member: ModelPoolAdapterMember,
+    failure: RetryablePoolFailure,
+    error: unknown,
+  ) {
+    const record = await markModelPoolMemberFailure(this.health, member, failure, error)
+
+    this.options.onMemberFailed?.({
+      logicalLabel: this.logicalLabel,
+      member,
+      failure,
+      record,
+      error,
+    })
+  }
+}
+
+class ModelPoolMemberSelector {
+  private stickyMembers = new Map<string, string>()
+
+  constructor(
+    private readonly logicalLabel: string,
+    private readonly members: ModelPoolAdapterMember[],
+    private readonly health: ProviderHealthRegistry,
+    private readonly options: Pick<
+      ModelPoolAdapterOptions,
+      'sticky' | 'quotaAware' | 'onMemberSelected'
+    >,
+  ) {}
+
+  async select(
     req: CompletionRequest,
     excluded: Set<string>,
   ): Promise<ModelPoolAdapterMember | undefined> {
@@ -119,7 +160,7 @@ export class ModelPoolAdapter implements ProviderAdapter {
       if (
         stickyMember &&
         !excluded.has(stickyMember.label) &&
-        (await this.isMemberAvailable(stickyMember))
+        (await this.isAvailable(stickyMember))
       ) {
         return stickyMember
       }
@@ -127,7 +168,7 @@ export class ModelPoolAdapter implements ProviderAdapter {
 
     for (const member of this.sortedMembers()) {
       if (excluded.has(member.label)) continue
-      if (!(await this.isMemberAvailable(member))) continue
+      if (!(await this.isAvailable(member))) continue
       if (this.options.sticky) {
         this.stickyMembers.set(stickyKey, member.label)
       }
@@ -138,83 +179,78 @@ export class ModelPoolAdapter implements ProviderAdapter {
     return undefined
   }
 
-  private async isMemberAvailable(member: ModelPoolAdapterMember): Promise<boolean> {
+  sortedMembers(): ModelPoolAdapterMember[] {
+    return sortModelPoolMembers(this.members)
+  }
+
+  private async isAvailable(member: ModelPoolAdapterMember): Promise<boolean> {
     if (!this.options.quotaAware) return true
     return await this.health.isAvailable(member.providerName, member.modelName)
   }
-
-  private createNoAvailableProvidersError(): Error {
-    const details = this.sortedMembers()
-      .map((member) => {
-        const record = this.health.get(member.providerName, member.modelName)
-        if (!record) return `${member.label}: unavailable`
-        const reason = record.reason ? `: ${truncate(record.reason, 220)}` : ''
-        const cooldown = record.cooldownUntil
-          ? ` until ${new Date(record.cooldownUntil).toISOString()}`
-          : ''
-        return `${member.label}: ${record.state}${cooldown}${reason}`
-      })
-      .join('; ')
-    return new Error(
-      `No available providers for model pool ${this.logicalLabel}${details ? ` (${details})` : ''}`,
-    )
-  }
-
-  private sortedMembers(): ModelPoolAdapterMember[] {
-    return [...this.members].sort((left, right) => left.priority - right.priority)
-  }
-
-  private forMember(req: CompletionRequest): CompletionRequest {
-    return { ...req, model: undefined }
-  }
-
-  private async markMemberFailure(
-    member: ModelPoolAdapterMember,
-    failure: RetryablePoolFailure,
-    error: unknown,
-  ) {
-    let record: ProviderHealthRecord | undefined
-    if (failure === 'quota_limited') {
-      record = await this.health.markQuotaLimited({
-        providerName: member.providerName,
-        modelName: member.modelName,
-        reason: errorMessage(error),
-        evidence: errorEvidence(error),
-      })
-    } else if (failure === 'auth_error') {
-      record = this.health.markAuthError({
-        providerName: member.providerName,
-        modelName: member.modelName,
-        reason: errorMessage(error),
-        evidence: errorEvidence(error),
-      })
-    } else {
-      record = this.health.markTemporaryUnavailable({
-        providerName: member.providerName,
-        modelName: member.modelName,
-        reason: errorMessage(error),
-        evidence: errorEvidence(error),
-      })
-    }
-
-    this.options.onMemberFailed?.({
-      logicalLabel: this.logicalLabel,
-      member,
-      failure,
-      record,
-      error,
-    })
-  }
 }
 
-export function classifyProviderFailureState(error: unknown): ProviderHealthState | undefined {
-  const failure = classifyPoolFailure(error)
-  return failure
+function createNoAvailableModelPoolProvidersError(
+  logicalLabel: string,
+  members: readonly ModelPoolAdapterMember[],
+  health: ProviderHealthRegistry,
+): Error {
+  const details = sortModelPoolMembers(members)
+    .map((member) => {
+      const record = health.get(member.providerName, member.modelName)
+      if (!record) return `${member.label}: unavailable`
+      const reason = record.reason ? `: ${truncate(record.reason, 220)}` : ''
+      const cooldown = record.cooldownUntil
+        ? ` until ${new Date(record.cooldownUntil).toISOString()}`
+        : ''
+      return `${member.label}: ${record.state}${cooldown}${reason}`
+    })
+    .join('; ')
+  return new Error(
+    `No available providers for model pool ${logicalLabel}${details ? ` (${details})` : ''}`,
+  )
+}
+
+async function markModelPoolMemberFailure(
+  health: ProviderHealthRegistry,
+  member: ModelPoolAdapterMember,
+  failure: RetryablePoolFailure,
+  error: unknown,
+): Promise<ProviderHealthRecord> {
+  if (failure === 'quota_limited') {
+    return await health.markQuotaLimited({
+      providerName: member.providerName,
+      modelName: member.modelName,
+      reason: getPoolFailureMessage(error),
+      evidence: getPoolFailureEvidence(error),
+    })
+  }
+
+  if (failure === 'auth_error') {
+    return health.markAuthError({
+      providerName: member.providerName,
+      modelName: member.modelName,
+      reason: getPoolFailureMessage(error),
+      evidence: getPoolFailureEvidence(error),
+    })
+  }
+
+  return health.markTemporaryUnavailable({
+    providerName: member.providerName,
+    modelName: member.modelName,
+    reason: getPoolFailureMessage(error),
+    evidence: getPoolFailureEvidence(error),
+  })
+}
+
+function sortModelPoolMembers(
+  members: readonly ModelPoolAdapterMember[],
+): ModelPoolAdapterMember[] {
+  return [...members].sort((left, right) => left.priority - right.priority)
 }
 
 function classifyPoolFailure(error: unknown): RetryablePoolFailure | undefined {
   const status = errorStatus(error)
-  const message = errorMessage(error).toLowerCase()
+  const message = getPoolFailureMessage(error).toLowerCase()
 
   if (
     status === 429 ||
@@ -238,6 +274,18 @@ function classifyPoolFailure(error: unknown): RetryablePoolFailure | undefined {
   return undefined
 }
 
+function getPoolFailureMessage(error: unknown): string {
+  if (error instanceof Error) return error.message
+  return typeof error === 'string' ? error : String(error)
+}
+
+function getPoolFailureEvidence(error: unknown): Record<string, unknown> {
+  return {
+    status: errorStatus(error),
+    message: getPoolFailureMessage(error).slice(0, 500),
+  }
+}
+
 function isAuthFailureMessage(message: string): boolean {
   return (
     message.includes('reauthenticate') ||
@@ -259,20 +307,8 @@ function errorStatus(error: unknown): number | undefined {
     if (typeof status === 'number') return status
   }
 
-  const match = errorMessage(error).match(/\b([45]\d{2})\b/)
+  const match = getPoolFailureMessage(error).match(/\b([45]\d{2})\b/)
   return match ? Number(match[1]) : undefined
-}
-
-function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message
-  return typeof error === 'string' ? error : String(error)
-}
-
-function errorEvidence(error: unknown): Record<string, unknown> {
-  return {
-    status: errorStatus(error),
-    message: errorMessage(error).slice(0, 500),
-  }
 }
 
 function truncate(value: string, maxLength: number): string {

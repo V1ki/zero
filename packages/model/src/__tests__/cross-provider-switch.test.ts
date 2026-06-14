@@ -1,9 +1,12 @@
 import { describe, expect, test } from 'bun:test'
-import type { CompletionRequest, Message, StreamEvent, SystemConfig } from '@zero-os/shared'
+import type { CompletionRequest, Message, SystemConfig } from '@zero-os/shared'
 import { generateId, now } from '@zero-os/shared'
 import { AnthropicAdapter } from '../adapters/anthropic'
+import { convertAnthropicMessages } from '../adapters/anthropic'
 import { OpenAIChatAdapter } from '../adapters/openai-chat'
+import { convertOpenAIChatMessages } from '../adapters/openai-chat'
 import { OpenAIResponsesAdapter } from '../adapters/openai-resp'
+import { buildOpenAIResponsesInput } from '../adapters/openai-resp-input'
 import { ModelRouter } from '../router'
 import { collectStream } from '../stream'
 
@@ -43,7 +46,6 @@ interface AnthropicAdapterTestHarness {
       create: (params: Record<string, unknown>) => Promise<unknown>
     }
   }
-  convertMessages(req: CompletionRequest): AnthropicMessageLike[]
 }
 
 interface OpenAIChatAdapterTestHarness {
@@ -54,28 +56,22 @@ interface OpenAIChatAdapterTestHarness {
       }
     }
   }
-  convertMessages(req: CompletionRequest): ChatMessageLike[]
-}
-
-interface OpenAIResponsesAdapterTestHarness {
-  client: {
-    responses: {
-      create: (params: Record<string, unknown>) => Promise<unknown>
-    }
-  } | null
-  buildInput(req: CompletionRequest): ResponsesInputItemLike[]
 }
 
 function getAnthropicHarness(instance: AnthropicAdapter): AnthropicAdapterTestHarness {
   return instance as unknown as AnthropicAdapterTestHarness
 }
 
+function convertAnthropic(req: CompletionRequest): AnthropicMessageLike[] {
+  return convertAnthropicMessages(req) as unknown as AnthropicMessageLike[]
+}
+
 function getOpenAIChatHarness(instance: OpenAIChatAdapter): OpenAIChatAdapterTestHarness {
   return instance as unknown as OpenAIChatAdapterTestHarness
 }
 
-function getResponsesHarness(instance: OpenAIResponsesAdapter): OpenAIResponsesAdapterTestHarness {
-  return instance as unknown as OpenAIResponsesAdapterTestHarness
+function convertOpenAIChat(req: CompletionRequest): ChatMessageLike[] {
+  return convertOpenAIChatMessages(req) as unknown as ChatMessageLike[]
 }
 
 function makeMessage(role: 'user' | 'assistant', text: string): Message {
@@ -169,21 +165,6 @@ function createOpenAIChatAdapter(): OpenAIChatAdapter {
   })
 }
 
-function createOpenAIResponsesAdapter(): OpenAIResponsesAdapter {
-  return new OpenAIResponsesAdapter({
-    baseUrl: 'https://api.openai.test',
-    auth: { type: 'api_key', apiKeyRef: 'responses_key' },
-    modelConfig: {
-      modelId: 'gpt-responses-test',
-      maxContext: 200000,
-      maxOutput: 8192,
-      capabilities: ['tools'],
-      tags: ['test'],
-    },
-    apiKey: 'responses-test-key',
-  })
-}
-
 function createChatGptResponsesAdapter(): OpenAIResponsesAdapter {
   return new OpenAIResponsesAdapter({
     providerName: 'chatgpt',
@@ -271,21 +252,26 @@ const ANTHROPIC_TOOL_ID_RE = /^[a-zA-Z0-9_-]+$/
 
 describe('Cross-provider tool ID compatibility', () => {
   test('Anthropic toolu_* IDs convert through OpenAI Chat without crashing', () => {
-    const adapter = createOpenAIChatAdapter()
     const toolId = `toolu_${generateId()}`
 
-    const converted = getOpenAIChatHarness(adapter).convertMessages(makeRequest(makeToolConversation(toolId)))
+    const converted = convertOpenAIChat(makeRequest(makeToolConversation(toolId)))
 
-    expect(converted.map((message) => message.role)).toEqual(['user', 'assistant', 'tool', 'assistant'])
+    expect(converted.map((message) => message.role)).toEqual([
+      'user',
+      'assistant',
+      'tool',
+      'assistant',
+    ])
     expect(converted[1].tool_calls?.[0].id).toBe(toolId)
     expect(converted[2].tool_call_id).toBe(toolId)
   })
 
   test('Anthropic toolu_* IDs convert through OpenAI Responses without crashing', () => {
-    const adapter = createOpenAIResponsesAdapter()
     const toolId = `toolu_${generateId()}`
 
-    const input = getResponsesHarness(adapter).buildInput(makeRequest(makeToolConversation(toolId)))
+    const input = buildOpenAIResponsesInput(
+      makeRequest(makeToolConversation(toolId)),
+    ) as ResponsesInputItemLike[]
 
     expect(input.map((item) => item.type ?? item.role)).toEqual([
       'user',
@@ -308,12 +294,16 @@ describe('Cross-provider tool ID compatibility', () => {
   })
 
   test('OpenAI Chat call_* IDs convert through Anthropic without crashing', () => {
-    const adapter = createAnthropicAdapter()
     const toolId = `call_${generateId()}`
 
-    const converted = getAnthropicHarness(adapter).convertMessages(makeRequest(makeToolConversation(toolId)))
+    const converted = convertAnthropic(makeRequest(makeToolConversation(toolId)))
 
-    expect(converted.map((message) => message.role)).toEqual(['user', 'assistant', 'user', 'assistant'])
+    expect(converted.map((message) => message.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+    ])
     expect(converted[1].content[1]).toMatchObject({
       type: 'tool_use',
       id: toolId,
@@ -327,11 +317,10 @@ describe('Cross-provider tool ID compatibility', () => {
   })
 
   test('Composite call_*|fc_* IDs are sanitized for Anthropic compatibility', () => {
-    const adapter = createAnthropicAdapter()
     const toolId = `call_${generateId()}|fc_${generateId()}`
     const sanitizedToolId = toolId.replace(/[^a-zA-Z0-9_-]/g, '-')
 
-    const converted = getAnthropicHarness(adapter).convertMessages(makeRequest(makeToolConversation(toolId)))
+    const converted = convertAnthropic(makeRequest(makeToolConversation(toolId)))
 
     expect(converted[1].content[1]).toMatchObject({
       type: 'tool_use',
@@ -346,13 +335,10 @@ describe('Cross-provider tool ID compatibility', () => {
   })
 
   test('Anthropic preserves already valid tool IDs', () => {
-    const adapter = createAnthropicAdapter()
     const toolIds = [`toolu_${generateId()}`, `call_${generateId()}`]
 
     for (const toolId of toolIds) {
-      const converted = getAnthropicHarness(adapter).convertMessages(
-        makeRequest(makeToolConversation(toolId)),
-      )
+      const converted = convertAnthropic(makeRequest(makeToolConversation(toolId)))
 
       expect(converted[1].content[1]).toMatchObject({
         type: 'tool_use',
@@ -366,11 +352,10 @@ describe('Cross-provider tool ID compatibility', () => {
   })
 
   test('Anthropic sanitizes every unsupported character in tool IDs', () => {
-    const adapter = createAnthropicAdapter()
     const toolId = `call:${generateId()}/fc.${generateId()}#result`
     const sanitizedToolId = toolId.replace(/[^a-zA-Z0-9_-]/g, '-')
 
-    const converted = getAnthropicHarness(adapter).convertMessages(makeRequest(makeToolConversation(toolId)))
+    const converted = convertAnthropic(makeRequest(makeToolConversation(toolId)))
 
     expect(converted[1].content[1]).toMatchObject({
       type: 'tool_use',
@@ -384,10 +369,9 @@ describe('Cross-provider tool ID compatibility', () => {
   })
 
   test('Composite call_*|fc_* IDs convert through OpenAI Chat without crashing', () => {
-    const adapter = createOpenAIChatAdapter()
     const toolId = `call_${generateId()}|fc_${generateId()}`
 
-    const converted = getOpenAIChatHarness(adapter).convertMessages(makeRequest(makeToolConversation(toolId)))
+    const converted = convertOpenAIChat(makeRequest(makeToolConversation(toolId)))
 
     expect(converted[1].tool_calls?.[0].id).toBe(toolId)
     expect(converted[2].tool_call_id).toBe(toolId)
@@ -395,12 +379,13 @@ describe('Cross-provider tool ID compatibility', () => {
   })
 
   test('Composite call_*|fc_* IDs convert through OpenAI Responses with split call_id/item id', () => {
-    const adapter = createOpenAIResponsesAdapter()
     const callId = `call_${generateId()}`
     const itemId = `fc_${generateId()}`
     const compositeId = `${callId}|${itemId}`
 
-    const input = getResponsesHarness(adapter).buildInput(makeRequest(makeToolConversation(compositeId)))
+    const input = buildOpenAIResponsesInput(
+      makeRequest(makeToolConversation(compositeId)),
+    ) as ResponsesInputItemLike[]
 
     expect(input[2]).toEqual({
       type: 'function_call',
@@ -419,10 +404,9 @@ describe('Cross-provider tool ID compatibility', () => {
 
 describe('Unified session history conversion', () => {
   test('Anthropic converts a complete text + tool_use + tool_result history', () => {
-    const adapter = createAnthropicAdapter()
     const messages = makeToolConversation(`toolu_${generateId()}`)
 
-    const converted = getAnthropicHarness(adapter).convertMessages(makeRequest(messages))
+    const converted = convertAnthropic(makeRequest(messages))
 
     expect(converted).toHaveLength(4)
     expect(converted[0]).toEqual({
@@ -448,10 +432,9 @@ describe('Unified session history conversion', () => {
   })
 
   test('OpenAI Chat converts a complete text + tool_use + tool_result history', () => {
-    const adapter = createOpenAIChatAdapter()
     const messages = makeToolConversation(`call_${generateId()}`)
 
-    const converted = getOpenAIChatHarness(adapter).convertMessages(makeRequest(messages))
+    const converted = convertOpenAIChat(makeRequest(messages))
 
     expect(converted).toHaveLength(4)
     expect(converted[0]).toEqual({
@@ -480,10 +463,9 @@ describe('Unified session history conversion', () => {
   })
 
   test('OpenAI Responses converts a complete text + tool_use + tool_result history', () => {
-    const adapter = createOpenAIResponsesAdapter()
     const messages = makeToolConversation(`call_${generateId()}`)
 
-    const input = getResponsesHarness(adapter).buildInput(makeRequest(messages))
+    const input = buildOpenAIResponsesInput(makeRequest(messages)) as ResponsesInputItemLike[]
 
     expect(input).toEqual([
       { role: 'user', content: 'Read the workspace instructions.' },
@@ -582,7 +564,12 @@ describe('collectStream unified consumption across adapters', () => {
             yield {
               type: 'content_block_start',
               index: 1,
-              content_block: { type: 'tool_use', id: 'toolu_stream_1', name: 'read_file', input: {} },
+              content_block: {
+                type: 'tool_use',
+                id: 'toolu_stream_1',
+                name: 'read_file',
+                input: {},
+              },
             }
             yield {
               type: 'content_block_delta',
@@ -611,7 +598,12 @@ describe('collectStream unified consumption across adapters', () => {
       { type: 'text', text: 'Checking instructions. ' },
       { type: 'tool_use', id: 'toolu_stream_1', name: 'read_file', input: { path: 'AGENTS.md' } },
     ])
-    expect(result.usage).toEqual({ input: 11, output: 7, cacheWrite: undefined, cacheRead: undefined })
+    expect(result.usage).toEqual({
+      input: 11,
+      output: 7,
+      cacheWrite: undefined,
+      cacheRead: undefined,
+    })
   })
 
   test('collectStream consumes OpenAI Chat stream events with call_* IDs', async () => {

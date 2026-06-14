@@ -3,8 +3,7 @@ export type { ListedModel, ListedModelPool, ResolvedModel } from './registry'
 export { ModelRouter } from './router'
 export type { ModelSwitchResult } from './router'
 export { OpenAIChatAdapter } from './adapters/openai-chat'
-export { AnthropicAdapter } from './adapters/anthropic'
-export { AnthropicDeepSeekAdapter } from './adapters/anthropic-deepseek'
+export { AnthropicAdapter, AnthropicDeepSeekAdapter } from './adapters/anthropic'
 export { OpenAIResponsesAdapter } from './adapters/openai-resp'
 export { XResponsesAdapter } from './adapters/x-resp'
 export { ModelPoolAdapter } from './adapters/model-pool'
@@ -36,7 +35,6 @@ export {
   serializeXPremiumOAuthSession,
 } from './auth/x-premium'
 export type { XPremiumOAuthAccount, XPremiumOAuthSession } from './auth/x-premium'
-export { createApiKeyAuth } from './auth/api-key'
 export { computeCost } from './cost'
 export { LiteLLMPricing } from './pricing'
 export { ProviderHealthRegistry } from './provider-health'
@@ -46,3 +44,24 @@ export type {
   ProviderRecoveryHint,
   ProviderRecoveryResolver,
 } from './provider-health'
+
+/**
+ * Simple API key authentication strategy.
+ * Retrieves the API key from the secrets vault.
+ */
+export interface ApiKeyAuth {
+  type: 'api_key'
+  getKey(): string | undefined
+}
+
+export function createApiKeyAuth(
+  secretsGet: (ref: string) => string | undefined,
+  keyRef: string,
+): ApiKeyAuth {
+  return {
+    type: 'api_key',
+    getKey() {
+      return secretsGet(keyRef)
+    },
+  }
+}

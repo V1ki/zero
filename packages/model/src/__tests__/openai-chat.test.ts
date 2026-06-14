@@ -3,6 +3,8 @@ import type { CompletionRequest, Message } from '@zero-os/shared'
 import { generateId, now } from '@zero-os/shared'
 import type OpenAI from 'openai'
 import { OpenAIChatAdapter } from '../adapters/openai-chat'
+import { convertOpenAIChatMessages } from '../adapters/openai-chat'
+import { parseOpenAIChatUsage } from '../adapters/openai-chat'
 import { collectStream } from '../stream'
 
 const API_KEY = 'sk-c6c02cbd0c25473f97f9be0da6070f6d'
@@ -30,22 +32,8 @@ type ConvertedChatMessage = {
   tool_calls?: Array<{ id: string }>
 }
 
-interface OpenAIChatAdapterTestHarness {
-  convertMessages(req: CompletionRequest): OpenAI.ChatCompletionMessageParam[]
-  parseUsage(usage?: OpenAI.CompletionUsage | null): {
-    input: number
-    output: number
-    cacheWrite?: number
-    cacheRead?: number
-    reasoning?: number
-  }
-}
-
-function getConvertedMessages(
-  instance: OpenAIChatAdapter,
-  messages: Message[],
-): ConvertedChatMessage[] {
-  return (instance as unknown as OpenAIChatAdapterTestHarness).convertMessages({
+function getConvertedMessages(messages: Message[]): ConvertedChatMessage[] {
+  return convertOpenAIChatMessages({
     messages,
   } as CompletionRequest) as ConvertedChatMessage[]
 }
@@ -152,8 +140,7 @@ describe.skipIf(!RUN_REAL_API)('OpenAI Chat Completions Adapter (Real API)', () 
       },
     ]
 
-    // Access private convertMessages via bracket notation
-    const converted = getConvertedMessages(adapter, messages)
+    const converted = getConvertedMessages(messages)
 
     // Should be: user, assistant (with tool_calls), tool — NO empty user message
     const roles = converted.map((m) => m.role)
@@ -245,7 +232,7 @@ describe.skipIf(!RUN_REAL_API)('OpenAI Chat Completions Adapter (Real API)', () 
 
 describe('OpenAI Chat Completions Adapter (Pure Logic)', () => {
   test('parseUsage normalizes cached tokens into cache buckets', () => {
-    const result = (adapter as unknown as OpenAIChatAdapterTestHarness).parseUsage({
+    const result = parseOpenAIChatUsage({
       prompt_tokens: 120,
       completion_tokens: 40,
       prompt_tokens_details: {
@@ -300,7 +287,7 @@ describe('OpenAI Chat Completions Adapter (Pure Logic)', () => {
       },
     ]
 
-    const converted = getConvertedMessages(adapter, messages)
+    const converted = getConvertedMessages(messages)
     const toolMsg = expectDefined(
       converted.find((m) => m.role === 'tool'),
       'expected tool message',
@@ -334,7 +321,7 @@ describe('OpenAI Chat Completions Adapter (Pure Logic)', () => {
       },
     ]
 
-    const converted = getConvertedMessages(adapter, messages)
+    const converted = getConvertedMessages(messages)
     const toolMsg = expectDefined(
       converted.find((m) => m.role === 'tool'),
       'expected tool message',
@@ -373,7 +360,7 @@ describe('OpenAI Chat Completions Adapter (Pure Logic)', () => {
       },
     ]
 
-    const converted = getConvertedMessages(adapter, messages)
+    const converted = getConvertedMessages(messages)
     const toolMsg = expectDefined(
       converted.find((m) => m.role === 'tool'),
       'expected tool message',
@@ -429,7 +416,7 @@ describe('OpenAI Chat Completions Adapter (Pure Logic)', () => {
       makeMessage('user', 'Continue'),
     ]
 
-    const converted = getConvertedMessages(adapter, messages)
+    const converted = getConvertedMessages(messages)
 
     // Only the paired tool call should be serialized
     const toolMsgs = converted.filter((m) => m.role === 'tool')
@@ -468,7 +455,7 @@ describe('OpenAI Chat Completions Adapter (Pure Logic)', () => {
       },
     ]
 
-    const converted = getConvertedMessages(adapter, messages)
+    const converted = getConvertedMessages(messages)
     const toolMsg = expectDefined(
       converted.find((m) => m.role === 'tool'),
       'expected tool message',
@@ -533,7 +520,7 @@ describe('OpenAI Chat Completions Adapter (Pure Logic)', () => {
       },
     ]
 
-    const converted = getConvertedMessages(adapter, messages)
+    const converted = getConvertedMessages(messages)
     const payload = JSON.stringify(converted)
 
     expect(payload).not.toContain('evidence')

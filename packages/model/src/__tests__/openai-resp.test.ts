@@ -1,21 +1,15 @@
 import { describe, expect, test } from 'bun:test'
-import type { CompletionRequest, CompletionResponse, Message, TokenUsage } from '@zero-os/shared'
+import type { CompletionRequest, Message } from '@zero-os/shared'
 import { generateId, now } from '@zero-os/shared'
 import type OpenAI from 'openai'
 import { OpenAIResponsesAdapter } from '../adapters/openai-resp'
-
-const adapter = new OpenAIResponsesAdapter({
-  baseUrl: 'https://api.example.com',
-  auth: { type: 'api_key', apiKeyRef: 'test' },
-  modelConfig: {
-    modelId: 'test-model',
-    maxContext: 128000,
-    maxOutput: 8192,
-    capabilities: [],
-    tags: [],
-  },
-  apiKey: 'dummy',
-})
+import { parseChatGptCompletionEvents } from '../adapters/openai-resp-chatgpt-events'
+import {
+  buildOpenAIResponsesInput,
+  convertOpenAIResponsesTools,
+} from '../adapters/openai-resp-input'
+import { parseOpenAIResponse } from '../adapters/openai-resp-parse'
+import { parseOpenAIResponseUsage } from '../adapters/openai-resp-parse'
 
 type ResponseInputItemLike = {
   type?: string
@@ -36,36 +30,8 @@ type ChatGptBodyLike = {
   model?: string
 }
 
-type ResponseUsageLike = {
-  input_tokens?: number
-  input_tokens_details?: {
-    cached_tokens?: number
-    cached_tokens_details?: {
-      cache_creation_input_tokens?: number
-    }
-  }
-  output_tokens?: number
-  output_tokens_details?: {
-    reasoning_tokens?: number
-  }
-}
-
 interface OpenAIResponsesAdapterTestHarness {
-  buildInput(req: CompletionRequest): OpenAI.Responses.ResponseInputItem[]
-  convertTools(tools: CompletionRequest['tools']): OpenAI.Responses.Tool[] | undefined
   buildChatGptBody(req: CompletionRequest): ChatGptBodyLike
-  parseResponse(response: OpenAI.Responses.Response): CompletionResponse
-  parseUsage(usage?: ResponseUsageLike): TokenUsage
-  parseChatGptCompletion(events: ChatGptSseEventLike[]): CompletionResponse
-}
-
-type ChatGptSseEventLike = {
-  type?: string
-  item?: Record<string, unknown>
-  response?: Record<string, unknown>
-  item_id?: string
-  summary_index?: number
-  delta?: string
 }
 
 function getResponsesHarness(instance: OpenAIResponsesAdapter): OpenAIResponsesAdapterTestHarness {
@@ -120,7 +86,7 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
       stream: false,
     }
 
-    const input = getResponsesHarness(adapter).buildInput(req) as ResponseInputItemLike[]
+    const input = buildOpenAIResponsesInput(req) as ResponseInputItemLike[]
 
     expect(input[0]).toEqual({ role: 'system', content: 'You are a helpful assistant.' })
     expect(input[1]).toEqual({ role: 'user', content: 'Hello' })
@@ -136,7 +102,7 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
       stream: false,
     }
 
-    const input = getResponsesHarness(adapter).buildInput(req) as ResponseInputItemLike[]
+    const input = buildOpenAIResponsesInput(req) as ResponseInputItemLike[]
 
     expect(input[0]).toEqual({ role: 'user', content: 'First message' })
     expect(input[1]).toEqual({ role: 'assistant', content: 'Response' })
@@ -178,7 +144,7 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
       },
     ]
 
-    const input = getResponsesHarness(adapter).buildInput({
+    const input = buildOpenAIResponsesInput({
       messages,
       stream: false,
     } as CompletionRequest) as ResponseInputItemLike[]
@@ -254,7 +220,7 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
       },
     ]
 
-    const input = getResponsesHarness(adapter).buildInput({
+    const input = buildOpenAIResponsesInput({
       messages,
       stream: false,
     } as CompletionRequest)
@@ -303,7 +269,7 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
       },
     ]
 
-    const input = getResponsesHarness(adapter).buildInput({
+    const input = buildOpenAIResponsesInput({
       messages,
       stream: false,
     } as CompletionRequest) as ResponseInputItemLike[]
@@ -383,7 +349,7 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
       makeMessage('user', 'Continue'),
     ]
 
-    const input = getResponsesHarness(adapter).buildInput({
+    const input = buildOpenAIResponsesInput({
       messages,
       stream: false,
     } as CompletionRequest) as ResponseInputItemLike[]
@@ -413,7 +379,7 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
       },
     ]
 
-    const converted = getResponsesHarness(adapter).convertTools(tools)
+    const converted = convertOpenAIResponsesTools(tools)
 
     expect(converted).toEqual([
       {
@@ -540,8 +506,9 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
       status: 'completed',
     }
 
-    const result = getResponsesHarness(adapter).parseResponse(
+    const result = parseOpenAIResponse(
       mockResponse as unknown as OpenAI.Responses.Response,
+      'test-model',
     )
 
     expect(result.id).toBe('resp_123')
@@ -566,7 +533,7 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
       output_tokens_details: { reasoning_tokens: 10 },
     }
 
-    const result = getResponsesHarness(adapter).parseUsage(usage)
+    const result = parseOpenAIResponseUsage(usage)
 
     expect(result.input).toBe(50)
     expect(result.output).toBe(50)
@@ -576,22 +543,25 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
   })
 
   test('parseChatGptCompletion preserves composite call_id|fc_id as tool_use id', () => {
-    const result = getResponsesHarness(adapter).parseChatGptCompletion([
-      {
-        type: 'response.output_item.added',
-        item: {
-          type: 'function_call',
-          id: 'fc_item_1',
-          call_id: 'call_123',
-          name: 'read',
-          arguments: '{"path":"a.txt"}',
+    const result = parseChatGptCompletionEvents(
+      [
+        {
+          type: 'response.output_item.added',
+          item: {
+            type: 'function_call',
+            id: 'fc_item_1',
+            call_id: 'call_123',
+            name: 'read',
+            arguments: '{"path":"a.txt"}',
+          },
         },
-      },
-      {
-        type: 'response.completed',
-        response: { id: 'resp_1', model: 'test-model', status: 'completed', usage: {} },
-      },
-    ])
+        {
+          type: 'response.completed',
+          response: { id: 'resp_1', model: 'test-model', status: 'completed', usage: {} },
+        },
+      ],
+      'test-model',
+    )
 
     expect(result.content).toContainEqual({
       type: 'tool_use',
@@ -602,24 +572,27 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
   })
 
   test('parseChatGptCompletion extracts reasoning summary text', () => {
-    const result = getResponsesHarness(adapter).parseChatGptCompletion([
-      {
-        type: 'response.reasoning_summary_text.delta',
-        item_id: 'rs_1',
-        summary_index: 0,
-        delta: 'First half. ',
-      },
-      {
-        type: 'response.reasoning_summary_text.delta',
-        item_id: 'rs_1',
-        summary_index: 0,
-        delta: 'Second half.',
-      },
-      {
-        type: 'response.completed',
-        response: { id: 'resp_2', model: 'test-model', status: 'completed', usage: {} },
-      },
-    ])
+    const result = parseChatGptCompletionEvents(
+      [
+        {
+          type: 'response.reasoning_summary_text.delta',
+          item_id: 'rs_1',
+          summary_index: 0,
+          delta: 'First half. ',
+        },
+        {
+          type: 'response.reasoning_summary_text.delta',
+          item_id: 'rs_1',
+          summary_index: 0,
+          delta: 'Second half.',
+        },
+        {
+          type: 'response.completed',
+          response: { id: 'resp_2', model: 'test-model', status: 'completed', usage: {} },
+        },
+      ],
+      'test-model',
+    )
 
     expect(result.reasoningContent).toBe('First half. Second half.')
   })

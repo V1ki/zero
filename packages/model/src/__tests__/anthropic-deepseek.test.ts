@@ -4,7 +4,7 @@ import type { CompletionRequest, Message } from '@zero-os/shared'
 import { generateId, now } from '@zero-os/shared'
 import { getMasterKey } from '../../../secrets/src/keychain'
 import { Vault } from '../../../secrets/src/vault'
-import { AnthropicDeepSeekAdapter } from '../adapters/anthropic-deepseek'
+import { AnthropicDeepSeekAdapter } from '../adapters/anthropic'
 import { collectStream } from '../stream'
 
 const __dirname = import.meta.dir
