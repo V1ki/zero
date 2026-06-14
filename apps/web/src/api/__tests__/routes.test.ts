@@ -11,13 +11,16 @@ import type { ProviderAdapter } from '@zero-os/model'
 import { encryptSecrets } from '@zero-os/secrets'
 import type { Session as SessionData, TimelineCompactionBlock } from '@zero-os/shared'
 import { readYaml } from '@zero-os/shared/utils'
-import { createTestProjectRoot } from '../../../../../packages/core/src/session/__tests__/test-helpers'
+import {
+  createTestProjectRoot,
+  getSessionAgentForTest,
+} from '../../../../../packages/core/src/session/__tests__/test-helpers'
 import { SessionDB } from '../../../../../packages/observe/src/session-db'
-import { getChatgptOAuthTokenRef } from '../../../../server/src/chatgpt-provider'
-import { getClaudeOAuthSessionRef } from '../../../../server/src/claude-provider'
 import { startZeroOS } from '../../../../server/src/main'
 import type { ZeroOS } from '../../../../server/src/main'
-import { getXPremiumOAuthSessionRef } from '../../../../server/src/x-premium-provider'
+import { getChatgptOAuthTokenRef } from '../../../../server/src/providers/chatgpt/config'
+import { getClaudeOAuthSessionRef } from '../../../../server/src/providers/claude/config'
+import { getXPremiumOAuthSessionRef } from '../../../../server/src/providers/x-premium'
 import { createRoutes } from '../routes'
 
 let app: ReturnType<typeof createRoutes>
@@ -702,11 +705,7 @@ fuse_list: []
       agentInstruction: 'Test runtime config updates.',
     })
 
-    const initialAgent = (
-      session as unknown as {
-        agent: { closureAdapter: ProviderAdapter } | null
-      }
-    ).agent
+    const initialAgent = getSessionAgentForTest<{ closureAdapter: ProviderAdapter }>(session)
     expect(initialAgent?.closureAdapter).toBe(zero.modelRouter.getDefaultModel()?.adapter)
 
     const res = await app.request('/api/config', {
@@ -716,11 +715,7 @@ fuse_list: []
     })
     expect(res.status).toBe(200)
 
-    const refreshedAgent = (
-      session as unknown as {
-        agent: { closureAdapter: ProviderAdapter } | null
-      }
-    ).agent
+    const refreshedAgent = getSessionAgentForTest<{ closureAdapter: ProviderAdapter }>(session)
     expect(refreshedAgent?.closureAdapter).toBe(
       zero.modelRouter.resolveModel('openai-codex/gpt-5.3-codex-medium')?.adapter,
     )
@@ -730,11 +725,7 @@ fuse_list: []
       name: 'runtime-config-agent-future',
       agentInstruction: 'Test future runtime config updates.',
     })
-    const futureAgent = (
-      future as unknown as {
-        agent: { closureAdapter: ProviderAdapter } | null
-      }
-    ).agent
+    const futureAgent = getSessionAgentForTest<{ closureAdapter: ProviderAdapter }>(future)
     expect(futureAgent?.closureAdapter).toBe(
       zero.modelRouter.resolveModel('openai-codex/gpt-5.3-codex-medium')?.adapter,
     )
@@ -756,13 +747,9 @@ fuse_list: []
     })
     expect(res.status).toBe(200)
 
-    const refreshedAgent = (
-      session as unknown as {
-        agent: {
-          contextCompactionAdapter: ProviderAdapter
-        } | null
-      }
-    ).agent
+    const refreshedAgent = getSessionAgentForTest<{
+      contextCompactionAdapter: ProviderAdapter
+    }>(session)
     expect(refreshedAgent?.contextCompactionAdapter).toBe(
       zero.modelRouter.resolveModel('openai-codex/gpt-5.4-medium')?.adapter,
     )

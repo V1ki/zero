@@ -13,7 +13,7 @@ test.describe('Logs Page', () => {
     // Time range select
     await expect(page.locator('main select')).toBeVisible()
     // Log type tabs
-    await expect(page.locator('main button:has-text("operations")')).toBeVisible()
+    await expect(page.locator('main button:has-text("events")')).toBeVisible()
     await expect(page.locator('main button:has-text("requests")')).toBeVisible()
     await expect(page.locator('main button:has-text("snapshots")')).toBeVisible()
     await expect(page.locator('main button:has-text("trace")')).toBeVisible()

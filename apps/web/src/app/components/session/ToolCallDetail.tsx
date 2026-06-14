@@ -11,7 +11,9 @@ import {
 } from '@phosphor-icons/react'
 import type { ReactNode } from 'react'
 
-interface ToolCallDetailProps {
+const stderrMarker = '\n[stderr]\n'
+
+export interface ToolCallDetailProps {
   name: string
   input: Record<string, unknown>
   result?: string
@@ -56,7 +58,259 @@ export interface ToolEvidencePointer {
   strategy?: string
 }
 
-const stderrMarker = '\n[stderr]\n'
+function DetailShell({
+  children,
+  dataTool,
+  nested,
+}: {
+  children: ReactNode
+  dataTool: string
+  nested?: boolean
+}) {
+  return (
+    <div
+      data-tool-renderer={dataTool}
+      className={`space-y-2 border-t border-white/[0.06] ${nested ? 'px-3 py-2.5' : 'px-4 py-3'}`}
+    >
+      {children}
+    </div>
+  )
+}
+
+function ToolMetaRow({ children }: { children: ReactNode }) {
+  return <div className="flex flex-wrap items-center gap-1.5">{children}</div>
+}
+
+function MetaChip({ children }: { children: ReactNode }) {
+  return (
+    <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-0.5 text-[10px] font-mono text-[var(--color-text-secondary)]">
+      {children}
+    </span>
+  )
+}
+
+function StatusChip({ isError }: { isError?: boolean }) {
+  if (isError === undefined) return null
+  return (
+    <span
+      className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${
+        isError
+          ? 'border-red-400/30 bg-red-400/12 text-red-200'
+          : 'border-emerald-400/30 bg-emerald-400/12 text-emerald-200'
+      }`}
+    >
+      {isError ? 'error' : 'ok'}
+    </span>
+  )
+}
+
+function SectionLabel({ icon, title }: { icon: ReactNode; title: string }) {
+  return (
+    <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-disabled)]">
+      <span className="text-[var(--color-text-secondary)]">{icon}</span>
+      <span>{title}</span>
+    </div>
+  )
+}
+
+function TerminalSurface({ children }: { children: ReactNode }) {
+  return (
+    <div className="overflow-hidden rounded-2xl border border-white/8 bg-[linear-gradient(180deg,rgba(9,11,16,0.98),rgba(13,18,26,0.94))] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+      {children}
+    </div>
+  )
+}
+
+function CodeViewer({
+  lines,
+  startLine = 1,
+  tone = 'default',
+}: {
+  lines: string[]
+  startLine?: number
+  tone?: 'default' | 'emerald'
+}) {
+  const lineColor =
+    tone === 'emerald' ? 'text-emerald-100/90' : 'text-[var(--color-text-secondary)]'
+
+  return (
+    <div className="overflow-hidden rounded-2xl border border-white/8 bg-[rgba(10,14,20,0.7)]">
+      <div className="max-h-[320px] overflow-y-auto">
+        {lines.map((line, index) => (
+          <div
+            key={`${startLine + index}-${line}`}
+            className="grid grid-cols-[auto_1fr] gap-x-2.5 px-3 py-0.5 font-mono text-[10.5px] leading-[1.15rem]"
+          >
+            <span className="select-none text-[var(--color-text-disabled)]">
+              {startLine + index}
+            </span>
+            <span className={`whitespace-pre-wrap break-words ${lineColor}`}>{line || ' '}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function InfoStrip({
+  tone,
+  label,
+  text,
+}: {
+  tone: 'cyan' | 'amber' | 'emerald' | 'blue' | 'slate'
+  label: string
+  text: string
+}) {
+  const toneClass =
+    tone === 'cyan'
+      ? 'border-cyan-400/15 bg-cyan-400/[0.06] text-cyan-100'
+      : tone === 'amber'
+        ? 'border-amber-400/15 bg-amber-400/[0.06] text-amber-100'
+        : tone === 'emerald'
+          ? 'border-emerald-400/15 bg-emerald-400/[0.06] text-emerald-100'
+          : tone === 'blue'
+            ? 'border-sky-400/15 bg-sky-400/[0.06] text-sky-100'
+            : 'border-white/8 bg-white/[0.03] text-[var(--color-text-secondary)]'
+
+  return (
+    <div className={`rounded-xl border px-3 py-1.5 ${toneClass}`}>
+      <p className="text-[10px] uppercase tracking-[0.18em] opacity-70">{label}</p>
+      <p className="mt-1 text-[10.5px] leading-[1.15rem]">{text}</p>
+    </div>
+  )
+}
+
+function EmptyStateStrip({ title, detail }: { title: string; detail: string }) {
+  return (
+    <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-2">
+      <p className="text-[10.5px] font-medium text-[var(--color-text-secondary)]">{title}</p>
+      <p className="mt-1 text-[10.5px] leading-[1.15rem] text-[var(--color-text-muted)]">
+        {detail}
+      </p>
+    </div>
+  )
+}
+
+function getToolName(value: string) {
+  const parts = value.split('/')
+  return (parts.at(-1) ?? value).toLowerCase()
+}
+
+function stringValue(value: unknown) {
+  return typeof value === 'string' ? value : undefined
+}
+
+function numberValue(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function isImageContentItem(
+  item: ToolResultContentItem,
+): item is Extract<ToolResultContentItem, { type: 'image' }> {
+  return item.type === 'image'
+}
+
+function countLines(value: string) {
+  if (!value) return 0
+  return value.replace(/\r\n/g, '\n').split('\n').length
+}
+
+function formatDuration(durationMs: number) {
+  return durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`
+}
+
+function splitToolResult(result?: string) {
+  if (!result) return { stdout: '', stderr: '' }
+  const markerIndex = result.indexOf(stderrMarker)
+  if (markerIndex === -1) return { stdout: result, stderr: '' }
+  return {
+    stdout: result.slice(0, markerIndex),
+    stderr: result.slice(markerIndex + stderrMarker.length),
+  }
+}
+
+function parseFetchResult(result?: string) {
+  if (!result) return { statusLabel: '', body: '' }
+  const [firstLine, ...rest] = result.split('\n')
+  const body = rest.join('\n').replace(/^\n+/, '')
+  return {
+    statusLabel: firstLine.startsWith('HTTP ') ? firstLine : '',
+    body: firstLine.startsWith('HTTP ') ? body : result,
+  }
+}
+
+function formatFetchBody(body: string): string[] {
+  const trimmed = body.trim()
+  if (!trimmed) return ['(empty response body)']
+
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      return JSON.stringify(JSON.parse(trimmed), null, 2).split('\n')
+    } catch {
+      return body.split('\n')
+    }
+  }
+
+  return body.split('\n')
+}
+
+function resolveToolOutput(toolName: string, result?: string, summary?: string) {
+  if (isMeaningfulToolResult(result)) return normalizeResult(result)
+  if (toolName === 'bash') {
+    const normalizedSummary = normalizeResult(summary)
+    if (
+      normalizedSummary &&
+      !normalizedSummary.startsWith('Executed:') &&
+      !isGenericToolStatus(normalizedSummary)
+    ) {
+      return normalizedSummary
+    }
+    return undefined
+  }
+  if (isMeaningfulToolResult(summary)) return normalizeResult(summary)
+  return undefined
+}
+
+function resolveToolSummary(toolName: string, result?: string, summary?: string) {
+  const normalizedSummary = normalizeResult(summary)
+  const normalizedResult = normalizeResult(result)
+
+  if (toolName === 'bash') {
+    if (normalizedSummary && !normalizedSummary.startsWith('Executed:')) return normalizedSummary
+    return undefined
+  }
+
+  if (normalizedSummary && !isGenericToolStatus(normalizedSummary)) return normalizedSummary
+  if (normalizedResult && !isGenericToolStatus(normalizedResult)) return normalizedResult
+  return undefined
+}
+
+function isMeaningfulToolResult(value?: string) {
+  const normalized = normalizeResult(value)
+  return Boolean(normalized && !isGenericToolStatus(normalized))
+}
+
+function isGenericToolStatus(value: string) {
+  const normalized = value
+    .replace(/^[✓✔]\s*/u, '')
+    .replace(/^[✗✘]\s*/u, '')
+    .trim()
+    .toLowerCase()
+
+  return (
+    normalized === 'success' ||
+    normalized === 'ok' ||
+    normalized === 'done' ||
+    normalized === 'completed' ||
+    normalized === 'passed'
+  )
+}
+
+function normalizeResult(value?: string) {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed ? trimmed : undefined
+}
 
 export function ToolCallDetail({
   name,
@@ -72,109 +326,19 @@ export function ToolCallDetail({
   onAbort,
   nested = false,
 }: ToolCallDetailProps) {
-  const toolName = getToolName(name)
-  const detail = (() => {
-    switch (toolName) {
-      case 'bash':
-        return (
-          <BashToolDetail
-            input={input}
-            result={result}
-            summary={summary}
-            isError={isError}
-            status={status}
-            durationMs={durationMs}
-            abortPending={abortPending}
-            onAbort={onAbort}
-            nested={nested}
-          />
-        )
-      case 'edit':
-        return (
-          <EditToolDetail
-            input={input}
-            result={result}
-            summary={summary}
-            isError={isError}
-            nested={nested}
-          />
-        )
-      case 'read':
-        return <ReadToolDetail input={input} result={result} isError={isError} nested={nested} />
-      case 'read_image':
-        return (
-          <ReadImageToolDetail
-            input={input}
-            result={result}
-            summary={summary}
-            contentItems={contentItems}
-            isError={isError}
-            nested={nested}
-          />
-        )
-      case 'write':
-        return (
-          <WriteToolDetail
-            input={input}
-            result={result}
-            summary={summary}
-            isError={isError}
-            nested={nested}
-          />
-        )
-      case 'memory':
-        return (
-          <MemoryToolDetail
-            input={input}
-            result={result}
-            summary={summary}
-            isError={isError}
-            nested={nested}
-          />
-        )
-      case 'memory_search':
-        return (
-          <MemorySearchToolDetail
-            input={input}
-            result={result}
-            summary={summary}
-            isError={isError}
-            nested={nested}
-          />
-        )
-      case 'memory_read':
-        return (
-          <MemoryReadToolDetail
-            input={input}
-            result={result}
-            summary={summary}
-            isError={isError}
-            nested={nested}
-          />
-        )
-      case 'fetch':
-        return (
-          <FetchToolDetail
-            input={input}
-            result={result}
-            summary={summary}
-            isError={isError}
-            nested={nested}
-          />
-        )
-      default:
-        return (
-          <GenericToolDetail
-            name={name}
-            input={input}
-            result={result}
-            summary={summary}
-            isError={isError}
-            nested={nested}
-          />
-        )
-    }
-  })()
+  const detail = renderToolCallDetail({
+    name,
+    input,
+    result,
+    summary,
+    contentItems,
+    isError,
+    status,
+    durationMs,
+    abortPending,
+    onAbort,
+    nested,
+  })
 
   if (evidence?.length) {
     return (
@@ -186,40 +350,6 @@ export function ToolCallDetail({
   }
 
   return detail
-}
-
-function EvidencePointers({
-  evidence,
-  nested,
-}: {
-  evidence: ToolEvidencePointer[]
-  nested: boolean
-}) {
-  return (
-    <div className={`${nested ? 'px-0 pb-2' : 'border-t border-white/[0.06] px-4 py-3'}`}>
-      <div className="space-y-2 rounded-md border border-white/[0.06] bg-black/15 p-3">
-        <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-text-muted)]">
-          <FileArrowDown size={13} />
-          Evidence
-        </div>
-        {evidence.map((item) => (
-          <div key={`${item.kind}-${item.path}`} className="space-y-1">
-            <div className="flex flex-wrap gap-2 text-[10px] font-mono text-[var(--color-text-disabled)]">
-              <span>{item.kind}</span>
-              {item.chars !== undefined && <span>{item.chars.toLocaleString()} chars</span>}
-              {item.sha256 && <span>sha256 {item.sha256.slice(0, 12)}</span>}
-            </div>
-            <p className="break-all font-mono text-[11px] text-[var(--color-text-secondary)]">
-              {item.path}
-            </p>
-            {item.summary && (
-              <p className="text-[11px] text-[var(--color-text-muted)]">{item.summary}</p>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  )
 }
 
 export function summarizeToolInput(name: string, input: Record<string, unknown>): string {
@@ -431,7 +561,7 @@ function EditToolDetail({
                   : row.type === 'added'
                     ? '+'
                     : row.type === 'omitted'
-                      ? '…'
+                      ? '...'
                       : ' '}
               </span>
               <span className="whitespace-pre-wrap break-words">{row.text || ' '}</span>
@@ -439,6 +569,247 @@ function EditToolDetail({
           ))}
         </div>
       </div>
+    </DetailShell>
+  )
+}
+
+function buildReplacementDiff(oldText: string, newText: string): DiffRow[] {
+  const before = normalizeLines(oldText)
+  const after = normalizeLines(newText)
+
+  let prefix = 0
+  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) {
+    prefix += 1
+  }
+
+  let suffix = 0
+  while (
+    suffix < before.length - prefix &&
+    suffix < after.length - prefix &&
+    before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
+  ) {
+    suffix += 1
+  }
+
+  const rows: DiffRow[] = []
+  const headContextStart = Math.max(0, prefix - 2)
+  const headContext = before.slice(headContextStart, prefix)
+  const removed = before.slice(prefix, before.length - suffix)
+  const added = after.slice(prefix, after.length - suffix)
+  const tailContext = suffix > 0 ? before.slice(before.length - Math.min(suffix, 2)) : []
+
+  if (headContextStart > 0) {
+    rows.push({ type: 'omitted', text: `${headContextStart} unchanged lines` })
+  }
+  for (const line of headContext) {
+    rows.push({ type: 'common', text: line })
+  }
+  for (const line of removed) {
+    rows.push({ type: 'removed', text: line })
+  }
+  for (const line of added) {
+    rows.push({ type: 'added', text: line })
+  }
+  for (const line of tailContext) {
+    rows.push({ type: 'common', text: line })
+  }
+  if (suffix > tailContext.length) {
+    rows.push({ type: 'omitted', text: `${suffix - tailContext.length} unchanged lines` })
+  }
+
+  if (rows.length === 0) {
+    rows.push({ type: 'common', text: '(no visible diff)' })
+  }
+
+  return rows
+}
+
+function countDiffRows(rows: DiffRow[]) {
+  let addedCount = 0
+  let removedCount = 0
+
+  for (const row of rows) {
+    if (row.type === 'added') addedCount += 1
+    if (row.type === 'removed') removedCount += 1
+  }
+
+  return { addedCount, removedCount }
+}
+
+function normalizeLines(value: string): string[] {
+  return value.replace(/\r\n/g, '\n').split('\n')
+}
+
+function MemoryToolDetail({ input, result, summary, isError, nested }: ToolCallDetailProps) {
+  const action = stringValue(input.action) ?? 'create'
+  const type = stringValue(input.type) ?? 'note'
+  const title = stringValue(input.title) ?? '(untitled memory)'
+  const tags = Array.isArray(input.tags)
+    ? input.tags.filter((tag): tag is string => typeof tag === 'string')
+    : []
+  const content = stringValue(input.content) ?? ''
+  const memoryId = stringValue(input.id) ?? stringValue(input.memoryId)
+  const detailSummary = resolveToolSummary('memory', result, summary)
+
+  return (
+    <DetailShell dataTool="memory" nested={nested}>
+      <ToolMetaRow>
+        <MetaChip>{action}</MetaChip>
+        <MetaChip>{type}</MetaChip>
+        {memoryId ? <MetaChip>{memoryId}</MetaChip> : null}
+        {tags.length > 0 ? <MetaChip>{tags.length} tags</MetaChip> : null}
+        <StatusChip isError={isError} />
+      </ToolMetaRow>
+
+      <div className="rounded-2xl border border-emerald-400/15 bg-[linear-gradient(180deg,rgba(6,78,59,0.18),rgba(10,14,20,0.7))] px-3 py-2">
+        <p className="text-[10px] uppercase tracking-[0.18em] text-emerald-200/70">Memory Target</p>
+        <p className="mt-1 text-[12px] font-medium text-emerald-50">{title}</p>
+        {tags.length > 0 ? (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {tags.map((tag) => (
+              <span
+                key={tag}
+                className="rounded-full border border-emerald-300/12 bg-emerald-300/[0.05] px-2 py-0.5 text-[10px] font-mono text-emerald-100/85"
+              >
+                {tag}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {detailSummary ? (
+          <div className="mt-2 rounded-xl border border-emerald-300/12 bg-emerald-300/[0.05] px-2.5 py-1.5 text-[10.5px] leading-[1.1rem] text-emerald-50/90">
+            {detailSummary}
+          </div>
+        ) : null}
+      </div>
+
+      {content ? (
+        <>
+          <SectionLabel icon={<Database size={14} />} title="Memory Content" />
+          <CodeViewer lines={content.split('\n')} tone="emerald" />
+        </>
+      ) : null}
+    </DetailShell>
+  )
+}
+
+function MemorySearchToolDetail({ input, result, summary, isError, nested }: ToolCallDetailProps) {
+  const query = stringValue(input.query) ?? '(missing query)'
+  const topK = numberValue(input.topK) ?? numberValue(input.limit)
+  const detailSummary = resolveToolSummary('memory_search', result, summary)
+
+  return (
+    <DetailShell dataTool="memory_search" nested={nested}>
+      <ToolMetaRow>
+        {topK !== undefined ? <MetaChip>top {topK}</MetaChip> : null}
+        <StatusChip isError={isError} />
+      </ToolMetaRow>
+
+      {detailSummary ? <InfoStrip tone="cyan" label="Search Result" text={detailSummary} /> : null}
+
+      <SectionLabel icon={<MagnifyingGlass size={14} />} title="Query" />
+      <div className="rounded-xl border border-cyan-400/12 bg-cyan-400/[0.05] px-3 py-2 text-[11px] text-cyan-100 break-words">
+        {query}
+      </div>
+
+      {isMeaningfulToolResult(result) ? (
+        <>
+          <SectionLabel icon={<FileText size={14} />} title="Output" />
+          <CodeViewer lines={(result ?? '').split('\n')} />
+        </>
+      ) : null}
+    </DetailShell>
+  )
+}
+
+function MemoryReadToolDetail({ input, result, summary, isError, nested }: ToolCallDetailProps) {
+  const target =
+    stringValue(input.path) ??
+    stringValue(input.id) ??
+    stringValue(input.memoryId) ??
+    '(missing target)'
+  const detailSummary = resolveToolSummary('memory_read', result, summary)
+
+  return (
+    <DetailShell dataTool="memory_read" nested={nested}>
+      <ToolMetaRow>
+        <MetaChip>{target}</MetaChip>
+        <StatusChip isError={isError} />
+      </ToolMetaRow>
+
+      {detailSummary ? <InfoStrip tone="blue" label="Read Summary" text={detailSummary} /> : null}
+
+      {isMeaningfulToolResult(result) ? (
+        <>
+          <SectionLabel icon={<Database size={14} />} title="Memory Payload" />
+          <CodeViewer lines={(result ?? '').split('\n')} />
+        </>
+      ) : (
+        <EmptyStateStrip
+          title="This memory read did not persist body content."
+          detail="Only the target identifier was recorded for this step."
+        />
+      )}
+    </DetailShell>
+  )
+}
+
+function FetchToolDetail({ input, result, summary, isError, nested }: ToolCallDetailProps) {
+  const method = stringValue(input.method) ?? 'GET'
+  const url = stringValue(input.url) ?? '(missing url)'
+  const timeout = numberValue(input.timeout)
+  const format = stringValue(input.format)
+  const parsed = parseFetchResult(result)
+  const detailSummary = resolveToolSummary('fetch', result, summary)
+
+  return (
+    <DetailShell dataTool="fetch" nested={nested}>
+      <ToolMetaRow>
+        <MetaChip>{method}</MetaChip>
+        {format ? <MetaChip>{format}</MetaChip> : null}
+        {timeout !== undefined ? <MetaChip>{timeout}ms</MetaChip> : null}
+        {parsed.statusLabel ? <MetaChip>{parsed.statusLabel}</MetaChip> : null}
+        <StatusChip isError={isError} />
+      </ToolMetaRow>
+
+      {detailSummary ? <InfoStrip tone="blue" label="Fetch Summary" text={detailSummary} /> : null}
+
+      <SectionLabel icon={<GlobeHemisphereWest size={14} />} title="Request" />
+      <div className="rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2 text-[12px] text-[var(--color-text-secondary)] break-all">
+        {url}
+      </div>
+
+      <SectionLabel icon={<FileText size={14} />} title="Response" />
+      <CodeViewer lines={formatFetchBody(parsed.body)} />
+    </DetailShell>
+  )
+}
+
+function GenericToolDetail({ name, input, result, summary, isError, nested }: ToolCallDetailProps) {
+  const detailSummary = resolveToolSummary(getToolName(name), result, summary)
+
+  return (
+    <DetailShell dataTool={getToolName(name)} nested={nested}>
+      <ToolMetaRow>
+        <MetaChip>{name}</MetaChip>
+        <StatusChip isError={isError} />
+      </ToolMetaRow>
+
+      {detailSummary ? <InfoStrip tone="slate" label="Summary" text={detailSummary} /> : null}
+
+      <SectionLabel icon={<ArrowsClockwise size={14} />} title="Input" />
+      <pre className="max-h-[220px] overflow-y-auto rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2 text-[10.5px] leading-[1.15rem] text-[var(--color-text-secondary)] whitespace-pre-wrap break-all">
+        {JSON.stringify(input, null, 2)}
+      </pre>
+
+      {isMeaningfulToolResult(result) ? (
+        <>
+          <SectionLabel icon={<FileText size={14} />} title="Output" />
+          <pre className="max-h-[260px] overflow-y-auto rounded-xl border border-white/8 bg-[rgba(10,14,20,0.7)] px-3 py-2 text-[10.5px] leading-[1.15rem] text-[var(--color-text-secondary)] whitespace-pre-wrap break-all">
+            {result}
+          </pre>
+        </>
+      ) : null}
     </DetailShell>
   )
 }
@@ -587,528 +958,63 @@ function WriteToolDetail({
   )
 }
 
-function MemoryToolDetail({
-  input,
-  result,
-  summary,
-  isError,
-  nested,
-}: Omit<ToolCallDetailProps, 'name' | 'durationMs'>) {
-  const action = stringValue(input.action) ?? 'create'
-  const type = stringValue(input.type) ?? 'note'
-  const title = stringValue(input.title) ?? '(untitled memory)'
-  const tags = Array.isArray(input.tags)
-    ? input.tags.filter((tag): tag is string => typeof tag === 'string')
-    : []
-  const content = stringValue(input.content) ?? ''
-  const memoryId = stringValue(input.id) ?? stringValue(input.memoryId)
-  const detailSummary = resolveToolSummary('memory', result, summary)
+function renderToolCallDetail(props: ToolCallDetailProps) {
+  const toolName = getToolName(props.name)
 
-  return (
-    <DetailShell dataTool="memory" nested={nested}>
-      <ToolMetaRow>
-        <MetaChip>{action}</MetaChip>
-        <MetaChip>{type}</MetaChip>
-        {memoryId ? <MetaChip>{memoryId}</MetaChip> : null}
-        {tags.length > 0 ? <MetaChip>{tags.length} tags</MetaChip> : null}
-        <StatusChip isError={isError} />
-      </ToolMetaRow>
-
-      <div className="rounded-2xl border border-emerald-400/15 bg-[linear-gradient(180deg,rgba(6,78,59,0.18),rgba(10,14,20,0.7))] px-3 py-2">
-        <p className="text-[10px] uppercase tracking-[0.18em] text-emerald-200/70">Memory Target</p>
-        <p className="mt-1 text-[12px] font-medium text-emerald-50">{title}</p>
-        {tags.length > 0 ? (
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {tags.map((tag) => (
-              <span
-                key={tag}
-                className="rounded-full border border-emerald-300/12 bg-emerald-300/[0.05] px-2 py-0.5 text-[10px] font-mono text-emerald-100/85"
-              >
-                {tag}
-              </span>
-            ))}
-          </div>
-        ) : null}
-        {detailSummary ? (
-          <div className="mt-2 rounded-xl border border-emerald-300/12 bg-emerald-300/[0.05] px-2.5 py-1.5 text-[10.5px] leading-[1.1rem] text-emerald-50/90">
-            {detailSummary}
-          </div>
-        ) : null}
-      </div>
-
-      {content ? (
-        <>
-          <SectionLabel icon={<Database size={14} />} title="Memory Content" />
-          <CodeViewer lines={content.split('\n')} tone="emerald" />
-        </>
-      ) : null}
-    </DetailShell>
-  )
+  switch (toolName) {
+    case 'bash':
+      return <BashToolDetail {...props} />
+    case 'edit':
+      return <EditToolDetail {...props} />
+    case 'read':
+      return <ReadToolDetail {...props} />
+    case 'read_image':
+      return <ReadImageToolDetail {...props} />
+    case 'write':
+      return <WriteToolDetail {...props} />
+    case 'memory':
+      return <MemoryToolDetail {...props} />
+    case 'memory_search':
+      return <MemorySearchToolDetail {...props} />
+    case 'memory_read':
+      return <MemoryReadToolDetail {...props} />
+    case 'fetch':
+      return <FetchToolDetail {...props} />
+    default:
+      return <GenericToolDetail {...props} />
+  }
 }
 
-function MemorySearchToolDetail({
-  input,
-  result,
-  summary,
-  isError,
-  nested,
-}: Omit<ToolCallDetailProps, 'name' | 'durationMs'>) {
-  const query = stringValue(input.query) ?? '(missing query)'
-  const topK = numberValue(input.topK) ?? numberValue(input.limit)
-  const detailSummary = resolveToolSummary('memory_search', result, summary)
-
-  return (
-    <DetailShell dataTool="memory_search" nested={nested}>
-      <ToolMetaRow>
-        {topK !== undefined ? <MetaChip>top {topK}</MetaChip> : null}
-        <StatusChip isError={isError} />
-      </ToolMetaRow>
-
-      {detailSummary ? <InfoStrip tone="cyan" label="Search Result" text={detailSummary} /> : null}
-
-      <SectionLabel icon={<MagnifyingGlass size={14} />} title="Query" />
-      <div className="rounded-xl border border-cyan-400/12 bg-cyan-400/[0.05] px-3 py-2 text-[11px] text-cyan-100 break-words">
-        {query}
-      </div>
-
-      {isMeaningfulToolResult(result) ? (
-        <>
-          <SectionLabel icon={<FileText size={14} />} title="Output" />
-          <CodeViewer lines={(result ?? '').split('\n')} />
-        </>
-      ) : null}
-    </DetailShell>
-  )
-}
-
-function MemoryReadToolDetail({
-  input,
-  result,
-  summary,
-  isError,
-  nested,
-}: Omit<ToolCallDetailProps, 'name' | 'durationMs'>) {
-  const target =
-    stringValue(input.path) ??
-    stringValue(input.id) ??
-    stringValue(input.memoryId) ??
-    '(missing target)'
-  const detailSummary = resolveToolSummary('memory_read', result, summary)
-
-  return (
-    <DetailShell dataTool="memory_read" nested={nested}>
-      <ToolMetaRow>
-        <MetaChip>{target}</MetaChip>
-        <StatusChip isError={isError} />
-      </ToolMetaRow>
-
-      {detailSummary ? <InfoStrip tone="blue" label="Read Summary" text={detailSummary} /> : null}
-
-      {isMeaningfulToolResult(result) ? (
-        <>
-          <SectionLabel icon={<Database size={14} />} title="Memory Payload" />
-          <CodeViewer lines={(result ?? '').split('\n')} />
-        </>
-      ) : (
-        <EmptyStateStrip
-          title="This memory read did not persist body content."
-          detail="Only the target identifier was recorded for this step."
-        />
-      )}
-    </DetailShell>
-  )
-}
-
-function FetchToolDetail({
-  input,
-  result,
-  summary,
-  isError,
-  nested,
-}: Omit<ToolCallDetailProps, 'name' | 'durationMs'>) {
-  const method = stringValue(input.method) ?? 'GET'
-  const url = stringValue(input.url) ?? '(missing url)'
-  const timeout = numberValue(input.timeout)
-  const format = stringValue(input.format)
-  const parsed = parseFetchResult(result)
-  const detailSummary = resolveToolSummary('fetch', result, summary)
-
-  return (
-    <DetailShell dataTool="fetch" nested={nested}>
-      <ToolMetaRow>
-        <MetaChip>{method}</MetaChip>
-        {format ? <MetaChip>{format}</MetaChip> : null}
-        {timeout !== undefined ? <MetaChip>{timeout}ms</MetaChip> : null}
-        {parsed.statusLabel ? <MetaChip>{parsed.statusLabel}</MetaChip> : null}
-        <StatusChip isError={isError} />
-      </ToolMetaRow>
-
-      {detailSummary ? <InfoStrip tone="blue" label="Fetch Summary" text={detailSummary} /> : null}
-
-      <SectionLabel icon={<GlobeHemisphereWest size={14} />} title="Request" />
-      <div className="rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2 text-[12px] text-[var(--color-text-secondary)] break-all">
-        {url}
-      </div>
-
-      <SectionLabel icon={<FileText size={14} />} title="Response" />
-      <CodeViewer lines={formatFetchBody(parsed.body)} />
-    </DetailShell>
-  )
-}
-
-function GenericToolDetail({
-  name,
-  input,
-  result,
-  summary,
-  isError,
-  nested,
-}: Omit<ToolCallDetailProps, 'durationMs'>) {
-  const detailSummary = resolveToolSummary(getToolName(name), result, summary)
-
-  return (
-    <DetailShell dataTool={getToolName(name)} nested={nested}>
-      <ToolMetaRow>
-        <MetaChip>{name}</MetaChip>
-        <StatusChip isError={isError} />
-      </ToolMetaRow>
-
-      {detailSummary ? <InfoStrip tone="slate" label="Summary" text={detailSummary} /> : null}
-
-      <SectionLabel icon={<ArrowsClockwise size={14} />} title="Input" />
-      <pre className="max-h-[220px] overflow-y-auto rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2 text-[10.5px] leading-[1.15rem] text-[var(--color-text-secondary)] whitespace-pre-wrap break-all">
-        {JSON.stringify(input, null, 2)}
-      </pre>
-
-      {isMeaningfulToolResult(result) ? (
-        <>
-          <SectionLabel icon={<FileText size={14} />} title="Output" />
-          <pre className="max-h-[260px] overflow-y-auto rounded-xl border border-white/8 bg-[rgba(10,14,20,0.7)] px-3 py-2 text-[10.5px] leading-[1.15rem] text-[var(--color-text-secondary)] whitespace-pre-wrap break-all">
-            {result}
-          </pre>
-        </>
-      ) : null}
-    </DetailShell>
-  )
-}
-
-function DetailShell({
-  children,
-  dataTool,
+function EvidencePointers({
+  evidence,
   nested,
 }: {
-  children: ReactNode
-  dataTool: string
-  nested?: boolean
+  evidence: ToolEvidencePointer[]
+  nested: boolean
 }) {
   return (
-    <div
-      data-tool-renderer={dataTool}
-      className={`space-y-2 border-t border-white/[0.06] ${nested ? 'px-3 py-2.5' : 'px-4 py-3'}`}
-    >
-      {children}
-    </div>
-  )
-}
-
-function ToolMetaRow({ children }: { children: ReactNode }) {
-  return <div className="flex flex-wrap items-center gap-1.5">{children}</div>
-}
-
-function MetaChip({ children }: { children: ReactNode }) {
-  return (
-    <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-0.5 text-[10px] font-mono text-[var(--color-text-secondary)]">
-      {children}
-    </span>
-  )
-}
-
-function StatusChip({ isError }: { isError?: boolean }) {
-  if (isError === undefined) return null
-  return (
-    <span
-      className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${
-        isError
-          ? 'border-red-400/30 bg-red-400/12 text-red-200'
-          : 'border-emerald-400/30 bg-emerald-400/12 text-emerald-200'
-      }`}
-    >
-      {isError ? 'error' : 'ok'}
-    </span>
-  )
-}
-
-function SectionLabel({ icon, title }: { icon: ReactNode; title: string }) {
-  return (
-    <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-disabled)]">
-      <span className="text-[var(--color-text-secondary)]">{icon}</span>
-      <span>{title}</span>
-    </div>
-  )
-}
-
-function TerminalSurface({ children }: { children: ReactNode }) {
-  return (
-    <div className="overflow-hidden rounded-2xl border border-white/8 bg-[linear-gradient(180deg,rgba(9,11,16,0.98),rgba(13,18,26,0.94))] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-      {children}
-    </div>
-  )
-}
-
-function CodeViewer({
-  lines,
-  startLine = 1,
-  tone = 'default',
-}: {
-  lines: string[]
-  startLine?: number
-  tone?: 'default' | 'emerald'
-}) {
-  const lineColor =
-    tone === 'emerald' ? 'text-emerald-100/90' : 'text-[var(--color-text-secondary)]'
-
-  return (
-    <div className="overflow-hidden rounded-2xl border border-white/8 bg-[rgba(10,14,20,0.7)]">
-      <div className="max-h-[320px] overflow-y-auto">
-        {lines.map((line, index) => (
-          <div
-            key={`${startLine + index}-${line}`}
-            className="grid grid-cols-[auto_1fr] gap-x-2.5 px-3 py-0.5 font-mono text-[10.5px] leading-[1.15rem]"
-          >
-            <span className="select-none text-[var(--color-text-disabled)]">
-              {startLine + index}
-            </span>
-            <span className={`whitespace-pre-wrap break-words ${lineColor}`}>{line || ' '}</span>
+    <div className={`${nested ? 'px-0 pb-2' : 'border-t border-white/[0.06] px-4 py-3'}`}>
+      <div className="space-y-2 rounded-md border border-white/[0.06] bg-black/15 p-3">
+        <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-text-muted)]">
+          <FileArrowDown size={13} />
+          Evidence
+        </div>
+        {evidence.map((item) => (
+          <div key={`${item.kind}-${item.path}`} className="space-y-1">
+            <div className="flex flex-wrap gap-2 text-[10px] font-mono text-[var(--color-text-disabled)]">
+              <span>{item.kind}</span>
+              {item.chars !== undefined && <span>{item.chars.toLocaleString()} chars</span>}
+              {item.sha256 && <span>sha256 {item.sha256.slice(0, 12)}</span>}
+            </div>
+            <p className="break-all font-mono text-[11px] text-[var(--color-text-secondary)]">
+              {item.path}
+            </p>
+            {item.summary && (
+              <p className="text-[11px] text-[var(--color-text-muted)]">{item.summary}</p>
+            )}
           </div>
         ))}
       </div>
     </div>
   )
-}
-
-function InfoStrip({
-  tone,
-  label,
-  text,
-}: {
-  tone: 'cyan' | 'amber' | 'emerald' | 'blue' | 'slate'
-  label: string
-  text: string
-}) {
-  const toneClass =
-    tone === 'cyan'
-      ? 'border-cyan-400/15 bg-cyan-400/[0.06] text-cyan-100'
-      : tone === 'amber'
-        ? 'border-amber-400/15 bg-amber-400/[0.06] text-amber-100'
-        : tone === 'emerald'
-          ? 'border-emerald-400/15 bg-emerald-400/[0.06] text-emerald-100'
-          : tone === 'blue'
-            ? 'border-sky-400/15 bg-sky-400/[0.06] text-sky-100'
-            : 'border-white/8 bg-white/[0.03] text-[var(--color-text-secondary)]'
-
-  return (
-    <div className={`rounded-xl border px-3 py-1.5 ${toneClass}`}>
-      <p className="text-[10px] uppercase tracking-[0.18em] opacity-70">{label}</p>
-      <p className="mt-1 text-[10.5px] leading-[1.15rem]">{text}</p>
-    </div>
-  )
-}
-
-function EmptyStateStrip({ title, detail }: { title: string; detail: string }) {
-  return (
-    <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-2">
-      <p className="text-[10.5px] font-medium text-[var(--color-text-secondary)]">{title}</p>
-      <p className="mt-1 text-[10.5px] leading-[1.15rem] text-[var(--color-text-muted)]">
-        {detail}
-      </p>
-    </div>
-  )
-}
-
-function buildReplacementDiff(oldText: string, newText: string): DiffRow[] {
-  const before = normalizeLines(oldText)
-  const after = normalizeLines(newText)
-
-  let prefix = 0
-  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) {
-    prefix += 1
-  }
-
-  let suffix = 0
-  while (
-    suffix < before.length - prefix &&
-    suffix < after.length - prefix &&
-    before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
-  ) {
-    suffix += 1
-  }
-
-  const rows: DiffRow[] = []
-  const headContextStart = Math.max(0, prefix - 2)
-  const headContext = before.slice(headContextStart, prefix)
-  const removed = before.slice(prefix, before.length - suffix)
-  const added = after.slice(prefix, after.length - suffix)
-  const tailContext = suffix > 0 ? before.slice(before.length - Math.min(suffix, 2)) : []
-
-  if (headContextStart > 0) {
-    rows.push({ type: 'omitted', text: `${headContextStart} unchanged lines` })
-  }
-  for (const line of headContext) {
-    rows.push({ type: 'common', text: line })
-  }
-  for (const line of removed) {
-    rows.push({ type: 'removed', text: line })
-  }
-  for (const line of added) {
-    rows.push({ type: 'added', text: line })
-  }
-  for (const line of tailContext) {
-    rows.push({ type: 'common', text: line })
-  }
-  if (suffix > tailContext.length) {
-    rows.push({ type: 'omitted', text: `${suffix - tailContext.length} unchanged lines` })
-  }
-
-  if (rows.length === 0) {
-    rows.push({ type: 'common', text: '(no visible diff)' })
-  }
-
-  return rows
-}
-
-function normalizeLines(value: string): string[] {
-  return value.replace(/\r\n/g, '\n').split('\n')
-}
-
-function splitToolResult(result?: string) {
-  if (!result) return { stdout: '', stderr: '' }
-  const markerIndex = result.indexOf(stderrMarker)
-  if (markerIndex === -1) return { stdout: result, stderr: '' }
-  return {
-    stdout: result.slice(0, markerIndex),
-    stderr: result.slice(markerIndex + stderrMarker.length),
-  }
-}
-
-function parseFetchResult(result?: string) {
-  if (!result) return { statusLabel: '', body: '' }
-  const [firstLine, ...rest] = result.split('\n')
-  const body = rest.join('\n').replace(/^\n+/, '')
-  return {
-    statusLabel: firstLine.startsWith('HTTP ') ? firstLine : '',
-    body: firstLine.startsWith('HTTP ') ? body : result,
-  }
-}
-
-function formatFetchBody(body: string): string[] {
-  const trimmed = body.trim()
-  if (!trimmed) return ['(empty response body)']
-
-  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-    try {
-      return JSON.stringify(JSON.parse(trimmed), null, 2).split('\n')
-    } catch {
-      return body.split('\n')
-    }
-  }
-
-  return body.split('\n')
-}
-
-function resolveToolOutput(toolName: string, result?: string, summary?: string) {
-  if (isMeaningfulToolResult(result)) return normalizeResult(result)
-  if (toolName === 'bash') {
-    const normalizedSummary = normalizeResult(summary)
-    if (
-      normalizedSummary &&
-      !normalizedSummary.startsWith('Executed:') &&
-      !isGenericToolStatus(normalizedSummary)
-    ) {
-      return normalizedSummary
-    }
-    return undefined
-  }
-  if (isMeaningfulToolResult(summary)) return normalizeResult(summary)
-  return undefined
-}
-
-function resolveToolSummary(toolName: string, result?: string, summary?: string) {
-  const normalizedSummary = normalizeResult(summary)
-  const normalizedResult = normalizeResult(result)
-
-  if (toolName === 'bash') {
-    if (normalizedSummary && !normalizedSummary.startsWith('Executed:')) return normalizedSummary
-    return undefined
-  }
-
-  if (normalizedSummary && !isGenericToolStatus(normalizedSummary)) return normalizedSummary
-  if (normalizedResult && !isGenericToolStatus(normalizedResult)) return normalizedResult
-  return undefined
-}
-
-function isMeaningfulToolResult(value?: string) {
-  const normalized = normalizeResult(value)
-  return Boolean(normalized && !isGenericToolStatus(normalized))
-}
-
-function isGenericToolStatus(value: string) {
-  const normalized = value
-    .replace(/^[✓✔]\s*/u, '')
-    .replace(/^[✗✘]\s*/u, '')
-    .trim()
-    .toLowerCase()
-
-  return (
-    normalized === 'success' ||
-    normalized === 'ok' ||
-    normalized === 'done' ||
-    normalized === 'completed' ||
-    normalized === 'passed'
-  )
-}
-
-function normalizeResult(value?: string) {
-  if (typeof value !== 'string') return undefined
-  const trimmed = value.trim()
-  return trimmed ? trimmed : undefined
-}
-
-function countDiffRows(rows: DiffRow[]) {
-  let addedCount = 0
-  let removedCount = 0
-
-  for (const row of rows) {
-    if (row.type === 'added') addedCount += 1
-    if (row.type === 'removed') removedCount += 1
-  }
-
-  return { addedCount, removedCount }
-}
-
-function getToolName(value: string) {
-  const parts = value.split('/')
-  return (parts.at(-1) ?? value).toLowerCase()
-}
-
-function stringValue(value: unknown) {
-  return typeof value === 'string' ? value : undefined
-}
-
-function numberValue(value: unknown) {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
-}
-
-function isImageContentItem(
-  item: ToolResultContentItem,
-): item is Extract<ToolResultContentItem, { type: 'image' }> {
-  return item.type === 'image'
-}
-
-function countLines(value: string) {
-  if (!value) return 0
-  return value.replace(/\r\n/g, '\n').split('\n').length
-}
-
-function formatDuration(durationMs: number) {
-  return durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`
 }

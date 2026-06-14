@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { ContextPanel, PersistedDecisionCard, TraceSummaryCard } from '../ContextPanel'
+import {
+  ContextPanel,
+  PersistedDecisionCard,
+  TraceSummaryCard,
+} from '../context-panel/ContextPanel'
 
 describe('TraceSummaryCard', () => {
   test('renders classifier request details from trace data before metadata fallback', () => {

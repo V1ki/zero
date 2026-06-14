@@ -3,7 +3,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { PulseDot } from '../components/shared/PulseDot'
 import { Skeleton } from '../components/shared/Skeleton'
-import { useWebSocket } from '../hooks/useWebSocket'
+import { useWebSocket } from '../useWebSocket'
 import { apiFetch } from '../lib/api'
 import { formatCost, formatModelHistory, formatNumber, formatTimeAgo } from '../lib/format'
 import { useUIStore } from '../stores/ui'
@@ -35,7 +35,9 @@ interface SessionInfo {
   totalCost: number
 }
 
-function mapPlacementToDot(placement: SessionInfo['placement']): 'active' | 'idle' | 'error' | 'warning' {
+function mapPlacementToDot(
+  placement: SessionInfo['placement'],
+): 'active' | 'idle' | 'error' | 'warning' {
   return placement === 'current' ? 'active' : 'idle'
 }
 

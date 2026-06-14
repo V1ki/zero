@@ -90,9 +90,10 @@ export function pickMemoryInjectionPreview(
     detail.turnIndex === undefined
       ? []
       : candidates.filter((request) => request.turnIndex === detail.turnIndex)
-  const ranked = (turnMatched.length > 0
-    ? turnMatched
-    : candidates.filter((request) => request.ts >= decision.createdAt)
+  const ranked = (
+    turnMatched.length > 0
+      ? turnMatched
+      : candidates.filter((request) => request.ts >= decision.createdAt)
   ).sort((left, right) => left.ts.localeCompare(right.ts))
   const matchedRequest = ranked[0]
 

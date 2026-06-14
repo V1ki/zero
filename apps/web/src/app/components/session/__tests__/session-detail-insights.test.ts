@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import { buildSessionDetailInsights } from '../session-detail-insights'
-import type { TimelineItem, TraceSpan } from '../timeline'
+import { buildSessionDetailInsights } from '../SessionDetailScreen'
+import type { TimelineItem, TraceSpan } from '../timeline/timeline'
 
 describe('buildSessionDetailInsights', () => {
   test('summarizes timeline composition, tool distribution, and trace health', () => {

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { CompressionSpanCard } from '../CompressionSpanCard'
-import type { TraceSpan } from '../timeline'
+import { CompressionSpanCard } from '../context-panel/ContextPanel'
+import type { TraceSpan } from '../timeline/timeline'
 
 describe('CompressionSpanCard', () => {
   test('renders compression model, cost, token badges, and collapsible sections', () => {

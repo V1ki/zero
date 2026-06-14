@@ -8,7 +8,7 @@ import {
   buildTimeline,
   extractFilesTouched,
   filterDisplayableDecisions,
-} from '../timeline'
+} from '../timeline/timeline'
 
 describe('buildTimeline', () => {
   test('adds task closure decision span as a dedicated task-closure item from trace data', () => {

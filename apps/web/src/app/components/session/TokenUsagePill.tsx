@@ -1,5 +1,5 @@
 import { formatCost, formatNumber } from '../../lib/format'
-import type { TokenUsageSummary } from './context-tokens'
+import type { TokenUsageSummary } from './context-panel/context-tokens'
 
 interface Props {
   usage?: TokenUsageSummary

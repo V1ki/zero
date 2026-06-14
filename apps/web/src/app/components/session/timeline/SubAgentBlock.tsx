@@ -9,10 +9,11 @@ import {
   XCircle,
 } from '@phosphor-icons/react'
 import * as React from 'react'
-import { formatTime } from '../../lib/format'
-import { ToolCallDetail, summarizeToolInput } from './ToolCallDetail'
-import type { ToolResultContentItem } from './ToolCallDetail'
+import { formatTime } from '../../../lib/format'
 import type { TraceSpan } from './timeline'
+import { ToolCallDetail } from '../ToolCallDetail'
+import { summarizeToolInput } from '../ToolCallDetail'
+import type { ToolResultContentItem } from '../ToolCallDetail'
 
 export interface SubAgentChildToolCall {
   id: string
@@ -71,6 +72,135 @@ type SubAgentInternalTimelineEvent =
       span?: TraceSpan
       toolCall?: undefined
     }
+
+function summarizeChildToolActivity(childToolCalls: SubAgentChildToolCall[]) {
+  const counts = new Map<string, number>()
+
+  for (const toolCall of childToolCalls) {
+    counts.set(toolCall.name, (counts.get(toolCall.name) ?? 0) + 1)
+  }
+
+  return [...counts.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name))
+}
+
+function getSubAgentPreview({
+  instruction,
+  output,
+  status,
+  childToolCalls,
+}: {
+  instruction: string
+  output?: string
+  status: SubAgentBlockProps['status']
+  childToolCalls: SubAgentChildToolCall[]
+}) {
+  if (output) {
+    const jsonSummary = summarizeJsonOutput(output)
+    if (jsonSummary) return jsonSummary
+    return truncateText(output.replace(/\s+/g, ' ').trim(), 280)
+  }
+  if (childToolCalls.length > 0) {
+    return `Used ${childToolCalls.length} tool call${childToolCalls.length === 1 ? '' : 's'} while ${status}.`
+  }
+  return truncateText(instruction.replace(/\s+/g, ' ').trim(), 280)
+}
+
+function hasRecordContent(value?: Record<string, unknown>) {
+  return Boolean(value && Object.keys(value).length > 0)
+}
+
+function truncateText(value: string, maxLength: number) {
+  if (value.length <= maxLength) return value
+  return `${value.slice(0, maxLength).trimEnd()}...`
+}
+
+function formatDuration(durationMs: number) {
+  return durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`
+}
+
+function compareSpansByTime(left: TraceSpan, right: TraceSpan) {
+  const leftTime = Date.parse(left.startTime)
+  const rightTime = Date.parse(right.startTime)
+
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+    return leftTime - rightTime
+  }
+
+  return left.name.localeCompare(right.name)
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  return value as Record<string, unknown>
+}
+
+function stringValue(value: unknown) {
+  return typeof value === 'string' ? value : undefined
+}
+
+function numberValue(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function pickMeaningfulText(...values: Array<string | undefined>) {
+  for (const value of values) {
+    if (!value) continue
+    const normalized = value.replace(/\s+/g, ' ').trim()
+    if (normalized) return normalized
+  }
+  return undefined
+}
+
+function collectPrimitiveChips(record: Record<string, unknown>, preferredKeys: string[]) {
+  const chips: string[] = []
+
+  for (const key of preferredKeys) {
+    const value = record[key]
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      chips.push(`${key} ${String(value)}`)
+    }
+    if (chips.length >= 3) return chips
+  }
+
+  for (const [key, value] of Object.entries(record)) {
+    if (preferredKeys.includes(key)) continue
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      chips.push(`${key} ${String(value)}`)
+    }
+    if (chips.length >= 3) break
+  }
+
+  return chips
+}
+
+function summarizeJsonOutput(value: string): string | null {
+  try {
+    const parsed = JSON.parse(value)
+    if (Array.isArray(parsed)) {
+      return `JSON output: ${parsed.length} item${parsed.length === 1 ? '' : 's'}`
+    }
+    if (parsed && typeof parsed === 'object') {
+      const entries = Object.entries(parsed as Record<string, unknown>)
+      if (entries.length === 0) return 'JSON output: empty object'
+      const summary = entries
+        .slice(0, 3)
+        .map(([key, entryValue]) => {
+          if (Array.isArray(entryValue)) return `${key}[${entryValue.length}]`
+          if (entryValue && typeof entryValue === 'object') {
+            return `${key}{${Object.keys(entryValue).length}}`
+          }
+          return key
+        })
+        .join(', ')
+      return `JSON output: ${summary}`
+    }
+  } catch {
+    return null
+  }
+  return null
+}
 
 const statusBorderColor: Record<SubAgentBlockProps['status'], string> = {
   running: 'border-l-sky-400',
@@ -270,6 +400,67 @@ export function SubAgentBlock({
   )
 }
 
+function StatusIcon({ status }: { status: SubAgentBlockProps['status'] }) {
+  if (status === 'running') {
+    return <Spinner size={14} weight="bold" className="animate-spin text-sky-300" />
+  }
+  if (status === 'waiting') {
+    return <HourglassMedium size={14} weight="fill" className="text-amber-300" />
+  }
+  if (status === 'completed') {
+    return <CheckCircle size={14} weight="fill" className="text-emerald-300" />
+  }
+  if (status === 'errored') {
+    return <XCircle size={14} weight="fill" className="text-rose-300" />
+  }
+  return null
+}
+
+function InlineSection({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-disabled)]">
+        {label}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function ExpandableInlineText({
+  value,
+  blockClassName,
+}: {
+  value: string
+  blockClassName?: string
+}) {
+  const [expanded, setExpanded] = React.useState(false)
+
+  return (
+    <>
+      <p className="text-[11px] text-[var(--color-text-secondary)]">
+        {expanded ? value : truncateText(value, 220)}
+      </p>
+      {value.length > 220 && (
+        <button
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
+          className="mt-1 text-[11px] text-[var(--color-accent)] hover:underline"
+        >
+          {expanded ? 'Collapse' : 'Expand'} ({value.length.toLocaleString()} chars)
+        </button>
+      )}
+      {expanded && (
+        <pre
+          className={`mt-2 max-h-[320px] overflow-y-auto whitespace-pre-wrap break-words rounded-xl p-3 text-[10px] ${blockClassName ?? 'bg-black/10 text-[var(--color-text-muted)]'}`}
+        >
+          {value}
+        </pre>
+      )}
+    </>
+  )
+}
+
 function SubAgentTimelineEventRow({
   event,
   selectedToolId,
@@ -398,6 +589,17 @@ function SubAgentTimelineEventRow({
   )
 }
 
+function TraceStatusBadge({ status }: { status: TraceSpan['status'] }) {
+  const className =
+    status === 'success'
+      ? 'bg-emerald-400/10 text-emerald-300'
+      : status === 'error'
+        ? 'bg-rose-400/10 text-rose-300'
+        : 'bg-amber-400/10 text-amber-300'
+
+  return <span className={`rounded px-1.5 py-0.5 text-[9px] ${className}`}>{status}</span>
+}
+
 function TraceEventDetail({
   event,
 }: {
@@ -447,76 +649,81 @@ function TraceRecordSection({
   )
 }
 
-function InlineSection({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-disabled)]">
-        {label}
-      </div>
-      {children}
-    </div>
-  )
+function getTimelineEventBadge(event: SubAgentInternalTimelineEvent) {
+  if (event.kind === 'tool') return event.toolCall.name
+  if (event.kind === 'llm-request') return 'llm'
+  if (event.kind === 'turn') return 'turn'
+  if (event.kind === 'reason') return 'reason'
+  return 'span'
 }
 
-function ExpandableInlineText({
-  value,
-  blockClassName,
-}: {
-  value: string
-  blockClassName?: string
-}) {
-  const [expanded, setExpanded] = React.useState(false)
+function getTimelineEventTone(event: SubAgentInternalTimelineEvent) {
+  if (event.kind === 'tool') return getToolEventTone(event.toolCall.name)
 
-  return (
-    <>
-      <p className="text-[11px] text-[var(--color-text-secondary)]">
-        {expanded ? value : truncateText(value, 220)}
-      </p>
-      {value.length > 220 && (
-        <button
-          type="button"
-          onClick={() => setExpanded((current) => !current)}
-          className="mt-1 text-[11px] text-[var(--color-accent)] hover:underline"
-        >
-          {expanded ? 'Collapse' : 'Expand'} ({value.length.toLocaleString()} chars)
-        </button>
-      )}
-      {expanded && (
-        <pre
-          className={`mt-2 max-h-[320px] overflow-y-auto whitespace-pre-wrap break-words rounded-xl p-3 text-[10px] ${blockClassName ?? 'bg-black/10 text-[var(--color-text-muted)]'}`}
-        >
-          {value}
-        </pre>
-      )}
-    </>
-  )
+  if (event.kind === 'llm-request') {
+    return {
+      surfaceClass: 'border-sky-400/14 bg-sky-400/[0.05]',
+      badgeClass: 'bg-sky-400/15 text-sky-200',
+      caretClass: 'text-sky-200',
+    }
+  }
+
+  if (event.kind === 'turn') {
+    return {
+      surfaceClass: 'border-indigo-400/14 bg-indigo-400/[0.05]',
+      badgeClass: 'bg-indigo-400/15 text-indigo-200',
+      caretClass: 'text-indigo-200',
+    }
+  }
+
+  if (event.kind === 'reason') {
+    return {
+      surfaceClass: 'border-amber-400/14 bg-amber-400/[0.05]',
+      badgeClass: 'bg-amber-400/15 text-amber-200',
+      caretClass: 'text-amber-200',
+    }
+  }
+
+  return neutralTone()
 }
 
-function StatusIcon({ status }: { status: SubAgentBlockProps['status'] }) {
-  if (status === 'running') {
-    return <Spinner size={14} weight="bold" className="animate-spin text-sky-300" />
+function getToolEventTone(toolName: string) {
+  switch (toolName.toLowerCase()) {
+    case 'bash':
+      return {
+        surfaceClass: 'border-cyan-400/14 bg-cyan-400/[0.05]',
+        badgeClass: 'bg-cyan-400/15 text-cyan-200',
+        caretClass: 'text-cyan-200',
+      }
+    case 'write':
+      return {
+        surfaceClass: 'border-emerald-400/14 bg-emerald-400/[0.05]',
+        badgeClass: 'bg-emerald-400/15 text-emerald-200',
+        caretClass: 'text-emerald-200',
+      }
+    case 'edit':
+      return {
+        surfaceClass: 'border-amber-400/14 bg-amber-400/[0.05]',
+        badgeClass: 'bg-amber-400/15 text-amber-200',
+        caretClass: 'text-amber-200',
+      }
+    case 'fetch':
+      return {
+        surfaceClass: 'border-sky-400/14 bg-sky-400/[0.05]',
+        badgeClass: 'bg-sky-400/15 text-sky-200',
+        caretClass: 'text-sky-200',
+      }
+    default:
+      return neutralTone()
   }
-  if (status === 'waiting') {
-    return <HourglassMedium size={14} weight="fill" className="text-amber-300" />
-  }
-  if (status === 'completed') {
-    return <CheckCircle size={14} weight="fill" className="text-emerald-300" />
-  }
-  if (status === 'errored') {
-    return <XCircle size={14} weight="fill" className="text-rose-300" />
-  }
-  return null
 }
 
-function TraceStatusBadge({ status }: { status: TraceSpan['status'] }) {
-  const className =
-    status === 'success'
-      ? 'bg-emerald-400/10 text-emerald-300'
-      : status === 'error'
-        ? 'bg-rose-400/10 text-rose-300'
-        : 'bg-amber-400/10 text-amber-300'
-
-  return <span className={`rounded px-1.5 py-0.5 text-[9px] ${className}`}>{status}</span>
+function neutralTone() {
+  return {
+    surfaceClass: 'border-white/[0.08] bg-white/[0.03]',
+    badgeClass: 'bg-white/[0.08] text-[var(--color-text-secondary)]',
+    caretClass: 'text-[var(--color-text-secondary)]',
+  }
 }
 
 function buildSubAgentInternalTimeline(
@@ -526,19 +733,20 @@ function buildSubAgentInternalTimeline(
   const toolById = new Map(childToolCalls.map((toolCall) => [toolCall.id, toolCall]))
 
   if (!traceSpan) {
-    return childToolCalls.map((toolCall, index) => ({
-      id: `tool-fallback-${toolCall.id}-${index}`,
-      kind: 'tool',
-      label: `tool:${toolCall.name}`,
-      preview: toolCall.summary ?? summarizeToolInput(toolCall.name, toolCall.input),
-      depth: 0,
-      durationMs: toolCall.durationMs,
-      status: toolCall.isError ? 'error' : 'success',
-      chips: summarizeToolInput(toolCall.name, toolCall.input)
-        ? [summarizeToolInput(toolCall.name, toolCall.input)]
-        : [],
-      toolCall,
-    }))
+    return childToolCalls.map((toolCall, index) => {
+      const inputSummary = summarizeToolInput(toolCall.name, toolCall.input)
+      return {
+        id: `tool-fallback-${toolCall.id}-${index}`,
+        kind: 'tool',
+        label: `tool:${toolCall.name}`,
+        preview: toolCall.summary ?? inputSummary,
+        depth: 0,
+        durationMs: toolCall.durationMs,
+        status: toolCall.isError ? 'error' : 'success',
+        chips: inputSummary ? [inputSummary] : [],
+        toolCall,
+      }
+    })
   }
 
   const collected: Array<{ span: TraceSpan; depth: number; index: number }> = []
@@ -571,7 +779,7 @@ function toInternalTimelineEvent(
   toolById: Map<string, SubAgentChildToolCall>,
 ): SubAgentInternalTimelineEvent {
   const kind = getInternalTimelineKind(span)
-  const label = getInternalTimelineLabel(span, kind)
+  const label = span.name
   const preview = getInternalTimelinePreview(span, kind)
   const chips = getInternalTimelineChips(span, kind)
 
@@ -649,11 +857,6 @@ function getInternalTimelineKind(span: TraceSpan): SubAgentInternalTimelineEvent
   if (span.name.startsWith('turn:')) return 'turn'
   if (span.name.includes('reason')) return 'reason'
   return 'generic'
-}
-
-function getInternalTimelineLabel(span: TraceSpan, kind: SubAgentInternalTimelineEvent['kind']) {
-  if (kind === 'tool') return span.name
-  return span.name
 }
 
 function getInternalTimelinePreview(span: TraceSpan, kind: SubAgentInternalTimelineEvent['kind']) {
@@ -749,210 +952,4 @@ function getInternalTimelineChips(span: TraceSpan, kind: SubAgentInternalTimelin
   const genericChips = collectPrimitiveChips(metadata, ['phase', 'model', 'source'])
   if (genericChips.length > 0) return genericChips
   return collectPrimitiveChips(data, ['phase', 'source', 'kind'])
-}
-
-function getTimelineEventBadge(event: SubAgentInternalTimelineEvent) {
-  if (event.kind === 'tool') return event.toolCall.name
-  if (event.kind === 'llm-request') return 'llm'
-  if (event.kind === 'turn') return 'turn'
-  if (event.kind === 'reason') return 'reason'
-  return 'span'
-}
-
-function getTimelineEventTone(event: SubAgentInternalTimelineEvent) {
-  if (event.kind === 'tool') {
-    const toolName = event.toolCall.name.toLowerCase()
-    if (toolName === 'bash') {
-      return {
-        surfaceClass: 'border-cyan-400/14 bg-cyan-400/[0.05]',
-        badgeClass: 'bg-cyan-400/15 text-cyan-200',
-        caretClass: 'text-cyan-200',
-      }
-    }
-    if (toolName === 'write') {
-      return {
-        surfaceClass: 'border-emerald-400/14 bg-emerald-400/[0.05]',
-        badgeClass: 'bg-emerald-400/15 text-emerald-200',
-        caretClass: 'text-emerald-200',
-      }
-    }
-    if (toolName === 'edit') {
-      return {
-        surfaceClass: 'border-amber-400/14 bg-amber-400/[0.05]',
-        badgeClass: 'bg-amber-400/15 text-amber-200',
-        caretClass: 'text-amber-200',
-      }
-    }
-    if (toolName === 'fetch') {
-      return {
-        surfaceClass: 'border-sky-400/14 bg-sky-400/[0.05]',
-        badgeClass: 'bg-sky-400/15 text-sky-200',
-        caretClass: 'text-sky-200',
-      }
-    }
-    return {
-      surfaceClass: 'border-white/[0.08] bg-white/[0.03]',
-      badgeClass: 'bg-white/[0.08] text-[var(--color-text-secondary)]',
-      caretClass: 'text-[var(--color-text-secondary)]',
-    }
-  }
-
-  if (event.kind === 'llm-request') {
-    return {
-      surfaceClass: 'border-sky-400/14 bg-sky-400/[0.05]',
-      badgeClass: 'bg-sky-400/15 text-sky-200',
-      caretClass: 'text-sky-200',
-    }
-  }
-
-  if (event.kind === 'turn') {
-    return {
-      surfaceClass: 'border-indigo-400/14 bg-indigo-400/[0.05]',
-      badgeClass: 'bg-indigo-400/15 text-indigo-200',
-      caretClass: 'text-indigo-200',
-    }
-  }
-
-  if (event.kind === 'reason') {
-    return {
-      surfaceClass: 'border-amber-400/14 bg-amber-400/[0.05]',
-      badgeClass: 'bg-amber-400/15 text-amber-200',
-      caretClass: 'text-amber-200',
-    }
-  }
-
-  return {
-    surfaceClass: 'border-white/[0.08] bg-white/[0.03]',
-    badgeClass: 'bg-white/[0.08] text-[var(--color-text-secondary)]',
-    caretClass: 'text-[var(--color-text-secondary)]',
-  }
-}
-
-function summarizeChildToolActivity(childToolCalls: SubAgentChildToolCall[]) {
-  const counts = new Map<string, number>()
-
-  for (const toolCall of childToolCalls) {
-    counts.set(toolCall.name, (counts.get(toolCall.name) ?? 0) + 1)
-  }
-
-  return [...counts.entries()]
-    .map(([name, count]) => ({ name, count }))
-    .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name))
-}
-
-function getSubAgentPreview({
-  instruction,
-  output,
-  status,
-  childToolCalls,
-}: {
-  instruction: string
-  output?: string
-  status: SubAgentBlockProps['status']
-  childToolCalls: SubAgentChildToolCall[]
-}) {
-  if (output) {
-    const jsonSummary = summarizeJsonOutput(output)
-    if (jsonSummary) return jsonSummary
-    return truncateText(output.replace(/\s+/g, ' ').trim(), 280)
-  }
-  if (childToolCalls.length > 0) {
-    return `Used ${childToolCalls.length} tool call${childToolCalls.length === 1 ? '' : 's'} while ${status}.`
-  }
-  return truncateText(instruction.replace(/\s+/g, ' ').trim(), 280)
-}
-
-function summarizeJsonOutput(value: string): string | null {
-  try {
-    const parsed = JSON.parse(value)
-    if (Array.isArray(parsed)) {
-      return `JSON output: ${parsed.length} item${parsed.length === 1 ? '' : 's'}`
-    }
-    if (parsed && typeof parsed === 'object') {
-      const entries = Object.entries(parsed as Record<string, unknown>)
-      if (entries.length === 0) return 'JSON output: empty object'
-      const summary = entries
-        .slice(0, 3)
-        .map(([key, entryValue]) => {
-          if (Array.isArray(entryValue)) return `${key}[${entryValue.length}]`
-          if (entryValue && typeof entryValue === 'object') {
-            return `${key}{${Object.keys(entryValue).length}}`
-          }
-          return key
-        })
-        .join(', ')
-      return `JSON output: ${summary}`
-    }
-  } catch {
-    return null
-  }
-  return null
-}
-
-function hasRecordContent(value?: Record<string, unknown>) {
-  return Boolean(value && Object.keys(value).length > 0)
-}
-
-function truncateText(value: string, maxLength: number) {
-  if (value.length <= maxLength) return value
-  return `${value.slice(0, maxLength).trimEnd()}...`
-}
-
-function formatDuration(durationMs: number) {
-  return durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`
-}
-
-function compareSpansByTime(left: TraceSpan, right: TraceSpan) {
-  const leftTime = Date.parse(left.startTime)
-  const rightTime = Date.parse(right.startTime)
-
-  if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
-    return leftTime - rightTime
-  }
-
-  return left.name.localeCompare(right.name)
-}
-
-function recordValue(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
-  return value as Record<string, unknown>
-}
-
-function stringValue(value: unknown) {
-  return typeof value === 'string' ? value : undefined
-}
-
-function numberValue(value: unknown) {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
-}
-
-function pickMeaningfulText(...values: Array<string | undefined>) {
-  for (const value of values) {
-    if (!value) continue
-    const normalized = value.replace(/\s+/g, ' ').trim()
-    if (normalized) return normalized
-  }
-  return undefined
-}
-
-function collectPrimitiveChips(record: Record<string, unknown>, preferredKeys: string[]) {
-  const chips: string[] = []
-
-  for (const key of preferredKeys) {
-    const value = record[key]
-    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-      chips.push(`${key} ${String(value)}`)
-    }
-    if (chips.length >= 3) return chips
-  }
-
-  for (const [key, value] of Object.entries(record)) {
-    if (preferredKeys.includes(key)) continue
-    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-      chips.push(`${key} ${String(value)}`)
-    }
-    if (chips.length >= 3) break
-  }
-
-  return chips
 }

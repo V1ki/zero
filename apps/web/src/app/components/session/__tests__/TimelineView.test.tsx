@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { TimelineView } from '../TimelineView'
-import type { TimelineItem } from '../timeline'
+import type { TimelineItem } from '../timeline/timeline'
+import { TimelineView } from '../timeline/TimelineView'
 
 describe('TimelineView', () => {
   test('renders the provided timeline items without recomputing a thinner tool result', () => {

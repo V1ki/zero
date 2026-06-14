@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { SubAgentBlock } from '../SubAgentBlock'
+import { SubAgentBlock } from '../timeline/SubAgentBlock'
 
 describe('SubAgentBlock', () => {
   test('renders the full sub-agent internal timeline inline when expanded', () => {

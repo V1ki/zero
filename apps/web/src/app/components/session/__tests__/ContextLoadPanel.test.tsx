@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { ContextLoadPanel } from '../ContextLoadPanel'
-import type { ContextTokenSummary } from '../context-tokens'
+import { ContextLoadPanel } from '../context-panel/ContextLoadPanel'
+import type { ContextTokenSummary } from '../context-panel/context-tokens'
 
 describe('ContextLoadPanel', () => {
   test('renders latest request and context distribution', () => {

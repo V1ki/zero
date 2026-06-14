@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { buildContextTokenSummary, estimateToolResultTokens } from '../context-tokens'
+import { buildContextTokenSummary, estimateToolResultTokens } from '../context-panel/context-tokens'
 
 describe('context token summary', () => {
   test('summarizes current context sections and latest request usage', () => {

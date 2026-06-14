@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { MetadataBar } from '../MetadataBar'
+import { MetadataBar } from '../detail/MetadataBar'
 
 describe('MetadataBar', () => {
   test('renders reasoning and auxiliary cost breakdown details', () => {

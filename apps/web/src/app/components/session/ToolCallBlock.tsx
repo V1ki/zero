@@ -16,9 +16,9 @@ import { toolColors } from '../../lib/colors'
 import { formatTime } from '../../lib/format'
 import { useUIStore } from '../../stores/ui'
 import { TokenUsagePill } from './TokenUsagePill'
+import type { TokenUsageSummary } from './context-panel/context-tokens'
 import { ToolCallDetail, summarizeToolInput } from './ToolCallDetail'
 import type { ToolEvidencePointer, ToolResultContentItem } from './ToolCallDetail'
-import type { TokenUsageSummary } from './context-tokens'
 
 const toolIcons: Record<string, typeof Terminal> = {
   bash: Terminal,

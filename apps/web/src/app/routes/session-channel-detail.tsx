@@ -2,7 +2,7 @@ import { useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChannelSessionSelector } from '../components/session/ChannelSessionSelector'
 import { SessionDetailScreen } from '../components/session/SessionDetailScreen'
-import { useWebSocket } from '../hooks/useWebSocket'
+import { useWebSocket } from '../useWebSocket'
 import { apiFetch, isAbortError } from '../lib/api'
 import {
   type ChannelSessionCandidate,

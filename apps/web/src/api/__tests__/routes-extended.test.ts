@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { cpSync, existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { encryptSecrets } from '@zero-os/secrets'
 import type { Message } from '@zero-os/shared'
 import { getSessionLogRelativeDir } from '@zero-os/shared'
 import { createTestProjectRoot } from '../../../../../packages/core/src/session/__tests__/test-helpers'
@@ -13,16 +14,70 @@ let app: ReturnType<typeof createRoutes>
 let zero: ZeroOS
 let testDataDir: string
 const testProject = createTestProjectRoot('zero-routes-extended-')
+const previousZeroDataDir = process.env.ZERO_DATA_DIR
+const previousMasterKey = process.env.ZERO_MASTER_KEY_BASE64
+const TEST_MASTER_KEY = Buffer.alloc(32, 8)
+
+function pushSessionMessages(session: unknown, ...messages: Message[]): void {
+  ;(
+    session as {
+      conversation: { messages: Message[] }
+    }
+  ).conversation.messages.push(...messages)
+}
+
+function getRunningToolRegistry(session: unknown): SessionRunningToolRegistry {
+  return (
+    session as {
+      agentRuntime: { runningToolRegistry: SessionRunningToolRegistry }
+    }
+  ).agentRuntime.runningToolRegistry
+}
+
+function writeConfig(dataDir: string) {
+  writeFileSync(
+    join(dataDir, 'config.yaml'),
+    `providers:
+  openai-codex:
+    api_type: openai_chat_completions
+    base_url: https://example.com/v1
+    auth:
+      type: api_key
+      api_key_ref: openai_codex_api_key
+    models:
+      gpt-5.4-medium:
+        model_id: gpt-5.4-medium
+        max_context: 400000
+        max_output: 128000
+        capabilities:
+          - tools
+          - vision
+          - reasoning
+        tags:
+          - powerful
+          - coding
+default_model: openai-codex/gpt-5.4-medium
+fallback_chain:
+  - openai-codex/gpt-5.4-medium
+schedules: []
+fuse_list: []
+`,
+  )
+  writeFileSync(join(dataDir, 'fuse_list.yaml'), 'rules: []\n')
+}
 
 beforeAll(async () => {
   testDataDir = testProject.zeroDir
-  const prodDir = join(process.cwd(), '.zero')
-  for (const file of ['secrets.enc', 'config.yaml', 'fuse_list.yaml']) {
-    const src = join(prodDir, file)
-    if (existsSync(src)) {
-      cpSync(src, join(testDataDir, file))
-    }
-  }
+  process.env.ZERO_DATA_DIR = testDataDir
+  process.env.ZERO_MASTER_KEY_BASE64 = TEST_MASTER_KEY.toString('base64')
+  writeConfig(testDataDir)
+  encryptSecrets(
+    {
+      openai_codex_api_key: 'sk-test-placeholder',
+    },
+    TEST_MASTER_KEY,
+    join(testDataDir, 'secrets.enc'),
+  )
   zero = await startZeroOS({
     dataDir: testDataDir,
     projectRoot: testProject.projectRoot,
@@ -32,7 +87,19 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  await zero.shutdown()
+  if (zero) {
+    await zero.shutdown()
+  }
+  if (previousMasterKey === undefined) {
+    process.env.ZERO_MASTER_KEY_BASE64 = undefined
+  } else {
+    process.env.ZERO_MASTER_KEY_BASE64 = previousMasterKey
+  }
+  if (previousZeroDataDir === undefined) {
+    process.env.ZERO_DATA_DIR = undefined
+  } else {
+    process.env.ZERO_DATA_DIR = previousZeroDataDir
+  }
   testProject.cleanup()
 })
 
@@ -116,7 +183,8 @@ describe('API Routes Extended', () => {
       name: 'background-eval-test',
       agentInstruction: 'Test web session background evaluation.',
     })
-    ;(session as unknown as { messages: Message[] }).messages.push(
+    pushSessionMessages(
+      session,
       {
         id: 'archive_user_1',
         sessionId: session.data.id,
@@ -202,18 +270,18 @@ describe('API Routes Extended', () => {
 
   test('POST /api/sessions/:id/tool-calls/:toolUseId/abort is idempotent for live bash runs', async () => {
     const session = zero.sessionManager.create('web')
-    ;(session as unknown as { messages: Message[] }).messages.push({
+    pushSessionMessages(session, {
       id: 'abort_tool_assistant_1',
       sessionId: session.data.id,
       role: 'assistant',
       messageType: 'message',
-      content: [{ type: 'tool_use', id: 'call_abort_live_1', name: 'bash', input: { command: 'sleep 5' } }],
+      content: [
+        { type: 'tool_use', id: 'call_abort_live_1', name: 'bash', input: { command: 'sleep 5' } },
+      ],
       createdAt: new Date().toISOString(),
     })
 
-    const runningToolRegistry = (
-      session as unknown as { runningToolRegistry: SessionRunningToolRegistry }
-    ).runningToolRegistry
+    const runningToolRegistry = getRunningToolRegistry(session)
     runningToolRegistry.register({
       toolUseId: 'call_abort_live_1',
       toolName: 'bash',
@@ -237,12 +305,14 @@ describe('API Routes Extended', () => {
 
   test('POST /api/sessions/:id/tool-calls/:toolUseId/abort returns already_finished for completed bash calls', async () => {
     const session = zero.sessionManager.create('web')
-    ;(session as unknown as { messages: Message[] }).messages.push({
+    pushSessionMessages(session, {
       id: 'abort_tool_assistant_2',
       sessionId: session.data.id,
       role: 'assistant',
       messageType: 'message',
-      content: [{ type: 'tool_use', id: 'call_abort_done_1', name: 'bash', input: { command: 'pwd' } }],
+      content: [
+        { type: 'tool_use', id: 'call_abort_done_1', name: 'bash', input: { command: 'pwd' } },
+      ],
       createdAt: new Date().toISOString(),
     })
 
@@ -256,12 +326,14 @@ describe('API Routes Extended', () => {
 
   test('POST /api/sessions/:id/tool-calls/:toolUseId/abort rejects non-bash tool ids', async () => {
     const session = zero.sessionManager.create('web')
-    ;(session as unknown as { messages: Message[] }).messages.push({
+    pushSessionMessages(session, {
       id: 'abort_tool_assistant_3',
       sessionId: session.data.id,
       role: 'assistant',
       messageType: 'message',
-      content: [{ type: 'tool_use', id: 'call_abort_read_1', name: 'read', input: { path: '/tmp/demo' } }],
+      content: [
+        { type: 'tool_use', id: 'call_abort_read_1', name: 'read', input: { path: '/tmp/demo' } },
+      ],
       createdAt: new Date().toISOString(),
     })
 
@@ -302,7 +374,7 @@ describe('API Routes Extended', () => {
       content: [{ type: 'text', text: 'remove me' }],
       createdAt: new Date().toISOString(),
     }
-    ;(session as unknown as { messages: Message[] }).messages.push(keep, tail)
+    pushSessionMessages(session, keep, tail)
 
     const res = await app.request(`/api/sessions/${session.data.id}/repair/rollback-tail`, {
       method: 'POST',
@@ -347,7 +419,7 @@ describe('API Routes Extended', () => {
       content: [{ type: 'text', text: 'remove me' }],
       createdAt: new Date().toISOString(),
     }
-    ;(session as unknown as { messages: Message[] }).messages.push(keep, tail)
+    pushSessionMessages(session, keep, tail)
 
     const res = await app.request(`/api/sessions/${session.data.id}/repair/rollback-tail`, {
       method: 'POST',
@@ -1868,7 +1940,9 @@ describe('API Routes Extended', () => {
     const listRes = await app.request('/api/logs/sessions?limit=20')
     expect(listRes.status).toBe(200)
     const listData = await listRes.json()
-    const summary = listData.sessions.find((entry: { sessionId: string }) => entry.sessionId === sessionId)
+    const summary = listData.sessions.find(
+      (entry: { sessionId: string }) => entry.sessionId === sessionId,
+    )
     expect(summary).toMatchObject({
       sessionId,
       entryCount: 2,
@@ -1919,9 +1993,9 @@ describe('API Routes Extended', () => {
           `${session.source}:${session.channelName ?? 'none'}`,
       ),
     ).toEqual(['telegram:none', 'feishu:feishu:ops', 'feishu:feishu:hr'])
-    expect(data.sessions.every((session: { placement: string }) => session.placement === 'current')).toBe(
-      true,
-    )
+    expect(
+      data.sessions.every((session: { placement: string }) => session.placement === 'current'),
+    ).toBe(true)
   })
 
   test('GET /api/sessions/channel/:channel/current returns empty array for missing channel', async () => {

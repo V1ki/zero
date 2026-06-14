@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { MemoryRetrievalBlock } from '../MemoryRetrievalBlock'
+import { MemoryRetrievalBlock } from '../memory/MemoryRetrievalBlock'
 
 describe('MemoryRetrievalBlock', () => {
   test('renders inline memory retrieval detail with injection preview when expanded', () => {

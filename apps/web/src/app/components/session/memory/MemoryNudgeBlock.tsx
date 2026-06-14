@@ -1,4 +1,3 @@
-import * as React from 'react'
 import {
   ArrowsClockwise,
   CaretDown,
@@ -9,9 +8,10 @@ import {
   MagnifyingGlass,
   WarningCircle,
 } from '@phosphor-icons/react'
-import { formatTime } from '../../lib/format'
-import { ToolCallDetail, summarizeToolInput } from './ToolCallDetail'
-import type { SubAgentChildToolCall, TraceSpan } from './timeline'
+import * as React from 'react'
+import { formatTime } from '../../../lib/format'
+import type { SubAgentChildToolCall, TraceSpan } from '../timeline/timeline'
+import { ToolCallDetail, summarizeToolInput } from '../ToolCallDetail'
 
 interface MemoryNudgeBlockProps {
   id: string
@@ -112,56 +112,104 @@ export function MemoryNudgeBlock({
       </button>
 
       {selected ? (
-        <div className="space-y-3 border-t border-white/[0.06] px-4 py-3">
-          {primaryWrite ? (
-            <div className="rounded-2xl border border-emerald-400/15 bg-[linear-gradient(180deg,rgba(6,78,59,0.18),rgba(10,14,20,0.7))] px-3 py-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="rounded-full bg-emerald-400/12 px-2 py-0.5 text-[10px] font-mono text-emerald-200">
-                  {String(primaryWrite.input.action ?? 'create')}
-                </span>
-                {typeof primaryWrite.input.type === 'string' ? (
-                  <span className="rounded-full bg-white/8 px-2 py-0.5 text-[10px] font-mono text-[var(--color-text-secondary)]">
-                    {primaryWrite.input.type}
-                  </span>
-                ) : null}
-              </div>
-              <p className="mt-2 text-[12px] font-medium text-[var(--color-text-primary)]">
-                {typeof primaryWrite.input.title === 'string'
-                  ? primaryWrite.input.title
-                  : (primaryWrite.summary ?? 'Recorded a memory write during this checkpoint.')}
-              </p>
-              {primaryWrite.summary ? (
-                <p className="mt-1 text-[11px] text-[var(--color-text-secondary)]">
-                  {primaryWrite.summary}
-                </p>
-              ) : null}
-            </div>
-          ) : null}
-
-          <InlineSection label="Prompt">
-            <ExpandableInlineText value={prompt} />
-          </InlineSection>
-
-          <InlineSection label={`Memory Activity (${relatedToolCalls.length})`}>
-            {relatedToolCalls.length > 0 ? (
-              <div className="space-y-1.5">
-                {relatedToolCalls.map((toolCall) => (
-                  <MemoryToolRow
-                    key={toolCall.id}
-                    toolCall={toolCall}
-                    selected={selectedChildToolId === toolCall.id}
-                    onSelect={onSelectChildTool}
-                  />
-                ))}
-              </div>
-            ) : (
-              <p className="text-[11px] text-[var(--color-text-muted)]">
-                This checkpoint did not persist any expandable memory tool steps.
-              </p>
-            )}
-          </InlineSection>
-        </div>
+        <MemoryNudgeDetails
+          prompt={prompt}
+          primaryWrite={primaryWrite}
+          relatedToolCalls={relatedToolCalls}
+          selectedChildToolId={selectedChildToolId}
+          onSelectChildTool={onSelectChildTool}
+        />
       ) : null}
+    </div>
+  )
+}
+
+function MemoryNudgeDetails({
+  prompt,
+  primaryWrite,
+  relatedToolCalls,
+  selectedChildToolId,
+  onSelectChildTool,
+}: {
+  prompt: string
+  primaryWrite?: SubAgentChildToolCall
+  relatedToolCalls: SubAgentChildToolCall[]
+  selectedChildToolId?: string | null
+  onSelectChildTool?: (toolId: string) => void
+}) {
+  return (
+    <div className="space-y-3 border-t border-white/[0.06] px-4 py-3">
+      {primaryWrite ? <PrimaryMemoryWriteCard primaryWrite={primaryWrite} /> : null}
+
+      <InlineSection label="Prompt">
+        <ExpandableInlineText value={prompt} />
+      </InlineSection>
+
+      <InlineSection label={`Memory Activity (${relatedToolCalls.length})`}>
+        <MemoryNudgeToolActivity
+          relatedToolCalls={relatedToolCalls}
+          selectedChildToolId={selectedChildToolId}
+          onSelectChildTool={onSelectChildTool}
+        />
+      </InlineSection>
+    </div>
+  )
+}
+
+function PrimaryMemoryWriteCard({ primaryWrite }: { primaryWrite: SubAgentChildToolCall }) {
+  return (
+    <div className="rounded-2xl border border-emerald-400/15 bg-[linear-gradient(180deg,rgba(6,78,59,0.18),rgba(10,14,20,0.7))] px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="rounded-full bg-emerald-400/12 px-2 py-0.5 text-[10px] font-mono text-emerald-200">
+          {String(primaryWrite.input.action ?? 'create')}
+        </span>
+        {typeof primaryWrite.input.type === 'string' ? (
+          <span className="rounded-full bg-white/8 px-2 py-0.5 text-[10px] font-mono text-[var(--color-text-secondary)]">
+            {primaryWrite.input.type}
+          </span>
+        ) : null}
+      </div>
+      <p className="mt-2 text-[12px] font-medium text-[var(--color-text-primary)]">
+        {typeof primaryWrite.input.title === 'string'
+          ? primaryWrite.input.title
+          : (primaryWrite.summary ?? 'Recorded a memory write during this checkpoint.')}
+      </p>
+      {primaryWrite.summary ? (
+        <p className="mt-1 text-[11px] text-[var(--color-text-secondary)]">
+          {primaryWrite.summary}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+function MemoryNudgeToolActivity({
+  relatedToolCalls,
+  selectedChildToolId,
+  onSelectChildTool,
+}: {
+  relatedToolCalls: SubAgentChildToolCall[]
+  selectedChildToolId?: string | null
+  onSelectChildTool?: (toolId: string) => void
+}) {
+  if (relatedToolCalls.length === 0) {
+    return (
+      <p className="text-[11px] text-[var(--color-text-muted)]">
+        This checkpoint did not persist any expandable memory tool steps.
+      </p>
+    )
+  }
+
+  return (
+    <div className="space-y-1.5">
+      {relatedToolCalls.map((toolCall) => (
+        <MemoryToolRow
+          key={toolCall.id}
+          toolCall={toolCall}
+          selected={selectedChildToolId === toolCall.id}
+          onSelect={onSelectChildTool}
+        />
+      ))}
     </div>
   )
 }
@@ -208,11 +256,11 @@ function MemoryToolRow({
                 </span>
               ) : null}
               {toolCall.isError === true ? (
-                <span className="rounded px-1.5 py-0.5 text-[9px] bg-rose-400/12 text-rose-200">
+                <span className="rounded bg-rose-400/12 px-1.5 py-0.5 text-[9px] text-rose-200">
                   error
                 </span>
               ) : (
-                <span className="rounded px-1.5 py-0.5 text-[9px] bg-emerald-400/12 text-emerald-200">
+                <span className="rounded bg-emerald-400/12 px-1.5 py-0.5 text-[9px] text-emerald-200">
                   ok
                 </span>
               )}
@@ -321,6 +369,21 @@ function findPrimaryMemoryWrite(toolCalls: SubAgentChildToolCall[]) {
   })
 }
 
+function firstSentence(value: string) {
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  const match = normalized.match(/^(.+?[?？。!！])/u)?.[1]?.trim()
+  return match || normalized
+}
+
+function formatDuration(durationMs: number) {
+  return durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`
+}
+
+function truncateText(value: string, maxLength: number) {
+  if (value.length <= maxLength) return value
+  return `${value.slice(0, maxLength).trimEnd()}...`
+}
+
 function getMemoryToolLabel(toolCall: SubAgentChildToolCall) {
   if (toolCall.name === 'memory_search') {
     return typeof toolCall.input.query === 'string' ? toolCall.input.query : 'Memory search'
@@ -366,21 +429,6 @@ function getMemoryToolTone(toolName: string) {
     badgeClass: 'bg-white/[0.08] text-[var(--color-text-secondary)]',
     caretClass: 'text-[var(--color-text-secondary)]',
   }
-}
-
-function firstSentence(value: string) {
-  const normalized = value.replace(/\s+/g, ' ').trim()
-  const match = normalized.match(/^(.+?[?？。!！])/u)?.[1]?.trim()
-  return match || normalized
-}
-
-function truncateText(value: string, maxLength: number) {
-  if (value.length <= maxLength) return value
-  return `${value.slice(0, maxLength).trimEnd()}...`
-}
-
-function formatDuration(durationMs: number) {
-  return durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`
 }
 
 function getMemoryToolIcon(toolName: string) {

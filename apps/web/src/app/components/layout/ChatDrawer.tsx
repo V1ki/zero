@@ -1,73 +1,19 @@
-import { ClipboardText, PaperPlaneRight, X } from '@phosphor-icons/react'
+import { X } from '@phosphor-icons/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import { useWebSocket } from '../../hooks/useWebSocket'
+import { useWebSocket } from '../../useWebSocket'
 import { apiFetch, apiPost } from '../../lib/api'
 import { useUIStore } from '../../stores/ui'
+import { ChatDrawerInput } from './ChatDrawerInput'
+import { ChatDrawerMessageList } from './ChatDrawerMessageList'
+import {
+  type ChatMessage,
+  type SessionMessage,
+  createChatMessage,
+  isKnownModelName,
+  toChatMessages,
+} from './chat-drawer-messages'
 
-interface ChatMessage {
-  id: string
-  role: 'user' | 'assistant' | 'notification'
-  content: string
-  title?: string
-  severity?: string
-}
-
-interface SessionContentBlock {
-  type: string
-  text?: string
-  content?: string
-}
-
-interface SessionMessage {
-  id: string
-  role: string
-  content: SessionContentBlock[]
-}
-
-export function shouldRenderAssistantAsPlainText(content: string): boolean {
-  if (!content.includes('\n')) return false
-
-  return !/(^|\n)\s*(#{1,6}\s|\d+\.\s|[-*+]\s|>\s|```|\|.+\|)/m.test(content)
-}
-
-function createChatMessage(message: Omit<ChatMessage, 'id'>): ChatMessage {
-  return { id: crypto.randomUUID(), ...message }
-}
-
-function isKnownModelName(modelName: string | null | undefined): modelName is string {
-  return Boolean(modelName && modelName !== 'unknown')
-}
-
-function extractSessionMessageText(message: SessionMessage): string {
-  return message.content
-    .flatMap((block) => {
-      if (block.type === 'text') {
-        return typeof block.text === 'string' ? [block.text] : []
-      }
-      if (block.type === 'tool_result') {
-        return typeof block.content === 'string' ? [block.content] : []
-      }
-      return []
-    })
-    .join('\n')
-    .trim()
-}
-
-function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
-  return messages
-    .filter((message) => message.role === 'user' || message.role === 'assistant')
-    .map((message) => {
-      const content = extractSessionMessageText(message)
-      if (!content) return null
-      return createChatMessage({
-        role: message.role as 'user' | 'assistant',
-        content,
-      })
-    })
-    .filter((message): message is ChatMessage => Boolean(message))
-}
+export { shouldRenderAssistantAsPlainText } from './chat-drawer-messages'
 
 export function ChatDrawer() {
   const { chatDrawerOpen, toggleChatDrawer, isMobile } = useUIStore()
@@ -82,10 +28,10 @@ export function ChatDrawer() {
   const modelNameRef = useRef(modelName)
   const lastMessage = messages[messages.length - 1]
 
-  function updateModelName(nextModel: string) {
+  const updateModelName = useCallback((nextModel: string) => {
     modelNameRef.current = nextModel
     setModelName(nextModel)
-  }
+  }, [])
 
   useEffect(() => {
     if (!lastMessage) return
@@ -136,7 +82,7 @@ export function ChatDrawer() {
         })
         .catch(() => {})
     }
-  }, [chatDrawerOpen])
+  }, [chatDrawerOpen, updateModelName])
 
   // Auto-resize textarea
   useEffect(() => {
@@ -332,97 +278,19 @@ export function ChatDrawer() {
         </button>
       </div>
 
-      {/* Messages area */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
-        {messages.length === 0 && !loading && (
-          <div className="text-center text-[var(--color-text-muted)] text-[13px] py-12">
-            Send a message to interact with ZeRo OS
-          </div>
-        )}
+      <ChatDrawerMessageList
+        messages={messages}
+        loading={loading}
+        messagesEndRef={messagesEndRef}
+      />
 
-        {messages.map((msg) => {
-          if (msg.role === 'notification') {
-            return (
-              <div
-                key={msg.id}
-                className="rounded-lg border border-[var(--color-border)] p-3 bg-white/[0.02]"
-              >
-                <div className="flex items-center gap-2 mb-1">
-                  <ClipboardText size={14} className="text-amber-400" />
-                  <span className="text-[12px] font-medium text-amber-400">
-                    {msg.title ?? 'Notification'}
-                  </span>
-                </div>
-                <p className="text-[12px] text-[var(--color-text-secondary)]">{msg.content}</p>
-              </div>
-            )
-          }
-
-          return (
-            <div
-              key={msg.id}
-              className={`text-[13px] ${
-                msg.role === 'user'
-                  ? 'ml-8 border-l-2 border-cyan-400 pl-3 py-2 text-[var(--color-text-primary)]'
-                  : 'mr-4 text-[var(--color-text-secondary)]'
-              }`}
-            >
-              {msg.role === 'assistant' ? (
-                shouldRenderAssistantAsPlainText(msg.content) ? (
-                  <div className="whitespace-pre-wrap break-words text-[var(--color-text-secondary)]">
-                    {msg.content}
-                  </div>
-                ) : (
-                  <div className="prose prose-invert prose-sm max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                  </div>
-                )
-              ) : (
-                msg.content
-              )}
-            </div>
-          )
-        })}
-
-        {loading && (
-          <div className="flex items-center gap-1.5 py-2">
-            <span className="typing-dot" />
-            <span className="typing-dot" />
-            <span className="typing-dot" />
-          </div>
-        )}
-
-        <div ref={messagesEndRef} />
-      </div>
-
-      {/* Input */}
-      <div className="p-3 border-t border-[var(--color-border)]">
-        <div className="flex items-end gap-2">
-          <textarea
-            ref={textareaRef}
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            placeholder="Send a message..."
-            className="input-field flex-1 resize-none min-h-[38px] py-2"
-            rows={1}
-            disabled={loading}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey && message.trim() && !loading) {
-                e.preventDefault()
-                sendMessage()
-              }
-            }}
-          />
-          <button
-            type="button"
-            className="p-2 rounded-lg bg-[var(--color-accent)] text-[var(--color-deep-bg)] hover:bg-[var(--color-accent-hover)] transition-colors disabled:opacity-40 shrink-0"
-            disabled={!message.trim() || loading}
-            onClick={sendMessage}
-          >
-            <PaperPlaneRight size={18} weight="fill" />
-          </button>
-        </div>
-      </div>
+      <ChatDrawerInput
+        message={message}
+        loading={loading}
+        textareaRef={textareaRef}
+        onMessageChange={setMessage}
+        onSend={sendMessage}
+      />
 
       <style>{`
         @keyframes slideIn {

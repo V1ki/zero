@@ -1,160 +1,71 @@
 import { ArrowLeft } from '@phosphor-icons/react'
 import { useNavigate } from '@tanstack/react-router'
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useWebSocket } from '../../hooks/useWebSocket'
-import { apiFetch, isAbortError } from '../../lib/api'
+import { type ReactNode, type RefObject, useMemo } from 'react'
 import { useUIStore } from '../../stores/ui'
 import { Skeleton, SkeletonText } from '../shared/Skeleton'
-import { ContextPanel } from './ContextPanel'
-import { MetadataBar } from './MetadataBar'
-import { TimelineView } from './TimelineView'
-import { buildContextTokenSummary } from './context-tokens'
-import { buildSessionDetailInsights } from './session-detail-insights'
+import { ContextPanel } from './context-panel/ContextPanel'
+import type { LlmRequestEntry } from './context-panel/ContextPanelSummaryTab'
+import { buildContextTokenSummary } from './context-panel/context-tokens'
+import { MetadataBar } from './detail/MetadataBar'
+import { useSessionDetailData } from './detail/useSessionDetailData'
+import { useSessionDetailSelection } from './detail/useSessionDetailSelection'
 import {
   type DecisionTimelineItem,
-  type SessionDecisionEvent,
-  type SessionTaskClosureEvent,
   type TaskClosureTimelineItem,
-  type TimelineCompactionBlock,
+  type TimelineItem,
   type TraceSpan,
   buildTimeline,
   extractFilesTouched,
-} from './timeline'
-
-interface ContentBlock {
-  type: string
-  [key: string]: unknown
-}
-
-interface Message {
-  id: string
-  role: string
-  messageType: string
-  content: ContentBlock[]
-  model?: string
-  createdAt: string
-}
-
-interface ModelHistoryEntry {
-  model: string
-  from: string
-  to: string | null
-}
-
-interface ToolResultEntry {
-  type: 'tool_result'
-  toolUseId: string
-  content: string
-  isError?: boolean
-  outputSummary?: string
-  evidence?: {
-    kind: 'tool_use_input' | 'tool_result_output'
-    toolUseId: string
-    toolName: string
-    path: string
-    chars?: number
-    bytes?: number
-    sha256?: string
-    summary?: string
-    strategy?: string
-  }
-}
-
-interface ToolCallEntry {
-  id: string
-  name: string
-  input: Record<string, unknown>
-}
-
-interface QueuedInjectionMessageEntry {
-  timestamp: string
-  content: string
-  imageCount: number
-  mediaTypes: string[]
-}
-
-interface QueuedInjectionEntry {
-  count: number
-  formattedText: string
-  messages: QueuedInjectionMessageEntry[]
-}
-
-interface MemoryInjectionEntry {
-  layer: 'layer1' | 'layer2'
-  source: 'retrieved_memories' | 'memory_hint'
-  formattedText: string
-}
-
-interface SessionRequestEntry {
-  id: string
-  turnIndex?: number
-  parentId?: string
-  model: string
-  provider: string
-  userPrompt: string
-  response: string
-  stopReason: string
-  toolUseCount: number
-  toolCalls?: ToolCallEntry[]
-  toolResults?: ToolResultEntry[]
-  queuedInjection?: QueuedInjectionEntry
-  memoryInjections?: MemoryInjectionEntry[]
-  tokens: {
-    input: number
-    output: number
-    cacheWrite?: number
-    cacheRead?: number
-    reasoning?: number
-  }
-  cost: number
-  durationMs?: number
-  ts: string
-}
-
-interface SessionDetail {
-  id: string
-  source: string
-  isCurrent: boolean
-  placement: 'current' | 'background'
-  currentModel: string
-  channelName?: string
-  channelId?: string
-  createdAt: string
-  updatedAt: string
-  messages: Message[]
-  timelineCompactionBlocks?: TimelineCompactionBlock[]
-  tags: string[]
-  summary?: string
-  systemPrompt?: string
-  modelHistory: ModelHistoryEntry[]
-  totalTokens: number
-  inputTokens: number
-  outputTokens: number
-  cacheWriteTokens: number
-  cacheReadTokens: number
-  reasoningTokens: number
-  effectiveInputTokens: number
-  cacheHitRate: number
-  cacheReadCost: number
-  cacheWriteCost: number
-  grossAvoidedInputCost: number
-  netSavings: number
-  totalCost: number
-  auxiliaryCost: number
-  purposeBreakdown: Array<{
-    purpose: string
-    totalCost: number
-    totalTokens: number
-    reasoningTokens: number
-    requestCount: number
-  }>
-  requestCount: number
-}
+} from './timeline/timeline'
+import { TimelineView } from './timeline/TimelineView'
 
 interface SessionDetailScreenProps {
   sessionId?: string | null
   topContent?: ReactNode
   emptyState?: ReactNode
+}
+
+export interface SessionDetailInsights {
+  timelineCount: number
+  userCount: number
+  assistantCount: number
+  toolCallCount: number
+  decisionCount: number
+  taskClosureCount: number
+  systemEventCount: number
+  subAgentCount: number
+  runningTraceCount: number
+  errorTraceCount: number
+  successfulTraceCount: number
+  dominantTool?: {
+    name: string
+    count: number
+  }
+  slowestTool?: {
+    name: string
+    durationMs: number
+  }
+  lastDecision?: {
+    decisionType: string
+    outcome: string
+    createdAt: string
+  }
+  lastTaskClosure?: {
+    event: string
+    action?: string
+    createdAt: string
+  }
+  averageRequestDurationMs?: number
+}
+
+interface SessionDetailToolCall {
+  id: string
+  name: string
+  input: Record<string, unknown>
+  result?: string
+  summary?: string
+  isError?: boolean
+  durationMs?: number
 }
 
 export function SessionDetailScreen({
@@ -164,187 +75,26 @@ export function SessionDetailScreen({
 }: SessionDetailScreenProps) {
   const { setSelectedSessionId } = useUIStore()
   const navigate = useNavigate()
+  const {
+    timelineRef,
+    selectedToolId,
+    selectedDecisionId,
+    selectedTaskClosureId,
+    selectedMemoryNudgeId,
+    selectedSubAgentId,
+    highlightedAssistantMessageId,
+    highlightedSubAgentId,
+    handleSelectTool,
+    handleSelectDecision,
+    handleSelectTaskClosure,
+    handleSelectMemoryNudge,
+    handleSelectSubAgent,
+    jumpToAssistantMessage,
+    handleJumpToSubAgentInTimeline,
+  } = useSessionDetailSelection(sessionId)
 
-  const [session, setSession] = useState<SessionDetail | null>(null)
-  const [traces, setTraces] = useState<TraceSpan[]>([])
-  const [taskClosureEvents, setTaskClosureEvents] = useState<SessionTaskClosureEvent[]>([])
-  const [decisions, setDecisions] = useState<SessionDecisionEvent[]>([])
-  const [llmRequests, setLlmRequests] = useState<SessionRequestEntry[]>([])
-  const [loading, setLoading] = useState(true)
-  const [traceLoading, setTraceLoading] = useState(true)
-  const [selectedToolId, setSelectedToolId] = useState<string | null>(null)
-  const [selectedDecisionId, setSelectedDecisionId] = useState<string | null>(null)
-  const [selectedTaskClosureId, setSelectedTaskClosureId] = useState<string | null>(null)
-  const [selectedMemoryNudgeId, setSelectedMemoryNudgeId] = useState<string | null>(null)
-  const [selectedSubAgentId, setSelectedSubAgentId] = useState<string | null>(null)
-  const [highlightedAssistantMessageId, setHighlightedAssistantMessageId] = useState<string | null>(
-    null,
-  )
-  const [highlightedSubAgentId, setHighlightedSubAgentId] = useState<string | null>(null)
-  const timelineRef = useRef<HTMLDivElement>(null)
-  const lastKeyRef = useRef<string>('')
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
-  const wasAtBottomRef = useRef(true)
-  const previousSessionIdRef = useRef<string | null | undefined>(undefined)
-  const requestIdRef = useRef(0)
-  const abortRef = useRef<AbortController | null>(null)
-  const lastTimelineSnapshotRef = useRef({
-    sessionId: null as string | null,
-    messageCount: 0,
-    traceCount: 0,
-    taskClosureCount: 0,
-    decisionCount: 0,
-  })
-
-  const fetchSession = useCallback(
-    (showLoading = false) => {
-      if (!sessionId) return Promise.resolve()
-      const requestId = ++requestIdRef.current
-      abortRef.current?.abort()
-      const controller = new AbortController()
-      abortRef.current = controller
-
-      if (showLoading) {
-        setLoading(true)
-      }
-      setTraceLoading(true)
-      return Promise.all([
-        apiFetch<SessionDetail>(`/api/sessions/${sessionId}`, { signal: controller.signal }),
-        apiFetch<{ traces: TraceSpan[] }>(`/api/sessions/${sessionId}/traces`, {
-          signal: controller.signal,
-        }),
-        apiFetch<{ events: SessionTaskClosureEvent[] }>(
-          `/api/sessions/${sessionId}/task-closure-events`,
-          { signal: controller.signal },
-        ),
-        apiFetch<{ requests: SessionRequestEntry[] }>(`/api/sessions/${sessionId}/requests`, {
-          signal: controller.signal,
-        }),
-        apiFetch<{ decisions: SessionDecisionEvent[] }>(`/api/sessions/${sessionId}/decisions`, {
-          signal: controller.signal,
-        }),
-      ])
-        .then(([data, traceResponse, taskClosureResponse, requestResponse, decisionResponse]) => {
-          if (requestId !== requestIdRef.current) return
-
-          const nextTraces = traceResponse.traces ?? []
-          const nextTaskClosureEvents = taskClosureResponse.events ?? []
-          const nextDecisions = decisionResponse.decisions ?? []
-          const previousSnapshot = lastTimelineSnapshotRef.current
-          const isSameSession = previousSnapshot.sessionId === data.id
-          const timelineExpanded =
-            data.messages.length > previousSnapshot.messageCount ||
-            nextTraces.length > previousSnapshot.traceCount ||
-            nextTaskClosureEvents.length > previousSnapshot.taskClosureCount ||
-            nextDecisions.length > previousSnapshot.decisionCount
-
-          setSession(data)
-          setTraces(nextTraces)
-          setTaskClosureEvents(nextTaskClosureEvents)
-          setDecisions(nextDecisions)
-          setLlmRequests(requestResponse.requests ?? [])
-
-          lastTimelineSnapshotRef.current = {
-            sessionId: data.id,
-            messageCount: data.messages.length,
-            traceCount: nextTraces.length,
-            taskClosureCount: nextTaskClosureEvents.length,
-            decisionCount: nextDecisions.length,
-          }
-
-          if (wasAtBottomRef.current && (!isSameSession || timelineExpanded)) {
-            requestAnimationFrame(() => {
-              const el = timelineRef.current
-              if (el) el.scrollTo({ top: el.scrollHeight })
-            })
-          }
-        })
-        .catch((error) => {
-          if (requestId !== requestIdRef.current || isAbortError(error)) return
-
-          if (showLoading) {
-            setSession(null)
-            setTraces([])
-            setTaskClosureEvents([])
-            setDecisions([])
-            setLlmRequests([])
-            lastTimelineSnapshotRef.current = {
-              sessionId: null,
-              messageCount: 0,
-              traceCount: 0,
-              taskClosureCount: 0,
-              decisionCount: 0,
-            }
-          }
-        })
-        .finally(() => {
-          if (requestId !== requestIdRef.current) return
-          setTraceLoading(false)
-          if (showLoading) setLoading(false)
-        })
-    },
-    [sessionId],
-  )
-
-  useEffect(() => {
-    if (previousSessionIdRef.current === sessionId) return
-    previousSessionIdRef.current = sessionId
-    setSelectedToolId(null)
-    setSelectedDecisionId(null)
-    setSelectedTaskClosureId(null)
-    setSelectedMemoryNudgeId(null)
-    setSelectedSubAgentId(null)
-    setHighlightedAssistantMessageId(null)
-    setHighlightedSubAgentId(null)
-  }, [sessionId])
-
-  useEffect(() => {
-    if (!sessionId) {
-      abortRef.current?.abort()
-      setDecisions([])
-      setLoading(false)
-      setTraceLoading(false)
-      return
-    }
-
-    void fetchSession(true)
-  }, [sessionId, fetchSession])
-
-  useEffect(() => {
-    if (!session?.id) return
-    const el = timelineRef.current
-    if (!el) return
-    function onScroll() {
-      if (!el) return
-      wasAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60
-    }
-    el.addEventListener('scroll', onScroll, { passive: true })
-    return () => el.removeEventListener('scroll', onScroll)
-  }, [session?.id])
-
-  useEffect(
-    () => () => {
-      clearTimeout(debounceRef.current)
-      abortRef.current?.abort()
-    },
-    [],
-  )
-
-  const onEvent = useCallback(
-    (_: string, data: unknown) => {
-      const ev = data as { sessionId?: string }
-      if (ev?.sessionId !== sessionId) return
-      clearTimeout(debounceRef.current)
-      debounceRef.current = setTimeout(fetchSession, 300)
-    },
-    [sessionId, fetchSession],
-  )
-
-  useWebSocket({
-    url: `ws://${window.location.host}/ws`,
-    topics: ['session:update', 'tool:call', 'tool:result'],
-    onEvent,
-  })
+  const { session, traces, taskClosureEvents, decisions, llmRequests, loading, traceLoading } =
+    useSessionDetailData(sessionId, timelineRef)
 
   function goBack() {
     setSelectedSessionId(null)
@@ -366,58 +116,7 @@ export function SessionDetailScreen({
     [session, traces, taskClosureEvents, decisions, llmRequests],
   )
 
-  const toolCalls = useMemo(() => {
-    const calls: Array<{
-      id: string
-      name: string
-      input: Record<string, unknown>
-      result?: string
-      summary?: string
-      isError?: boolean
-      durationMs?: number
-    }> = []
-
-    for (const item of timelineItems) {
-      if (item.type === 'tool-call') {
-        calls.push({
-          id: item.id,
-          name: item.name,
-          input: item.input,
-          result: item.result,
-          summary: item.summary,
-          isError: item.isError,
-          durationMs: item.durationMs,
-        })
-      } else if (item.type === 'memory-nudge') {
-        for (const tc of item.relatedToolCalls) {
-          calls.push({
-            id: tc.id,
-            name: tc.name,
-            input: tc.input,
-            result: tc.result,
-            summary: tc.summary,
-            isError: tc.isError,
-            durationMs: tc.durationMs,
-          })
-        }
-      } else if (item.type === 'sub-agent' && item.childToolCalls) {
-        // Include child tool calls so summary cards and metrics see the whole session activity.
-        for (const tc of item.childToolCalls) {
-          calls.push({
-            id: tc.id,
-            name: tc.name,
-            input: tc.input,
-            result: tc.result,
-            summary: tc.summary,
-            isError: tc.isError,
-            durationMs: tc.durationMs,
-          })
-        }
-      }
-    }
-
-    return calls
-  }, [timelineItems])
+  const toolCalls = useMemo(() => collectSessionDetailToolCalls(timelineItems), [timelineItems])
 
   const filesTouched = useMemo(() => extractFilesTouched(timelineItems), [timelineItems])
 
@@ -467,185 +166,29 @@ export function SessionDetailScreen({
     [session, llmRequests],
   )
 
-  const handleSelectTool = useCallback((toolId: string | null) => {
-    setSelectedToolId(toolId)
-  }, [])
-
-  const handleSelectDecision = useCallback((decisionId: string | null) => {
-    setSelectedDecisionId(decisionId)
-    setSelectedTaskClosureId(null)
-    setSelectedMemoryNudgeId(null)
-    setSelectedSubAgentId(null)
-  }, [])
-
-  const handleSelectTaskClosure = useCallback((taskClosureId: string | null) => {
-    setSelectedTaskClosureId(taskClosureId)
-    setSelectedDecisionId(null)
-    setSelectedMemoryNudgeId(null)
-    setSelectedSubAgentId(null)
-  }, [])
-
-  const handleSelectMemoryNudge = useCallback((memoryNudgeId: string | null) => {
-    setSelectedMemoryNudgeId(memoryNudgeId)
-    setSelectedDecisionId(null)
-    setSelectedTaskClosureId(null)
-    setSelectedSubAgentId(null)
-  }, [])
-
-  const handleSelectSubAgent = useCallback((subAgentId: string | null) => {
-    setSelectedSubAgentId(subAgentId)
-    setSelectedDecisionId(null)
-    setSelectedTaskClosureId(null)
-    setSelectedMemoryNudgeId(null)
-  }, [])
-
-  const jumpToAssistantMessage = useCallback((messageId: string) => {
-    setHighlightedAssistantMessageId(messageId)
-
-    requestAnimationFrame(() => {
-      const container = timelineRef.current
-      const target = container?.querySelector(
-        `[data-assistant-message-id="${messageId}"]`,
-      ) as HTMLElement | null
-      target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    })
-  }, [])
-
-  const handleJumpToSubAgentInTimeline = useCallback((subAgentId: string) => {
-    setSelectedSubAgentId(subAgentId)
-    setHighlightedSubAgentId(subAgentId)
-
-    requestAnimationFrame(() => {
-      const container = timelineRef.current
-      const target = container?.querySelector(
-        `[data-sub-agent-id="${subAgentId}"]`,
-      ) as HTMLElement | null
-      target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    })
-  }, [])
-
-  useEffect(() => {
-    if (!highlightedAssistantMessageId) return
-    const timer = setTimeout(() => setHighlightedAssistantMessageId(null), 3000)
-    return () => clearTimeout(timer)
-  }, [highlightedAssistantMessageId])
-
-  useEffect(() => {
-    if (!highlightedSubAgentId) return
-    const timer = setTimeout(() => setHighlightedSubAgentId(null), 3000)
-    return () => clearTimeout(timer)
-  }, [highlightedSubAgentId])
-
-  const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    const el = timelineRef.current
-    if (!el) return
-
-    const tag = (e.target as HTMLElement).tagName
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
-
-    const scrollAmount = 60
-
-    if (e.key === 'j') {
-      el.scrollBy({ top: scrollAmount, behavior: 'smooth' })
-    } else if (e.key === 'k') {
-      el.scrollBy({ top: -scrollAmount, behavior: 'smooth' })
-    } else if (e.key === 'Escape') {
-      setSelectedToolId(null)
-      setSelectedDecisionId(null)
-      setSelectedTaskClosureId(null)
-      setSelectedSubAgentId(null)
-    } else if (e.key === 'g' && lastKeyRef.current === 'g') {
-      el.scrollTo({ top: 0, behavior: 'smooth' })
-    } else if (e.key === 'G') {
-      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-    }
-
-    lastKeyRef.current = e.key
-  }, [])
-
-  useEffect(() => {
-    document.addEventListener('keydown', handleKeyDown)
-    return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [handleKeyDown])
-
-  const pageHeader = (
-    <div className="mb-3 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-      <button
-        type="button"
-        onClick={goBack}
-        className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-2.5 text-[12px] text-[var(--color-text-muted)] transition-colors hover:border-white/18 hover:text-[var(--color-accent)]"
-      >
-        <ArrowLeft size={14} /> Sessions
-      </button>
-      {topContent ? <div className="min-w-0 flex-1">{topContent}</div> : null}
-    </div>
-  )
-
   if (!sessionId) {
     return (
-      <div className="relative mx-auto max-w-[1600px] px-4 py-6 sm:px-6">
-        {pageHeader}
-        {emptyState ?? (
-          <div className="p-6 text-center text-[var(--color-text-muted)]">
-            No session selected.{' '}
-            <button type="button" onClick={goBack} className="text-[var(--color-accent)] underline">
-              Back to sessions
-            </button>
-          </div>
-        )}
-      </div>
+      <SessionDetailUnselectedState
+        topContent={topContent}
+        emptyState={emptyState}
+        onBack={goBack}
+      />
     )
   }
 
   if (loading && !session) {
-    return (
-      <div className="relative mx-auto max-w-[1600px] px-4 py-6 sm:px-6">
-        {pageHeader}
-        <Skeleton className="h-3 w-48 mb-3" />
-        <div className="card p-4 mb-4">
-          <div className="flex gap-4">
-            {Array.from({ length: 6 }, (_, index) => `session-metadata-${index}`).map((key) => (
-              <div key={key} className="flex-1">
-                <Skeleton className="h-2.5 w-16 mb-2" />
-                <Skeleton className="h-4 w-24" />
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[65fr_35fr]">
-          <div className="space-y-3">
-            {Array.from({ length: 4 }, (_, index) => `session-message-${index}`).map((key) => (
-              <div key={key} className="card p-4">
-                <Skeleton className="h-3 w-20 mb-2" />
-                <SkeletonText lines={2} />
-              </div>
-            ))}
-          </div>
-          <div className="card p-4">
-            <Skeleton className="h-4 w-32 mb-3" />
-            <SkeletonText lines={5} />
-          </div>
-        </div>
-      </div>
-    )
+    return <SessionDetailLoadingState topContent={topContent} onBack={goBack} />
   }
 
   if (!session) {
-    return (
-      <div className="relative mx-auto max-w-[1600px] px-4 py-6 sm:px-6">
-        {pageHeader}
-        <div className="card p-8 text-center text-[13px] text-[var(--color-text-muted)]">
-          Session not found.
-        </div>
-      </div>
-    )
+    return <SessionDetailMissingState topContent={topContent} onBack={goBack} />
   }
 
   return (
     <div className="relative mx-auto flex h-screen max-w-[1720px] flex-col overflow-hidden px-4 py-4 sm:px-6 sm:py-5">
       <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[480px] bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.12),transparent_35%),radial-gradient(circle_at_top_right,rgba(245,158,11,0.1),transparent_28%)]" />
       <div data-testid="session-detail-header" className="shrink-0">
-        {pageHeader}
+        <SessionDetailPageHeader topContent={topContent} onBack={goBack} />
 
         <MetadataBar
           sessionId={session.id}
@@ -685,75 +228,27 @@ export function SessionDetailScreen({
         data-testid="session-detail-layout"
         className="mt-3 grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-y-auto xl:grid-cols-[minmax(0,1fr)_340px] xl:items-stretch xl:overflow-hidden 2xl:grid-cols-[minmax(0,1fr)_360px]"
       >
-        <section
-          data-testid="session-timeline-stage"
-          className="card flex min-h-[520px] flex-col overflow-hidden p-0 xl:min-h-0"
-        >
-          <div className="shrink-0 border-b border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01))] px-4 py-3 sm:px-5">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--color-text-disabled)]">
-                  Timeline
-                </p>
-                <h3 className="mt-1 text-[18px] font-semibold text-[var(--color-text-primary)]">
-                  Execution Story
-                </h3>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] font-mono text-[var(--color-text-secondary)]">
-                  {sessionInsights.assistantCount} assistant
-                </span>
-                <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] font-mono text-[var(--color-text-secondary)]">
-                  {sessionInsights.toolCallCount} tools
-                </span>
-                <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] font-mono text-[var(--color-text-secondary)]">
-                  {sessionInsights.decisionCount} decisions
-                </span>
-                <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] font-mono text-[var(--color-text-secondary)]">
-                  trace {sessionInsights.runningTraceCount} run / {sessionInsights.errorTraceCount}{' '}
-                  err
-                </span>
-                <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] font-mono text-[var(--color-text-secondary)]">
-                  files {filesTouched.length}
-                </span>
-                {sessionInsights.dominantTool ? (
-                  <span className="rounded-full border border-cyan-400/20 bg-cyan-400/7 px-2.5 py-1 text-[10px] font-mono text-cyan-100">
-                    top {sessionInsights.dominantTool.name}
-                  </span>
-                ) : null}
-              </div>
-            </div>
-          </div>
-
-          <div
-            ref={timelineRef}
-            className="min-h-0 flex-1 overflow-y-auto bg-[linear-gradient(180deg,rgba(10,14,20,0.72),rgba(9,11,16,0.98))] px-4 py-4 sm:px-5 [scrollbar-gutter:stable]"
-          >
-            {session.messages.length === 0 ? (
-              <div className="rounded-[24px] border border-white/8 bg-white/[0.03] p-8 text-center text-[13px] text-[var(--color-text-muted)]">
-                No messages in this session.
-              </div>
-            ) : (
-              <TimelineView
-                sessionId={session.id}
-                items={timelineItems}
-                llmRequests={llmRequests}
-                selectedToolId={selectedToolId}
-                selectedDecisionId={selectedDecisionId}
-                selectedTaskClosureId={selectedTaskClosureId}
-                selectedMemoryNudgeId={selectedMemoryNudgeId}
-                selectedSubAgentId={selectedSubAgentId}
-                highlightedAssistantMessageId={highlightedAssistantMessageId}
-                highlightedSubAgentId={highlightedSubAgentId}
-                onSelectTool={handleSelectTool}
-                onSelectDecision={handleSelectDecision}
-                onSelectTaskClosure={handleSelectTaskClosure}
-                onSelectMemoryNudge={handleSelectMemoryNudge}
-                onSelectSubAgent={handleSelectSubAgent}
-              />
-            )}
-          </div>
-        </section>
+        <SessionDetailTimelineStage
+          sessionId={session.id}
+          messageCount={session.messages.length}
+          timelineItems={timelineItems}
+          llmRequests={llmRequests}
+          insights={sessionInsights}
+          filesTouchedCount={filesTouched.length}
+          timelineRef={timelineRef}
+          selectedToolId={selectedToolId}
+          selectedDecisionId={selectedDecisionId}
+          selectedTaskClosureId={selectedTaskClosureId}
+          selectedMemoryNudgeId={selectedMemoryNudgeId}
+          selectedSubAgentId={selectedSubAgentId}
+          highlightedAssistantMessageId={highlightedAssistantMessageId}
+          highlightedSubAgentId={highlightedSubAgentId}
+          onSelectTool={handleSelectTool}
+          onSelectDecision={handleSelectDecision}
+          onSelectTaskClosure={handleSelectTaskClosure}
+          onSelectMemoryNudge={handleSelectMemoryNudge}
+          onSelectSubAgent={handleSelectSubAgent}
+        />
 
         <div className="min-h-[520px] xl:min-h-0">
           <ContextPanel
@@ -788,5 +283,420 @@ export function SessionDetailScreen({
         </div>
       </div>
     </div>
+  )
+}
+
+interface SessionDetailStateProps {
+  topContent?: ReactNode
+  onBack: () => void
+}
+
+function SessionDetailPageHeader({ topContent, onBack }: SessionDetailStateProps) {
+  return (
+    <div className="mb-3 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+      <button
+        type="button"
+        onClick={onBack}
+        className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-2.5 text-[12px] text-[var(--color-text-muted)] transition-colors hover:border-white/18 hover:text-[var(--color-accent)]"
+      >
+        <ArrowLeft size={14} /> Sessions
+      </button>
+      {topContent ? <div className="min-w-0 flex-1">{topContent}</div> : null}
+    </div>
+  )
+}
+
+function collectSessionDetailToolCalls(items: TimelineItem[]): SessionDetailToolCall[] {
+  const calls: SessionDetailToolCall[] = []
+
+  for (const item of items) {
+    if (item.type === 'tool-call') {
+      calls.push({
+        id: item.id,
+        name: item.name,
+        input: item.input,
+        result: item.result,
+        summary: item.summary,
+        isError: item.isError,
+        durationMs: item.durationMs,
+      })
+    } else if (item.type === 'memory-nudge') {
+      for (const toolCall of item.relatedToolCalls) {
+        calls.push(toSessionDetailToolCall(toolCall))
+      }
+    } else if (item.type === 'sub-agent' && item.childToolCalls) {
+      for (const toolCall of item.childToolCalls) {
+        calls.push(toSessionDetailToolCall(toolCall))
+      }
+    }
+  }
+
+  return calls
+}
+
+function toSessionDetailToolCall(toolCall: {
+  id: string
+  name: string
+  input: Record<string, unknown>
+  result?: string
+  summary?: string
+  isError?: boolean
+  durationMs?: number
+}): SessionDetailToolCall {
+  return {
+    id: toolCall.id,
+    name: toolCall.name,
+    input: toolCall.input,
+    result: toolCall.result,
+    summary: toolCall.summary,
+    isError: toolCall.isError,
+    durationMs: toolCall.durationMs,
+  }
+}
+
+interface SessionDetailInsightRequestLike {
+  durationMs?: number
+}
+
+export function buildSessionDetailInsights(
+  items: TimelineItem[],
+  traces: TraceSpan[],
+  llmRequests: SessionDetailInsightRequestLike[] = [],
+): SessionDetailInsights {
+  const toolDistribution = new Map<string, number>()
+
+  let userCount = 0
+  let assistantCount = 0
+  let toolCallCount = 0
+  let decisionCount = 0
+  let taskClosureCount = 0
+  let systemEventCount = 0
+  let subAgentCount = 0
+  let slowestTool: SessionDetailInsights['slowestTool']
+  let lastDecision: SessionDetailInsights['lastDecision']
+  let lastTaskClosure: SessionDetailInsights['lastTaskClosure']
+
+  for (const item of items) {
+    switch (item.type) {
+      case 'user-message':
+        userCount += 1
+        break
+      case 'agent-text':
+        assistantCount += 1
+        break
+      case 'tool-call':
+        toolCallCount += 1
+        toolDistribution.set(item.name, (toolDistribution.get(item.name) ?? 0) + 1)
+        if (
+          item.durationMs !== undefined &&
+          (!slowestTool || item.durationMs > slowestTool.durationMs)
+        ) {
+          slowestTool = { name: item.name, durationMs: item.durationMs }
+        }
+        break
+      case 'decision':
+        decisionCount += 1
+        lastDecision = {
+          decisionType: item.decisionType,
+          outcome: item.outcome,
+          createdAt: item.createdAt,
+        }
+        break
+      case 'task-closure':
+        taskClosureCount += 1
+        lastTaskClosure = {
+          event: item.event,
+          action: item.action,
+          createdAt: item.createdAt,
+        }
+        break
+      case 'memory-nudge':
+        for (const toolCall of item.relatedToolCalls) {
+          toolCallCount += 1
+          toolDistribution.set(toolCall.name, (toolDistribution.get(toolCall.name) ?? 0) + 1)
+          if (
+            toolCall.durationMs !== undefined &&
+            (!slowestTool || toolCall.durationMs > slowestTool.durationMs)
+          ) {
+            slowestTool = { name: toolCall.name, durationMs: toolCall.durationMs }
+          }
+        }
+        break
+      case 'system-event':
+        systemEventCount += 1
+        break
+      case 'sub-agent':
+        subAgentCount += 1
+        break
+    }
+  }
+
+  let dominantTool: SessionDetailInsights['dominantTool']
+  for (const [name, count] of toolDistribution.entries()) {
+    if (!dominantTool || count > dominantTool.count) {
+      dominantTool = { name, count }
+    }
+  }
+
+  let runningTraceCount = 0
+  let errorTraceCount = 0
+  let successfulTraceCount = 0
+
+  for (const span of traces) {
+    const counts = countTraceStatuses(span)
+    runningTraceCount += counts.runningTraceCount
+    errorTraceCount += counts.errorTraceCount
+    successfulTraceCount += counts.successfulTraceCount
+  }
+
+  const requestDurations = llmRequests
+    .map((request) => request.durationMs)
+    .filter((durationMs): durationMs is number => typeof durationMs === 'number')
+
+  return {
+    timelineCount: items.length,
+    userCount,
+    assistantCount,
+    toolCallCount,
+    decisionCount,
+    taskClosureCount,
+    systemEventCount,
+    subAgentCount,
+    runningTraceCount,
+    errorTraceCount,
+    successfulTraceCount,
+    dominantTool,
+    slowestTool,
+    lastDecision,
+    lastTaskClosure,
+    averageRequestDurationMs:
+      requestDurations.length > 0
+        ? Math.round(
+            requestDurations.reduce((sum, durationMs) => sum + durationMs, 0) /
+              requestDurations.length,
+          )
+        : undefined,
+  }
+}
+
+function countTraceStatuses(
+  span: TraceSpan,
+): Pick<SessionDetailInsights, 'runningTraceCount' | 'errorTraceCount' | 'successfulTraceCount'> {
+  let runningTraceCount = span.status === 'running' ? 1 : 0
+  let errorTraceCount = span.status === 'error' ? 1 : 0
+  let successfulTraceCount = span.status === 'success' ? 1 : 0
+
+  for (const child of span.children) {
+    const childCounts = countTraceStatuses(child)
+    runningTraceCount += childCounts.runningTraceCount
+    errorTraceCount += childCounts.errorTraceCount
+    successfulTraceCount += childCounts.successfulTraceCount
+  }
+
+  return {
+    runningTraceCount,
+    errorTraceCount,
+    successfulTraceCount,
+  }
+}
+
+function SessionDetailUnselectedState({
+  topContent,
+  emptyState,
+  onBack,
+}: SessionDetailStateProps & { emptyState?: ReactNode }) {
+  return (
+    <SessionDetailOuter topContent={topContent} onBack={onBack}>
+      {emptyState ?? (
+        <div className="p-6 text-center text-[var(--color-text-muted)]">
+          No session selected.{' '}
+          <button type="button" onClick={onBack} className="text-[var(--color-accent)] underline">
+            Back to sessions
+          </button>
+        </div>
+      )}
+    </SessionDetailOuter>
+  )
+}
+
+function SessionDetailLoadingState({ topContent, onBack }: SessionDetailStateProps) {
+  return (
+    <SessionDetailOuter topContent={topContent} onBack={onBack}>
+      <Skeleton className="h-3 w-48 mb-3" />
+      <div className="card p-4 mb-4">
+        <div className="flex gap-4">
+          {Array.from({ length: 6 }, (_, index) => `session-metadata-${index}`).map((key) => (
+            <div key={key} className="flex-1">
+              <Skeleton className="h-2.5 w-16 mb-2" />
+              <Skeleton className="h-4 w-24" />
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[65fr_35fr]">
+        <div className="space-y-3">
+          {Array.from({ length: 4 }, (_, index) => `session-message-${index}`).map((key) => (
+            <div key={key} className="card p-4">
+              <Skeleton className="h-3 w-20 mb-2" />
+              <SkeletonText lines={2} />
+            </div>
+          ))}
+        </div>
+        <div className="card p-4">
+          <Skeleton className="h-4 w-32 mb-3" />
+          <SkeletonText lines={5} />
+        </div>
+      </div>
+    </SessionDetailOuter>
+  )
+}
+
+function SessionDetailMissingState({ topContent, onBack }: SessionDetailStateProps) {
+  return (
+    <SessionDetailOuter topContent={topContent} onBack={onBack}>
+      <div className="card p-8 text-center text-[13px] text-[var(--color-text-muted)]">
+        Session not found.
+      </div>
+    </SessionDetailOuter>
+  )
+}
+
+function SessionDetailOuter({
+  topContent,
+  onBack,
+  children,
+}: SessionDetailStateProps & { children: ReactNode }) {
+  return (
+    <div className="relative mx-auto max-w-[1600px] px-4 py-6 sm:px-6">
+      <SessionDetailPageHeader topContent={topContent} onBack={onBack} />
+      {children}
+    </div>
+  )
+}
+
+interface SessionDetailTimelineStageProps {
+  sessionId: string
+  messageCount: number
+  timelineItems: TimelineItem[]
+  llmRequests: LlmRequestEntry[]
+  insights: SessionDetailInsights
+  filesTouchedCount: number
+  timelineRef: RefObject<HTMLDivElement | null>
+  selectedToolId: string | null
+  selectedDecisionId: string | null
+  selectedTaskClosureId: string | null
+  selectedMemoryNudgeId: string | null
+  selectedSubAgentId: string | null
+  highlightedAssistantMessageId: string | null
+  highlightedSubAgentId: string | null
+  onSelectTool: (toolId: string | null) => void
+  onSelectDecision: (decisionId: string | null) => void
+  onSelectTaskClosure: (taskClosureId: string | null) => void
+  onSelectMemoryNudge: (memoryNudgeId: string | null) => void
+  onSelectSubAgent: (subAgentId: string | null) => void
+}
+
+function SessionDetailTimelineStage({
+  sessionId,
+  messageCount,
+  timelineItems,
+  llmRequests,
+  insights,
+  filesTouchedCount,
+  timelineRef,
+  selectedToolId,
+  selectedDecisionId,
+  selectedTaskClosureId,
+  selectedMemoryNudgeId,
+  selectedSubAgentId,
+  highlightedAssistantMessageId,
+  highlightedSubAgentId,
+  onSelectTool,
+  onSelectDecision,
+  onSelectTaskClosure,
+  onSelectMemoryNudge,
+  onSelectSubAgent,
+}: SessionDetailTimelineStageProps) {
+  return (
+    <section
+      data-testid="session-timeline-stage"
+      className="card flex min-h-[520px] flex-col overflow-hidden p-0 xl:min-h-0"
+    >
+      <div className="shrink-0 border-b border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01))] px-4 py-3 sm:px-5">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--color-text-disabled)]">
+              Timeline
+            </p>
+            <h3 className="mt-1 text-[18px] font-semibold text-[var(--color-text-primary)]">
+              Execution Story
+            </h3>
+          </div>
+          <TimelineInsightChips insights={insights} filesTouchedCount={filesTouchedCount} />
+        </div>
+      </div>
+
+      <div
+        ref={timelineRef}
+        className="min-h-0 flex-1 overflow-y-auto bg-[linear-gradient(180deg,rgba(10,14,20,0.72),rgba(9,11,16,0.98))] px-4 py-4 sm:px-5 [scrollbar-gutter:stable]"
+      >
+        {messageCount === 0 ? (
+          <div className="rounded-[24px] border border-white/8 bg-white/[0.03] p-8 text-center text-[13px] text-[var(--color-text-muted)]">
+            No messages in this session.
+          </div>
+        ) : (
+          <TimelineView
+            sessionId={sessionId}
+            items={timelineItems}
+            llmRequests={llmRequests}
+            selectedToolId={selectedToolId}
+            selectedDecisionId={selectedDecisionId}
+            selectedTaskClosureId={selectedTaskClosureId}
+            selectedMemoryNudgeId={selectedMemoryNudgeId}
+            selectedSubAgentId={selectedSubAgentId}
+            highlightedAssistantMessageId={highlightedAssistantMessageId}
+            highlightedSubAgentId={highlightedSubAgentId}
+            onSelectTool={onSelectTool}
+            onSelectDecision={onSelectDecision}
+            onSelectTaskClosure={onSelectTaskClosure}
+            onSelectMemoryNudge={onSelectMemoryNudge}
+            onSelectSubAgent={onSelectSubAgent}
+          />
+        )}
+      </div>
+    </section>
+  )
+}
+
+function TimelineInsightChips({
+  insights,
+  filesTouchedCount,
+}: {
+  insights: SessionDetailInsights
+  filesTouchedCount: number
+}) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      <TimelineChip>{insights.assistantCount} assistant</TimelineChip>
+      <TimelineChip>{insights.toolCallCount} tools</TimelineChip>
+      <TimelineChip>{insights.decisionCount} decisions</TimelineChip>
+      <TimelineChip>
+        trace {insights.runningTraceCount} run / {insights.errorTraceCount} err
+      </TimelineChip>
+      <TimelineChip>files {filesTouchedCount}</TimelineChip>
+      {insights.dominantTool ? (
+        <span className="rounded-full border border-cyan-400/20 bg-cyan-400/7 px-2.5 py-1 text-[10px] font-mono text-cyan-100">
+          top {insights.dominantTool.name}
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
+function TimelineChip({ children }: { children: ReactNode }) {
+  return (
+    <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] font-mono text-[var(--color-text-secondary)]">
+      {children}
+    </span>
   )
 }

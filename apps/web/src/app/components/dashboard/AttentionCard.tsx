@@ -1,8 +1,7 @@
 import { Warning } from '@phosphor-icons/react'
 import { useCallback, useEffect, useState } from 'react'
-import { useWebSocket } from '../../hooks/useWebSocket'
+import { useWebSocket } from '../../useWebSocket'
 import { apiFetch, apiPost } from '../../lib/api'
-import { requestNotificationPermission, sendBrowserNotification } from '../../lib/browser-notify'
 import { formatTimeAgo } from '../../lib/format'
 import { useUIStore } from '../../stores/ui'
 
@@ -30,6 +29,26 @@ const severityDot: Record<string, string> = {
   warn: 'bg-amber-400',
   error: 'bg-red-400',
   info: 'bg-cyan-400',
+}
+
+async function requestNotificationPermission(): Promise<boolean> {
+  if (!('Notification' in window)) return false
+  if (Notification.permission === 'granted') return true
+  if (Notification.permission === 'denied') return false
+
+  const result = await Notification.requestPermission()
+  return result === 'granted'
+}
+
+function sendBrowserNotification(title: string, body: string): void {
+  if (!('Notification' in window)) return
+  if (Notification.permission !== 'granted') return
+
+  new Notification(title, {
+    body,
+    icon: '/assets/icon.png',
+    tag: 'zero-os-notification',
+  })
 }
 
 export function AttentionCard() {

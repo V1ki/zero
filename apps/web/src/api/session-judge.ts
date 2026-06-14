@@ -1,11 +1,17 @@
 import {
+  type ClosureLogEntry,
   type RequestLogEntry,
   type SnapshotEntry,
   type TraceSpan,
   flattenTraceSpans,
 } from '@zero-os/observe'
-import type { CompletionResponse, Message } from '@zero-os/shared'
-import { now, toErrorMessage } from '@zero-os/shared'
+import {
+  type CompletionRequest,
+  type CompletionResponse,
+  type Message,
+  now,
+  toErrorMessage,
+} from '@zero-os/shared'
 import type { ZeroOS } from '../../../server/src/main'
 import type {
   SessionJudgeArtifacts,
@@ -17,18 +23,7 @@ import type {
   SessionJudgeResult,
   SessionJudgeRunOutput,
   SessionJudgeSignals,
-} from '../eval/types'
-
-const DIMENSION_LABELS: Record<SessionJudgeDimensionKey, string> = {
-  task_completion: 'Task Completion',
-  context_management: 'Context Management',
-  memory_usage: 'Memory Usage',
-  evidence_grounding: 'Evidence Grounding',
-  tool_efficiency: 'Tool Efficiency',
-  cost_efficiency: 'Cost Efficiency',
-  human_intervention: 'Human Intervention Judgment',
-  recovery_honesty: 'Recovery & Honesty',
-}
+} from '../session-judge-types'
 
 const JUDGE_SYSTEM_PROMPT = `You are a strict evaluator for agent execution traces.
 Judge process quality and outcome quality from evidence only. Never infer success without evidence.
@@ -73,21 +68,49 @@ Return ONLY valid JSON matching the original judge schema.
 Preserve the original meaning, scores, verdict, confidence, summary, dimensions, and findings whenever possible.
 If a field is missing, fill it conservatively rather than inventing strong claims.`
 
-type JudgeCompletionAdapter = {
-  complete(request: {
-    messages: Message[]
-    system?: string
-    stream: boolean
-    maxTokens?: number
-    model?: string
-    meta?: import('@zero-os/shared').CompletionRequest['meta']
-  }): Promise<CompletionResponse>
+const DIMENSION_LABELS: Record<SessionJudgeDimensionKey, string> = {
+  task_completion: 'Task Completion',
+  context_management: 'Context Management',
+  memory_usage: 'Memory Usage',
+  evidence_grounding: 'Evidence Grounding',
+  tool_efficiency: 'Tool Efficiency',
+  cost_efficiency: 'Cost Efficiency',
+  human_intervention: 'Human Intervention Judgment',
+  recovery_honesty: 'Recovery & Honesty',
 }
 
-interface ParsedJudgeArtifacts {
-  parsed: Omit<SessionJudgeResult, 'signals'>
-  repair?: SessionJudgeExchangeArtifacts
-}
+const HUMAN_INTERVENTION_HINTS = [
+  'please',
+  'can you',
+  'could you',
+  'need you',
+  'provide',
+  'confirm',
+  'approval',
+  'approve',
+  'permission',
+  'access',
+  'auth code',
+  'authorize',
+  'manual',
+  'human',
+  'user input',
+  'credential',
+  'token',
+  'login',
+  'share',
+  'upload',
+  '请',
+  '麻烦',
+  '提供',
+  '确认',
+  '授权',
+  '权限',
+  '验证码',
+  '凭证',
+  '登录',
+  '人工',
+]
 
 export async function runSessionJudge(
   zero: ZeroOS,
@@ -204,21 +227,20 @@ function resolveJudgeModel(zero: ZeroOS, preferred?: string) {
   return fallback
 }
 
-function buildJudgePayload(
-  zero: ZeroOS,
-  input: {
-    sessionId: string
-    currentModel?: string
-    summary?: string
-    placement?: string
-    messages: Message[]
-    requests: RequestLogEntry[]
-    closures: ReturnType<ZeroOS['observability']['readSessionClosures']>
-    snapshots: SnapshotEntry[]
-    traces: TraceSpan[]
-    signals: SessionJudgeSignals
-  },
-) {
+interface BuildJudgePayloadInput {
+  sessionId: string
+  currentModel?: string
+  summary?: string
+  placement?: string
+  messages: Message[]
+  requests: RequestLogEntry[]
+  closures: ClosureLogEntry[]
+  snapshots: SnapshotEntry[]
+  traces: TraceSpan[]
+  signals: SessionJudgeSignals
+}
+
+function buildJudgePayload(zero: ZeroOS, input: BuildJudgePayloadInput) {
   const filter = (value: string) => zero.secretFilter.filter(value)
   const recentMessages = input.messages
     .filter((message) => message.role === 'user' || message.role === 'assistant')
@@ -316,6 +338,33 @@ function buildJudgePrompt(payload: Record<string, unknown>): string {
   ].join('\n')
 }
 
+function buildJudgeRepairPrompt(raw: string, parseError: unknown): string {
+  const detail = toErrorMessage(parseError)
+  return [
+    'Repair this malformed session-judge JSON into valid JSON.',
+    'Keep the original intent and values whenever possible.',
+    `Parse error: ${detail}`,
+    '',
+    raw,
+  ].join('\n')
+}
+
+type JudgeCompletionAdapter = {
+  complete(request: {
+    messages: Message[]
+    system?: string
+    stream: boolean
+    maxTokens?: number
+    model?: string
+    meta?: CompletionRequest['meta']
+  }): Promise<CompletionResponse>
+}
+
+interface ParsedJudgeArtifacts {
+  parsed: Omit<SessionJudgeResult, 'signals'>
+  repair?: SessionJudgeExchangeArtifacts
+}
+
 async function parseOrRepairJudgeResponse(
   adapter: JudgeCompletionAdapter,
   sessionId: string,
@@ -373,15 +422,13 @@ async function parseOrRepairJudgeResponse(
   }
 }
 
-function buildJudgeRepairPrompt(raw: string, parseError: unknown): string {
-  const detail = toErrorMessage(parseError)
-  return [
-    'Repair this malformed session-judge JSON into valid JSON.',
-    'Keep the original intent and values whenever possible.',
-    `Parse error: ${detail}`,
-    '',
-    raw,
-  ].join('\n')
+function extractResponseText(response: {
+  content: Array<{ type: string; text?: string }>
+}): string {
+  return response.content
+    .filter((block) => block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text as string)
+    .join('')
 }
 
 function parseJudgeResponse(raw: string): Omit<SessionJudgeResult, 'signals'> {
@@ -493,208 +540,6 @@ function normalizeConfidence(value: unknown): SessionJudgeResult['confidence'] {
 
 function normalizeSeverity(value: unknown): SessionJudgeFinding['severity'] {
   return value === 'info' || value === 'warn' || value === 'bad' ? value : 'warn'
-}
-
-function collectSignals(requests: RequestLogEntry[], closureCount: number): SessionJudgeSignals {
-  let toolCallCount = 0
-  let memorySearchCount = 0
-  let memoryReadCount = 0
-  let memoryWriteCount = 0
-  const duplicateMap = new Map<string, number>()
-
-  for (const request of requests) {
-    toolCallCount += request.toolCalls.length
-    for (const toolCall of request.toolCalls) {
-      const signature = `${toolCall.name}:${stableStringify(toolCall.input)}`
-      duplicateMap.set(signature, (duplicateMap.get(signature) ?? 0) + 1)
-      if (toolCall.name === 'memory_search') memorySearchCount++
-      if (toolCall.name === 'memory_read') memoryReadCount++
-      if (toolCall.name === 'memory') memoryWriteCount++
-    }
-  }
-
-  const duplicateToolCallCount = Array.from(duplicateMap.values()).filter(
-    (count) => count > 1,
-  ).length
-
-  return {
-    totalCost: Number(requests.reduce((sum, request) => sum + request.cost, 0).toFixed(6)),
-    requestCount: requests.length,
-    toolCallCount,
-    duplicateToolCallCount,
-    memorySearchCount,
-    memoryReadCount,
-    memoryWriteCount,
-    closureCount,
-  }
-}
-
-function collectMemorySignals(requests: RequestLogEntry[], filter: (value: string) => string) {
-  const queries: string[] = []
-  const paths: string[] = []
-  let memoryWriteCalls = 0
-
-  for (const request of requests) {
-    for (const toolCall of request.toolCalls) {
-      if (toolCall.name === 'memory_search' && typeof toolCall.input.query === 'string') {
-        queries.push(previewText(filter(toolCall.input.query), 120))
-      }
-      if (toolCall.name === 'memory_read' && typeof toolCall.input.path === 'string') {
-        paths.push(previewText(filter(toolCall.input.path), 120))
-      }
-      if (toolCall.name === 'memory') {
-        memoryWriteCalls++
-      }
-    }
-  }
-
-  return {
-    searchQueries: unique(queries).slice(0, 5),
-    memoryPaths: unique(paths).slice(0, 5),
-    memoryWriteCalls,
-  }
-}
-
-const HUMAN_INTERVENTION_HINTS = [
-  'please',
-  'can you',
-  'could you',
-  'need you',
-  'provide',
-  'confirm',
-  'approval',
-  'approve',
-  'permission',
-  'access',
-  'auth code',
-  'authorize',
-  'manual',
-  'human',
-  'user input',
-  'credential',
-  'token',
-  'login',
-  'share',
-  'upload',
-  '请',
-  '麻烦',
-  '提供',
-  '确认',
-  '授权',
-  '权限',
-  '验证码',
-  '凭证',
-  '登录',
-  '人工',
-]
-
-function collectInterventionSignals(
-  messages: Message[],
-  requests: RequestLogEntry[],
-  closures: ReturnType<ZeroOS['observability']['readSessionClosures']>,
-  filter: (value: string) => string,
-) {
-  const recentHumanAskSamples = messages
-    .filter((message) => message.role === 'assistant')
-    .map((message) => previewText(filter(extractMessageText(message)), 220))
-    .filter((text) => text.length > 0 && looksLikeHumanInterventionAsk(text))
-
-  const closureActions = closures
-    .filter(
-      (closure): closure is Extract<typeof closure, { action: 'continue' | 'finish' | 'block' }> =>
-        'action' in closure,
-    )
-    .map((closure) => closure.action)
-
-  const recentBlockReasons = closures
-    .filter((closure) => 'action' in closure && closure.action === 'block')
-    .slice(-4)
-    .map((closure) => previewText(filter(closure.reason), 180))
-    .filter((reason) => reason.length > 0)
-
-  const toolErrorCount = requests.reduce(
-    (sum, request) => sum + request.toolResults.filter((result) => result.isError === true).length,
-    0,
-  )
-  const errorRequestCount = requests.filter((request) =>
-    request.toolResults.some((result) => result.isError === true),
-  ).length
-  const unresolvedErrorTurnCount = requests.filter(
-    (request) =>
-      request.stopReason === 'end_turn' &&
-      request.toolResults.some((result) => result.isError === true),
-  ).length
-
-  return {
-    blockDecisionCount: closureActions.filter((action) => action === 'block').length,
-    continueDecisionCount: closureActions.filter((action) => action === 'continue').length,
-    finishDecisionCount: closureActions.filter((action) => action === 'finish').length,
-    assistantHumanAskCount: recentHumanAskSamples.length,
-    recentHumanAskSamples: recentHumanAskSamples.slice(-4),
-    recentBlockReasons,
-    toolErrorCount,
-    errorRequestCount,
-    unresolvedErrorTurnCount,
-  }
-}
-
-function looksLikeHumanInterventionAsk(text: string): boolean {
-  const normalized = text.toLowerCase()
-  return (
-    normalized.includes('?') || HUMAN_INTERVENTION_HINTS.some((hint) => normalized.includes(hint))
-  )
-}
-
-function collectToolSignals(requests: RequestLogEntry[], filter: (value: string) => string) {
-  const byTool = new Map<string, { count: number; errorCount: number }>()
-  const duplicates = new Map<
-    string,
-    { toolName: string; inputSignature: string; count: number; turnIndexes: number[] }
-  >()
-
-  for (const request of requests) {
-    const resultByToolUseId = new Map(
-      request.toolResults.map((result) => [result.toolUseId, result.isError === true]),
-    )
-
-    for (const toolCall of request.toolCalls) {
-      const stats = byTool.get(toolCall.name) ?? { count: 0, errorCount: 0 }
-      stats.count++
-      if (resultByToolUseId.get(toolCall.id)) {
-        stats.errorCount++
-      }
-      byTool.set(toolCall.name, stats)
-
-      const inputSignature = previewText(filter(stableStringify(toolCall.input)), 180)
-      const key = `${toolCall.name}:${stableStringify(toolCall.input)}`
-      const duplicate = duplicates.get(key) ?? {
-        toolName: toolCall.name,
-        inputSignature,
-        count: 0,
-        turnIndexes: [],
-      }
-      duplicate.count++
-      duplicate.turnIndexes.push(request.turnIndex)
-      duplicates.set(key, duplicate)
-    }
-  }
-
-  return {
-    byTool: Array.from(byTool.entries()).map(([name, stats]) => ({ name, ...stats })),
-    duplicateCalls: Array.from(duplicates.values())
-      .filter((item) => item.count > 1)
-      .sort((left, right) => right.count - left.count)
-      .slice(0, 6),
-  }
-}
-
-function extractResponseText(response: {
-  content: Array<{ type: string; text?: string }>
-}): string {
-  return response.content
-    .filter((block) => block.type === 'text' && typeof block.text === 'string')
-    .map((block) => block.text as string)
-    .join('')
 }
 
 function parseJudgeJson(value: string): unknown {
@@ -882,6 +727,166 @@ function balanceJson(value: string): string {
 
 function stripTrailingCommas(value: string): string {
   return value.replace(/,\s*([}\]])/g, '$1').replace(/,\s*$/g, '')
+}
+
+function collectSignals(requests: RequestLogEntry[], closureCount: number): SessionJudgeSignals {
+  let toolCallCount = 0
+  let memorySearchCount = 0
+  let memoryReadCount = 0
+  let memoryWriteCount = 0
+  const duplicateMap = new Map<string, number>()
+
+  for (const request of requests) {
+    toolCallCount += request.toolCalls.length
+    for (const toolCall of request.toolCalls) {
+      const signature = `${toolCall.name}:${stableStringify(toolCall.input)}`
+      duplicateMap.set(signature, (duplicateMap.get(signature) ?? 0) + 1)
+      if (toolCall.name === 'memory_search') memorySearchCount++
+      if (toolCall.name === 'memory_read') memoryReadCount++
+      if (toolCall.name === 'memory') memoryWriteCount++
+    }
+  }
+
+  const duplicateToolCallCount = Array.from(duplicateMap.values()).filter(
+    (count) => count > 1,
+  ).length
+
+  return {
+    totalCost: Number(requests.reduce((sum, request) => sum + request.cost, 0).toFixed(6)),
+    requestCount: requests.length,
+    toolCallCount,
+    duplicateToolCallCount,
+    memorySearchCount,
+    memoryReadCount,
+    memoryWriteCount,
+    closureCount,
+  }
+}
+
+function collectMemorySignals(requests: RequestLogEntry[], filter: (value: string) => string) {
+  const queries: string[] = []
+  const paths: string[] = []
+  let memoryWriteCalls = 0
+
+  for (const request of requests) {
+    for (const toolCall of request.toolCalls) {
+      if (toolCall.name === 'memory_search' && typeof toolCall.input.query === 'string') {
+        queries.push(previewText(filter(toolCall.input.query), 120))
+      }
+      if (toolCall.name === 'memory_read' && typeof toolCall.input.path === 'string') {
+        paths.push(previewText(filter(toolCall.input.path), 120))
+      }
+      if (toolCall.name === 'memory') {
+        memoryWriteCalls++
+      }
+    }
+  }
+
+  return {
+    searchQueries: unique(queries).slice(0, 5),
+    memoryPaths: unique(paths).slice(0, 5),
+    memoryWriteCalls,
+  }
+}
+
+function collectInterventionSignals(
+  messages: Message[],
+  requests: RequestLogEntry[],
+  closures: ClosureLogEntry[],
+  filter: (value: string) => string,
+) {
+  const recentHumanAskSamples = messages
+    .filter((message) => message.role === 'assistant')
+    .map((message) => previewText(filter(extractMessageText(message)), 220))
+    .filter((text) => text.length > 0 && looksLikeHumanInterventionAsk(text))
+
+  const closureActions = closures
+    .filter(
+      (closure): closure is Extract<typeof closure, { action: 'continue' | 'finish' | 'block' }> =>
+        'action' in closure,
+    )
+    .map((closure) => closure.action)
+
+  const recentBlockReasons = closures
+    .filter((closure) => 'action' in closure && closure.action === 'block')
+    .slice(-4)
+    .map((closure) => previewText(filter(closure.reason), 180))
+    .filter((reason) => reason.length > 0)
+
+  const toolErrorCount = requests.reduce(
+    (sum, request) => sum + request.toolResults.filter((result) => result.isError === true).length,
+    0,
+  )
+  const errorRequestCount = requests.filter((request) =>
+    request.toolResults.some((result) => result.isError === true),
+  ).length
+  const unresolvedErrorTurnCount = requests.filter(
+    (request) =>
+      request.stopReason === 'end_turn' &&
+      request.toolResults.some((result) => result.isError === true),
+  ).length
+
+  return {
+    blockDecisionCount: closureActions.filter((action) => action === 'block').length,
+    continueDecisionCount: closureActions.filter((action) => action === 'continue').length,
+    finishDecisionCount: closureActions.filter((action) => action === 'finish').length,
+    assistantHumanAskCount: recentHumanAskSamples.length,
+    recentHumanAskSamples: recentHumanAskSamples.slice(-4),
+    recentBlockReasons,
+    toolErrorCount,
+    errorRequestCount,
+    unresolvedErrorTurnCount,
+  }
+}
+
+function looksLikeHumanInterventionAsk(text: string): boolean {
+  const normalized = text.toLowerCase()
+  return (
+    normalized.includes('?') || HUMAN_INTERVENTION_HINTS.some((hint) => normalized.includes(hint))
+  )
+}
+
+function collectToolSignals(requests: RequestLogEntry[], filter: (value: string) => string) {
+  const byTool = new Map<string, { count: number; errorCount: number }>()
+  const duplicates = new Map<
+    string,
+    { toolName: string; inputSignature: string; count: number; turnIndexes: number[] }
+  >()
+
+  for (const request of requests) {
+    const resultByToolUseId = new Map(
+      request.toolResults.map((result) => [result.toolUseId, result.isError === true]),
+    )
+
+    for (const toolCall of request.toolCalls) {
+      const stats = byTool.get(toolCall.name) ?? { count: 0, errorCount: 0 }
+      stats.count++
+      if (resultByToolUseId.get(toolCall.id)) {
+        stats.errorCount++
+      }
+      byTool.set(toolCall.name, stats)
+
+      const inputSignature = previewText(filter(stableStringify(toolCall.input)), 180)
+      const key = `${toolCall.name}:${stableStringify(toolCall.input)}`
+      const duplicate = duplicates.get(key) ?? {
+        toolName: toolCall.name,
+        inputSignature,
+        count: 0,
+        turnIndexes: [],
+      }
+      duplicate.count++
+      duplicate.turnIndexes.push(request.turnIndex)
+      duplicates.set(key, duplicate)
+    }
+  }
+
+  return {
+    byTool: Array.from(byTool.entries()).map(([name, stats]) => ({ name, ...stats })),
+    duplicateCalls: Array.from(duplicates.values())
+      .filter((item) => item.count > 1)
+      .sort((left, right) => right.count - left.count)
+      .slice(0, 6),
+  }
 }
 
 function previewText(value: string, maxLength: number): string {

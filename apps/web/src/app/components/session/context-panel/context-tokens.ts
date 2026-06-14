@@ -246,7 +246,7 @@ export function buildContextTokenSummary(input: {
   const hotspots: ContextTokenHotspot[] = []
   const latestRequest = pickLatestRequest(input.llmRequests)
 
-  addSection(sections, {
+  addContextTokenSection(sections, {
     key: 'system',
     label: 'System',
     tokens: estimateTokens(input.systemPrompt ?? ''),
@@ -262,15 +262,15 @@ export function buildContextTokenSummary(input: {
     if (messageTokens > 0) {
       hotspots.push({
         id: message.id,
-        label: formatMessageLabel(message),
+        label: formatContextMessageLabel(message),
         tokens: messageTokens,
-        detail: previewMessage(message),
+        detail: previewContextMessage(message),
       })
     }
 
     if (message.role === 'user') {
       if (parts.toolResults > 0) {
-        addSection(sections, {
+        addContextTokenSection(sections, {
           key: 'tool-results',
           label: 'Tool Results',
           tokens: parts.toolResults,
@@ -280,7 +280,7 @@ export function buildContextTokenSummary(input: {
       }
       const userPromptTokens = parts.text + parts.other
       if (userPromptTokens > 0 && message.messageType !== 'control') {
-        addSection(sections, {
+        addContextTokenSection(sections, {
           key: 'user',
           label: 'User',
           tokens: userPromptTokens,
@@ -291,7 +291,7 @@ export function buildContextTokenSummary(input: {
     } else if (message.role === 'assistant') {
       const assistantTokens = parts.text + parts.other
       if (assistantTokens > 0) {
-        addSection(sections, {
+        addContextTokenSection(sections, {
           key: 'assistant',
           label: 'Assistant',
           tokens: assistantTokens,
@@ -300,7 +300,7 @@ export function buildContextTokenSummary(input: {
         })
       }
       if (parts.thinking > 0) {
-        addSection(sections, {
+        addContextTokenSection(sections, {
           key: 'thinking',
           label: 'Thinking',
           tokens: parts.thinking,
@@ -309,7 +309,7 @@ export function buildContextTokenSummary(input: {
         })
       }
       if (parts.toolCalls > 0) {
-        addSection(sections, {
+        addContextTokenSection(sections, {
           key: 'tool-calls',
           label: 'Tool Calls',
           tokens: parts.toolCalls,
@@ -320,7 +320,7 @@ export function buildContextTokenSummary(input: {
     }
 
     if (parts.images > 0) {
-      addSection(sections, {
+      addContextTokenSection(sections, {
         key: 'images',
         label: 'Images',
         tokens: parts.images,
@@ -332,7 +332,7 @@ export function buildContextTokenSummary(input: {
     if (message.messageType === 'control') {
       const controlTokens = parts.text + parts.other
       if (controlTokens > 0) {
-        addSection(sections, {
+        addContextTokenSection(sections, {
           key: 'control',
           label: 'Control',
           tokens: controlTokens,
@@ -347,7 +347,7 @@ export function buildContextTokenSummary(input: {
     latestRequest?.memoryInjections?.reduce((sum, injection) => {
       return sum + estimateTokens(injection.formattedText)
     }, 0) ?? 0
-  addSection(sections, {
+  addContextTokenSection(sections, {
     key: 'memory',
     label: 'Memory',
     tokens: latestMemoryTokens,
@@ -358,7 +358,7 @@ export function buildContextTokenSummary(input: {
   const latestQueuedTokens = latestRequest?.queuedInjection
     ? estimateTokens(latestRequest.queuedInjection.formattedText)
     : 0
-  addSection(sections, {
+  addContextTokenSection(sections, {
     key: 'queued',
     label: 'Queued',
     tokens: latestQueuedTokens,
@@ -366,9 +366,7 @@ export function buildContextTokenSummary(input: {
     tone: 'other',
   })
 
-  const rows = Array.from(sections.values())
-    .filter((section) => section.tokens > 0)
-    .sort((left, right) => right.tokens - left.tokens)
+  const rows = finalizeContextTokenSections(sections)
   const estimatedContextTokens = rows.reduce((sum, section) => sum + section.tokens, 0)
 
   return {
@@ -398,29 +396,6 @@ export function buildContextTokenSummary(input: {
   }
 }
 
-function addSection(sections: Map<string, ContextTokenSection>, next: ContextTokenSection): void {
-  if (next.tokens <= 0) return
-
-  const current = sections.get(next.key)
-  if (!current) {
-    sections.set(next.key, next)
-    return
-  }
-
-  sections.set(next.key, {
-    ...current,
-    tokens: current.tokens + next.tokens,
-    detail: current.detail ?? next.detail,
-  })
-}
-
-function pickLatestRequest(requests: LlmRequestLike[]): LlmRequestLike | undefined {
-  return [...requests]
-    .filter((request) => request.tokens && typeof request.ts === 'string')
-    .sort((left, right) => left.ts.localeCompare(right.ts))
-    .at(-1)
-}
-
 function estimateContentItemsTokens(value: unknown): number {
   if (!Array.isArray(value)) return 0
 
@@ -434,7 +409,14 @@ function estimateContentItemsTokens(value: unknown): number {
   return total
 }
 
-function formatMessageLabel(message: MessageLike): string {
+function pickLatestRequest(requests: LlmRequestLike[]): LlmRequestLike | undefined {
+  return [...requests]
+    .filter((request) => request.tokens && typeof request.ts === 'string')
+    .sort((left, right) => left.ts.localeCompare(right.ts))
+    .at(-1)
+}
+
+function formatContextMessageLabel(message: MessageLike): string {
   if (message.messageType === 'control') return formatControlKind(message.controlKind)
   if (message.role === 'assistant') return 'Assistant'
   if (message.role === 'user' && message.content.some((block) => block.type === 'tool_result')) {
@@ -444,15 +426,7 @@ function formatMessageLabel(message: MessageLike): string {
   return message.role
 }
 
-function formatControlKind(controlKind: string | undefined): string {
-  if (!controlKind) return 'Control'
-  return controlKind
-    .split('_')
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ')
-}
-
-function previewMessage(message: MessageLike): string {
+function previewContextMessage(message: MessageLike): string {
   const text = message.content
     .flatMap((block) => {
       if (block.type === 'text') return [asText(block.text)]
@@ -469,6 +443,41 @@ function previewMessage(message: MessageLike): string {
     .trim()
 
   return text.length > 88 ? `${text.slice(0, 85).trimEnd()}...` : text
+}
+
+function formatControlKind(controlKind: string | undefined): string {
+  if (!controlKind) return 'Control'
+  return controlKind
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+function addContextTokenSection(
+  sections: Map<string, ContextTokenSection>,
+  next: ContextTokenSection,
+): void {
+  if (next.tokens <= 0) return
+
+  const current = sections.get(next.key)
+  if (!current) {
+    sections.set(next.key, next)
+    return
+  }
+
+  sections.set(next.key, {
+    ...current,
+    tokens: current.tokens + next.tokens,
+    detail: current.detail ?? next.detail,
+  })
+}
+
+function finalizeContextTokenSections(
+  sections: Map<string, ContextTokenSection>,
+): ContextTokenSection[] {
+  return Array.from(sections.values())
+    .filter((section) => section.tokens > 0)
+    .sort((left, right) => right.tokens - left.tokens)
 }
 
 function asText(value: unknown): string {
