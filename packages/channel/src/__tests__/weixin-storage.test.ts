@@ -2,12 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import {
-  ContextTokenStore,
-  MessageDeduplicator,
-  loadSyncBuf,
-  saveSyncBuf,
-} from '../weixin/storage'
+import { ContextTokenStore, loadSyncBuf, saveSyncBuf } from '../weixin/storage'
 
 let tempDir: string
 
@@ -58,14 +53,5 @@ describe('ContextTokenStore', () => {
     store.set('accB', 'c1', 'b')
     expect(store.get('accA', 'c1')).toBe('a')
     expect(store.get('accB', 'c1')).toBe('b')
-  })
-})
-
-describe('MessageDeduplicator', () => {
-  test('first sight is not a duplicate, second is', () => {
-    const d = new MessageDeduplicator(1000)
-    expect(d.isDuplicate('m1')).toBe(false)
-    expect(d.isDuplicate('m1')).toBe(true)
-    expect(d.isDuplicate('m2')).toBe(false)
   })
 })

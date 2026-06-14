@@ -5,9 +5,9 @@
  * only owns the polling state machine.
  */
 
-import { ILINK_BASE_URL } from './constants'
-import { getBotQrCode, getQrCodeStatus, type ApiOptions, type FetchImpl } from './api'
-import type { ILinkCredentials } from './types'
+import { type ApiOptions, type FetchImpl, getJson } from './api-transport'
+import { EP_GET_BOT_QR, EP_GET_QR_STATUS, ILINK_BASE_URL, QR_TIMEOUT_MS } from './constants'
+import type { ILinkCredentials, QrCodeResponse, QrStatusResponse } from './types'
 
 export interface QrLoginOptions {
   botType?: string
@@ -25,6 +25,30 @@ export interface QrLoginOptions {
 
 export interface QrLoginResult {
   credentials: ILinkCredentials
+}
+
+export async function getBotQrCode(
+  params: { baseUrl?: string; botType?: string } = {},
+  opts: ApiOptions = {},
+): Promise<QrCodeResponse> {
+  const baseUrl = params.baseUrl ?? 'https://ilinkai.weixin.qq.com'
+  const botType = params.botType ?? '3'
+  return getJson(opts.fetchImpl ?? globalThis.fetch, {
+    baseUrl,
+    endpoint: `${EP_GET_BOT_QR}?bot_type=${encodeURIComponent(botType)}`,
+    timeoutMs: QR_TIMEOUT_MS,
+  })
+}
+
+export async function getQrCodeStatus(
+  params: { baseUrl: string; qrcode: string },
+  opts: ApiOptions = {},
+): Promise<QrStatusResponse> {
+  return getJson(opts.fetchImpl ?? globalThis.fetch, {
+    baseUrl: params.baseUrl,
+    endpoint: `${EP_GET_QR_STATUS}?qrcode=${encodeURIComponent(params.qrcode)}`,
+    timeoutMs: QR_TIMEOUT_MS,
+  })
 }
 
 export async function runQrLogin(options: QrLoginOptions = {}): Promise<QrLoginResult | null> {

@@ -5,14 +5,13 @@ export type {
   ImageAttachment,
   MessageHandler,
 } from './base'
-export { WebMessageHandler } from './web/handler'
-export type { WebSocketMessage, WebSocketResponse } from './web/handler'
-export { WebChannel } from './web/channel'
+export { WebChannel, WebMessageHandler } from './web'
+export type { WebSocketMessage, WebSocketResponse } from './web'
 export { FeishuChannel } from './feishu/index'
 export type { FeishuChannelConfig } from './feishu/index'
 export type { FeishuStreamingSession } from './feishu/index'
 export { FeishuImageResolver } from './feishu/image-resolver'
-export { TelegramChannel } from './telegram/index'
+export { TelegramChannel } from './telegram'
 export type {
   TelegramChannelConfig,
   TelegramBotCommand,
@@ -21,7 +20,7 @@ export type {
   TelegramMenuButtonConfig,
   TelegramSetChatMenuButtonOptions,
   TelegramGetChatMenuButtonOptions,
-} from './telegram/index'
+} from './telegram'
 export * from './richtext/index'
 export {
   WeixinChannel,

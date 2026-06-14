@@ -13,7 +13,6 @@ export {
 } from './crypto'
 export {
   ContextTokenStore,
-  MessageDeduplicator,
   loadSyncBuf,
   saveSyncBuf,
 } from './storage'

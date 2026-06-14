@@ -1,19 +1,15 @@
 import { describe, expect, test } from 'bun:test'
+import { sendTextMessage } from '../weixin/api-messages'
+import { ILinkError, buildBaseInfo, sanitizeBotAgent } from '../weixin/api-transport'
+import { notifyStart, notifyStop } from '../weixin/channel'
 import {
-  ILinkError,
-  buildBaseInfo,
   buildCdnDownloadUrl,
   buildCdnUploadUrl,
-  getBotQrCode,
-  getQrCodeStatus,
-  getUpdates,
   getUploadUrl,
-  notifyStart,
-  notifyStop,
-  sanitizeBotAgent,
-  sendTextMessage,
   uploadCiphertext,
-} from '../weixin/api'
+} from '../weixin/media-api'
+import { getUpdates } from '../weixin/polling'
+import { getBotQrCode, getQrCodeStatus } from '../weixin/qr-login'
 
 interface UploadRequestCapture {
   rawsize?: unknown

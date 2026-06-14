@@ -1,8 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import {
-  normalizeMarkdownForWeixin,
-  splitForWeixinDelivery,
-} from '../weixin/markdown'
+import { normalizeMarkdownForWeixin, splitForWeixinDelivery } from '../weixin/markdown'
 
 describe('normalizeMarkdownForWeixin', () => {
   test('H1 becomes 【Title】 and H2+ become bold', () => {
@@ -37,7 +34,7 @@ describe('splitForWeixinDelivery', () => {
   })
 
   test('splits oversized block at block boundary (compact mode)', () => {
-    const long = 'a'.repeat(3000) + '\n\n' + 'b'.repeat(3000)
+    const long = `${'a'.repeat(3000)}\n\n${'b'.repeat(3000)}`
     const parts = splitForWeixinDelivery(long)
     expect(parts.length).toBeGreaterThanOrEqual(2)
     expect(parts.every((p) => p.length <= 4000)).toBe(true)

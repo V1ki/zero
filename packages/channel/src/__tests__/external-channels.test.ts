@@ -3,9 +3,13 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
+import type * as lark from '@larksuiteoapi/node-sdk'
 import type { IncomingMessage } from '../base'
+import { FeishuConnectionState } from '../feishu'
+import { FeishuIncomingMessageBuilder } from '../feishu/incoming-message'
 import { FeishuChannel } from '../feishu/index'
-import { TelegramChannel } from '../telegram/index'
+import { parseInteractiveCardContent } from '../feishu/interactive-card-parser'
+import { TelegramChannel } from '../telegram'
 
 type RecordedArgs = unknown[]
 const tempDirs: string[] = []
@@ -94,6 +98,18 @@ interface FeishuImageCreatePayload {
   }
 }
 
+interface FeishuCardCreateResponse {
+  data?: { card_id?: string }
+}
+
+interface FeishuCardUpdatePayload {
+  data: { card: { data: string } }
+}
+
+interface FeishuCardElementContentPayload {
+  data: { content: string }
+}
+
 interface FeishuTestHarness {
   client: {
     im: {
@@ -106,23 +122,33 @@ interface FeishuTestHarness {
         get?: (payload: FeishuMessageResourcePayload) => Promise<FeishuBinaryResponseLike>
       }
       message?: {
-        create?: (
-          payload: FeishuMessageCreatePayload,
-        ) => Promise<void | { data?: { message_id?: string } }>
-        reply?: (
-          payload: FeishuMessageReplyPayload,
-        ) => Promise<void | { data?: { message_id?: string } }>
+        create?: (payload: FeishuMessageCreatePayload) => Promise<unknown>
+        reply?: (payload: FeishuMessageReplyPayload) => Promise<unknown>
         delete?: (payload: { path: { message_id: string } }) => Promise<void>
+      }
+      messageReaction?: {
+        create?: (payload: {
+          path: { message_id: string }
+          data: { reaction_type: { emoji_type: string } }
+        }) => Promise<{ reaction_id?: string }>
+        delete?: (payload: {
+          path: { message_id: string; reaction_id: string }
+        }) => Promise<void>
+      }
+    }
+    cardkit?: {
+      v1: {
+        card: {
+          create?: () => Promise<FeishuCardCreateResponse>
+          update?: (payload: FeishuCardUpdatePayload) => Promise<void>
+        }
+        cardElement: {
+          content?: (payload: FeishuCardElementContentPayload) => Promise<void>
+        }
       }
     }
     request?: (opts: unknown) => Promise<unknown>
   } | null
-  buildIncomingMessage(payload: FeishuIncomingPayload): Promise<IncomingMessage | null>
-  parseInteractiveCardContent(raw: string): string
-  updateConnectionStateFromSdkLog(
-    level: 'error' | 'warn' | 'info' | 'debug' | 'trace',
-    message: string,
-  ): void
 }
 
 function getTelegramHarness(channel: TelegramChannel): TelegramTestHarness {
@@ -131,6 +157,17 @@ function getTelegramHarness(channel: TelegramChannel): TelegramTestHarness {
 
 function getFeishuHarness(channel: FeishuChannel): FeishuTestHarness {
   return channel as unknown as FeishuTestHarness
+}
+
+function buildFeishuIncomingMessage(
+  channel: FeishuChannel,
+  payload: FeishuIncomingPayload,
+  downloadsDir?: string,
+): Promise<IncomingMessage | null> {
+  return new FeishuIncomingMessageBuilder({
+    getClient: () => getFeishuHarness(channel).client as unknown as lark.Client | null,
+    downloadsDir,
+  }).build(payload)
 }
 
 afterEach(() => {
@@ -503,21 +540,51 @@ describe('FeishuChannel contract', () => {
     expect(channel.isConnected()).toBe(false)
   })
 
-  test('connection state follows websocket sdk log transitions', () => {
+  test('react and removeReaction delegate to messageReaction API', async () => {
     const channel = new FeishuChannel({ appId: 'test-id', appSecret: 'test-secret' })
-    const harness = getFeishuHarness(channel)
+    const creates: unknown[] = []
+    const deletes: unknown[] = []
+    getFeishuHarness(channel).client = {
+      im: {
+        messageReaction: {
+          create: async (payload) => {
+            creates.push(payload)
+            return { reaction_id: 'reaction-1' }
+          },
+          delete: async (payload) => {
+            deletes.push(payload)
+          },
+        },
+      },
+    }
 
-    harness.updateConnectionStateFromSdkLog('debug', '[ws] | ws connect success')
-    expect(channel.isConnected()).toBe(true)
+    const reactionId = await channel.react('msg-1', 'Typing')
+    await channel.removeReaction('msg-1', reactionId ?? '')
 
-    harness.updateConnectionStateFromSdkLog('error', '[ws] | timeout of 15000ms exceeded')
-    expect(channel.isConnected()).toBe(false)
+    expect(reactionId).toBe('reaction-1')
+    expect(creates).toEqual([
+      {
+        path: { message_id: 'msg-1' },
+        data: { reaction_type: { emoji_type: 'Typing' } },
+      },
+    ])
+    expect(deletes).toEqual([{ path: { message_id: 'msg-1', reaction_id: 'reaction-1' } }])
+  })
 
-    harness.updateConnectionStateFromSdkLog('debug', '[ws] | reconnect success')
-    expect(channel.isConnected()).toBe(true)
+  test('connection state follows websocket sdk log transitions', () => {
+    const connectionState = new FeishuConnectionState()
 
-    harness.updateConnectionStateFromSdkLog('debug', '[ws] | client closed')
-    expect(channel.isConnected()).toBe(false)
+    connectionState.updateFromSdkLog('debug', '[ws] | ws connect success')
+    expect(connectionState.isConnected()).toBe(true)
+
+    connectionState.updateFromSdkLog('error', '[ws] | timeout of 15000ms exceeded')
+    expect(connectionState.isConnected()).toBe(false)
+
+    connectionState.updateFromSdkLog('debug', '[ws] | reconnect success')
+    expect(connectionState.isConnected()).toBe(true)
+
+    connectionState.updateFromSdkLog('debug', '[ws] | client closed')
+    expect(connectionState.isConnected()).toBe(false)
   })
 
   test('buildIncomingMessage downloads standalone image via messageResource', async () => {
@@ -537,7 +604,7 @@ describe('FeishuChannel contract', () => {
       },
     }
 
-    const msg = await getFeishuHarness(channel).buildIncomingMessage({
+    const msg = await buildFeishuIncomingMessage(channel, {
       sender: { sender_id: { open_id: 'ou_test' } },
       message: {
         message_id: 'om_test',
@@ -599,20 +666,24 @@ describe('FeishuChannel contract', () => {
       },
     }
 
-    const msg = await getFeishuHarness(channel).buildIncomingMessage({
-      sender: { sender_id: { open_id: 'ou_file' } },
-      message: {
-        message_id: 'om_file',
-        chat_id: 'chat_file',
-        chat_type: 'p2p',
-        message_type: 'file',
-        create_time: '1710000000',
-        content: JSON.stringify({
-          file_key: 'file_v3_test',
-          file_name: 'Quarterly Report.pdf',
-        }),
+    const msg = await buildFeishuIncomingMessage(
+      channel,
+      {
+        sender: { sender_id: { open_id: 'ou_file' } },
+        message: {
+          message_id: 'om_file',
+          chat_id: 'chat_file',
+          chat_type: 'p2p',
+          message_type: 'file',
+          create_time: '1710000000',
+          content: JSON.stringify({
+            file_key: 'file_v3_test',
+            file_name: 'Quarterly Report.pdf',
+          }),
+        },
       },
-    })
+      uploadsDir,
+    )
     if (!msg) {
       throw new Error('expected Feishu message')
     }
@@ -669,7 +740,7 @@ describe('FeishuChannel contract', () => {
     }
 
     try {
-      const msg = await getFeishuHarness(channel).buildIncomingMessage({
+      const msg = await buildFeishuIncomingMessage(channel, {
         sender: { sender_id: { open_id: 'ou_test' } },
         message: {
           message_id: 'om_test',
@@ -710,7 +781,7 @@ describe('FeishuChannel contract', () => {
       },
     }
 
-    const msg = await getFeishuHarness(channel).buildIncomingMessage({
+    const msg = await buildFeishuIncomingMessage(channel, {
       sender: { sender_id: { open_id: 'ou_test' } },
       message: {
         message_id: 'om_post',
@@ -742,9 +813,7 @@ describe('FeishuChannel contract', () => {
   })
 
   test('parseInteractiveCardContent extracts text from cardkit v2 cards', () => {
-    const channel = new FeishuChannel({ appId: 'test-id', appSecret: 'test-secret' })
-
-    const parsed = getFeishuHarness(channel).parseInteractiveCardContent(
+    const parsed = parseInteractiveCardContent(
       JSON.stringify({
         schema: '2.0',
         header: {
@@ -770,9 +839,7 @@ describe('FeishuChannel contract', () => {
   })
 
   test('parseInteractiveCardContent avoids duplicate text for nested cardkit nodes', () => {
-    const channel = new FeishuChannel({ appId: 'test-id', appSecret: 'test-secret' })
-
-    const parsed = getFeishuHarness(channel).parseInteractiveCardContent(
+    const parsed = parseInteractiveCardContent(
       JSON.stringify({
         schema: '2.0',
         body: {
@@ -791,10 +858,7 @@ describe('FeishuChannel contract', () => {
   })
 
   test('parseInteractiveCardContent handles wrapped and legacy cards', () => {
-    const channel = new FeishuChannel({ appId: 'test-id', appSecret: 'test-secret' })
-    const harness = getFeishuHarness(channel)
-
-    const wrapped = harness.parseInteractiveCardContent(
+    const wrapped = parseInteractiveCardContent(
       JSON.stringify({
         type: 'interactive',
         card: {
@@ -807,7 +871,7 @@ describe('FeishuChannel contract', () => {
     )
     expect(wrapped).toBe('包裹卡片正文')
 
-    const legacy = harness.parseInteractiveCardContent(
+    const legacy = parseInteractiveCardContent(
       JSON.stringify({
         header: {
           title: { content: 'Legacy 标题' },
@@ -826,11 +890,8 @@ describe('FeishuChannel contract', () => {
   })
 
   test('parseInteractiveCardContent ignores non-visible legacy content fields', () => {
-    const channel = new FeishuChannel({ appId: 'test-id', appSecret: 'test-secret' })
-    const harness = getFeishuHarness(channel)
-
     expect(
-      harness.parseInteractiveCardContent(
+      parseInteractiveCardContent(
         JSON.stringify({
           config: {},
           elements: [{ tag: 'action', content: 'callback_action_id' }],
@@ -840,25 +901,18 @@ describe('FeishuChannel contract', () => {
   })
 
   test('parseInteractiveCardContent degrades for unsupported or empty cards', () => {
-    const channel = new FeishuChannel({ appId: 'test-id', appSecret: 'test-secret' })
-    const harness = getFeishuHarness(channel)
-
     expect(
-      harness.parseInteractiveCardContent(
-        JSON.stringify({ type: 'card', data: { card_id: 'card_v1' } }),
-      ),
+      parseInteractiveCardContent(JSON.stringify({ type: 'card', data: { card_id: 'card_v1' } })),
     ).toBe('[卡片消息]')
     expect(
-      harness.parseInteractiveCardContent(
+      parseInteractiveCardContent(
         JSON.stringify({ type: 'template', data: { template_id: 'tpl_v1' } }),
       ),
     ).toBe('[卡片消息]')
     expect(
-      harness.parseInteractiveCardContent(
-        JSON.stringify({ schema: '2.0', body: { elements: [] } }),
-      ),
+      parseInteractiveCardContent(JSON.stringify({ schema: '2.0', body: { elements: [] } })),
     ).toBe('[卡片消息]')
-    expect(harness.parseInteractiveCardContent('not json')).toBe('[卡片消息]')
+    expect(parseInteractiveCardContent('not json')).toBe('[卡片消息]')
   })
 
   test('buildIncomingMessage injects quoted interactive card content into reply text', async () => {
@@ -885,7 +939,7 @@ describe('FeishuChannel contract', () => {
       }),
     }
 
-    const msg = await getFeishuHarness(channel).buildIncomingMessage({
+    const msg = await buildFeishuIncomingMessage(channel, {
       sender: { sender_id: { open_id: 'ou_test' } },
       message: {
         message_id: 'om_reply',
@@ -969,7 +1023,7 @@ describe('FeishuChannel contract', () => {
     const imageUploads: FeishuImageCreatePayload[] = []
     const originalFetch = globalThis.fetch
 
-    globalThis.fetch = ((async () => new Response('fake-inline-image')) as unknown) as typeof fetch
+    globalThis.fetch = (async () => new Response('fake-inline-image')) as unknown as typeof fetch
     try {
       getFeishuHarness(channel).client = {
         im: {
@@ -996,9 +1050,7 @@ describe('FeishuChannel contract', () => {
     expect(imageUploads).toHaveLength(2)
     expect(calls).toHaveLength(2)
     expect(calls[0].data.msg_type).toBe('interactive')
-    expect(
-      JSON.parse(calls[0].data.content ?? '').body.elements[0].content.trim(),
-    ).toBe('Hello')
+    expect(JSON.parse(calls[0].data.content ?? '').body.elements[0].content.trim()).toBe('Hello')
     expect(calls[1]).toEqual({
       params: { receive_id_type: 'chat_id' },
       data: {
@@ -1079,7 +1131,7 @@ describe('FeishuChannel contract', () => {
     const imageUploads: FeishuImageCreatePayload[] = []
     const originalFetch = globalThis.fetch
 
-    globalThis.fetch = ((async () => new Response('fake-inline-image')) as unknown) as typeof fetch
+    globalThis.fetch = (async () => new Response('fake-inline-image')) as unknown as typeof fetch
     try {
       getFeishuHarness(channel).client = {
         im: {
@@ -1105,9 +1157,7 @@ describe('FeishuChannel contract', () => {
     expect(imageUploads).toHaveLength(2)
     expect(calls).toHaveLength(2)
     expect(calls[0].data.msg_type).toBe('interactive')
-    expect(
-      JSON.parse(calls[0].data.content).body.elements[0].content.trim(),
-    ).toBe('Hello')
+    expect(JSON.parse(calls[0].data.content).body.elements[0].content.trim()).toBe('Hello')
     expect(calls[1].data.msg_type).toBe('interactive')
     expect(JSON.parse(calls[1].data.content).body.elements[0].content).toBe(
       '有 1 张图片未能发送，请检查图片引用或稍后重试。',
@@ -1204,7 +1254,7 @@ describe('FeishuChannel contract', () => {
           },
         },
       },
-    } as any
+    }
 
     const session = await channel.sendStreaming('chat-1')
     const updatePromise = session.update('hello')
@@ -1272,7 +1322,7 @@ describe('FeishuChannel contract', () => {
           },
         },
       },
-    } as any
+    }
 
     const session = await channel.sendStreaming('chat-1')
     await session.dismiss()

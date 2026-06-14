@@ -2,19 +2,23 @@
  * Convert generic markdown into Weixin-friendly chat bubbles.
  *
  * Rules (mirrored from Hermes):
- *   - `# Title`        → `【Title】`
- *   - `## Title` etc.  → `**Title**`
- *   - `[text](url)`    → `text (url)`
- *   - GitHub-style tables → `- key: value` lists
+ *   - `# Title`        -> `【Title】`
+ *   - `## Title` etc.  -> `**Title**`
+ *   - `[text](url)`    -> `text (url)`
+ *   - GitHub-style tables -> `- key: value` lists
  *   - Preserve fenced code blocks as single units
  */
 
 import { MAX_MESSAGE_LENGTH } from './constants'
 
+const FENCE_RE = /^```([^\n`]*)\s*$/
 const HEADER_RE = /^(#{1,6})\s+(.+?)\s*$/
 const TABLE_RULE_RE = /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$/
-const FENCE_RE = /^```([^\n`]*)\s*$/
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)]+)\)/g
+
+function isWeixinCodeFenceLine(line: string): boolean {
+  return FENCE_RE.test(line.trim())
+}
 
 function rewriteHeader(line: string): string {
   const match = line.match(HEADER_RE)
@@ -34,7 +38,10 @@ function splitTableRow(line: string): string[] {
 function rewriteTableBlock(lines: string[]): string {
   if (lines.length < 2) return lines.join('\n')
   const headers = splitTableRow(lines[0])
-  const bodyRows = lines.slice(2).filter((l) => l.trim().length > 0).map(splitTableRow)
+  const bodyRows = lines
+    .slice(2)
+    .filter((l) => l.trim().length > 0)
+    .map(splitTableRow)
   if (headers.length === 0 || bodyRows.length === 0) return lines.join('\n')
 
   const formatted: string[] = []
@@ -65,7 +72,7 @@ export function normalizeMarkdownForWeixin(content: string): string {
   let i = 0
   while (i < lines.length) {
     const line = lines[i].replace(/\s+$/, '')
-    if (FENCE_RE.test(line.trim())) {
+    if (isWeixinCodeFenceLine(line)) {
       inCodeBlock = !inCodeBlock
       result.push(line)
       i += 1
@@ -94,7 +101,10 @@ export function normalizeMarkdownForWeixin(content: string): string {
     result.push(rewritten)
     i += 1
   }
-  const normalized = result.map((l) => l.replace(/\s+$/, '')).join('\n').replace(/\n{3,}/g, '\n\n')
+  const normalized = result
+    .map((l) => l.replace(/\s+$/, ''))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
   return normalized.trim()
 }
 
@@ -106,7 +116,7 @@ function splitMarkdownBlocks(content: string): string[] {
   let inCodeBlock = false
   for (const rawLine of lines) {
     const line = rawLine.replace(/\s+$/, '')
-    if (FENCE_RE.test(line.trim())) {
+    if (isWeixinCodeFenceLine(line)) {
       if (!inCodeBlock && current.length > 0) {
         blocks.push(current.join('\n').trim())
         current = []
@@ -172,7 +182,7 @@ function splitDeliveryUnits(content: string): string[] {
   const units: string[] = []
   for (const block of splitMarkdownBlocks(content)) {
     const firstLine = block.split('\n')[0].trim()
-    if (FENCE_RE.test(firstLine)) {
+    if (isWeixinCodeFenceLine(firstLine)) {
       units.push(block)
       continue
     }

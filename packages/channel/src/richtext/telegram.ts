@@ -1,15 +1,15 @@
 import { normalizeMarkdownForChannels } from './normalize'
 import type { TelegramEntityType, TelegramRichText, TelegramTextEntity } from './types'
 
-interface ParsedInline {
-  text: string
-  entities: TelegramTextEntity[]
-}
-
 interface Chunk {
   type: 'text' | 'pre'
   content: string
   language?: string
+}
+
+interface ParsedTelegramInline {
+  text: string
+  entities: TelegramTextEntity[]
 }
 
 const MARKER_TO_ENTITY: Record<string, TelegramEntityType> = {
@@ -54,7 +54,7 @@ export function markdownToTelegramRichText(markdown: string): TelegramRichText {
 
     const lines = chunk.content.split('\n')
     for (let i = 0; i < lines.length; i++) {
-      const parsed = parseLine(lines[i], out.length)
+      const parsed = parseTelegramLine(lines[i], out.length)
       out += parsed.text
       entities.push(...parsed.entities)
 
@@ -113,6 +113,86 @@ export function chunkTelegramRichText(
   return chunks
 }
 
+function parseTelegramLine(line: string, baseOffset: number): ParsedTelegramInline {
+  let quoteType: TelegramEntityType | null = null
+  let body = line
+
+  if (line.startsWith('>!')) {
+    quoteType = 'expandable_blockquote'
+    body = line.slice(2)
+  } else if (line.startsWith('>')) {
+    quoteType = 'blockquote'
+    body = line.slice(1)
+  }
+
+  if (body.startsWith(' ')) {
+    body = body.slice(1)
+  }
+
+  const parsed = parseStructuredTelegramLine(body, baseOffset)
+
+  if (quoteType && parsed.text.length > 0) {
+    parsed.entities.push({
+      type: quoteType,
+      offset: baseOffset,
+      length: parsed.text.length,
+    })
+  }
+
+  return parsed
+}
+
+function parseStructuredTelegramLine(body: string, baseOffset: number): ParsedTelegramInline {
+  const heading = body.match(/^#{1,6}\s+(.+)$/)
+  if (heading) {
+    const parsed = parseTelegramInline(heading[1], baseOffset)
+    if (parsed.text.length > 0) {
+      parsed.entities.push({
+        type: 'bold',
+        offset: baseOffset,
+        length: parsed.text.length,
+      })
+    }
+    return parsed
+  }
+
+  if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(body)) {
+    return { text: '──────────', entities: [] }
+  }
+
+  const task = body.match(/^[-*+]\s+\[( |x|X)\]\s+(.+)$/)
+  if (task) {
+    const prefix = task[1].toLowerCase() === 'x' ? '☑ ' : '☐ '
+    const parsed = parseTelegramInline(task[2], baseOffset + prefix.length)
+    return {
+      text: `${prefix}${parsed.text}`,
+      entities: parsed.entities,
+    }
+  }
+
+  const unordered = body.match(/^[-*+]\s+(.+)$/)
+  if (unordered) {
+    const prefix = '• '
+    const parsed = parseTelegramInline(unordered[1], baseOffset + prefix.length)
+    return {
+      text: `${prefix}${parsed.text}`,
+      entities: parsed.entities,
+    }
+  }
+
+  const ordered = body.match(/^(\d+)[.)]\s+(.+)$/)
+  if (ordered) {
+    const prefix = `${ordered[1]}. `
+    const parsed = parseTelegramInline(ordered[2], baseOffset + prefix.length)
+    return {
+      text: `${prefix}${parsed.text}`,
+      entities: parsed.entities,
+    }
+  }
+
+  return parseTelegramInline(body, baseOffset)
+}
+
 function splitFencedCodeBlocks(markdown: string): Chunk[] {
   const chunks: Chunk[] = []
   const re = /```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g
@@ -139,87 +219,7 @@ function splitFencedCodeBlocks(markdown: string): Chunk[] {
   return chunks.length > 0 ? chunks : [{ type: 'text', content: markdown }]
 }
 
-function parseLine(line: string, baseOffset: number): ParsedInline {
-  let quoteType: TelegramEntityType | null = null
-  let body = line
-
-  if (line.startsWith('>!')) {
-    quoteType = 'expandable_blockquote'
-    body = line.slice(2)
-  } else if (line.startsWith('>')) {
-    quoteType = 'blockquote'
-    body = line.slice(1)
-  }
-
-  if (body.startsWith(' ')) {
-    body = body.slice(1)
-  }
-
-  const parsed = parseStructuredLine(body, baseOffset)
-
-  if (quoteType && parsed.text.length > 0) {
-    parsed.entities.push({
-      type: quoteType,
-      offset: baseOffset,
-      length: parsed.text.length,
-    })
-  }
-
-  return parsed
-}
-
-function parseStructuredLine(body: string, baseOffset: number): ParsedInline {
-  const heading = body.match(/^#{1,6}\s+(.+)$/)
-  if (heading) {
-    const parsed = parseInline(heading[1], baseOffset)
-    if (parsed.text.length > 0) {
-      parsed.entities.push({
-        type: 'bold',
-        offset: baseOffset,
-        length: parsed.text.length,
-      })
-    }
-    return parsed
-  }
-
-  if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(body)) {
-    return { text: '──────────', entities: [] }
-  }
-
-  const task = body.match(/^[-*+]\s+\[( |x|X)\]\s+(.+)$/)
-  if (task) {
-    const prefix = task[1].toLowerCase() === 'x' ? '☑ ' : '☐ '
-    const parsed = parseInline(task[2], baseOffset + prefix.length)
-    return {
-      text: `${prefix}${parsed.text}`,
-      entities: parsed.entities,
-    }
-  }
-
-  const unordered = body.match(/^[-*+]\s+(.+)$/)
-  if (unordered) {
-    const prefix = '• '
-    const parsed = parseInline(unordered[1], baseOffset + prefix.length)
-    return {
-      text: `${prefix}${parsed.text}`,
-      entities: parsed.entities,
-    }
-  }
-
-  const ordered = body.match(/^(\d+)[.)]\s+(.+)$/)
-  if (ordered) {
-    const prefix = `${ordered[1]}. `
-    const parsed = parseInline(ordered[2], baseOffset + prefix.length)
-    return {
-      text: `${prefix}${parsed.text}`,
-      entities: parsed.entities,
-    }
-  }
-
-  return parseInline(body, baseOffset)
-}
-
-function parseInline(input: string, baseOffset: number): ParsedInline {
+function parseTelegramInline(input: string, baseOffset: number): ParsedTelegramInline {
   let text = ''
   const entities: TelegramTextEntity[] = []
   let i = 0
@@ -261,7 +261,7 @@ function parseInline(input: string, baseOffset: number): ParsedInline {
       if (end !== -1) {
         const innerRaw = input.slice(i + marker.length, end)
         const start = baseOffset + text.length
-        const parsedInner = parseInline(innerRaw, start)
+        const parsedInner = parseTelegramInline(innerRaw, start)
 
         text += parsedInner.text
         entities.push(...parsedInner.entities)
@@ -307,7 +307,7 @@ function parseLink(
     return null
   }
 
-  const parsedLabel = parseInline(rawLabel, baseOffset)
+  const parsedLabel = parseTelegramInline(rawLabel, baseOffset)
   const text = parsedLabel.text
   const entities = [...parsedLabel.entities]
 

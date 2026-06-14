@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { IncomingMessage as ZeroIncoming } from '../base'
-import type { FetchImpl } from '../weixin/api'
+import type { FetchImpl } from '../weixin/api-transport'
 import { WeixinChannel, guessChatType } from '../weixin/channel'
 import {
   ITEM_IMAGE,
@@ -90,26 +90,40 @@ describe('WeixinChannel.send', () => {
   })
 
   test('sends typing start and cancel using cached typing ticket', async () => {
-    const { fetchImpl, calls } = makeFetch(
-      () => new Response(JSON.stringify({ ret: 0 }), { status: 200 }),
-    )
+    const { fetchImpl, calls } = makeFetch((call) => {
+      if (new URL(call.url).pathname === '/ilink/bot/getconfig') {
+        return new Response(JSON.stringify({ typing_ticket: 'ticket-1' }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ ret: 0 }), { status: 200 })
+    })
     const ch = new WeixinChannel(
       { accountId: 'acc', token: 'tok', homeDir: tempDir },
       { fetchImpl, sleep: async () => {} },
     )
     const internal = ch as unknown as {
-      typingCache: Map<string, { ticket: string; ts: number }>
+      typingNotifier: {
+        maybeFetchTicket(chatId: string, contextToken: string | undefined): Promise<void>
+      }
     }
-    internal.typingCache.set('peer', { ticket: 'ticket-1', ts: Date.now() })
+    await internal.typingNotifier.maybeFetchTicket('peer', 'context-1')
 
     await ch.sendTypingIndicator('peer')
     await ch.clearTypingIndicator('peer')
 
     expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+      '/ilink/bot/getconfig',
       '/ilink/bot/sendtyping',
       '/ilink/bot/sendtyping',
     ])
-    const statuses = calls.map((call) => {
+    const getConfigBody = JSON.parse(String(calls[0].init?.body ?? '{}')) as {
+      context_token?: string
+      ilink_user_id?: string
+    }
+    expect(getConfigBody).toMatchObject({
+      context_token: 'context-1',
+      ilink_user_id: 'peer',
+    })
+    const statuses = calls.slice(1).map((call) => {
       const body = JSON.parse(String(call.init?.body ?? '{}')) as {
         status?: number
         typing_ticket?: string

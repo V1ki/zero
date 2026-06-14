@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { IncomingMessage } from '../base'
-import { WebChannel } from '../web/channel'
-import { WebMessageHandler } from '../web/handler'
+import { WebChannel, WebMessageHandler } from '../web'
 
 function expectIncomingMessage(message: IncomingMessage | null): IncomingMessage {
   if (!message) {

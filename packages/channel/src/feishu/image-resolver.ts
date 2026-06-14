@@ -1,24 +1,9 @@
 import type * as lark from '@larksuiteoapi/node-sdk'
 import { protectMarkdownCodeContent } from '../richtext/code-protection'
+import { readFeishuImageReferenceBuffer } from './image-source'
+import { uploadFeishuImageBuffer } from './upload'
 
 const IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
-
-/**
- * Normalize a `file://` URI to a local filesystem path.
- * e.g. `file:///Users/foo/bar.png` → `/Users/foo/bar.png`
- * Non-file references are returned unchanged.
- */
-function normalizeFileReference(ref: string): string {
-  if (ref.startsWith('file://')) {
-    try {
-      return new URL(ref).pathname
-    } catch {
-      // Malformed URL — strip prefix as best-effort
-      return ref.replace(/^file:\/\//, '')
-    }
-  }
-  return ref
-}
 
 export interface FeishuImageResolverOptions {
   client: lark.Client
@@ -87,9 +72,7 @@ export class FeishuImageResolver {
       await Promise.race([allUploads, timeout])
 
       if (this.pending.size > 0) {
-        console.warn(
-          `[FeishuImageResolver] Timed out with ${this.pending.size} pending upload(s)`,
-        )
+        console.warn(`[FeishuImageResolver] Timed out with ${this.pending.size} pending upload(s)`)
       }
     }
 
@@ -143,24 +126,7 @@ export class FeishuImageResolver {
 
   private async doUpload(reference: string): Promise<string | null> {
     try {
-      let buffer: Buffer
-      const normalizedRef = normalizeFileReference(reference)
-
-      if (normalizedRef.startsWith('http://') || normalizedRef.startsWith('https://')) {
-        console.log(`[FeishuImageResolver] Downloading: ${normalizedRef}`)
-        const resp = await fetch(normalizedRef, { signal: AbortSignal.timeout(15_000) })
-        if (!resp.ok) {
-          throw new Error(`HTTP ${resp.status}`)
-        }
-        buffer = Buffer.from(await resp.arrayBuffer())
-      } else {
-        const fs = await import('node:fs')
-        if (!fs.existsSync(normalizedRef)) {
-          throw new Error(`File not found: ${normalizedRef}`)
-        }
-        buffer = fs.readFileSync(normalizedRef)
-      }
-
+      const buffer = await readFeishuImageReferenceBuffer(reference)
       const imageKey = await this.doUploadBuffer(buffer)
       this.pending.delete(reference)
 
@@ -181,15 +147,7 @@ export class FeishuImageResolver {
   }
 
   private async doUploadBuffer(buffer: Buffer): Promise<string | null> {
-    const { Readable } = await import('node:stream')
-    const resp = await this.client.im.image.create({
-      data: {
-        image_type: 'message',
-        image: Readable.from(buffer) as any,
-      },
-    })
-
-    const imageKey = (resp as any)?.data?.image_key ?? (resp as any)?.image_key
+    const imageKey = await uploadFeishuImageBuffer(this.client, buffer)
     if (!imageKey) {
       console.warn('[FeishuImageResolver] Upload returned no image_key')
       return null

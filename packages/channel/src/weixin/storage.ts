@@ -88,23 +88,3 @@ export class ContextTokenStore {
     atomicWriteJson(this.tokensPath(accountId), payload)
   }
 }
-
-export class MessageDeduplicator {
-  private readonly seen = new Map<string, number>()
-
-  constructor(private readonly ttlMs: number) {}
-
-  isDuplicate(id: string): boolean {
-    this.sweep()
-    if (this.seen.has(id)) return true
-    this.seen.set(id, Date.now())
-    return false
-  }
-
-  private sweep(): void {
-    const cutoff = Date.now() - this.ttlMs
-    for (const [id, ts] of this.seen.entries()) {
-      if (ts < cutoff) this.seen.delete(id)
-    }
-  }
-}

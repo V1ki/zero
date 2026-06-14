@@ -1,4 +1,4 @@
-import type { IncomingMessage, MessageHandler } from '../base'
+import type { Channel, IncomingMessage, MessageHandler } from './base'
 
 export interface WebSocketMessage {
   type: 'subscribe' | 'message' | 'ping'
@@ -88,5 +88,60 @@ export class WebMessageHandler {
 
   removeClient(clientId: string): void {
     this.subscriptions.delete(clientId)
+  }
+}
+
+/**
+ * Web channel — wraps WebMessageHandler into a proper Channel implementation.
+ * The web channel is always "connected" when the server is running.
+ */
+export class WebChannel implements Channel {
+  readonly name = 'web'
+  readonly type = 'web'
+
+  private handler: WebMessageHandler
+  private running = false
+
+  constructor(handler?: WebMessageHandler) {
+    this.handler = handler ?? new WebMessageHandler()
+  }
+
+  async start(): Promise<void> {
+    this.running = true
+  }
+
+  async stop(): Promise<void> {
+    this.running = false
+  }
+
+  async send(_sessionId: string, _content: string): Promise<void> {
+    // Web channel sends via WebSocket broadcast from the server,
+    // not through this method. This is handled by the bus -> WS bridge.
+  }
+
+  isConnected(): boolean {
+    return this.running
+  }
+
+  setMessageHandler(handler: MessageHandler): void {
+    this.handler.setMessageHandler(handler)
+  }
+
+  getCapabilities() {
+    return {
+      streaming: true,
+      inlineImages: true,
+      imageMessages: true,
+      fileMessages: true,
+      interactiveCards: true,
+      mentions: false,
+      reactions: false,
+      threadReply: false,
+      markdownNotes: 'Web UI supports full standard Markdown with inline images.',
+    }
+  }
+
+  getHandler(): WebMessageHandler {
+    return this.handler
   }
 }

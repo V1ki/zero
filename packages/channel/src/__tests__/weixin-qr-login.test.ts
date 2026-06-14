@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import type { FetchImpl } from '../weixin/api'
+import type { FetchImpl } from '../weixin/api-transport'
 import { runQrLogin } from '../weixin/qr-login'
 
 function okJson(body: unknown): Response {
