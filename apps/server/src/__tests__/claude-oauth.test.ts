@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { ClaudeOAuthDriver } from '../claude-oauth'
+import { ClaudeOAuthDriver } from '../providers/claude/oauth'
 
 describe('ClaudeOAuthDriver', () => {
   test('buildAuthorizationUrl matches the current Claude Code authorize flow', () => {

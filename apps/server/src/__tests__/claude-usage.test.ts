@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { serializeClaudeOAuthSession } from '@zero-os/model'
 import { Vault } from '@zero-os/secrets'
-import { getClaudeOAuthSessionRef } from '../claude-provider'
-import { ClaudeUsageService } from '../claude-usage'
+import { getClaudeOAuthSessionRef } from '../providers/claude/config'
+import { ClaudeUsageService } from '../providers/claude/usage'
 
 const originalFetch = globalThis.fetch
 

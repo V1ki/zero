@@ -3,11 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readYaml } from '@zero-os/shared'
-import {
-  ensureChatgptProviderConfig,
-  getChatgptOAuthTokenRef,
-  getConfigPath,
-} from '../chatgpt-provider'
+import { getProviderConfigPath } from '../oauth/provider/provider-config'
+import { ensureChatgptProviderConfig, getChatgptOAuthTokenRef } from '../providers/chatgpt/config'
 
 const previousZeroDataDir = process.env.ZERO_DATA_DIR
 
@@ -107,7 +104,7 @@ fuse_list: []
       expect(chatgpt.models['gpt-5.3-codex-medium']).toBeUndefined()
       expect(chatgpt.models['gpt-5.4-medium']).toBeUndefined()
 
-      const raw = readYaml<Record<string, unknown>>(getConfigPath())
+      const raw = readYaml<Record<string, unknown>>(getProviderConfigPath())
       const rawProviders = raw.providers as Record<string, Record<string, unknown>>
       const rawChatgptAuth = rawProviders.chatgpt.auth as Record<string, unknown>
       const rawChatgptModels = rawProviders.chatgpt.models as Record<string, unknown>
@@ -220,7 +217,7 @@ fuse_list: []
       expect(result.config.providers.chatgpt.models['gpt-5.3-codex-medium']).toBeUndefined()
       expect(result.config.providers.chatgpt.models['gpt-5.4-medium']).toBeUndefined()
 
-      const raw = readYaml<Record<string, unknown>>(getConfigPath())
+      const raw = readYaml<Record<string, unknown>>(getProviderConfigPath())
       const rawProviders = raw.providers as Record<string, Record<string, unknown>>
       const rawChatgptAuth = rawProviders.chatgpt.auth as Record<string, unknown>
       const rawChatgptModels = rawProviders.chatgpt.models as Record<string, unknown>

@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseChatGptOAuthSession, serializeChatGptOAuthSession } from '@zero-os/model'
 import { Vault } from '@zero-os/secrets'
-import { ChatGptTokenManager } from '../chatgpt-oauth'
-import { getChatgptOAuthTokenRef } from '../chatgpt-provider'
+import { getChatgptOAuthTokenRef } from '../providers/chatgpt/config'
+import { ChatGptTokenManager } from '../providers/chatgpt/oauth'
 
 const originalFetch = globalThis.fetch
 

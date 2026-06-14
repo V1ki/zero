@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { WeixinAdapter } from '../weixin-adapter'
+import { WeixinAdapter } from '../channels/weixin'
 
 describe('WeixinAdapter', () => {
   test('reply delegates to channel.sendToChat', async () => {

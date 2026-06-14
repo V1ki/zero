@@ -39,7 +39,9 @@ describe('buildNewSessionReply', () => {
         { success: false, message: 'Unknown model: gpt-does-not-exist' },
         'sess_xyz789',
       ),
-    ).toBe('New conversation started. Unknown model: gpt-does-not-exist\nPrevious session: sess_xyz789')
+    ).toBe(
+      'New conversation started. Unknown model: gpt-does-not-exist\nPrevious session: sess_xyz789',
+    )
   })
 
   test('omits previous session line when no previous session', () => {

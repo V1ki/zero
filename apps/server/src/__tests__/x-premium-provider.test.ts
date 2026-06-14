@@ -3,12 +3,12 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readYaml } from '@zero-os/shared'
+import { getProviderConfigPath } from '../oauth/provider/provider-config'
 import {
   ensureXPremiumProviderConfig,
-  getConfigPath,
   getXPremiumBaseUrl,
   getXPremiumOAuthSessionRef,
-} from '../x-premium-provider'
+} from '../providers/x-premium'
 
 const previousZeroDataDir = process.env.ZERO_DATA_DIR
 
@@ -65,7 +65,7 @@ fuse_list: []
       expect(provider.models['grok-4.3']).toBeDefined()
       expect(provider.models['grok-4.20-reasoning']).toBeDefined()
 
-      const raw = readYaml<Record<string, unknown>>(getConfigPath())
+      const raw = readYaml<Record<string, unknown>>(getProviderConfigPath())
       const rawProvider = (raw.providers as Record<string, Record<string, unknown>>)['x-premium']
       const rawAuth = rawProvider.auth as Record<string, unknown>
       expect(rawProvider.api_type).toBe('x_responses')

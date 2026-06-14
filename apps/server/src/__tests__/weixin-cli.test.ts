@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readYaml } from '@zero-os/shared'
-import { renderQrForTerminal, upsertWeixinChannelConfig } from '../weixin-cli'
+import { renderQrForTerminal, upsertWeixinChannelConfig } from '../channels/weixin'
 
 describe('weixin CLI usage', () => {
   test('prints usage and exits before QR login when no subcommand is provided', () => {

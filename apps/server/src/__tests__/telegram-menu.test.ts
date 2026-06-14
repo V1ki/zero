@@ -2,9 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import {
   buildTelegramCommandSyncTargets,
   buildTelegramMenuButton,
-  canRunTelegramRestart,
   syncTelegramCommandMenu,
-} from '../telegram-menu'
+} from '../channels/telegram'
 
 describe('telegram menu sync definitions', () => {
   test('builds default and private scope command targets', () => {
@@ -59,12 +58,5 @@ describe('telegram menu sync behavior', () => {
         menuButton: { type: 'commands' },
       },
     })
-  })
-
-  test('restart allowed only in private chats', () => {
-    expect(canRunTelegramRestart('private')).toBe(true)
-    expect(canRunTelegramRestart('group')).toBe(false)
-    expect(canRunTelegramRestart('supergroup')).toBe(false)
-    expect(canRunTelegramRestart(undefined)).toBe(false)
   })
 })

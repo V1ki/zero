@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { createTelegramStreamFlusher, reconcileTelegramFinalText } from '../telegram-streaming'
+import { createTelegramStreamFlusher, shouldFlushTelegramStreamText } from '../channels/telegram'
 
 describe('telegram streaming flush controller', () => {
   test('forces a trailing flush after in-flight send completes', async () => {
@@ -70,14 +70,49 @@ describe('telegram streaming flush controller', () => {
   })
 })
 
-describe('reconcileTelegramFinalText', () => {
-  test('prefers final reply whenever content differs', () => {
-    expect(reconcileTelegramFinalText('abcd', 'wxyz')).toBe('wxyz')
-    expect(reconcileTelegramFinalText('prefix', 'final')).toBe('final')
+describe('shouldFlushTelegramStreamText', () => {
+  test('rejects empty, duplicate, and throttled non-forced flushes', () => {
+    const base = {
+      force: false,
+      nowMs: 1_000,
+      lastFlushAt: 900,
+      minIntervalMs: 350,
+      lastFlushedText: 'hello',
+    }
+
+    expect(shouldFlushTelegramStreamText({ ...base, text: '' })).toBe(false)
+    expect(
+      shouldFlushTelegramStreamText({
+        ...base,
+        text: 'hello-2',
+      }),
+    ).toBe(false)
+    expect(
+      shouldFlushTelegramStreamText({
+        ...base,
+        text: 'hello',
+        nowMs: 1_500,
+      }),
+    ).toBe(false)
   })
 
-  test('keeps stream text when final reply is empty or identical', () => {
-    expect(reconcileTelegramFinalText('same', 'same')).toBe('same')
-    expect(reconcileTelegramFinalText('stream', '')).toBe('stream')
+  test('allows changed text after cadence and forced text immediately', () => {
+    const base = {
+      text: 'hello-2',
+      nowMs: 1_500,
+      lastFlushAt: 1_000,
+      minIntervalMs: 350,
+      lastFlushedText: 'hello',
+    }
+
+    expect(shouldFlushTelegramStreamText({ ...base, force: false })).toBe(true)
+    expect(
+      shouldFlushTelegramStreamText({
+        ...base,
+        text: 'hello',
+        force: true,
+        nowMs: 1_001,
+      }),
+    ).toBe(true)
   })
 })

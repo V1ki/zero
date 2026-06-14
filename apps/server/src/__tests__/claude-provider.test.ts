@@ -3,11 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readYaml } from '@zero-os/shared'
-import {
-  ensureClaudeProviderConfig,
-  getClaudeOAuthSessionRef,
-  getConfigPath,
-} from '../claude-provider'
+import { getProviderConfigPath } from '../oauth/provider/provider-config'
+import { ensureClaudeProviderConfig, getClaudeOAuthSessionRef } from '../providers/claude/config'
 
 const previousZeroDataDir = process.env.ZERO_DATA_DIR
 
@@ -63,7 +60,7 @@ fuse_list: []
       expect(claude.auth.apiKeyRef).toBeUndefined()
       expect(claude.models['claude-sonnet-4-6']).toBeDefined()
 
-      const raw = readYaml<Record<string, unknown>>(getConfigPath())
+      const raw = readYaml<Record<string, unknown>>(getProviderConfigPath())
       const rawProviders = raw.providers as Record<string, Record<string, unknown>>
       const rawClaude = rawProviders.anthropic
       const rawAuth = rawClaude.auth as Record<string, unknown>

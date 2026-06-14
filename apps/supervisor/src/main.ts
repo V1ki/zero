@@ -3,8 +3,7 @@ import { installConsoleTimestamping } from '@zero-os/shared'
 import { HeartbeatChecker } from '@zero-os/supervisor'
 import { RepairEngine } from '@zero-os/supervisor'
 import { waitForHeartbeatReady } from '@zero-os/supervisor'
-import { getBunExecutable, getRuntimeEnv } from '../../server/src/runtime'
-import { rebuildWebBundle } from '../../server/src/web-build'
+import { getBunExecutable, getRuntimeEnv, rebuildWebBundle } from '../../server/src/system/runtime'
 import { createSupervisorMonitor } from './monitor'
 
 const PROJECT_ROOT = join(import.meta.dirname, '..', '..', '..')

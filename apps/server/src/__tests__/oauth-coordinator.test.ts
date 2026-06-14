@@ -4,11 +4,9 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Vault } from '@zero-os/secrets'
-import {
-  ManagedOAuthCoordinator,
-  type ManagedOAuthDriver,
-  type ManagedOAuthStatus,
-} from '../oauth-coordinator'
+import { ManagedOAuthCoordinator } from '../oauth/coordinator'
+import type { ManagedOAuthDriver } from '../oauth/driver'
+import type { ManagedOAuthStatus } from '../oauth/status'
 
 interface FakeSession {
   provider: 'chatgpt' | 'anthropic'
@@ -28,6 +26,7 @@ function createDriver(
   options: { onRefreshStatus?: (vault: Vault) => Promise<void> | void } = {},
 ): ManagedOAuthDriver<FakeSession> {
   const key = `${provider}_session`
+  const isSessionExpired = (session: FakeSession) => Date.now() >= session.expiresAt
 
   return {
     provider,
@@ -61,14 +60,12 @@ function createDriver(
     writeSession(vault, session) {
       vault.set(key, JSON.stringify(session))
     },
-    isSessionExpired(session) {
-      return Date.now() >= session.expiresAt
-    },
     buildConnectedStatus(session, options): ManagedOAuthStatus {
+      const expired = isSessionExpired(session)
       return {
         provider,
-        state: this.isSessionExpired(session) ? 'expired' : 'connected',
-        authorized: !this.isSessionExpired(session),
+        state: expired ? 'expired' : 'connected',
+        authorized: !expired,
         expiresAt: session.expiresAt,
         requiresRestart: options.requiresRestart,
         attemptId: options.attemptId,

@@ -6,7 +6,7 @@ import {
   consumeRestartTrigger,
   formatRestartTriggerLog,
   writeRestartTrigger,
-} from '../restart-trigger'
+} from '../system/restart-trigger'
 
 const tempDirs: string[] = []
 

@@ -1,0 +1,575 @@
+import { appendFileSync, existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import type { Channel } from '@zero-os/channel'
+import {
+  type Command,
+  CommandRouter,
+  type SessionManager,
+  registerBuiltinCommands,
+} from '@zero-os/core'
+import type { MetricsDB, ObservabilityStore } from '@zero-os/observe'
+import type { Vault } from '@zero-os/secrets'
+import {
+  type Notification,
+  type SessionSource,
+  type SystemConfig,
+  describeError,
+} from '@zero-os/shared'
+import type { HeartbeatWriter } from '@zero-os/supervisor'
+import { writeRestartTrigger } from '../system/restart-trigger'
+import { rebuildWebBundle } from '../system/runtime'
+import type { BusPayload, EventBus } from './bus'
+import {
+  registerExternalRuntimeChannels,
+  registerWebRuntimeChannel,
+} from './channel-runtime/runtime'
+import type { ChannelRuntimeDefinition } from './channel-runtime/types'
+import { type CoreRuntime, createCoreRuntime } from './core'
+import { createReloadModelProviders } from './model-providers/reload'
+import { recoverInterruptedSessionsAfterRestart } from './restart'
+import { type ShutdownRuntime, createShutdownRuntime } from './shutdown'
+import type { ZeroOS } from './types'
+
+const DEFAULT_AGENT_INSTRUCTION =
+  'You are ZeRo OS, an AI agent system. Be helpful, concise, and accurate.'
+
+interface CreateStartupRuntimeOptions {
+  zeroDir: string
+  projectRoot: string
+  bus: EventBus
+  skipProcessExit?: boolean
+}
+
+export interface StartupRuntime {
+  startedAt: number
+  zeroDir: string
+  restartSentinelPath: string
+  core: CoreRuntime
+  zero: ZeroOS
+  shutdownRuntime: ShutdownRuntime
+  getConfig(): SystemConfig
+}
+
+interface StartupRuntimeShell {
+  channels: Map<string, Channel>
+  channelDefinitions: Map<string, ChannelRuntimeDefinition>
+  notifications: Notification[]
+  addNotification(n: Omit<Notification, 'id' | 'createdAt'>): Notification
+}
+
+function getRestartSentinelPath(zeroDir: string): string {
+  return join(zeroDir, 'restart-sentinel.json')
+}
+
+export async function createStartupRuntime({
+  zeroDir,
+  projectRoot,
+  bus,
+  skipProcessExit,
+}: CreateStartupRuntimeOptions): Promise<StartupRuntime> {
+  const startedAt = Date.now()
+  const core = await createCoreRuntime({
+    zeroDir,
+    projectRoot,
+    bus,
+  })
+  const config = core.config
+
+  const shell = await createStartupRuntimeShell({
+    zeroDir,
+    bus,
+    core,
+    config,
+  })
+
+  const restartSentinelPath = getRestartSentinelPath(zeroDir)
+  const shutdownRuntime = createStartupShutdownRuntime({
+    zeroDir,
+    restartSentinelPath,
+    core,
+    bus,
+    channels: shell.channels,
+    skipProcessExit,
+  })
+
+  const zeroHandle = createZeroOSHandle({
+    core,
+    config,
+    bus,
+    shell,
+    shutdownRuntime,
+  })
+
+  return {
+    startedAt,
+    zeroDir,
+    restartSentinelPath,
+    core,
+    zero: zeroHandle.zero,
+    shutdownRuntime,
+    getConfig: zeroHandle.getConfig,
+  }
+}
+
+export async function startStartupRuntimeChannels(runtime: StartupRuntime): Promise<void> {
+  await startExternalRuntimeChannels({
+    zeroDir: runtime.zeroDir,
+    startedAt: runtime.startedAt,
+    restartSentinelPath: runtime.restartSentinelPath,
+    config: runtime.getConfig(),
+    vault: runtime.core.vault,
+    channels: runtime.zero.channels,
+    channelDefinitions: runtime.zero.channelDefinitions,
+    sessionManager: runtime.core.sessionManager,
+    metrics: runtime.core.metrics,
+    heartbeat: runtime.core.heartbeat,
+    shutdown: runtime.shutdownRuntime.shutdown,
+    isShuttingDown: runtime.shutdownRuntime.isShuttingDown,
+    registerFeishuStreamingSessionSet: runtime.shutdownRuntime.registerFeishuStreamingSessionSet,
+  })
+}
+
+export function markStartupRuntimeReady(runtime: StartupRuntime): void {
+  runtime.core.heartbeat.setReady(true, 'ready')
+  runtime.core.heartbeat.write()
+  console.log('[ZeRo OS] System ready.')
+
+  runtime.zero.bus.emit('session:create', { event: 'system_start' })
+}
+
+async function createStartupRuntimeShell({
+  zeroDir,
+  bus,
+  core,
+  config,
+}: {
+  zeroDir: string
+  bus: EventBus
+  core: CoreRuntime
+  config: SystemConfig
+}): Promise<StartupRuntimeShell> {
+  core.heartbeat.setReady(false, 'starting_channels')
+  const channels = new Map<string, Channel>()
+  const channelDefinitions = new Map<string, ChannelRuntimeDefinition>()
+
+  configureRuntimeHeartbeat({
+    bus,
+    heartbeat: core.heartbeat,
+    channels,
+    channelDefinitions,
+  })
+  core.heartbeat.write()
+
+  const { notifications, addNotification } = createNotificationRuntime({
+    zeroDir,
+    bus,
+    channels,
+    channelDefinitions,
+    sessionManager: core.sessionManager,
+  })
+
+  core.startSchedulerRuntime({
+    config,
+    sessionManager: core.sessionManager,
+    channels,
+    addNotification,
+  })
+
+  await registerWebRuntimeChannel({
+    channels,
+    channelDefinitions,
+    heartbeat: core.heartbeat,
+  })
+
+  return {
+    channels,
+    channelDefinitions,
+    notifications,
+    addNotification,
+  }
+}
+
+function createStartupShutdownRuntime({
+  zeroDir,
+  restartSentinelPath,
+  core,
+  bus,
+  channels,
+  skipProcessExit,
+}: {
+  zeroDir: string
+  restartSentinelPath: string
+  core: CoreRuntime
+  bus: EventBus
+  channels: Map<string, Channel>
+  skipProcessExit?: boolean
+}): ShutdownRuntime {
+  const disposeRuntimeEventListeners = registerRuntimeEventListeners({
+    bus,
+    observability: core.observability,
+    metrics: core.metrics,
+  })
+
+  return createShutdownRuntime({
+    zeroDir,
+    restartSentinelPath,
+    scheduler: core.scheduler,
+    sessionManager: core.sessionManager,
+    channels,
+    disposeRuntimeEventListeners,
+    disposePricing: () => core.litellmPricing.dispose(),
+    heartbeat: core.heartbeat,
+    sessionDb: core.sessionDb,
+    metrics: core.metrics,
+    skipProcessExit,
+  })
+}
+
+interface StartExternalRuntimeChannelsOptions {
+  zeroDir: string
+  startedAt: number
+  restartSentinelPath: string
+  config: SystemConfig
+  vault: Vault
+  channels: Map<string, Channel>
+  channelDefinitions: Map<string, ChannelRuntimeDefinition>
+  sessionManager: SessionManager
+  metrics: MetricsDB
+  heartbeat: Pick<HeartbeatWriter, 'write'>
+  shutdown: ShutdownRuntime['shutdown']
+  isShuttingDown: ShutdownRuntime['isShuttingDown']
+  registerFeishuStreamingSessionSet: ShutdownRuntime['registerFeishuStreamingSessionSet']
+}
+
+async function startExternalRuntimeChannels({
+  zeroDir,
+  startedAt,
+  restartSentinelPath,
+  config,
+  vault,
+  channels,
+  channelDefinitions,
+  sessionManager,
+  metrics,
+  heartbeat,
+  shutdown,
+  isShuttingDown,
+  registerFeishuStreamingSessionSet,
+}: StartExternalRuntimeChannelsOptions): Promise<void> {
+  const commandRouter = new CommandRouter()
+  registerBuiltinCommands(commandRouter)
+  commandRouter.register(createRestartCommand({ zeroDir, startedAt, shutdown }))
+
+  await registerExternalRuntimeChannels({
+    zeroDir,
+    config,
+    vault,
+    channels,
+    channelDefinitions,
+    sessionManager,
+    commandRouter,
+    metrics,
+    heartbeat,
+    agentInstruction: DEFAULT_AGENT_INSTRUCTION,
+    isShuttingDown,
+    registerFeishuStreamingSessionSet,
+  })
+
+  console.log(`[ZeRo OS] ${channels.size} channels registered`)
+
+  await recoverInterruptedSessionsAfterRestart({
+    restartSentinelPath,
+    sessionManager,
+    channels,
+  })
+}
+
+interface RuntimeEventListenersOptions {
+  bus: EventBus
+  observability: ObservabilityStore
+  metrics: MetricsDB
+}
+
+function registerRuntimeEventListeners({
+  bus,
+  observability,
+  metrics,
+}: RuntimeEventListenersOptions): () => void {
+  const wildcardLogListener = (payload: BusPayload) => {
+    if (!shouldPersistBusEvent(payload)) return
+    observability.log('info', payload.topic, payload.data)
+  }
+
+  const repairMetricsListener = (payload: BusPayload) => {
+    metrics.recordRepair({
+      sessionId: payload.data.sessionId as string | undefined,
+      status: (payload.data.status as string) === 'success' ? 'success' : 'failed',
+      diagnosis: (payload.data.diagnosis as string) ?? '',
+      action: (payload.data.action as string) ?? '',
+      result: (payload.data.result as string) ?? '',
+    })
+  }
+
+  const toolMetricsListener = (payload: BusPayload) => {
+    const sessionId = payload.data.sessionId as string | undefined
+    if (!sessionId) return
+
+    metrics.recordOperation({
+      sessionId,
+      tool: (payload.data.tool as string) ?? '',
+      event: 'tool:call',
+      success: true,
+      durationMs: 0,
+      createdAt: payload.timestamp,
+    })
+  }
+
+  bus.on('*', wildcardLogListener)
+  bus.on('repair:end', repairMetricsListener)
+  bus.on('tool:call', toolMetricsListener)
+
+  return () => {
+    bus.off('*', wildcardLogListener)
+    bus.off('repair:end', repairMetricsListener)
+    bus.off('tool:call', toolMetricsListener)
+  }
+}
+
+function shouldPersistBusEvent(payload: BusPayload) {
+  switch (payload.topic) {
+    case 'session:create':
+    case 'model:switch':
+    case 'notification':
+    case 'repair:start':
+    case 'repair:end':
+    case 'fuse:trigger':
+      return true
+    case 'session:update':
+      return (
+        payload.data.event === 'binding_set' ||
+        payload.data.event === 'binding_replaced' ||
+        payload.data.event === 'binding_cleared' ||
+        payload.data.event === 'session_backgrounded' ||
+        payload.data.event === 'task_closure_decision' ||
+        payload.data.event === 'task_closure_failed'
+      )
+    default:
+      return false
+  }
+}
+
+interface RuntimeHeartbeatOptions {
+  bus: EventBus
+  heartbeat: HeartbeatWriter
+  channels: Map<string, Channel>
+  channelDefinitions: Map<string, ChannelRuntimeDefinition>
+}
+
+function configureRuntimeHeartbeat({
+  bus,
+  heartbeat,
+  channels,
+  channelDefinitions,
+}: RuntimeHeartbeatOptions): void {
+  heartbeat.setHealthMetricsProvider(() => ({
+    channels: Array.from(channels.entries()).map(([name, channel]) => ({
+      name,
+      type: channel.type,
+      connected: channel.isConnected(),
+      configured: channelDefinitions.get(name)?.configured ?? channel.type === 'web',
+    })),
+  }))
+  heartbeat.setOnWrite((data) => {
+    bus.emit('heartbeat', {
+      status: data.health.status,
+      channels: data.channels,
+      disconnectedChannels: data.health.channels.offline,
+      timestamp: data.timestamp,
+    })
+  })
+}
+
+interface NotificationRuntimeOptions {
+  zeroDir: string
+  bus: EventBus
+  channels: Map<string, Channel>
+  channelDefinitions: Map<string, ChannelRuntimeDefinition>
+  sessionManager: SessionManager
+}
+
+interface NotificationRuntime {
+  notifications: Notification[]
+  addNotification(n: Omit<Notification, 'id' | 'createdAt'>): Notification
+}
+
+function createNotificationRuntime({
+  zeroDir,
+  bus,
+  channels,
+  channelDefinitions,
+  sessionManager,
+}: NotificationRuntimeOptions): NotificationRuntime {
+  const notifications: Notification[] = []
+  const notificationsPath = join(zeroDir, 'logs', 'notifications.jsonl')
+
+  if (existsSync(notificationsPath)) {
+    const lines = readFileSync(notificationsPath, 'utf-8').split('\n').filter(Boolean)
+    for (const line of lines) {
+      try {
+        notifications.push(JSON.parse(line))
+      } catch {}
+    }
+  }
+
+  function addNotification(n: Omit<Notification, 'id' | 'createdAt'>): Notification {
+    const notification: Notification = {
+      ...n,
+      id: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
+    }
+    notifications.push(notification)
+    appendFileSync(notificationsPath, `${JSON.stringify(notification)}\n`)
+    bus.emit('notification', {
+      notification,
+      event: 'notification:new',
+    })
+
+    for (const [name, ch] of channels) {
+      const definition = channelDefinitions.get(name)
+      if (!definition?.receiveNotifications || !ch.isConnected() || ch.type === 'web') continue
+      const chatIds = sessionManager.getCurrentChannelIds(definition.type as SessionSource, name)
+      const text = `[notification]${notification.title}: ${notification.description}`
+      for (const chatId of chatIds) {
+        ch.send(chatId, text).catch(() => {})
+      }
+    }
+
+    return notification
+  }
+
+  return { notifications, addNotification }
+}
+
+function createRestartCommand({
+  zeroDir,
+  startedAt,
+  shutdown,
+}: {
+  zeroDir: string
+  startedAt: number
+  shutdown(): Promise<void>
+}): Command {
+  return {
+    name: '/restart',
+    description: 'Rebuild the web UI and restart ZeRo OS.',
+    parse(content) {
+      if (Date.now() - startedAt < 15_000) return null
+      return /^\/restart(?:@\S+)?$/i.test(content.trim()) ? {} : null
+    },
+    async execute(_args, ctx) {
+      if (ctx.source === 'telegram' && ctx.metadata?.chatType !== 'private') {
+        return {
+          handled: true,
+          reply: 'The /restart command is only available in private chats.',
+        }
+      }
+
+      await ctx.reply('Rebuilding web UI and restarting ZeRo OS...')
+
+      const build = rebuildWebBundle()
+      if (!build.ok) {
+        await ctx.reply(`Web rebuild failed, restart cancelled: ${build.error ?? 'unknown error'}`)
+        return { handled: true }
+      }
+
+      if (ctx.source === 'feishu' || ctx.source === 'telegram' || ctx.source === 'weixin') {
+        try {
+          writeRestartTrigger(zeroDir, {
+            source: 'chat',
+            channelName: ctx.channelName,
+            channelId: ctx.chatId,
+          })
+        } catch (error) {
+          await ctx.reply(
+            `Failed to record restart trigger, restart cancelled: ${describeError(error)}`,
+          )
+          return { handled: true }
+        }
+      }
+
+      setTimeout(() => {
+        void shutdown()
+      }, 500)
+      return { handled: true }
+    },
+  }
+}
+
+function createZeroOSHandle({
+  core,
+  config: initialConfig,
+  bus,
+  shell,
+  shutdownRuntime,
+}: {
+  core: CoreRuntime
+  config: SystemConfig
+  bus: EventBus
+  shell: StartupRuntimeShell
+  shutdownRuntime: ShutdownRuntime
+}): {
+  zero: ZeroOS
+  getConfig(): SystemConfig
+} {
+  let config = initialConfig
+  const zeroRef: { current?: ZeroOS } = {}
+  const reloadModelProviders = createReloadModelProviders({
+    configPath: core.configPath,
+    vault: core.vault,
+    providerHealth: core.providerHealth,
+    modelRouter: core.modelRouter,
+    usageRecorder: core.usageRecorder,
+    sessionManager: core.sessionManager,
+    bus,
+    setConfig(nextConfig) {
+      config = nextConfig
+      if (zeroRef.current) zeroRef.current.config = nextConfig
+    },
+  })
+
+  const zero: ZeroOS = {
+    config,
+    bus,
+    vault: core.vault,
+    secretFilter: core.secretFilter,
+    observability: core.observability,
+    metrics: core.metrics,
+    sessionDb: core.sessionDb,
+    modelRouter: core.modelRouter,
+    providerHealth: core.providerHealth,
+    toolRegistry: core.toolRegistry,
+    sessionManager: core.sessionManager,
+    memoryStore: core.memoryStore,
+    memoryRetriever: core.memoryRetriever,
+    memoryLifecycle: core.memoryLifecycle,
+    vectorIndex: core.vectorIndex,
+    memoManager: core.memoManager,
+    tracer: core.tracer,
+    repairEngine: core.repairEngine,
+    heartbeat: core.heartbeat,
+    scheduler: core.scheduler,
+    channels: shell.channels,
+    channelDefinitions: shell.channelDefinitions,
+    notifications: shell.notifications,
+    addNotification: shell.addNotification,
+    reloadModelProviders,
+    isShuttingDown: shutdownRuntime.isShuttingDown,
+    shutdown: shutdownRuntime.shutdown,
+  }
+  zeroRef.current = zero
+
+  return {
+    zero,
+    getConfig: () => config,
+  }
+}

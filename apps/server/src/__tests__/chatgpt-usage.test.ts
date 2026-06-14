@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { serializeChatGptOAuthSession } from '@zero-os/model'
 import { Vault } from '@zero-os/secrets'
-import { getChatgptOAuthTokenRef } from '../chatgpt-provider'
-import { ChatGptUsageService } from '../chatgpt-usage'
+import { getChatgptOAuthTokenRef } from '../providers/chatgpt/config'
+import { ChatGptUsageService } from '../providers/chatgpt/usage'
 
 const originalFetch = globalThis.fetch
 const previousZeroDataDir = process.env.ZERO_DATA_DIR

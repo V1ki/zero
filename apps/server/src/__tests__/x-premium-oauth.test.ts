@@ -5,8 +5,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseXPremiumOAuthSession, serializeXPremiumOAuthSession } from '@zero-os/model'
 import { Vault } from '@zero-os/secrets'
-import { XPremiumOAuthDriver, XPremiumTokenManager } from '../x-premium-oauth'
-import { getXPremiumOAuthSessionRef } from '../x-premium-provider'
+import {
+  getXPremiumOAuthSessionRef,
+  XPremiumOAuthDriver,
+  XPremiumTokenManager,
+} from '../providers/x-premium'
 
 const originalFetch = globalThis.fetch
 

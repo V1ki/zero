@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { EventBus } from '../bus'
+import { EventBus } from '../runtime/bus'
 
 describe('EventBus', () => {
   test('emit and receive events', () => {

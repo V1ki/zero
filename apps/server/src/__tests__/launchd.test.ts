@@ -3,7 +3,7 @@ import {
   SUPERVISOR_LABEL,
   getSupervisorLaunchAgentPaths,
   renderSupervisorLaunchAgentPlist,
-} from '../launchd'
+} from '../system/launchd'
 
 describe('launchd', () => {
   test('renders a LaunchAgent plist for the supervisor', () => {
