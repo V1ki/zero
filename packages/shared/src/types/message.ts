@@ -1,4 +1,5 @@
 import type { ReasoningEffort } from './reasoning'
+import type { SessionSource } from './session'
 
 export type MessageRole = 'user' | 'assistant' | 'system'
 
@@ -80,11 +81,27 @@ export type ToolResultContentItem = TextBlock | ImageBlock
 
 export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ImageBlock | ThinkingBlock
 
+export interface MessageChannelSource {
+  channelType: SessionSource
+  channelName?: string
+  channelId?: string
+  participantId?: string
+  messageId?: string | number
+}
+
+export interface MessageRecallInfo {
+  externalMessageId: string | number
+  recalledAt: string
+  recallType?: string
+}
+
 export interface Message {
   id: string
   sessionId: string
   role: MessageRole
   messageType: MessageType
+  source?: MessageChannelSource
+  recalled?: MessageRecallInfo
   controlKind?: ControlKind
   taskClosure?: {
     action: 'finish' | 'continue' | 'block'

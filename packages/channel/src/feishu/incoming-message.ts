@@ -30,6 +30,20 @@ export interface FeishuIncomingEventPayload {
   message?: FeishuMessagePayload
 }
 
+export interface FeishuMessageRecalledEventPayload {
+  message_id?: string
+  chat_id?: string
+  recall_time?: string | number
+  recall_type?: string
+}
+
+interface FeishuWrappedEventPayload<T> {
+  header?: {
+    create_time?: string | number
+  }
+  event?: T
+}
+
 export interface ParsedFeishuIncomingContent {
   content: string
   images: ImageAttachment[]
@@ -68,8 +82,7 @@ export class FeishuIncomingMessageBuilder {
   }
 
   async build(data: unknown): Promise<IncomingMessage | null> {
-    const event =
-      typeof data === 'object' && data !== null ? (data as FeishuIncomingEventPayload) : undefined
+    const event = unwrapFeishuEvent<FeishuIncomingEventPayload>(data)
     const msg = event?.message
     if (!msg) {
       console.warn('[FeishuChannel] Received event with no message payload')
@@ -107,6 +120,52 @@ export class FeishuIncomingMessageBuilder {
       files: files.length > 0 ? files : undefined,
     }
   }
+
+  async buildRecalled(data: unknown): Promise<IncomingMessage | null> {
+    const event = unwrapFeishuEvent<FeishuMessageRecalledEventPayload>(data)
+    const messageId = event?.message_id
+    const chatId = event?.chat_id
+    if (!messageId || !chatId) {
+      console.warn('[FeishuChannel] Received recall event without message_id or chat_id')
+      return null
+    }
+
+    const recalledAt = normalizeFeishuEventTime(event.recall_time) ?? new Date().toISOString()
+
+    return {
+      channelType: 'feishu',
+      eventType: 'message_recalled',
+      senderId: 'unknown',
+      content: '',
+      timestamp: recalledAt,
+      metadata: {
+        eventType: 'message_recalled',
+        chatId,
+        messageId,
+        recallTime: recalledAt,
+        recallType: event.recall_type,
+      },
+    }
+  }
+}
+
+function unwrapFeishuEvent<T>(data: unknown): T | undefined {
+  if (!data || typeof data !== 'object') return undefined
+
+  const wrapped = data as FeishuWrappedEventPayload<T>
+  if (wrapped.event && typeof wrapped.event === 'object') return wrapped.event
+
+  return data as T
+}
+
+function normalizeFeishuEventTime(value: string | number | undefined): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return undefined
+
+  const millis = numeric < 10_000_000_000 ? numeric * 1000 : numeric
+  return new Date(millis).toISOString()
 }
 
 class FeishuIncomingMediaDownloader {

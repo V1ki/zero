@@ -1,4 +1,4 @@
-import type { Message, TimelineCompactionBlock } from '@zero-os/shared'
+import type { Message, MessageChannelSource, TimelineCompactionBlock } from '@zero-os/shared'
 import {
   type SessionTailRollbackRemovedMessage,
   summarizeRollbackMessage,
@@ -14,6 +14,14 @@ export interface SessionTailRollbackResult {
   removed: SessionTailRollbackRemovedMessage[]
   reason?: string
   error?: string
+}
+
+export interface SessionMessageRecallResult {
+  matched: boolean
+  changed: boolean
+  status: 'not_found' | 'recalled' | 'already_recalled'
+  messageId?: string
+  previousMessageType?: Message['messageType']
 }
 
 export class SessionConversationState {
@@ -44,6 +52,50 @@ export class SessionConversationState {
 
   replaceTimelineCompactionBlocks(blocks: TimelineCompactionBlock[]): void {
     this.compactionBlocks = blocks
+  }
+
+  markExternalMessageRecalled(options: {
+    source: MessageChannelSource
+    recalledAt: string
+    recallType?: string
+  }): SessionMessageRecallResult {
+    const message = this.messages.find((candidate) =>
+      matchesMessageSource(candidate.source, options.source),
+    )
+    if (!message) {
+      return {
+        matched: false,
+        changed: false,
+        status: 'not_found',
+      }
+    }
+
+    if (message.recalled) {
+      return {
+        matched: true,
+        changed: false,
+        status: 'already_recalled',
+        messageId: message.id,
+        previousMessageType: message.messageType,
+      }
+    }
+
+    const previousMessageType = message.messageType
+    message.messageType = 'notification'
+    message.recalled = {
+      externalMessageId: options.source.messageId ?? '',
+      recalledAt: options.recalledAt,
+      ...(options.recallType ? { recallType: options.recallType } : {}),
+    }
+    message.content = [{ type: 'text', text: '用户已撤回这条消息。' }]
+
+    return {
+      matched: true,
+      changed: true,
+      status: 'recalled',
+      messageId: message.id,
+      previousMessageType,
+    }
   }
 
   rollbackTailMessages(options: {
@@ -121,4 +173,16 @@ export class SessionConversationState {
   getTimelineCompactionBlocksSnapshot(): TimelineCompactionBlock[] {
     return [...this.compactionBlocks]
   }
+}
+
+function matchesMessageSource(
+  candidate: MessageChannelSource | undefined,
+  expected: MessageChannelSource,
+): boolean {
+  if (!candidate?.messageId || !expected.messageId) return false
+  if (String(candidate.messageId) !== String(expected.messageId)) return false
+  if (candidate.channelType !== expected.channelType) return false
+  if (expected.channelName && candidate.channelName !== expected.channelName) return false
+  if (expected.channelId && candidate.channelId !== expected.channelId) return false
+  return true
 }

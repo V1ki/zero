@@ -95,4 +95,71 @@ describe('handleChannelMessage Feishu routing', () => {
       replyTo: 'msg_1',
     })
   })
+
+  test('routes Feishu recall events to session recall handling without starting a turn', async () => {
+    const recallCalls: unknown[] = []
+    const replies: unknown[] = []
+    const channelAdapter: ChannelAdapter = {
+      reply: async (...args) => {
+        replies.push(args)
+      },
+      showTyping: async () => {
+        throw new Error('should not show typing for recall events')
+      },
+    }
+    const sessionManager = {
+      getOrCreateForChannel: () => {
+        throw new Error('should not create a session for recall events')
+      },
+      markExternalMessageRecalled: (options: unknown) => {
+        recallCalls.push(options)
+        return {
+          matched: true,
+          changed: true,
+          status: 'recalled',
+          sessionId: 'sess_alice',
+        }
+      },
+    }
+
+    await handleChannelMessage(
+      createIncomingMessage({
+        eventType: 'message_recalled',
+        senderId: 'unknown',
+        content: '',
+        timestamp: '2026-03-23T00:00:01.000Z',
+        metadata: {
+          eventType: 'message_recalled',
+          chatId: 'oc_group',
+          messageId: 'msg_1',
+          recallTime: '2026-03-23T00:00:01.000Z',
+          recallType: 'message_owner',
+        },
+      }),
+      {
+        channelType: 'feishu',
+        channelName: 'feishu',
+        agentName: 'ZeRo OS',
+        agentInstruction: 'test instruction',
+        sessionManager: sessionManager as unknown as MessageHandlerDeps['sessionManager'],
+        commandRouter: new CommandRouter() as MessageHandlerDeps['commandRouter'],
+        channelAdapter,
+        isShuttingDown: () => false,
+      },
+    )
+
+    expect(recallCalls).toEqual([
+      {
+        source: {
+          channelType: 'feishu',
+          channelName: 'feishu',
+          channelId: 'oc_group',
+          messageId: 'msg_1',
+        },
+        recalledAt: '2026-03-23T00:00:01.000Z',
+        recallType: 'message_owner',
+      },
+    ])
+    expect(replies).toEqual([])
+  })
 })

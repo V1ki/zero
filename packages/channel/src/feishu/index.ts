@@ -640,22 +640,26 @@ export class FeishuConnectionState {
 
 interface FeishuIncomingEventReceiverOptions {
   channelName: string
-  incomingBuilder: Pick<FeishuIncomingMessageBuilder, 'build'>
+  incomingBuilder: Pick<FeishuIncomingMessageBuilder, 'build' | 'buildRecalled'>
   processedMessages?: RecentMessageTracker
+  recalledMessages?: RecentMessageTracker
 }
 
 export class FeishuIncomingEventReceiver {
   private messageHandler: MessageHandler | null = null
   private processedMessages: RecentMessageTracker
+  private recalledMessages: RecentMessageTracker
 
   constructor(private readonly options: FeishuIncomingEventReceiverOptions) {
     this.processedMessages =
       options.processedMessages ?? new RecentMessageTracker({ maxSize: 1000 })
+    this.recalledMessages = options.recalledMessages ?? new RecentMessageTracker({ maxSize: 1000 })
   }
 
   register(dispatcher: lark.EventDispatcher): void {
     dispatcher.register({
-      'im.message.receive_v1': (data: unknown) => this.handle(data),
+      'im.message.receive_v1': (data: unknown) => this.handleReceived(data),
+      'im.message.recalled_v1': (data: unknown) => this.handleRecalled(data),
     })
   }
 
@@ -665,14 +669,19 @@ export class FeishuIncomingEventReceiver {
 
   reset(): void {
     this.processedMessages.clear()
+    this.recalledMessages.clear()
   }
 
   async handle(data: unknown): Promise<void> {
+    await this.handleReceived(data)
+  }
+
+  async handleReceived(data: unknown): Promise<void> {
     const handler = this.messageHandler
     if (!handler) return
 
     try {
-      const event = this.parseEvent(data)
+      const event = this.unwrapEvent<FeishuIncomingEventPayload>(data)
       const msg = event?.message
       if (!msg) {
         console.warn('[FeishuChannel] Received event with no message payload')
@@ -680,7 +689,11 @@ export class FeishuIncomingEventReceiver {
       }
 
       const messageId = msg.message_id
-      if (!this.processedMessages.shouldProcess(messageId)) {
+      if (this.recalledMessages.has(messageId)) {
+        console.log('[FeishuChannel] Skipping recalled message:', messageId)
+        return
+      }
+      if (!this.processedMessages.shouldProcess(messageId ? `receive:${messageId}` : undefined)) {
         console.log('[FeishuChannel] Skipping duplicate message:', messageId)
         return
       }
@@ -705,10 +718,54 @@ export class FeishuIncomingEventReceiver {
     }
   }
 
-  private parseEvent(data: unknown): FeishuIncomingEventPayload | undefined {
-    return typeof data === 'object' && data !== null
-      ? (data as FeishuIncomingEventPayload)
-      : undefined
+  async handleRecalled(data: unknown): Promise<void> {
+    const handler = this.messageHandler
+    if (!handler) return
+
+    try {
+      const event = this.unwrapEvent<{
+        message_id?: string
+        chat_id?: string
+        recall_type?: string
+      }>(data)
+      const messageId = event?.message_id
+      if (!messageId) {
+        console.warn('[FeishuChannel] Received recall event with no message_id')
+        return
+      }
+
+      this.recalledMessages.remember(messageId)
+      if (!this.processedMessages.shouldProcess(`recall:${messageId}`)) {
+        console.log('[FeishuChannel] Skipping duplicate recall event:', messageId)
+        return
+      }
+
+      console.log(
+        `[FeishuChannel:${this.options.channelName}] im.message.recalled_v1 chat=${
+          event?.chat_id ?? 'unknown'
+        } message=${messageId} type=${event?.recall_type ?? 'unknown'}`,
+      )
+
+      const incoming = await this.options.incomingBuilder.buildRecalled(data)
+      if (!incoming) return
+
+      handler(incoming).catch((err) => {
+        console.error('[FeishuChannel] Async recall handler error:', describeError(err))
+      })
+    } catch (err) {
+      console.error('[FeishuChannel] Error handling im.message.recalled_v1:', describeError(err))
+    }
+  }
+
+  private unwrapEvent<T>(data: unknown): T | undefined {
+    if (typeof data !== 'object' || data === null) return undefined
+
+    const maybeWrapped = data as { event?: unknown }
+    if (maybeWrapped.event && typeof maybeWrapped.event === 'object') {
+      return maybeWrapped.event as T
+    }
+
+    return data as T
   }
 }
 

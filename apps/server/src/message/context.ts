@@ -1,7 +1,7 @@
 import type { IncomingMessage } from '@zero-os/channel'
 import type { CommandContext, CommandRouter, SessionManager } from '@zero-os/core'
 import type { MetricsDB } from '@zero-os/observe'
-import type { ChannelCapabilities, SessionSource } from '@zero-os/shared'
+import type { ChannelCapabilities, MessageChannelSource, SessionSource } from '@zero-os/shared'
 import type { ChannelAdapter } from '../channels/adapter'
 
 export interface MessageHandlerDeps {
@@ -23,6 +23,7 @@ export interface IncomingMessageContext {
   chatId: string
   participantId?: string
   messageId?: string | number
+  source?: MessageChannelSource
   reply(text: string): Promise<void>
 }
 
@@ -38,6 +39,7 @@ export function createIncomingMessageContext(
     chatId,
     participantId,
     messageId,
+    source: createIncomingMessageSource(deps, chatId, participantId, messageId),
     reply: (text) => deps.channelAdapter.reply(chatId, text, messageId),
   }
 }
@@ -98,4 +100,24 @@ function normalizeMessageId(msg: IncomingMessage): string | number | undefined {
     return messageId
   }
   return undefined
+}
+
+function createIncomingMessageSource(
+  deps: MessageHandlerDeps,
+  channelId: string,
+  participantId: string | undefined,
+  messageId: string | number | undefined,
+): MessageChannelSource | undefined {
+  if (messageId === undefined) return undefined
+
+  const source: MessageChannelSource = {
+    channelType: deps.channelType,
+    channelName: deps.channelName,
+    channelId,
+    messageId,
+  }
+  if (participantId) {
+    source.participantId = participantId
+  }
+  return source
 }

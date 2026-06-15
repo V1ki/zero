@@ -1,4 +1,4 @@
-import type { ContentBlock, ControlKind, Message } from '@zero-os/shared'
+import type { ContentBlock, ControlKind, Message, MessageChannelSource } from '@zero-os/shared'
 import { generateId, now } from '@zero-os/shared'
 import { CONTEXT_PARAMS } from './params'
 
@@ -6,6 +6,7 @@ export interface QueuedMessage {
   content: string
   images?: Array<{ mediaType: string; data: string }>
   timestamp: string
+  source?: MessageChannelSource
   onApplied?: () => void
 }
 

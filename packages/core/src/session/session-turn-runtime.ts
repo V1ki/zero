@@ -1,4 +1,4 @@
-import type { Message, Session as SessionData } from '@zero-os/shared'
+import type { Message, MessageChannelSource, Session as SessionData } from '@zero-os/shared'
 import { Mutex, generateId, now } from '@zero-os/shared'
 import type { QueuedMessage } from '../agent/queue'
 import { type SessionImageAttachment, createUserMessage } from './session-messages'
@@ -34,6 +34,7 @@ export class SessionTurnRuntime {
   queueMessage(options: {
     content: string
     images?: SessionImageAttachment[]
+    source?: MessageChannelSource
     messages: Message[]
     data: SessionData
     persistState(): void
@@ -49,6 +50,7 @@ export class SessionTurnRuntime {
     this.messageQueue.push({
       content: options.content,
       images: options.images,
+      source: options.source,
       timestamp,
       onApplied: options.onApplied,
     })
@@ -58,6 +60,7 @@ export class SessionTurnRuntime {
         text: options.content,
         createdAt: timestamp,
         images: options.images,
+        source: options.source,
         messageType: 'queued',
       }),
     )
@@ -82,6 +85,18 @@ export class SessionTurnRuntime {
     return messages
   }
 
+  removeQueuedMessagesBySource(source: MessageChannelSource): number {
+    const before = this.messageQueue.length
+    const nextQueue = this.messageQueue.filter(
+      (message) => !matchesMessageSource(message.source, source),
+    )
+    this.messageQueue = nextQueue
+    if (before !== nextQueue.length) {
+      this.interruptFlag = nextQueue.length > 0
+    }
+    return before - nextQueue.length
+  }
+
   allocateTurnIndex(): number {
     const turnIndex = this.nextTurnIndex
     this.nextTurnIndex += 1
@@ -94,4 +109,16 @@ export class SessionTurnRuntime {
       interruptFlag: this.interruptFlag,
     }
   }
+}
+
+function matchesMessageSource(
+  candidate: MessageChannelSource | undefined,
+  expected: MessageChannelSource,
+): boolean {
+  if (!candidate?.messageId || !expected.messageId) return false
+  if (String(candidate.messageId) !== String(expected.messageId)) return false
+  if (candidate.channelType !== expected.channelType) return false
+  if (expected.channelName && candidate.channelName !== expected.channelName) return false
+  if (expected.channelId && candidate.channelId !== expected.channelId) return false
+  return true
 }

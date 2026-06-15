@@ -3,6 +3,7 @@ import type { SessionDB } from '@zero-os/observe'
 import type {
   ChannelCapabilities,
   Message,
+  MessageChannelSource,
   ReasoningEffort,
   RunningToolAbortRequestStatus,
   Session as SessionData,
@@ -27,6 +28,7 @@ import {
 } from './session-controllers'
 import {
   SessionConversationState,
+  type SessionMessageRecallResult,
   type SessionTailRollbackResult,
 } from './session-conversation-state'
 import { isTopLevelUserTurn } from './session-messages'
@@ -298,6 +300,26 @@ export class Session {
     return this.controllers.tailRepair.rollbackTailMessages(count, options)
   }
 
+  markExternalMessageRecalled(options: {
+    source: MessageChannelSource
+    recalledAt: string
+    recallType?: string
+  }): SessionMessageRecallResult {
+    const result = this.conversation.markExternalMessageRecalled(options)
+    if (result.changed) {
+      this.turnRuntime.removeQueuedMessagesBySource(options.source)
+      this.data.updatedAt = now()
+      this.deps.bus?.emit('session:update', {
+        sessionId: this.data.id,
+        event: 'message_recalled',
+        messageCount: this.conversation.messageCount,
+        messageId: result.messageId,
+      })
+      this.persistState()
+    }
+    return result
+  }
+
   private reinitializeAgent(): void {
     this.agentRuntime.reinitialize(this.buildAgentRuntimeInitOptions())
   }
@@ -497,6 +519,7 @@ async function handleSessionMessageEntry(options: {
     options.turnRuntime.queueMessage({
       content: options.content,
       images: options.handleOptions?.images,
+      source: options.handleOptions?.source,
       messages: options.messages,
       data: options.sessionData,
       persistState: options.persistState,

@@ -1,6 +1,6 @@
 import type { IncomingMessage } from '@zero-os/channel'
 import { CommandRouter } from '@zero-os/core'
-import type { Message } from '@zero-os/shared'
+import type { Message, MessageChannelSource } from '@zero-os/shared'
 import type { ChannelAdapter } from '../channels/adapter'
 import type { MessageHandlerDeps } from '../message/handler'
 
@@ -8,6 +8,7 @@ const DEFAULT_TIMESTAMP = new Date('2026-03-23T00:00:00.000Z').toISOString()
 
 export type SessionHandleMessageOptions = {
   images?: IncomingMessage['images']
+  source?: MessageChannelSource
   onTextDelta?: (delta: string, meta: { turnId: string }) => void
   onQueuedMessageApplied?: () => void
 }

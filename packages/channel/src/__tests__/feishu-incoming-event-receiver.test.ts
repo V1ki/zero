@@ -16,6 +16,15 @@ function feishuPayload(messageId: string) {
   }
 }
 
+function feishuRecallPayload(messageId: string) {
+  return {
+    message_id: messageId,
+    chat_id: 'chat_1',
+    recall_time: '1000',
+    recall_type: 'message_owner',
+  }
+}
+
 function incoming(messageId: string): IncomingMessage {
   return {
     channelType: 'feishu',
@@ -23,6 +32,23 @@ function incoming(messageId: string): IncomingMessage {
     content: 'hello',
     timestamp: new Date(1000).toISOString(),
     metadata: { messageId },
+  }
+}
+
+function recalled(messageId: string): IncomingMessage {
+  return {
+    channelType: 'feishu',
+    eventType: 'message_recalled',
+    senderId: 'unknown',
+    content: '',
+    timestamp: new Date(1000).toISOString(),
+    metadata: {
+      eventType: 'message_recalled',
+      chatId: 'chat_1',
+      messageId,
+      recallTime: new Date(1000).toISOString(),
+      recallType: 'message_owner',
+    },
   }
 }
 
@@ -37,6 +63,7 @@ describe('FeishuIncomingEventReceiver', () => {
           buildCount++
           return incoming('msg_1')
         },
+        buildRecalled: async () => null,
       },
     })
     receiver.setMessageHandler(async () => {
@@ -55,7 +82,7 @@ describe('FeishuIncomingEventReceiver', () => {
     let handlerCompleted = false
     const receiver = new FeishuIncomingEventReceiver({
       channelName: 'feishu',
-      incomingBuilder: { build: async () => incoming('msg_2') },
+      incomingBuilder: { build: async () => incoming('msg_2'), buildRecalled: async () => null },
     })
     receiver.setMessageHandler(async () => {
       await new Promise<void>((resolve) => {
@@ -78,7 +105,7 @@ describe('FeishuIncomingEventReceiver', () => {
     let handledCount = 0
     const receiver = new FeishuIncomingEventReceiver({
       channelName: 'feishu',
-      incomingBuilder: { build: async () => incoming('msg_3') },
+      incomingBuilder: { build: async () => incoming('msg_3'), buildRecalled: async () => null },
     })
     receiver.setMessageHandler(async () => {
       handledCount++
@@ -90,5 +117,50 @@ describe('FeishuIncomingEventReceiver', () => {
     await receiver.handle(feishuPayload('msg_3'))
 
     expect(handledCount).toBe(2)
+  })
+
+  test('dispatches recall events without being deduped by the original message id', async () => {
+    const handled: IncomingMessage[] = []
+    const receiver = new FeishuIncomingEventReceiver({
+      channelName: 'feishu',
+      incomingBuilder: {
+        build: async (data) =>
+          incoming((data as { message: { message_id: string } }).message.message_id),
+        buildRecalled: async (data) => recalled((data as { message_id: string }).message_id),
+      },
+    })
+    receiver.setMessageHandler(async (message) => {
+      handled.push(message)
+    })
+
+    await receiver.handleReceived(feishuPayload('msg_4'))
+    await receiver.handleRecalled(feishuRecallPayload('msg_4'))
+    await Promise.resolve()
+
+    expect(handled.map((message) => message.eventType ?? 'message')).toEqual([
+      'message',
+      'message_recalled',
+    ])
+    expect(handled[1]?.metadata?.messageId).toBe('msg_4')
+  })
+
+  test('skips a receive event when the recall event arrived first', async () => {
+    let handledCount = 0
+    const receiver = new FeishuIncomingEventReceiver({
+      channelName: 'feishu',
+      incomingBuilder: {
+        build: async () => incoming('msg_5'),
+        buildRecalled: async () => recalled('msg_5'),
+      },
+    })
+    receiver.setMessageHandler(async () => {
+      handledCount++
+    })
+
+    await receiver.handleRecalled(feishuRecallPayload('msg_5'))
+    await receiver.handleReceived(feishuPayload('msg_5'))
+    await Promise.resolve()
+
+    expect(handledCount).toBe(1)
   })
 })

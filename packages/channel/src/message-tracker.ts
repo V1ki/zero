@@ -20,6 +20,21 @@ export class RecentMessageTracker {
     return true
   }
 
+  remember(messageId?: string): void {
+    if (!messageId) return
+
+    this.sweepExpired()
+    this.seenMessageIds.set(messageId, this.now())
+    this.trimToCapacity()
+  }
+
+  has(messageId?: string): boolean {
+    if (!messageId) return false
+
+    this.sweepExpired()
+    return this.seenMessageIds.has(messageId)
+  }
+
   clear(): void {
     this.seenMessageIds.clear()
   }

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { Message } from '@zero-os/shared'
+import type { Message, MessageChannelSource } from '@zero-os/shared'
 import { generateId, now } from '@zero-os/shared'
 
 export interface SessionImageAttachment {
@@ -47,6 +47,7 @@ export function createUserMessage(options: {
   text: string
   createdAt: string
   images?: SessionImageAttachment[]
+  source?: MessageChannelSource
   messageType?: Message['messageType']
 }): Message {
   const content: Message['content'] = []
@@ -59,7 +60,7 @@ export function createUserMessage(options: {
     }
   }
 
-  return {
+  const message: Message = {
     id: generateId(),
     sessionId: options.sessionId,
     role: 'user',
@@ -67,6 +68,12 @@ export function createUserMessage(options: {
     content,
     createdAt: options.createdAt,
   }
+
+  if (options.source) {
+    message.source = options.source
+  }
+
+  return message
 }
 
 export function applyFailedTurnRollback(options: {

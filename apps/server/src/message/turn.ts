@@ -169,6 +169,7 @@ async function runActiveMessageTurn({
 
   const replies = await session.handleMessage(messageContent, {
     images: msg.images,
+    source: incoming.source,
     onTextDelta: state.progressDelivery.onTextDelta,
     onProgress: state.progressDelivery.onProgress,
   } satisfies HandleMessageOptions)
@@ -250,6 +251,7 @@ async function runQueuedMessageTurn({
 }: RunQueuedMessageTurnOptions): Promise<void> {
   await session.handleMessage(messageContent, {
     images: msg.images,
+    source: incoming.source,
     onQueuedMessageApplied: createQueuedMessageAppliedHandler({
       deps,
       chatId: incoming.chatId,

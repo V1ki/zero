@@ -51,4 +51,14 @@ describe('RecentMessageTracker', () => {
 
     expect(tracker.shouldProcess('msg_1')).toBe(true)
   })
+
+  test('remember and has track ids without consuming a processing decision', () => {
+    const tracker = new RecentMessageTracker()
+
+    expect(tracker.has('msg_1')).toBe(false)
+    tracker.remember('msg_1')
+
+    expect(tracker.has('msg_1')).toBe(true)
+    expect(tracker.shouldProcess('msg_1')).toBe(false)
+  })
 })

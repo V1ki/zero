@@ -5,6 +5,7 @@ import type { MetricsDB, SessionDB, SessionRow } from '@zero-os/observe'
 import type {
   ChannelSessionBinding,
   Message,
+  MessageChannelSource,
   SessionPlacement,
   SessionSource,
   TimelineCompactionBlock,
@@ -12,6 +13,7 @@ import type {
 import type { AgentSnapshot } from '../agent/agent-control'
 import type { ToolRegistry } from '../tool/registry'
 import { Session, type SessionDeps } from './session'
+import type { SessionMessageRecallResult } from './session-conversation-state'
 import { persistSessionSnapshot } from './session-persistence'
 import { normalizeAgentConfig, normalizeSessionRow, sessionDataFromRow } from './session-restore'
 import { allocateUniqueSessionId } from './session-runtime'
@@ -234,6 +236,25 @@ export class SessionManager {
 
   getPlacement(sessionId: string): SessionPlacement {
     return this.isCurrentSessionId(sessionId) ? 'current' : 'background'
+  }
+
+  markExternalMessageRecalled(options: {
+    source: MessageChannelSource
+    recalledAt: string
+    recallType?: string
+  }): SessionMessageRecallResult & { sessionId?: string } {
+    for (const session of this.sessions.values()) {
+      const result = session.markExternalMessageRecalled(options)
+      if (result.matched) {
+        return { ...result, sessionId: session.data.id }
+      }
+    }
+
+    return {
+      matched: false,
+      changed: false,
+      status: 'not_found',
+    }
   }
 }
 

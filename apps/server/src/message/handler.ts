@@ -24,6 +24,11 @@ export async function handleChannelMessage(
       return
     }
 
+    if (isMessageRecalledEvent(msg)) {
+      handleMessageRecalled(msg, deps, incoming)
+      return
+    }
+
     if (await handleMessageCommand(msg, deps, incoming)) return
 
     await runMessageTurn(msg, deps, incoming, turnState)
@@ -43,6 +48,45 @@ export async function handleChannelMessage(
       streamText: turnState.progressDelivery?.streamText ?? '',
     })
   }
+}
+
+function isMessageRecalledEvent(msg: IncomingMessage): boolean {
+  return msg.eventType === 'message_recalled' || msg.metadata?.eventType === 'message_recalled'
+}
+
+function handleMessageRecalled(
+  msg: IncomingMessage,
+  deps: MessageHandlerDeps,
+  incoming: IncomingMessageContext,
+): void {
+  const source = incoming.source
+  if (!source) {
+    console.warn(`[ZeRo OS] ${deps.channelName} recall event missing source message id`)
+    return
+  }
+
+  const recalledAt =
+    typeof msg.metadata?.recallTime === 'string' ? msg.metadata.recallTime : msg.timestamp
+  const recallType =
+    typeof msg.metadata?.recallType === 'string' ? msg.metadata.recallType : undefined
+  const result = deps.sessionManager.markExternalMessageRecalled({
+    source,
+    recalledAt,
+    recallType,
+  })
+
+  if (!result.matched) {
+    console.log(
+      `[ZeRo OS] ${deps.channelName} recalled message not found: ${String(source.messageId)}`,
+    )
+    return
+  }
+
+  console.log(
+    `[ZeRo OS] ${deps.channelName} marked message recalled: session=${result.sessionId} message=${String(
+      source.messageId,
+    )} status=${result.status}`,
+  )
 }
 
 async function handleMessageCommand(

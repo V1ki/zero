@@ -60,6 +60,7 @@ export interface FileAttachment {
 
 export interface IncomingMessage {
   channelType: string
+  eventType?: 'message' | 'message_recalled'
   senderId: string
   content: string
   timestamp: string

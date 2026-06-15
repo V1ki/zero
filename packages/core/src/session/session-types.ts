@@ -1,6 +1,6 @@
 import type { MemoryRetriever } from '@zero-os/memory'
 import type { MetricsDB, ObservabilityStore, SessionDB, Tracer } from '@zero-os/observe'
-import type { Message, SecretFilter, ToolContext } from '@zero-os/shared'
+import type { Message, MessageChannelSource, SecretFilter, ToolContext } from '@zero-os/shared'
 import type { SessionImageAttachment } from './session-messages'
 
 /**
@@ -40,6 +40,8 @@ export interface HandleMessageOptions {
   onTextDelta?: (delta: string, meta: { role: 'assistant'; turnId: string }) => void
   /** Image attachments (base64) to send alongside the text message. */
   images?: SessionImageAttachment[]
+  /** Originating external channel message, used for follow-up events like message recall. */
+  source?: MessageChannelSource
   /** Called after a queued message is injected into a later model request and that request returns. */
   onQueuedMessageApplied?: () => void
 }
