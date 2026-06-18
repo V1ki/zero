@@ -4,11 +4,13 @@ import type { MetricsDB } from '@zero-os/observe'
 import type { Vault } from '@zero-os/secrets'
 import type { ChannelInstanceConfig, SystemConfig } from '@zero-os/shared'
 import type { HeartbeatWriter } from '@zero-os/supervisor'
+import { buildConfiguredDingtalkDefinition, registerDingtalkRuntimeChannel } from './dingtalk'
 import { buildConfiguredFeishuDefinition, registerFeishuRuntimeChannel } from './feishu'
 import type { ExternalChannelRegistrarOptions } from './runtime-common'
 import { buildConfiguredTelegramDefinition, registerTelegramRuntimeChannel } from './telegram'
 import type {
   ChannelRuntimeDefinition,
+  DingtalkRuntimeDefinition,
   ExternalChannelRuntimeDefinition,
   FeishuRuntimeDefinition,
   TelegramRuntimeDefinition,
@@ -132,6 +134,10 @@ function buildConfiguredChannelDefinition(
     return buildConfiguredFeishuDefinition(channel, vault)
   }
 
+  if (channel.type === 'dingtalk') {
+    return buildConfiguredDingtalkDefinition(channel, vault)
+  }
+
   if (channel.type === 'weixin') {
     return buildConfiguredWeixinDefinition(channel, vault)
   }
@@ -144,7 +150,35 @@ function buildConfiguredChannelDefinition(
 }
 
 function buildFallbackChannelDefinitions(vault: Vault): ExternalChannelRuntimeDefinition[] {
-  return [buildFallbackFeishuDefinition(vault), buildFallbackTelegramDefinition(vault)]
+  return [
+    buildFallbackDingtalkDefinition(vault),
+    buildFallbackFeishuDefinition(vault),
+    buildFallbackTelegramDefinition(vault),
+  ]
+}
+
+function buildFallbackDingtalkDefinition(vault: Vault): DingtalkRuntimeDefinition {
+  const clientId = vault.get('dingtalk_client_id')
+  const clientSecret = vault.get('dingtalk_client_secret')
+  const robotCode = vault.get('dingtalk_robot_code') ?? undefined
+
+  return {
+    name: 'dingtalk',
+    type: 'dingtalk',
+    configured: !!(clientId && clientSecret),
+    receiveNotifications: false,
+    secretRefs: ['dingtalk_client_id', 'dingtalk_client_secret', 'dingtalk_robot_code'],
+    debug: false,
+    keepAlive: true,
+    credentials:
+      clientId && clientSecret
+        ? {
+            clientId,
+            clientSecret,
+            robotCode,
+          }
+        : undefined,
+  }
 }
 
 function buildFallbackFeishuDefinition(vault: Vault): FeishuRuntimeDefinition {
@@ -194,6 +228,11 @@ async function registerExternalChannelDefinition(
 ): Promise<void> {
   if (definition.type === 'feishu') {
     await registerFeishuRuntimeChannel(definition, options)
+    return
+  }
+
+  if (definition.type === 'dingtalk') {
+    await registerDingtalkRuntimeChannel(definition, options)
     return
   }
 

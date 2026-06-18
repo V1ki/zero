@@ -151,7 +151,21 @@ channels:
 
 - `.zero/fuse_list.yaml`：用于 shell 安全规则
 - `.zero/config.yaml` 中的 embedding 配置：用于向量记忆检索
-- 额外的 Telegram / 飞书 channel 定义
+- 额外的 Telegram / 飞书 / 微信 / 钉钉 channel 定义
+
+钉钉企业内部应用机器人在本地开发时建议使用 Stream 模式：
+
+```yaml
+channels:
+  - name: dingtalk:ops
+    type: dingtalk
+    client_id_ref: dingtalk_ops_client_id
+    client_secret_ref: dingtalk_ops_client_secret
+    robot_code_ref: dingtalk_ops_robot_code # 媒体下载的可选兜底
+```
+
+钉钉回复会使用入站机器人消息携带的 `sessionWebhook`。普通机器人消息不支持原地编辑，
+因此 ZeRo OS 对该 channel 关闭流式更新。
 
 ### 4. 构建 Web UI
 

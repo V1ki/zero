@@ -10,6 +10,7 @@
     "@zero-os/core": "workspace:*",
     "@zero-os/observe": "workspace:*",
     "@zero-os/shared": "workspace:*",
+    "dingtalk-stream": "2.1.6-beta.1",
     "hono": "^4.7.0",
     "telegraf": "^4.16.3"
   },

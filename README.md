@@ -159,7 +159,21 @@ Optional files:
 
 - `.zero/fuse_list.yaml` for shell safety rules
 - embedding config inside `.zero/config.yaml` if you want vector-backed memory retrieval
-- additional channel definitions for Telegram or Feishu
+- additional channel definitions for Telegram, Feishu, Weixin, or DingTalk
+
+DingTalk enterprise/internal application robots should use Stream mode for local development:
+
+```yaml
+channels:
+  - name: dingtalk:ops
+    type: dingtalk
+    client_id_ref: dingtalk_ops_client_id
+    client_secret_ref: dingtalk_ops_client_secret
+    robot_code_ref: dingtalk_ops_robot_code # optional fallback for media download
+```
+
+DingTalk replies use the `sessionWebhook` included with incoming robot messages. Regular robot
+messages are not edited in place, so ZeRo OS disables streaming updates for this channel.
 
 ### 4. Build the Web UI
 

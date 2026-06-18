@@ -225,6 +225,12 @@ channels:
     type: telegram
     bot_token_ref: telegram_alerts_bot_token
     streaming: false
+  - name: dingtalk:ops
+    type: dingtalk
+    client_id_ref: dingtalk_ops_client_id
+    client_secret_ref: dingtalk_ops_client_secret
+    robot_code_ref: dingtalk_ops_robot_code
+    keep_alive: false
   - name: weixin:personal
     type: weixin
     account_id_ref: weixin_personal_account_id
@@ -243,7 +249,7 @@ channels:
 
     const config = loadConfig(configPath)
 
-    expect(config.channels).toHaveLength(3)
+    expect(config.channels).toHaveLength(4)
     expect(config.channels?.[0]).toEqual({
       name: 'feishu:ops',
       type: 'feishu',
@@ -263,6 +269,17 @@ channels:
       streaming: false,
     })
     expect(config.channels?.[2]).toEqual({
+      name: 'dingtalk:ops',
+      type: 'dingtalk',
+      enabled: true,
+      receiveNotifications: false,
+      clientIdRef: 'dingtalk_ops_client_id',
+      clientSecretRef: 'dingtalk_ops_client_secret',
+      robotCodeRef: 'dingtalk_ops_robot_code',
+      debug: undefined,
+      keepAlive: false,
+    })
+    expect(config.channels?.[3]).toEqual({
       name: 'weixin:personal',
       type: 'weixin',
       enabled: true,

@@ -1,6 +1,6 @@
 import type { ReasoningEffort } from './reasoning'
 
-export type SessionSource = 'feishu' | 'telegram' | 'scheduler' | 'web' | 'weixin'
+export type SessionSource = 'dingtalk' | 'feishu' | 'telegram' | 'scheduler' | 'web' | 'weixin'
 export type SessionPlacement = 'current' | 'background'
 
 export interface ModelHistoryEntry {

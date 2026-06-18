@@ -2,6 +2,7 @@ import type { SessionSource } from '../types/session'
 
 export const SESSION_SOURCE_ABBREVIATIONS = {
   web: 'web',
+  dingtalk: 'din',
   feishu: 'fei',
   telegram: 'tel',
   scheduler: 'sch',

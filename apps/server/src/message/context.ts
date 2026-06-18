@@ -84,12 +84,12 @@ function normalizeChatId(msg: IncomingMessage): string {
 }
 
 function normalizeParticipantId(msg: IncomingMessage, source: SessionSource): string | undefined {
-  if (source !== 'feishu') return undefined
+  if (source !== 'feishu' && source !== 'dingtalk') return undefined
   const senderId = msg.senderId.trim()
   if (senderId && senderId !== 'unknown') return senderId
 
   console.warn(
-    '[ZeRo OS] Feishu message missing senderId; falling back to chat-level session scope',
+    `[ZeRo OS] ${source} message missing senderId; falling back to chat-level session scope`,
   )
   return undefined
 }

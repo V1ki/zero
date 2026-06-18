@@ -163,3 +163,88 @@ describe('handleChannelMessage Feishu routing', () => {
     expect(replies).toEqual([])
   })
 })
+
+describe('handleChannelMessage DingTalk routing', () => {
+  test('scopes DingTalk group sessions by sender while replying to the conversation id', async () => {
+    const managerCalls: Array<{
+      source: string
+      channelId: string
+      channelName?: string
+      participantId?: string
+    }> = []
+    const replies: Array<{ chatId: string; text: string; replyTo?: string | number }> = []
+    const session = {
+      data: { id: 'sess_dingtalk_alice' },
+      isAgentInitialized: () => true,
+      setChannelCapabilities: () => {},
+      initAgent: () => {},
+      handleMessage: async () => [
+        createAssistantTextMessage('hello dingtalk', 'sess_dingtalk_alice'),
+      ],
+    }
+
+    const sessionManager = {
+      getOrCreateForChannel: (
+        source: string,
+        channelId: string,
+        channelName?: string,
+        participantId?: string,
+      ) => {
+        managerCalls.push({ source, channelId, channelName, participantId })
+        return { session, isNew: false }
+      },
+      isCurrentSessionForChannel: (
+        _source: string,
+        _channelId: string,
+        _channelName: string | undefined,
+        sessionId: string,
+        participantId?: string,
+      ) => sessionId === session.data.id && participantId === 'staff_alice',
+    }
+
+    const channelAdapter: ChannelAdapter = {
+      reply: async (chatId, text, replyTo) => {
+        replies.push({ chatId, text, replyTo })
+      },
+      showTyping: async () => ({
+        clear: async () => {},
+      }),
+    }
+
+    await handleChannelMessage(
+      createIncomingMessage({
+        senderId: 'staff_alice',
+        content: 'hello',
+        metadata: {
+          chatId: 'cid_group',
+          messageId: 'msg_1',
+          conversationType: '2',
+        },
+      }),
+      {
+        channelType: 'dingtalk',
+        channelName: 'dingtalk',
+        agentName: 'ZeRo OS',
+        agentInstruction: 'test instruction',
+        sessionManager: sessionManager as unknown as MessageHandlerDeps['sessionManager'],
+        commandRouter: new CommandRouter() as MessageHandlerDeps['commandRouter'],
+        channelAdapter,
+        isShuttingDown: () => false,
+      },
+    )
+
+    expect(managerCalls).toEqual([
+      {
+        source: 'dingtalk',
+        channelId: 'cid_group',
+        channelName: 'dingtalk',
+        participantId: 'staff_alice',
+      },
+    ])
+    expect(replies).toContainEqual({
+      chatId: 'cid_group',
+      text: 'hello dingtalk',
+      replyTo: 'msg_1',
+    })
+  })
+})

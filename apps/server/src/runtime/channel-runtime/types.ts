@@ -1,9 +1,20 @@
 export interface ChannelRuntimeDefinition {
   name: string
-  type: 'web' | 'feishu' | 'telegram' | 'weixin'
+  type: 'web' | 'dingtalk' | 'feishu' | 'telegram' | 'weixin'
   configured: boolean
   receiveNotifications: boolean
   secretRefs: string[]
+}
+
+export interface DingtalkRuntimeDefinition extends ChannelRuntimeDefinition {
+  type: 'dingtalk'
+  debug: boolean
+  keepAlive: boolean
+  credentials?: {
+    clientId: string
+    clientSecret: string
+    robotCode?: string
+  }
 }
 
 export interface FeishuRuntimeDefinition extends ChannelRuntimeDefinition {
@@ -40,6 +51,7 @@ export interface WeixinRuntimeDefinition extends ChannelRuntimeDefinition {
 }
 
 export type ExternalChannelRuntimeDefinition =
+  | DingtalkRuntimeDefinition
   | FeishuRuntimeDefinition
   | TelegramRuntimeDefinition
   | WeixinRuntimeDefinition

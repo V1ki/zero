@@ -11,6 +11,14 @@ export { FeishuChannel } from './feishu/index'
 export type { FeishuChannelConfig } from './feishu/index'
 export type { FeishuStreamingSession } from './feishu/index'
 export { FeishuImageResolver } from './feishu/image-resolver'
+export { DingtalkChannel, DingtalkIncomingMessageBuilder } from './dingtalk/index'
+export type {
+  DingtalkChannelConfig,
+  DingtalkDownloadedMedia,
+  DingtalkMediaDownloadRequest,
+  DingtalkRecallEventPayload,
+  DingtalkRobotMessage,
+} from './dingtalk/index'
 export { TelegramChannel } from './telegram'
 export type {
   TelegramChannelConfig,

@@ -104,9 +104,18 @@ export interface FuseRule {
 
 export interface BaseChannelInstanceConfig {
   name: string
-  type: 'feishu' | 'telegram' | 'web' | 'weixin'
+  type: 'dingtalk' | 'feishu' | 'telegram' | 'web' | 'weixin'
   enabled?: boolean
   receiveNotifications?: boolean
+}
+
+export interface DingtalkChannelInstanceConfig extends BaseChannelInstanceConfig {
+  type: 'dingtalk'
+  clientIdRef: string
+  clientSecretRef: string
+  robotCodeRef?: string
+  debug?: boolean
+  keepAlive?: boolean
 }
 
 export interface FeishuChannelInstanceConfig extends BaseChannelInstanceConfig {
@@ -141,6 +150,7 @@ export interface WeixinChannelInstanceConfig extends BaseChannelInstanceConfig {
 }
 
 export type ChannelInstanceConfig =
+  | DingtalkChannelInstanceConfig
   | FeishuChannelInstanceConfig
   | TelegramChannelInstanceConfig
   | WebChannelInstanceConfig

@@ -3,10 +3,10 @@ import { useNavigate } from '@tanstack/react-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { PulseDot } from '../components/shared/PulseDot'
 import { Skeleton } from '../components/shared/Skeleton'
-import { useWebSocket } from '../useWebSocket'
 import { apiFetch } from '../lib/api'
 import { formatCost, formatModelHistory, formatNumber, formatTimeAgo } from '../lib/format'
 import { useUIStore } from '../stores/ui'
+import { useWebSocket } from '../useWebSocket'
 
 interface ModelHistoryEntry {
   model: string
@@ -45,7 +45,15 @@ function canOpenChannelDetail(session: SessionInfo) {
   return Boolean(session.channelId && session.placement === 'current')
 }
 
-const SOURCE_FILTERS = ['all', 'web', 'feishu', 'telegram', 'weixin', 'scheduler'] as const
+const SOURCE_FILTERS = [
+  'all',
+  'web',
+  'dingtalk',
+  'feishu',
+  'telegram',
+  'weixin',
+  'scheduler',
+] as const
 
 export function SessionsPage() {
   const [filter, setFilter] = useState('all')

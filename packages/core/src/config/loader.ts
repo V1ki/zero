@@ -190,6 +190,21 @@ function normalizeChannelConfig(raw: Record<string, unknown>): ChannelInstanceCo
       readBoolean(raw, 'receiveNotifications', 'receive_notifications') ?? false,
   }
 
+  if (type === 'dingtalk') {
+    const clientIdRef = readString(raw, 'clientIdRef', 'client_id_ref')
+    const clientSecretRef = readString(raw, 'clientSecretRef', 'client_secret_ref')
+    if (!clientIdRef || !clientSecretRef) return null
+    return {
+      ...base,
+      type,
+      clientIdRef,
+      clientSecretRef,
+      robotCodeRef: readString(raw, 'robotCodeRef', 'robot_code_ref'),
+      debug: readBoolean(raw, 'debug'),
+      keepAlive: readBoolean(raw, 'keepAlive', 'keep_alive'),
+    }
+  }
+
   if (type === 'feishu') {
     const appIdRef = readString(raw, 'appIdRef', 'app_id_ref')
     const appSecretRef = readString(raw, 'appSecretRef', 'app_secret_ref')

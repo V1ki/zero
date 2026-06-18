@@ -69,7 +69,7 @@ export function createRuntimeChannelMessageHandler(
 export class UnconfiguredChannel implements Channel {
   constructor(
     readonly name: string,
-    readonly type: 'feishu' | 'telegram' | 'weixin',
+    readonly type: 'dingtalk' | 'feishu' | 'telegram' | 'weixin',
   ) {}
 
   async start(): Promise<void> {}
