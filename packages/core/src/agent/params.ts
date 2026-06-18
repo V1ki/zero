@@ -110,7 +110,7 @@ export const CONTEXT_PARAMS = {
     vectorWeight: 0.8,
     recencyWeight: 0.2,
     recencyHalfLifeDays: 30,
-    minScore: 0.3,
+    minScore: 0.7,
     agentMaxIterations: 3,
     agentMaxOutputTokens: 512,
     agentMaxSelectedMemories: 3,
