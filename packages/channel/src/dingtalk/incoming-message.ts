@@ -44,6 +44,23 @@ export interface DingtalkRobotMessage {
   fileName?: string
   downloadCode?: string
   pictureDownloadCode?: string
+  originalMsgId?: string
+  isReplyMsg?: boolean
+  repliedMsg?: DingtalkRepliedMessage
+  [key: string]: unknown
+}
+
+export interface DingtalkRepliedMessage {
+  createdAt?: number | string
+  senderId?: string
+  senderStaffId?: string
+  msgId?: string
+  messageId?: string
+  msgType?: string
+  msgtype?: string
+  content?: unknown
+  text?: unknown
+  richText?: DingtalkRichTextElement[]
   [key: string]: unknown
 }
 
@@ -94,6 +111,7 @@ export class DingtalkIncomingMessageBuilder {
     const messageId = readString(msg.msgId) ?? readString(msg.messageId)
     const conversationId = readString(msg.conversationId)
     const senderId = readString(msg.senderStaffId) ?? readString(msg.senderId) ?? 'unknown'
+    const reply = extractDingtalkReplyReference(msg)
 
     return {
       channelType: 'dingtalk',
@@ -114,6 +132,12 @@ export class DingtalkIncomingMessageBuilder {
         sessionWebhook: readString(msg.sessionWebhook),
         sessionWebhookExpiredTime: readNumber(msg.sessionWebhookExpiredTime),
         robotCode: readString(msg.robotCode),
+        originalMsgId: reply?.originalMsgId,
+        parentId: reply?.repliedMsgId,
+        quotedMessageId: reply?.repliedMsgId,
+        quotedMessageType: reply?.repliedMsgType,
+        quotedSenderId: reply?.repliedSenderId,
+        isReplyMsg: reply?.isReplyMsg,
       },
       images: parsed.images.length > 0 ? parsed.images : undefined,
       files: parsed.files.length > 0 ? parsed.files : undefined,
@@ -176,8 +200,13 @@ export async function parseDingtalkIncomingContent(
   const markdownText = readString(msg.markdown?.text)
   if (markdownText) textParts.push(markdownText)
 
-  const rawContent = readContentField(msg.content)
+  const rawContent = readContentText(msg.content)
   if (rawContent) textParts.push(rawContent)
+
+  const reply = extractDingtalkReplyReference(msg)
+  const quotedContent =
+    readContentText(reply?.repliedMsg?.content) ?? readContentText(reply?.repliedMsg)
+  if (quotedContent) textParts.unshift(formatDingtalkQuotedContent(quotedContent))
 
   if (Array.isArray(msg.richText)) {
     for (const element of msg.richText) {
@@ -313,15 +342,96 @@ function unwrapDingtalkData(data: unknown): unknown {
   return maybeStream.data ?? data
 }
 
-function readContentField(value: unknown): string | undefined {
-  if (typeof value !== 'string' || !value.trim()) return undefined
-
-  try {
-    const parsed = JSON.parse(value) as { text?: string; content?: string }
-    return readString(parsed.text) ?? readString(parsed.content) ?? value
-  } catch {
-    return value
+function readContentText(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value) as unknown
+      return readContentText(parsed) ?? value
+    } catch {
+      return value
+    }
   }
+
+  if (!isRecord(value)) return undefined
+
+  const directText = readContentText(value.text) ?? readContentText(value.content)
+  if (directText) return directText
+
+  const richText = Array.isArray(value.richText)
+    ? value.richText
+    : isRecord(value.content) && Array.isArray(value.content.richText)
+      ? value.content.richText
+      : undefined
+  if (richText) {
+    const parts = richText
+      .map((element) =>
+        isRecord(element) ? (readString(element.text) ?? readString(element.content)) : undefined,
+      )
+      .filter((part): part is string => Boolean(part))
+    if (parts.length > 0) return parts.join('\n')
+  }
+
+  return undefined
+}
+
+function extractDingtalkReplyReference(msg: DingtalkRobotMessage): {
+  isReplyMsg?: boolean
+  originalMsgId?: string
+  repliedMsg?: DingtalkRepliedMessage
+  repliedMsgId?: string
+  repliedMsgType?: string
+  repliedSenderId?: string
+} | null {
+  const replyPayload = findDingtalkReplyPayload(msg)
+  if (!replyPayload) return null
+
+  const repliedMsg = isRecord(replyPayload.repliedMsg)
+    ? (replyPayload.repliedMsg as DingtalkRepliedMessage)
+    : isRecord(msg.repliedMsg)
+      ? msg.repliedMsg
+      : undefined
+
+  return {
+    isReplyMsg: readBoolean(replyPayload.isReplyMsg) ?? readBoolean(msg.isReplyMsg),
+    originalMsgId: readString(replyPayload.originalMsgId) ?? readString(msg.originalMsgId),
+    repliedMsg,
+    repliedMsgId:
+      readString(repliedMsg?.msgId) ??
+      readString(repliedMsg?.messageId) ??
+      readString(replyPayload.originalMsgId) ??
+      readString(msg.originalMsgId),
+    repliedMsgType: readString(repliedMsg?.msgType) ?? readString(repliedMsg?.msgtype),
+    repliedSenderId: readString(repliedMsg?.senderStaffId) ?? readString(repliedMsg?.senderId),
+  }
+}
+
+function findDingtalkReplyPayload(msg: DingtalkRobotMessage): Record<string, unknown> | null {
+  if (msg.isReplyMsg || msg.repliedMsg || msg.originalMsgId) return msg
+
+  for (const value of Object.values(msg)) {
+    if (!isRecord(value)) continue
+    if (value.isReplyMsg || value.repliedMsg || value.originalMsgId) return value
+  }
+
+  return null
+}
+
+function formatDingtalkQuotedContent(quotedContent: string): string {
+  const maxLen = 500
+  const normalized = quotedContent.replace(/\s+/g, ' ').trim()
+  const truncated =
+    normalized.length > maxLen
+      ? `${normalized.slice(0, maxLen)}...（原文共 ${normalized.length} 字，已截断）`
+      : normalized
+  return `> 引用: ${truncated}`
+}
+
+function readBoolean(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 function toImageAttachment(media: DingtalkDownloadedMedia): ImageAttachment {

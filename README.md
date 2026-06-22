@@ -172,8 +172,11 @@ channels:
     robot_code_ref: dingtalk_ops_robot_code # optional fallback for media download
 ```
 
-DingTalk replies use the `sessionWebhook` included with incoming robot messages. Regular robot
-messages are not edited in place, so ZeRo OS disables streaming updates for this channel.
+DingTalk replies use the `sessionWebhook` included with incoming robot messages. This sends back
+into the same conversation but does not expose Feishu-style native quote-reply UI. Regular robot
+messages are not edited in place, so ZeRo OS disables streaming updates for this channel. If a
+DingTalk Stream callback includes quoted-message fields such as `repliedMsg`/`originalMsgId`, ZeRo
+OS injects the quoted text into the incoming prompt context.
 
 ### 4. Build the Web UI
 

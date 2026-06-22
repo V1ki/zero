@@ -134,6 +134,62 @@ describe('DingtalkIncomingMessageBuilder', () => {
     ])
   })
 
+  test('injects quoted reply text from Stream payload into incoming content', async () => {
+    const builder = new DingtalkIncomingMessageBuilder()
+
+    const message = await builder.build(
+      robotPayload({
+        msgId: 'msg_followup',
+        text: { content: '继续处理这个' },
+        originalMsgId: 'msg_quoted_original',
+        isReplyMsg: true,
+        repliedMsg: {
+          msgId: 'msg_quoted',
+          msgType: 'text',
+          senderId: 'sender_quoted',
+          content: { text: '上一条用户消息' },
+        },
+      }),
+    )
+
+    expect(message?.content).toBe('> 引用: 上一条用户消息\n继续处理这个')
+    expect(message?.metadata).toMatchObject({
+      messageId: 'msg_followup',
+      originalMsgId: 'msg_quoted_original',
+      parentId: 'msg_quoted',
+      quotedMessageId: 'msg_quoted',
+      quotedMessageType: 'text',
+      quotedSenderId: 'sender_quoted',
+      isReplyMsg: true,
+    })
+  })
+
+  test('recognizes quoted reply payloads nested in DingTalk callback extensions', async () => {
+    const builder = new DingtalkIncomingMessageBuilder()
+
+    const message = await builder.build(
+      robotPayload({
+        text: { content: '好的' },
+        replyContext: {
+          isReplyMsg: true,
+          originalMsgId: 'msg_quoted_original',
+          repliedMsg: {
+            msgId: 'msg_quoted',
+            content: { text: '需要释放 xmind pro' },
+          },
+        },
+      }),
+    )
+
+    expect(message?.content).toBe('> 引用: 需要释放 xmind pro\n好的')
+    expect(message?.metadata).toMatchObject({
+      originalMsgId: 'msg_quoted_original',
+      parentId: 'msg_quoted',
+      quotedMessageId: 'msg_quoted',
+      isReplyMsg: true,
+    })
+  })
+
   test('parses recall events into message_recalled events', () => {
     const builder = new DingtalkIncomingMessageBuilder()
 
@@ -163,6 +219,18 @@ describe('DingtalkIncomingMessageBuilder', () => {
 })
 
 describe('DingtalkChannel', () => {
+  test('does not advertise native quote-reply support', () => {
+    const channel = new DingtalkChannel({
+      clientId: 'client_id',
+      clientSecret: 'client_secret',
+    })
+
+    const caps = channel.getCapabilities()
+
+    expect(caps.threadReply).toBe(false)
+    expect(caps.markdownNotes).toContain('does not expose Feishu-style native quote-reply UI')
+  })
+
   test('acknowledges stream callbacks, dispatches messages, and replies through sessionWebhook', async () => {
     const client = new FakeDingtalkClient()
     const fetchCalls: Array<{ url: string; init?: RequestInit }> = []
@@ -209,6 +277,30 @@ describe('DingtalkChannel', () => {
         text: '# done',
       },
     })
+  })
+
+  test('fails replies when DingTalk returns a business error with HTTP 200', async () => {
+    const client = new FakeDingtalkClient()
+    const channel = new DingtalkChannel({
+      clientId: 'client_id',
+      clientSecret: 'client_secret',
+      clientFactory: () => client,
+      fetch: (async () => {
+        return new Response(JSON.stringify({ errcode: 310000, errmsg: 'invalid webhook' }), {
+          status: 200,
+        })
+      }) as unknown as typeof fetch,
+    })
+    channel.setMessageHandler(async () => {})
+
+    await channel.start()
+    client.callback?.(downstream(robotPayload()))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    await expect(channel.reply('cid_1', 'hello', 'msg_1')).rejects.toThrow(
+      'code=310000, message=invalid webhook',
+    )
   })
 
   test('uploads images and returns DingTalk media ids', async () => {

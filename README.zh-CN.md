@@ -164,8 +164,10 @@ channels:
     robot_code_ref: dingtalk_ops_robot_code # 媒体下载的可选兜底
 ```
 
-钉钉回复会使用入站机器人消息携带的 `sessionWebhook`。普通机器人消息不支持原地编辑，
-因此 ZeRo OS 对该 channel 关闭流式更新。
+钉钉回复会使用入站机器人消息携带的 `sessionWebhook`。这会把消息发回同一个会话，
+但不提供飞书那种原生引用回复气泡。普通机器人消息不支持原地编辑，因此 ZeRo OS
+对该 channel 关闭流式更新。如果钉钉 Stream 回调包含 `repliedMsg`/`originalMsgId`
+等引用消息字段，ZeRo OS 会把被引用文本注入到本轮入站 prompt 上下文里。
 
 ### 4. 构建 Web UI
 

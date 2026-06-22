@@ -73,6 +73,18 @@ interface DingtalkUploadResponse {
   }
 }
 
+interface DingtalkApiErrorBody {
+  errcode?: unknown
+  errCode?: unknown
+  errorCode?: unknown
+  code?: unknown
+  errmsg?: unknown
+  errMsg?: unknown
+  message?: unknown
+  msg?: unknown
+  success?: unknown
+}
+
 /**
  * DingTalk channel for enterprise/internal application robots using Stream mode.
  * Incoming messages are received over the long-lived Stream connection; replies
@@ -187,9 +199,9 @@ export class DingtalkChannel implements Channel {
       inlineImages: true,
       imageMessages: true,
       mentions: true,
-      threadReply: true,
+      threadReply: false,
       markdownNotes:
-        'DingTalk robot replies support Markdown and MediaId image references through sessionWebhook. Regular robot messages do not support editing previously sent text, so live streaming updates are disabled.',
+        'DingTalk robot replies support Markdown and MediaId image references through sessionWebhook. The sessionWebhook reply API does not expose Feishu-style native quote-reply UI, and regular robot messages do not support editing previously sent text, so live streaming updates are disabled.',
     }
   }
 
@@ -314,9 +326,16 @@ export class DingtalkChannel implements Channel {
       }),
     })
 
-    if (!response.ok) {
+    const responseText = await response.text()
+    const errorDetail = describeDingtalkApiError(responseText)
+    if (!response.ok || errorDetail) {
+      const httpDetail = response.ok
+        ? ''
+        : `${response.status}${response.statusText ? ` ${response.statusText}` : ''}`
       throw new Error(
-        `DingTalk sessionWebhook reply failed: ${response.status} ${await response.text()}`,
+        `DingTalk sessionWebhook reply failed${httpDetail ? `: ${httpDetail}` : ''}${
+          errorDetail ? `${httpDetail ? ' - ' : ': '}${errorDetail}` : ''
+        }`,
       )
     }
   }
@@ -414,6 +433,60 @@ function buildDingtalkMarkdownTitle(text: string): string {
     .map((line) => line.replace(/[#*_`>[\]()]/g, '').trim())
     .find(Boolean)
   return (firstLine ?? 'ZeRo OS').slice(0, 40)
+}
+
+function describeDingtalkApiError(responseText: string): string | null {
+  if (!responseText.trim()) return null
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(responseText)
+  } catch {
+    return null
+  }
+
+  if (!isRecord(parsed)) return null
+
+  const body = parsed as DingtalkApiErrorBody
+  const code = firstPresent(body.errcode, body.errCode, body.errorCode, body.code)
+
+  if (body.success === false || isFailureCode(code)) {
+    const message = firstString(body.errmsg, body.errMsg, body.message, body.msg)
+    const parts = [
+      code !== undefined ? `code=${String(code)}` : null,
+      message ? `message=${message}` : null,
+    ].filter((part): part is string => Boolean(part))
+    return parts.length > 0 ? parts.join(', ') : 'business error'
+  }
+
+  return null
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function firstPresent(...values: unknown[]): unknown | undefined {
+  return values.find((value) => value !== undefined && value !== null && value !== '')
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value !== 'string') continue
+    const trimmed = value.trim()
+    if (trimmed) return trimmed
+  }
+  return undefined
+}
+
+function isFailureCode(code: unknown): boolean {
+  if (code === undefined || code === null || code === '') return false
+  if (typeof code === 'number') return code !== 0
+  if (typeof code === 'string') {
+    const normalized = code.trim().toLowerCase()
+    return normalized !== '0' && normalized !== 'ok' && normalized !== 'success'
+  }
+  return false
 }
 
 export { DingtalkIncomingMessageBuilder } from './incoming-message'
