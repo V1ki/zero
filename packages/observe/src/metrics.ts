@@ -74,15 +74,45 @@ export interface ToolStatsRow {
   avgDurationMs: number
 }
 
-function rangeToCutoff(range: string): string {
+interface MetricsRangeWindow {
+  since: string
+  until: string | null
+}
+
+function normalizeDateRangeBoundary(value: string, boundary: 'start' | 'end'): string | null {
+  const trimmed = value.trim()
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    const time = boundary === 'start' ? '00:00:00.000Z' : '23:59:59.999Z'
+    return new Date(`${trimmed}T${time}`).toISOString()
+  }
+
+  const timestamp = Date.parse(trimmed)
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null
+}
+
+function rangeToWindow(range: string): MetricsRangeWindow {
   const now = Date.now()
+  const dateRange = range.match(/^(.+)\.\.(.+)$/)
+  if (dateRange) {
+    const since = normalizeDateRangeBoundary(dateRange[1], 'start')
+    const until = normalizeDateRangeBoundary(dateRange[2], 'end')
+    if (since && until) {
+      return since <= until ? { since, until } : { since: until, until: since }
+    }
+  }
+
   const match = range.match(/^(\d+)(d|h|m)$/)
-  if (!match) return new Date(now - 7 * 86_400_000).toISOString()
+  if (!match) return { since: new Date(now - 7 * 86_400_000).toISOString(), until: null }
 
   const value = Number.parseInt(match[1])
   const unit = match[2]
   const ms = unit === 'd' ? value * 86_400_000 : unit === 'h' ? value * 3_600_000 : value * 60_000
-  return new Date(now - ms).toISOString()
+  return { since: new Date(now - ms).toISOString(), until: null }
+}
+
+function rangeParams(range: string): [string, string | null, string | null] {
+  const window = rangeToWindow(range)
+  return [window.since, window.until, window.until]
 }
 
 function querySessionUsageByPurpose(db: Database, sessionId: string): SessionUsageByPurposeRow[] {
@@ -102,7 +132,7 @@ function querySessionUsageByPurpose(db: Database, sessionId: string): SessionUsa
 }
 
 function queryCostByChannel(db: Database, range = '7d'): CostByChannelRow[] {
-  const since = rangeToCutoff(range)
+  const [since, untilFilter, until] = rangeParams(range)
   return db
     .query(
       `SELECT s.source as source,
@@ -113,14 +143,15 @@ function queryCostByChannel(db: Database, range = '7d'): CostByChannelRow[] {
        FROM usage_ledger u
        JOIN sdb.sessions s ON COALESCE(u.parent_session_id, u.session_id) = s.id
        WHERE u.created_at >= ?
+         AND (? IS NULL OR u.created_at <= ?)
        GROUP BY s.source, s.channel_name
        ORDER BY totalCost DESC, requestCount DESC`,
     )
-    .all(since) as CostByChannelRow[]
+    .all(since, untilFilter, until) as CostByChannelRow[]
 }
 
 function queryCostBySource(db: Database, range = '7d'): CostBySourceRow[] {
-  const since = rangeToCutoff(range)
+  const [since, untilFilter, until] = rangeParams(range)
   return db
     .query(
       `SELECT s.source as source,
@@ -129,10 +160,11 @@ function queryCostBySource(db: Database, range = '7d'): CostBySourceRow[] {
        FROM usage_ledger u
        JOIN sdb.sessions s ON COALESCE(u.parent_session_id, u.session_id) = s.id
        WHERE u.created_at >= ?
+         AND (? IS NULL OR u.created_at <= ?)
        GROUP BY s.source
        ORDER BY totalCost DESC, sessionCount DESC`,
     )
-    .all(since) as CostBySourceRow[]
+    .all(since, untilFilter, until) as CostBySourceRow[]
 }
 
 function queryChannelCostByDay(
@@ -141,7 +173,7 @@ function queryChannelCostByDay(
   range = '30d',
   source?: string,
 ): CostByPeriod[] {
-  const since = rangeToCutoff(range)
+  const [since, untilFilter, until] = rangeParams(range)
   return db
     .query(
       `SELECT substr(u.created_at, 1, 10) as period,
@@ -150,12 +182,13 @@ function queryChannelCostByDay(
        FROM usage_ledger u
        JOIN sdb.sessions s ON COALESCE(u.parent_session_id, u.session_id) = s.id
        WHERE u.created_at >= ?
+         AND (? IS NULL OR u.created_at <= ?)
          AND COALESCE(s.channel_name, 'unknown') = ?
          AND (? IS NULL OR s.source = ?)
        GROUP BY period
        ORDER BY period`,
     )
-    .all(since, channelName, source ?? null, source ?? null) as CostByPeriod[]
+    .all(since, untilFilter, until, channelName, source ?? null, source ?? null) as CostByPeriod[]
 }
 
 function queryChannelPurposeBreakdown(
@@ -164,7 +197,7 @@ function queryChannelPurposeBreakdown(
   range = '30d',
   source?: string,
 ): SessionUsageByPurposeRow[] {
-  const since = rangeToCutoff(range)
+  const [since, untilFilter, until] = rangeParams(range)
   return db
     .query(
       `SELECT u.purpose as purpose,
@@ -175,16 +208,24 @@ function queryChannelPurposeBreakdown(
        FROM usage_ledger u
        JOIN sdb.sessions s ON COALESCE(u.parent_session_id, u.session_id) = s.id
        WHERE u.created_at >= ?
+         AND (? IS NULL OR u.created_at <= ?)
          AND COALESCE(s.channel_name, 'unknown') = ?
          AND (? IS NULL OR s.source = ?)
        GROUP BY u.purpose
        ORDER BY totalCost DESC, requestCount DESC`,
     )
-    .all(since, channelName, source ?? null, source ?? null) as SessionUsageByPurposeRow[]
+    .all(
+      since,
+      untilFilter,
+      until,
+      channelName,
+      source ?? null,
+      source ?? null,
+    ) as SessionUsageByPurposeRow[]
 }
 
 function queryCostByModel(db: Database, range = '7d'): CostByModel[] {
-  const since = rangeToCutoff(range)
+  const [since, untilFilter, until] = rangeParams(range)
   return db
     .query(
       `SELECT model, provider,
@@ -194,14 +235,15 @@ function queryCostByModel(db: Database, range = '7d'): CostByModel[] {
               COUNT(*) as requestCount
        FROM usage_ledger
        WHERE created_at >= ?
+         AND (? IS NULL OR created_at <= ?)
        GROUP BY model, provider
        ORDER BY totalCost DESC`,
     )
-    .all(since) as CostByModel[]
+    .all(since, untilFilter, until) as CostByModel[]
 }
 
 function queryCostByDay(db: Database, range = '30d'): CostByPeriod[] {
-  const since = rangeToCutoff(range)
+  const [since, untilFilter, until] = rangeParams(range)
   return db
     .query(
       `SELECT substr(created_at, 1, 10) as period,
@@ -209,30 +251,36 @@ function queryCostByDay(db: Database, range = '30d'): CostByPeriod[] {
               SUM(input_tokens + output_tokens) as totalTokens
        FROM usage_ledger
        WHERE created_at >= ?
+         AND (? IS NULL OR created_at <= ?)
        GROUP BY period
        ORDER BY period DESC`,
     )
-    .all(since) as CostByPeriod[]
+    .all(since, untilFilter, until) as CostByPeriod[]
 }
 
 function querySummary(
   db: Database,
   range = '7d',
 ): { totalCost: number; totalTokens: number; requestCount: number } {
-  const since = rangeToCutoff(range)
+  const [since, untilFilter, until] = rangeParams(range)
   return db
     .query(
       `SELECT COALESCE(SUM(cost), 0) as totalCost,
               COALESCE(SUM(input_tokens + output_tokens), 0) as totalTokens,
               COUNT(*) as requestCount
        FROM usage_ledger
-       WHERE created_at >= ?`,
+       WHERE created_at >= ?
+         AND (? IS NULL OR created_at <= ?)`,
     )
-    .get(since) as { totalCost: number; totalTokens: number; requestCount: number }
+    .get(since, untilFilter, until) as {
+    totalCost: number
+    totalTokens: number
+    requestCount: number
+  }
 }
 
 function queryCacheHitRate(db: Database, range = '30d'): CacheHitRate[] {
-  const since = rangeToCutoff(range)
+  const [since, untilFilter, until] = rangeParams(range)
   return db
     .query(
       `SELECT period,
@@ -244,16 +292,17 @@ function queryCacheHitRate(db: Database, range = '30d'): CacheHitRate[] {
                 SUM(input_tokens + cache_write_tokens + cache_read_tokens) as denominator
          FROM usage_ledger
          WHERE created_at >= ?
+           AND (? IS NULL OR created_at <= ?)
          GROUP BY period, provider
        )
        GROUP BY period
        ORDER BY period`,
     )
-    .all(since) as CacheHitRate[]
+    .all(since, untilFilter, until) as CacheHitRate[]
 }
 
 function queryCostByDayModel(db: Database, range = '30d'): CostByDayModel[] {
-  const since = rangeToCutoff(range)
+  const [since, untilFilter, until] = rangeParams(range)
   return db
     .query(
       `SELECT substr(created_at, 1, 10) as period,
@@ -261,14 +310,15 @@ function queryCostByDayModel(db: Database, range = '30d'): CostByDayModel[] {
               SUM(cost) as cost
        FROM usage_ledger
        WHERE created_at >= ?
+         AND (? IS NULL OR created_at <= ?)
        GROUP BY period, model
        ORDER BY period, cost DESC`,
     )
-    .all(since) as CostByDayModel[]
+    .all(since, untilFilter, until) as CostByDayModel[]
 }
 
 function queryUsageSummaryByPurpose(db: Database, range = '7d'): UsageSummaryRow[] {
-  const since = rangeToCutoff(range)
+  const [since, untilFilter, until] = rangeParams(range)
   return db
     .query(
       `SELECT purpose,
@@ -278,14 +328,15 @@ function queryUsageSummaryByPurpose(db: Database, range = '7d'): UsageSummaryRow
               COUNT(*) as eventCount
        FROM usage_ledger
        WHERE created_at >= ?
+         AND (? IS NULL OR created_at <= ?)
        GROUP BY purpose
        ORDER BY totalCost DESC, eventCount DESC`,
     )
-    .all(since) as UsageSummaryRow[]
+    .all(since, untilFilter, until) as UsageSummaryRow[]
 }
 
 function queryCacheByModel(db: Database, range = '30d'): CacheByModelRecord[] {
-  const since = rangeToCutoff(range)
+  const [since, untilFilter, until] = rangeParams(range)
   return db
     .query(
       `SELECT provider,
@@ -300,14 +351,15 @@ function queryCacheByModel(db: Database, range = '30d'): CacheByModelRecord[] {
               SUM(cost) as cost
        FROM usage_ledger
        WHERE created_at >= ?
+         AND (? IS NULL OR created_at <= ?)
        GROUP BY provider, model
        ORDER BY cacheRead DESC, hitRate DESC, cost DESC`,
     )
-    .all(since) as CacheByModelRecord[]
+    .all(since, untilFilter, until) as CacheByModelRecord[]
 }
 
 function queryCostDetailRecords(db: Database, range = '30d'): CostDetailRecord[] {
-  const since = rangeToCutoff(range)
+  const [since, untilFilter, until] = rangeParams(range)
   return db
     .query(
       `SELECT substr(created_at, 1, 10) as date,
@@ -324,23 +376,26 @@ function queryCostDetailRecords(db: Database, range = '30d'): CostDetailRecord[]
               SUM(cost) as cost
        FROM usage_ledger
        WHERE created_at >= ?
+         AND (? IS NULL OR created_at <= ?)
        GROUP BY date, provider, model
        ORDER BY date DESC, cost DESC`,
     )
-    .all(since) as CostDetailRecord[]
+    .all(since, untilFilter, until) as CostDetailRecord[]
 }
 
 function querySystemCosts(db: Database, range = '7d'): UsageTotals {
-  const since = rangeToCutoff(range)
+  const [since, untilFilter, until] = rangeParams(range)
   return db
     .query(
       `SELECT COALESCE(SUM(cost), 0) as totalCost,
               COALESCE(SUM(input_tokens + output_tokens), 0) as totalTokens,
               COUNT(*) as eventCount
        FROM usage_ledger
-       WHERE session_id IS NULL AND created_at >= ?`,
+       WHERE session_id IS NULL
+         AND created_at >= ?
+         AND (? IS NULL OR created_at <= ?)`,
     )
-    .get(since) as UsageTotals
+    .get(since, untilFilter, until) as UsageTotals
 }
 
 /**
@@ -394,15 +449,18 @@ export class MetricsDB {
   }
 
   evaluationTrend(range = '30d'): EvaluationTrendRow[] {
-    return evaluationTrend(this.db, rangeToCutoff(range))
+    const window = rangeToWindow(range)
+    return evaluationTrend(this.db, window.since, window.until)
   }
 
   evaluationDimensionAvg(range = '30d'): EvaluationDimensionAverageRow[] {
-    return evaluationDimensionAvg(this.db, rangeToCutoff(range))
+    const window = rangeToWindow(range)
+    return evaluationDimensionAvg(this.db, window.since, window.until)
   }
 
   topFindings(range = '30d', limit = 10): TopFindingRow[] {
-    return topFindings(this.db, rangeToCutoff(range), limit)
+    const window = rangeToWindow(range)
+    return topFindings(this.db, window.since, window.until, limit)
   }
 
   sessionUsageByPurpose(sessionId: string): SessionUsageByPurposeRow[] {
@@ -630,7 +688,7 @@ function evaluationsBySession(db: Database, sessionId: string): EvaluationEntry[
   return rows.map(mapEvaluationRow)
 }
 
-function evaluationTrend(db: Database, since: string): EvaluationTrendRow[] {
+function evaluationTrend(db: Database, since: string, until: string | null): EvaluationTrendRow[] {
   return db
     .query(
       `SELECT substr(created_at, 1, 10) as period,
@@ -641,16 +699,21 @@ function evaluationTrend(db: Database, since: string): EvaluationTrendRow[] {
               SUM(CASE WHEN verdict = 'weak' THEN 1 ELSE 0 END) as weakCount
        FROM evaluations
        WHERE created_at >= ?
+         AND (? IS NULL OR created_at <= ?)
        GROUP BY period
        ORDER BY period`,
     )
-    .all(since) as EvaluationTrendRow[]
+    .all(since, until, until) as EvaluationTrendRow[]
 }
 
-function evaluationDimensionAvg(db: Database, since: string): EvaluationDimensionAverageRow[] {
+function evaluationDimensionAvg(
+  db: Database,
+  since: string,
+  until: string | null,
+): EvaluationDimensionAverageRow[] {
   const aggregates = new Map<string, { total: number; count: number }>()
 
-  for (const evaluation of listEvaluationsSince(db, since)) {
+  for (const evaluation of listEvaluationsSince(db, since, until)) {
     for (const dimension of evaluation.dimensions) {
       const current = aggregates.get(dimension.key) ?? { total: 0, count: 0 }
       current.total += dimension.score
@@ -671,10 +734,15 @@ function evaluationDimensionAvg(db: Database, since: string): EvaluationDimensio
     )
 }
 
-function topFindings(db: Database, since: string, limit = 10): TopFindingRow[] {
+function topFindings(
+  db: Database,
+  since: string,
+  until: string | null,
+  limit = 10,
+): TopFindingRow[] {
   const counts = new Map<string, TopFindingRow>()
 
-  for (const evaluation of listEvaluationsSince(db, since)) {
+  for (const evaluation of listEvaluationsSince(db, since, until)) {
     for (const finding of evaluation.findings) {
       const key = `${finding.severity}::${finding.title}`
       const current = counts.get(key) ?? {
@@ -692,15 +760,20 @@ function topFindings(db: Database, since: string, limit = 10): TopFindingRow[] {
     .slice(0, limit)
 }
 
-function listEvaluationsSince(db: Database, since: string): EvaluationEntry[] {
+function listEvaluationsSince(
+  db: Database,
+  since: string,
+  until: string | null,
+): EvaluationEntry[] {
   const rows = db
     .query(
       `SELECT *
        FROM evaluations
        WHERE created_at >= ?
+         AND (? IS NULL OR created_at <= ?)
        ORDER BY created_at DESC, id DESC`,
     )
-    .all(since) as EvaluationRow[]
+    .all(since, until, until) as EvaluationRow[]
 
   return rows.map(mapEvaluationRow)
 }
@@ -761,7 +834,7 @@ function recordOperation(db: Database, entry: OperationEntry): void {
 }
 
 function queryToolStats(db: Database, range = '7d'): ToolStatsRow[] {
-  const since = rangeToCutoff(range)
+  const [since, untilFilter, until] = rangeParams(range)
   return db
     .query(
       `SELECT tool,
@@ -770,10 +843,11 @@ function queryToolStats(db: Database, range = '7d'): ToolStatsRow[] {
               AVG(duration_ms) as avgDurationMs
        FROM operations
        WHERE created_at >= ?
+         AND (? IS NULL OR created_at <= ?)
        GROUP BY tool
        ORDER BY count DESC`,
     )
-    .all(since) as ToolStatsRow[]
+    .all(since, untilFilter, until) as ToolStatsRow[]
 }
 
 function querySessionToolCallCount(db: Database, sessionId: string): number {
@@ -789,7 +863,7 @@ function querySessionToolCallCount(db: Database, sessionId: string): number {
 }
 
 function queryTaskSuccessRate(db: Database, range = '30d'): TaskSuccessRate[] {
-  const since = rangeToCutoff(range)
+  const [since, untilFilter, until] = rangeParams(range)
   return db
     .query(
       `SELECT substr(created_at, 1, 10) as period,
@@ -797,28 +871,30 @@ function queryTaskSuccessRate(db: Database, range = '30d'): TaskSuccessRate[] {
               COUNT(*) as total
        FROM operations
        WHERE created_at >= ?
+         AND (? IS NULL OR created_at <= ?)
        GROUP BY period
        ORDER BY period`,
     )
-    .all(since) as TaskSuccessRate[]
+    .all(since, untilFilter, until) as TaskSuccessRate[]
 }
 
 function queryAvgDurationByDay(db: Database, range = '30d'): AvgDuration[] {
-  const since = rangeToCutoff(range)
+  const [since, untilFilter, until] = rangeParams(range)
   return db
     .query(
       `SELECT substr(created_at, 1, 10) as period,
               AVG(duration_ms) as avgMs
        FROM operations
        WHERE created_at >= ?
+         AND (? IS NULL OR created_at <= ?)
        GROUP BY period
        ORDER BY period`,
     )
-    .all(since) as AvgDuration[]
+    .all(since, untilFilter, until) as AvgDuration[]
 }
 
 function queryToolErrorByDay(db: Database, range = '30d'): ToolErrorByDay[] {
-  const since = rangeToCutoff(range)
+  const [since, untilFilter, until] = rangeParams(range)
   return db
     .query(
       `SELECT substr(created_at, 1, 10) as period,
@@ -827,10 +903,11 @@ function queryToolErrorByDay(db: Database, range = '30d'): ToolErrorByDay[] {
               SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as errors
        FROM operations
        WHERE created_at >= ?
+         AND (? IS NULL OR created_at <= ?)
        GROUP BY period, tool
        ORDER BY period, errors DESC`,
     )
-    .all(since) as ToolErrorByDay[]
+    .all(since, untilFilter, until) as ToolErrorByDay[]
 }
 
 function recordRepair(db: Database, entry: RepairEntry): void {
@@ -849,15 +926,16 @@ function recordRepair(db: Database, entry: RepairEntry): void {
 }
 
 function queryRepairStats(db: Database, range = '30d'): RepairStats {
-  const since = rangeToCutoff(range)
+  const [since, untilFilter, until] = rangeParams(range)
   const row = db
     .query(
       `SELECT COUNT(*) as total,
               SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successCount
        FROM repairs
-       WHERE created_at >= ?`,
+       WHERE created_at >= ?
+         AND (? IS NULL OR created_at <= ?)`,
     )
-    .get(since) as { total: number; successCount: number | null }
+    .get(since, untilFilter, until) as { total: number; successCount: number | null }
   return {
     total: row.total,
     successCount: row.successCount ?? 0,
@@ -866,7 +944,7 @@ function queryRepairStats(db: Database, range = '30d'): RepairStats {
 }
 
 function queryRepairByDay(db: Database, range = '30d'): RepairByDay[] {
-  const since = rangeToCutoff(range)
+  const [since, untilFilter, until] = rangeParams(range)
   return db
     .query(
       `SELECT substr(created_at, 1, 10) as period,
@@ -874,10 +952,11 @@ function queryRepairByDay(db: Database, range = '30d'): RepairByDay[] {
               SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success
        FROM repairs
        WHERE created_at >= ?
+         AND (? IS NULL OR created_at <= ?)
        GROUP BY period
        ORDER BY period`,
     )
-    .all(since) as RepairByDay[]
+    .all(since, untilFilter, until) as RepairByDay[]
 }
 
 function querySessionStats(db: Database, sessionId: string): SessionStatsSummary {

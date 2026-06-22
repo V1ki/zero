@@ -46,7 +46,7 @@ export function CostTab({ range }: { range: TimeRange }) {
     modelCount,
     cacheSummaryHitRate,
     dailyRows,
-    modelSpendRows,
+    cumulativeTokenRows,
   } = useCostTabData(range)
 
   return (
@@ -171,7 +171,21 @@ export function CostTab({ range }: { range: TimeRange }) {
       </ChartCard>
 
       <div className="xl:col-span-12">
-        <ChartCard title="Daily Model Spend" delay={120}>
+        <ChartCard title="Cumulative Token Usage" delay={120}>
+          {loading ? (
+            <div className="py-6 text-center text-[13px] text-[#93a4b8]">Loading...</div>
+          ) : cumulativeTokenRows.length === 0 ? (
+            <div className="py-6 text-center text-[13px] text-[#93a4b8]">
+              No cumulative token usage
+            </div>
+          ) : (
+            <CumulativeTokenUsageTable rows={cumulativeTokenRows} />
+          )}
+        </ChartCard>
+      </div>
+
+      <div className="xl:col-span-12">
+        <ChartCard title="Daily Model Spend" delay={160}>
           {loading ? (
             <div className="py-6 text-center text-[13px] text-[#93a4b8]">Loading...</div>
           ) : dailyRows.length === 0 ? (
@@ -182,19 +196,7 @@ export function CostTab({ range }: { range: TimeRange }) {
         </ChartCard>
       </div>
 
-      <div className="xl:col-span-7">
-        <ChartCard title="Model Spend Summary" delay={180}>
-          {loading ? (
-            <div className="py-6 text-center text-[13px] text-[#93a4b8]">Loading...</div>
-          ) : modelSpendRows.length === 0 ? (
-            <div className="py-6 text-center text-[13px] text-[#93a4b8]">No model spend</div>
-          ) : (
-            <ModelSpendSummaryTable rows={modelSpendRows} />
-          )}
-        </ChartCard>
-      </div>
-
-      <ChartCard title="Cache Efficiency" delay={220} className="xl:col-span-5">
+      <ChartCard title="Cache Efficiency" delay={220} className="xl:col-span-12">
         <div className="h-[190px]">
           {loading || cacheHitRate.length === 0 ? (
             <ChartEmpty loading={loading} />
@@ -271,6 +273,18 @@ interface CostSummary {
 
 type DailyCostRow = CostDetail & { totalTokens: number }
 
+interface CumulativeTokenRow {
+  provider: string
+  model: string
+  requestCount: number
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  reasoningTokens: number
+  totalTokens: number
+}
+
 function useCostTabData(range: TimeRange) {
   const [loading, setLoading] = useState(true)
   const [costByDayModel, setCostByDayModel] = useState<CostByDayModel[]>([])
@@ -313,7 +327,7 @@ function useCostTabData(range: TimeRange) {
     ...row,
     totalTokens: totalTokensForDetail(row),
   }))
-  const modelSpendRows = buildModelSpendRows(costDetail)
+  const cumulativeTokenRows = buildCumulativeTokenRows(costDetail)
 
   return {
     loading,
@@ -326,7 +340,7 @@ function useCostTabData(range: TimeRange) {
     modelCount,
     cacheSummaryHitRate,
     dailyRows,
-    modelSpendRows,
+    cumulativeTokenRows,
   }
 }
 
@@ -382,33 +396,106 @@ function summarizeCostDetails(costDetail: CostDetail[]): CostSummary {
   )
 }
 
-function buildModelSpendRows(costDetail: CostDetail[]): DailyCostRow[] {
-  const modelSpendMap = new Map<string, DailyCostRow>()
+function buildCumulativeTokenRows(costDetail: CostDetail[]): CumulativeTokenRow[] {
+  const cumulativeMap = new Map<string, CumulativeTokenRow>()
   for (const row of costDetail) {
     const key = `${row.provider}:${row.model}`
-    const existing = modelSpendMap.get(key)
+    const existing = cumulativeMap.get(key)
     if (existing) {
       existing.requestCount += row.requestCount
       existing.input += row.input
       existing.output += row.output
-      existing.cacheWrite += row.cacheWrite
       existing.cacheRead += row.cacheRead
+      existing.cacheWrite += row.cacheWrite
       existing.reasoningTokens += row.reasoningTokens
-      existing.effectiveInput += row.effectiveInput
-      existing.cacheReadCost += row.cacheReadCost
-      existing.cacheWriteCost += row.cacheWriteCost
-      existing.grossAvoidedInputCost += row.grossAvoidedInputCost
-      existing.netSavings += row.netSavings
-      existing.cost += row.cost
       existing.totalTokens += totalTokensForDetail(row)
     } else {
-      modelSpendMap.set(key, { ...row, totalTokens: totalTokensForDetail(row) })
+      cumulativeMap.set(key, {
+        provider: row.provider,
+        model: row.model,
+        requestCount: row.requestCount,
+        input: row.input,
+        output: row.output,
+        cacheRead: row.cacheRead,
+        cacheWrite: row.cacheWrite,
+        reasoningTokens: row.reasoningTokens,
+        totalTokens: totalTokensForDetail(row),
+      })
     }
   }
 
-  return Array.from(modelSpendMap.values())
-    .sort((left, right) => right.cost - left.cost)
-    .slice(0, 8)
+  return Array.from(cumulativeMap.values()).sort((left, right) => {
+    if (right.totalTokens !== left.totalTokens) return right.totalTokens - left.totalTokens
+    return `${left.provider}/${left.model}`.localeCompare(`${right.provider}/${right.model}`)
+  })
+}
+
+function CumulativeTokenUsageTable({ rows }: { rows: CumulativeTokenRow[] }) {
+  const maxTokens = Math.max(...rows.map((row) => row.totalTokens), 1)
+
+  return (
+    <div className="overflow-x-auto" style={{ maxHeight: 360 }}>
+      <table className="w-full min-w-[900px] text-[12px]">
+        <thead className="sticky top-0 z-10 bg-[#111820]">
+          <tr className="border-b border-[#253244] text-left text-[10px] font-semibold tracking-wide text-[#7f8ea3]">
+            <th className="pb-2 pr-4">Provider</th>
+            <th className="pb-2 pr-4">Model</th>
+            <th className="pb-2 pr-4 text-right">Requests</th>
+            <th className="pb-2 pr-4 text-right">Input</th>
+            <th className="pb-2 pr-4 text-right">Output</th>
+            <th className="pb-2 pr-4 text-right">Cache Read</th>
+            <th className="pb-2 pr-4 text-right">Cache Write</th>
+            <th className="pb-2 pr-4 text-right">Reasoning</th>
+            <th className="pb-2 text-right">Total Tokens</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr
+              key={`${row.provider}-${row.model}`}
+              className="border-b border-[#1f2a3a] transition-colors last:border-0 hover:bg-white/[0.04]"
+            >
+              <td className="py-2 pr-4 text-[#93a4b8]">{row.provider}</td>
+              <td className="max-w-[260px] truncate py-2 pr-4 font-mono text-[#67e8f9]">
+                {row.model}
+              </td>
+              <td className="py-2 pr-4 text-right font-mono text-[#d7e0ea]">
+                {formatExactNumber(row.requestCount)}
+              </td>
+              <td className="py-2 pr-4 text-right font-mono text-[#d7e0ea]">
+                {formatExactNumber(row.input)}
+              </td>
+              <td className="py-2 pr-4 text-right font-mono text-[#d7e0ea]">
+                {formatExactNumber(row.output)}
+              </td>
+              <td className="py-2 pr-4 text-right font-mono text-[#9fb0c4]">
+                {formatExactNumber(row.cacheRead)}
+              </td>
+              <td className="py-2 pr-4 text-right font-mono text-[#9fb0c4]">
+                {formatExactNumber(row.cacheWrite)}
+              </td>
+              <td className="py-2 pr-4 text-right font-mono text-[#d8b4fe]">
+                {formatExactNumber(row.reasoningTokens)}
+              </td>
+              <td className="min-w-[180px] py-2 text-right">
+                <div className="flex items-center justify-end gap-3">
+                  <div className="h-1.5 w-20 overflow-hidden rounded-full bg-[#253244]">
+                    <div
+                      className="h-full rounded-full bg-cyan-300"
+                      style={{ width: `${Math.max(4, (row.totalTokens / maxTokens) * 100)}%` }}
+                    />
+                  </div>
+                  <span className="w-24 font-mono font-semibold text-[#f8fafc]">
+                    {formatExactNumber(row.totalTokens)}
+                  </span>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
 }
 
 function DailyModelSpendTable({ rows }: { rows: DailyCostRow[] }) {
@@ -457,58 +544,6 @@ function DailyModelSpendTable({ rows }: { rows: DailyCostRow[] }) {
               </td>
               <td className="py-2 pr-4 text-right font-mono font-semibold text-[#f8fafc]">
                 {formatExactNumber(row.totalTokens)}
-              </td>
-              <td className="py-2 text-right font-mono font-semibold text-[#f8fafc]">
-                {formatCurrency(row.cost)}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-function ModelSpendSummaryTable({ rows }: { rows: DailyCostRow[] }) {
-  return (
-    <div className="overflow-x-auto" style={{ maxHeight: 320 }}>
-      <table className="w-full min-w-[760px] text-[12px]">
-        <thead>
-          <tr className="border-b border-[#253244] text-left text-[10px] font-semibold tracking-wide text-[#7f8ea3]">
-            <th className="pb-2 pr-4">Provider</th>
-            <th className="pb-2 pr-4">Model</th>
-            <th className="pb-2 pr-4 text-right">Requests</th>
-            <th className="pb-2 pr-4 text-right">Input</th>
-            <th className="pb-2 pr-4 text-right">Output</th>
-            <th className="pb-2 pr-4 text-right">Total Tokens</th>
-            <th className="pb-2 pr-4 text-right">Net Savings</th>
-            <th className="pb-2 text-right">Cost</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr
-              key={`${row.provider}-${row.model}`}
-              className="border-b border-[#1f2a3a] transition-colors last:border-0 hover:bg-white/[0.04]"
-            >
-              <td className="py-2 pr-4 text-[#93a4b8]">{row.provider}</td>
-              <td className="max-w-[230px] truncate py-2 pr-4 font-mono text-[#67e8f9]">
-                {row.model}
-              </td>
-              <td className="py-2 pr-4 text-right font-mono text-[#d7e0ea]">
-                {formatExactNumber(row.requestCount)}
-              </td>
-              <td className="py-2 pr-4 text-right font-mono text-[#d7e0ea]">
-                {formatExactNumber(row.input)}
-              </td>
-              <td className="py-2 pr-4 text-right font-mono text-[#d7e0ea]">
-                {formatExactNumber(row.output)}
-              </td>
-              <td className="py-2 pr-4 text-right font-mono font-semibold text-[#f8fafc]">
-                {formatExactNumber(row.totalTokens)}
-              </td>
-              <td className="py-2 pr-4 text-right font-mono text-[#9fb0c4]">
-                {signedCostFormatter(row.netSavings)}
               </td>
               <td className="py-2 text-right font-mono font-semibold text-[#f8fafc]">
                 {formatCurrency(row.cost)}

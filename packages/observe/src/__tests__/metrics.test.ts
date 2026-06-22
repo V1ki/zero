@@ -95,6 +95,65 @@ describe('MetricsDB', () => {
     expect(costs[0].requestCount).toBe(2)
   })
 
+  test('custom date range filters usage inclusively', () => {
+    const rangeDb = MetricsDB.createInMemory()
+    try {
+      recordUsageRequest(rangeDb, {
+        id: 'range_before',
+        sessionId: 'sess_range',
+        model: 'gpt-5',
+        provider: 'openai',
+        inputTokens: 10,
+        outputTokens: 10,
+        cost: 0.01,
+        durationMs: 100,
+        createdAt: '2026-06-09T23:59:59.999Z',
+      })
+      recordUsageRequest(rangeDb, {
+        id: 'range_start',
+        sessionId: 'sess_range',
+        model: 'gpt-5',
+        provider: 'openai',
+        inputTokens: 20,
+        outputTokens: 10,
+        cost: 0.02,
+        durationMs: 100,
+        createdAt: '2026-06-10T00:00:00.000Z',
+      })
+      recordUsageRequest(rangeDb, {
+        id: 'range_end',
+        sessionId: 'sess_range',
+        model: 'gpt-5',
+        provider: 'openai',
+        inputTokens: 30,
+        outputTokens: 10,
+        cost: 0.03,
+        durationMs: 100,
+        createdAt: '2026-06-12T23:59:59.999Z',
+      })
+      recordUsageRequest(rangeDb, {
+        id: 'range_after',
+        sessionId: 'sess_range',
+        model: 'gpt-5',
+        provider: 'openai',
+        inputTokens: 40,
+        outputTokens: 10,
+        cost: 0.04,
+        durationMs: 100,
+        createdAt: '2026-06-13T00:00:00.000Z',
+      })
+
+      const summary = rangeDb.summary('2026-06-10..2026-06-12')
+      expect(summary.requestCount).toBe(2)
+      expect(summary.totalTokens).toBe(70)
+
+      const details = rangeDb.costDetailRecords('2026-06-10..2026-06-12')
+      expect(details.map((row) => row.date)).toEqual(['2026-06-12', '2026-06-10'])
+    } finally {
+      rangeDb.close()
+    }
+  })
+
   test('sessionStats returns cache metrics', () => {
     recordUsageRequest(db, {
       id: 'req_session_cache_001',

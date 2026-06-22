@@ -2,7 +2,13 @@ import type { ReactNode } from 'react'
 import { formatCost } from '../lib/format'
 
 export type MetricsTab = 'cost' | 'purpose' | 'attribution' | 'evaluations' | 'events' | 'health'
-export type TimeRange = '7d' | '30d' | '90d' | 'custom'
+export type PresetTimeRange = '7d' | '30d' | '90d' | 'custom'
+export type TimeRange =
+  | PresetTimeRange
+  | `${number}d`
+  | `${number}h`
+  | `${number}m`
+  | `${string}..${string}`
 
 export interface CostByDayModel {
   period: string
@@ -139,7 +145,7 @@ export const METRICS_TABS: { key: MetricsTab; label: string }[] = [
   { key: 'health', label: 'Health' },
 ]
 
-export const METRICS_RANGES: TimeRange[] = ['7d', '30d', '90d', 'custom']
+export const METRICS_RANGES: PresetTimeRange[] = ['7d', '30d', '90d', 'custom']
 
 export function ChartCard({
   title,

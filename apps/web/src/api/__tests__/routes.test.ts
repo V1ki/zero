@@ -910,6 +910,126 @@ fuse_list: []
     )
   })
 
+  test('GET /api/metrics model endpoints group configured model pool members', async () => {
+    const range = '2026-06-10..2026-06-10'
+    try {
+      const configRes = await app.request('/api/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          modelPools: {
+            'pooled/gpt-5.4-medium': {
+              strategy: 'sticky_quota_aware_failover',
+              members: [
+                { model: 'openai-codex/gpt-5.4-medium' },
+                { model: 'openai-codex/gpt-5.3-codex-medium' },
+              ],
+            },
+          },
+        }),
+      })
+      expect(configRes.status).toBe(200)
+
+      recordAgentLoopUsage(zero, {
+        id: 'req_pool_metrics_001',
+        sessionId: 'sess_pool_metrics_001',
+        model: 'openai-codex/gpt-5.4-medium',
+        provider: 'openai-codex',
+        inputTokens: 10,
+        outputTokens: 3,
+        cacheWriteTokens: 4,
+        cacheReadTokens: 6,
+        cost: 0.1,
+        durationMs: 100,
+        createdAt: '2026-06-10T10:00:00.000Z',
+      })
+      recordAgentLoopUsage(zero, {
+        id: 'req_pool_metrics_002',
+        sessionId: 'sess_pool_metrics_002',
+        model: 'openai-codex/gpt-5.3-codex-medium',
+        provider: 'openai-codex',
+        inputTokens: 20,
+        outputTokens: 5,
+        cacheWriteTokens: 1,
+        cacheReadTokens: 5,
+        cost: 0.2,
+        durationMs: 100,
+        createdAt: '2026-06-10T11:00:00.000Z',
+      })
+
+      const detailRes = await app.request(`/api/metrics/cost-detail?range=${range}`)
+      expect(detailRes.status).toBe(200)
+      const detailData = await detailRes.json()
+      const detailRow = detailData.data.find(
+        (entry: { date: string; provider: string; model: string }) =>
+          entry.date === '2026-06-10' &&
+          entry.provider === 'pooled' &&
+          entry.model === 'pooled/gpt-5.4-medium',
+      )
+      expect(detailRow).toEqual(
+        expect.objectContaining({
+          requestCount: 2,
+          input: 30,
+          output: 8,
+          cacheWrite: 5,
+          cacheRead: 11,
+          effectiveInput: 46,
+        }),
+      )
+      expect(detailRow.cost).toBeCloseTo(0.3)
+      expect(
+        detailData.data.some(
+          (entry: { model: string }) => entry.model === 'openai-codex/gpt-5.3-codex-medium',
+        ),
+      ).toBe(false)
+
+      const dayModelRes = await app.request(`/api/metrics/cost-by-day-model?range=${range}`)
+      const dayModelData = await dayModelRes.json()
+      expect(dayModelData.data).toEqual([
+        expect.objectContaining({
+          period: '2026-06-10',
+          model: 'pooled/gpt-5.4-medium',
+        }),
+      ])
+      expect(dayModelData.data[0].cost).toBeCloseTo(0.3)
+
+      const cacheRes = await app.request(`/api/metrics/cache-by-model?range=${range}`)
+      const cacheData = await cacheRes.json()
+      expect(cacheData.data).toEqual([
+        expect.objectContaining({
+          provider: 'pooled',
+          model: 'pooled/gpt-5.4-medium',
+          requestCount: 2,
+          input: 30,
+          output: 8,
+          cacheWrite: 5,
+          cacheRead: 11,
+          effectiveInput: 46,
+        }),
+      ])
+      expect(cacheData.data[0].cost).toBeCloseTo(0.3)
+
+      const costRes = await app.request(`/api/metrics/cost?range=${range}`)
+      const costData = await costRes.json()
+      expect(costData.byModel).toEqual([
+        expect.objectContaining({
+          provider: 'pooled',
+          model: 'pooled/gpt-5.4-medium',
+          requestCount: 2,
+          totalInput: 30,
+          totalOutput: 8,
+        }),
+      ])
+      expect(costData.byModel[0].totalCost).toBeCloseTo(0.3)
+    } finally {
+      await app.request('/api/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelPools: {} }),
+      })
+    }
+  })
+
   test('GET /api/sessions/:id returns cache summary fields', async () => {
     const session = zero.sessionManager.create('web')
     const createdAt = new Date().toISOString()

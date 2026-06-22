@@ -1,3 +1,6 @@
+import { ConfigProvider, DatePicker, theme } from 'antd'
+import dayjs from 'dayjs'
+import type { Dayjs } from 'dayjs'
 import { useCallback, useEffect, useState } from 'react'
 import {
   Bar,
@@ -28,9 +31,10 @@ import {
   METRICS_RANGES,
   METRICS_TABS,
   MODEL_COLORS,
+  type MetricsTab,
+  type PresetTimeRange,
   StatCard,
   TOOLTIP_STYLE,
-  type MetricsTab,
   type TaskSuccess,
   type TimeRange,
   type ToolErrorByDay,
@@ -42,13 +46,60 @@ import {
   pivotBy,
 } from './metrics-shared'
 
+const DATE_RANGE_FORMAT = 'YYYY-MM-DD'
+
+function defaultCustomDateRange() {
+  const end = dayjs()
+  return {
+    start: end.subtract(29, 'day').format(DATE_RANGE_FORMAT),
+    end: end.format(DATE_RANGE_FORMAT),
+  }
+}
+
+function toDatePickerValue(date: string): Dayjs | null {
+  return date ? dayjs(date, DATE_RANGE_FORMAT) : null
+}
+
+function toCustomMetricsRange(start: string, end: string): TimeRange {
+  if (!start || !end) return '30d'
+  return `${start}..${end}`
+}
+
 export function MetricsPage() {
   const [activeTab, setActiveTab] = useState<MetricsTab>('cost')
-  const [range, setRange] = useState<TimeRange>('30d')
-  const [customStart, setCustomStart] = useState('')
-  const [customEnd, setCustomEnd] = useState('')
+  const [range, setRange] = useState<PresetTimeRange>('30d')
+  const [customStart, setCustomStart] = useState(() => defaultCustomDateRange().start)
+  const [customEnd, setCustomEnd] = useState(() => defaultCustomDateRange().end)
+  const [customPickerKey, setCustomPickerKey] = useState(0)
 
-  const effectiveRange = range === 'custom' ? 'custom' : range
+  const effectiveRange = range === 'custom' ? toCustomMetricsRange(customStart, customEnd) : range
+
+  function selectRange(nextRange: PresetTimeRange) {
+    setRange(nextRange)
+    if (nextRange === 'custom') {
+      setCustomPickerKey((current) => current + 1)
+    }
+  }
+
+  function setCustomStartDate(nextStart: string) {
+    setCustomStart(nextStart)
+    if (customEnd && nextStart > customEnd) {
+      setCustomEnd(nextStart)
+    }
+  }
+
+  function setCustomEndDate(nextEnd: string) {
+    setCustomEnd(nextEnd)
+    if (customStart && nextEnd < customStart) {
+      setCustomStart(nextEnd)
+    }
+  }
+
+  function applyRecentDays(days: number) {
+    const end = dayjs()
+    setCustomStart(end.subtract(days - 1, 'day').format(DATE_RANGE_FORMAT))
+    setCustomEnd(end.format(DATE_RANGE_FORMAT))
+  }
 
   return (
     <div className="min-h-screen bg-[#0a0f14] text-[#e6edf3]">
@@ -78,7 +129,7 @@ export function MetricsPage() {
               <button
                 key={r}
                 type="button"
-                onClick={() => setRange(r)}
+                onClick={() => selectRange(r)}
                 className={`rounded-md px-3 py-1 text-[12px] transition-colors ${
                   range === r
                     ? 'bg-cyan-400/10 text-cyan-200'
@@ -92,21 +143,73 @@ export function MetricsPage() {
         </div>
 
         {range === 'custom' && (
-          <div className="animate-fade-up mb-4 flex items-center gap-3 rounded-lg border border-[#253244] bg-[#111820]/95 p-3">
-            <span className="text-[12px] text-[#93a4b8]">From</span>
-            <input
-              type="date"
-              className="input-field text-[12px]"
-              value={customStart}
-              onChange={(e) => setCustomStart(e.target.value)}
-            />
-            <span className="text-[12px] text-[#93a4b8]">To</span>
-            <input
-              type="date"
-              className="input-field text-[12px]"
-              value={customEnd}
-              onChange={(e) => setCustomEnd(e.target.value)}
-            />
+          <div className="animate-fade-up mb-4 flex flex-col gap-3 rounded-lg border border-[#253244] bg-[#111820]/95 p-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <span className="text-[12px] font-medium text-[#93a4b8]">Date Range</span>
+              <ConfigProvider
+                theme={{
+                  algorithm: theme.darkAlgorithm,
+                  token: {
+                    colorPrimary: '#22d3ee',
+                    colorBgContainer: '#0f1720',
+                    colorBgElevated: '#111820',
+                    colorBorder: '#253244',
+                    colorText: '#e6edf3',
+                    colorTextPlaceholder: '#64748b',
+                    borderRadius: 8,
+                  },
+                }}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <DatePicker
+                    allowClear={false}
+                    className="zero-metrics-date-picker"
+                    defaultOpen
+                    format={DATE_RANGE_FORMAT}
+                    getPopupContainer={() => document.body}
+                    inputReadOnly
+                    key={`start-${customPickerKey}`}
+                    onChange={(date, dateString) => {
+                      if (!date || typeof dateString !== 'string') return
+                      setCustomStartDate(dateString)
+                    }}
+                    placement="bottomRight"
+                    popupClassName="zero-metrics-date-picker-popup"
+                    value={toDatePickerValue(customStart)}
+                  />
+                  <span className="text-[12px] text-[#64748b]">to</span>
+                  <DatePicker
+                    allowClear={false}
+                    className="zero-metrics-date-picker"
+                    format={DATE_RANGE_FORMAT}
+                    getPopupContainer={() => document.body}
+                    inputReadOnly
+                    onChange={(date, dateString) => {
+                      if (!date || typeof dateString !== 'string') return
+                      setCustomEndDate(dateString)
+                    }}
+                    placement="bottomRight"
+                    popupClassName="zero-metrics-date-picker-popup"
+                    value={toDatePickerValue(customEnd)}
+                  />
+                </div>
+              </ConfigProvider>
+              <div className="flex gap-1">
+                {[7, 30, 90].map((days) => (
+                  <button
+                    key={days}
+                    type="button"
+                    onClick={() => applyRecentDays(days)}
+                    className="rounded-md px-2 py-1 text-[11px] text-[#93a4b8] transition-colors hover:bg-white/[0.05] hover:text-[#d7e0ea]"
+                  >
+                    {days}d
+                  </button>
+                ))}
+              </div>
+            </div>
+            <span className="font-mono text-[11px] text-[#7f8ea3]">
+              Applied {customStart} to {customEnd}
+            </span>
           </div>
         )}
 

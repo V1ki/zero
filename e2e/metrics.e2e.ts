@@ -30,7 +30,6 @@ test.describe('Metrics Page', () => {
     await expect(page.locator('main h3:has-text("Cost Trend")')).toBeVisible()
     await expect(page.locator('main h3:has-text("Daily Tokens")')).toBeVisible()
     await expect(page.locator('main h3:has-text("Daily Model Spend")')).toBeVisible()
-    await expect(page.locator('main h3:has-text("Model Spend Summary")')).toBeVisible()
     await expect(page.locator('main h3:has-text("Cache Efficiency")')).toBeVisible()
   })
 
@@ -85,13 +84,19 @@ test.describe('Metrics Page', () => {
     await expect(btn7d).toHaveClass(/bg-cyan-400\/10/)
   })
 
-  test('Custom time range shows date inputs', async ({ page }) => {
+  test('Custom time range opens date picker', async ({ page }) => {
     await page.goto('/metrics')
+    const customResponse = page.waitForResponse((response) => {
+      const url = decodeURIComponent(response.url())
+      return url.includes('/api/metrics/cost-detail?range=') && url.includes('..')
+    })
+
     await page.locator('main button:has-text("Custom")').click()
-    // Custom range inputs should appear
-    await expect(page.locator('main input[type="date"]').first()).toBeVisible()
-    await expect(page.locator('main input[type="date"]').last()).toBeVisible()
-    await expect(page.locator('main')).toContainText('From')
-    await expect(page.locator('main')).toContainText('To')
+    await customResponse
+
+    await expect(page.locator('main')).toContainText('Date Range')
+    await expect(page.locator('main .zero-metrics-date-picker').first()).toBeVisible()
+    await expect(page.locator('.zero-metrics-date-picker-popup')).toBeVisible()
+    await expect(page.locator('main')).toContainText('Applied')
   })
 })

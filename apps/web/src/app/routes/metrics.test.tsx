@@ -18,8 +18,14 @@ describe('MetricsPage', () => {
 
     expect(html).toContain('Total Cost')
     expect(html).toContain('Total Tokens')
+    expect(html).toContain('Cumulative Token Usage')
     expect(html).toContain('Daily Model Spend')
-    expect(html).toContain('Model Spend Summary')
     expect(html).toContain('Cache Efficiency')
+  })
+
+  test('renders custom date range controls', () => {
+    const html = renderToStaticMarkup(<MetricsPage />)
+
+    expect(html).toContain('Custom')
   })
 })

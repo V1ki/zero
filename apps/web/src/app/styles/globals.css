@@ -183,6 +183,32 @@ body {
   box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.08);
 }
 
+.zero-metrics-date-picker.ant-picker {
+  width: 132px;
+  background: rgba(15, 23, 32, 0.9);
+  border-color: rgba(148, 163, 184, 0.18);
+}
+
+.zero-metrics-date-picker.ant-picker:hover,
+.zero-metrics-date-picker.ant-picker-focused {
+  border-color: rgba(34, 211, 238, 0.45);
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.08);
+}
+
+.zero-metrics-date-picker .ant-picker-input > input {
+  color: #e6edf3;
+  font-size: 12px;
+}
+
+.zero-metrics-date-picker-popup {
+  z-index: 5000;
+}
+
+.zero-metrics-date-picker-popup .ant-picker-panel-container {
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+}
+
 /* Toast animations */
 @keyframes toastIn {
   from {
