@@ -1,6 +1,13 @@
 import type { MemoryRetriever } from '@zero-os/memory'
 import type { MetricsDB, ObservabilityStore, SessionDB, Tracer } from '@zero-os/observe'
-import type { Message, MessageChannelSource, SecretFilter, ToolContext } from '@zero-os/shared'
+import type {
+  ControlKind,
+  Message,
+  MessageChannelSource,
+  MessageType,
+  SecretFilter,
+  ToolContext,
+} from '@zero-os/shared'
 import type { SessionImageAttachment } from './session-messages'
 
 /**
@@ -42,6 +49,10 @@ export interface HandleMessageOptions {
   images?: SessionImageAttachment[]
   /** Originating external channel message, used for follow-up events like message recall. */
   source?: MessageChannelSource
+  /** Internal message classification for runtime-generated user-role events. */
+  messageType?: MessageType
+  /** Runtime control event kind when messageType is control. */
+  controlKind?: ControlKind
   /** Called after a queued message is injected into a later model request and that request returns. */
   onQueuedMessageApplied?: () => void
 }

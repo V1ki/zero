@@ -1471,6 +1471,7 @@ function formatControlKindLabel(controlKind: string): string {
   if (controlKind === 'memory_nudge') return 'Memory Nudge'
   if (controlKind === 'task_closure') return 'Task Closure Prompt'
   if (controlKind === 'queued_injection') return 'Queued Injection'
+  if (controlKind === 'background_tool_completed') return 'Background Tool Completed'
   if (controlKind === 'empty_retry') return 'Empty Retry'
   if (controlKind === 'continuation') return 'Continuation'
 
@@ -1483,6 +1484,7 @@ function formatControlKindLabel(controlKind: string): string {
 function buildControlEventChips(controlKind: string): string[] | undefined {
   if (controlKind === 'memory_nudge') return ['post-turn', 'memory check']
   if (controlKind === 'queued_injection') return ['queue']
+  if (controlKind === 'background_tool_completed') return ['background', 'tool']
   if (controlKind === 'task_closure') return ['closure gate']
   if (controlKind === 'empty_retry') return ['retry']
   return undefined

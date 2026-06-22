@@ -9,6 +9,7 @@ import type {
 import type { AgentConfig } from '../agent/agent'
 import { sanitizeConversationHistoryForSignedThinkingToolUse } from '../agent/context'
 import type { ToolRegistry } from '../tool/registry'
+import type { BackgroundToolCompletionEvent } from './background-tool-tasks'
 import { SessionAgentRuntimeController } from './session-agent-controller'
 import { SessionConversationState } from './session-conversation-state'
 import { deriveNextTurnIndex } from './session-runtime'
@@ -112,6 +113,7 @@ export function createRestoredSessionRuntime(options: {
   deps: SessionDeps
   timelineCompactionBlocks: TimelineCompactionBlock[]
   getAgentName: () => string
+  onBackgroundToolCompletion(event: BackgroundToolCompletionEvent): Promise<void> | void
 }): Record<string, unknown> {
   const restored = prepareSessionRestoreState({
     data: options.data,
@@ -137,6 +139,7 @@ export function createRestoredSessionRuntime(options: {
       toolRegistry: options.toolRegistry,
       deps: options.deps,
       logger: restored.logger,
+      onBackgroundToolCompletion: options.onBackgroundToolCompletion,
     }),
     turnRuntime: new SessionTurnRuntime({ nextTurnIndex: restored.nextTurnIndex }),
     snapshotRecorder: new SessionSnapshotRecorder({

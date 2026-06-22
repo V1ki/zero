@@ -89,6 +89,7 @@ export async function createStartupRuntime({
     core,
     bus,
     channels: shell.channels,
+    addNotification: shell.addNotification,
     skipProcessExit,
   })
 
@@ -195,6 +196,7 @@ function createStartupShutdownRuntime({
   core,
   bus,
   channels,
+  addNotification,
   skipProcessExit,
 }: {
   zeroDir: string
@@ -202,12 +204,15 @@ function createStartupShutdownRuntime({
   core: CoreRuntime
   bus: EventBus
   channels: Map<string, Channel>
+  addNotification(n: Omit<Notification, 'id' | 'createdAt'>): Notification
   skipProcessExit?: boolean
 }): ShutdownRuntime {
   const disposeRuntimeEventListeners = registerRuntimeEventListeners({
     bus,
     observability: core.observability,
     metrics: core.metrics,
+    channels,
+    addNotification,
   })
 
   return createShutdownRuntime({
@@ -288,12 +293,16 @@ interface RuntimeEventListenersOptions {
   bus: EventBus
   observability: ObservabilityStore
   metrics: MetricsDB
+  channels: Map<string, Channel>
+  addNotification(n: Omit<Notification, 'id' | 'createdAt'>): Notification
 }
 
 function registerRuntimeEventListeners({
   bus,
   observability,
   metrics,
+  channels,
+  addNotification,
 }: RuntimeEventListenersOptions): () => void {
   const wildcardLogListener = (payload: BusPayload) => {
     if (!shouldPersistBusEvent(payload)) return
@@ -324,15 +333,75 @@ function registerRuntimeEventListeners({
     })
   }
 
+  const backgroundToolCompletionListener = (payload: BusPayload) => {
+    void notifyBackgroundToolCompletion({
+      payload,
+      channels,
+      addNotification,
+    })
+  }
+
   bus.on('*', wildcardLogListener)
   bus.on('repair:end', repairMetricsListener)
   bus.on('tool:call', toolMetricsListener)
+  bus.on('background_tool:completed', backgroundToolCompletionListener)
 
   return () => {
     bus.off('*', wildcardLogListener)
     bus.off('repair:end', repairMetricsListener)
     bus.off('tool:call', toolMetricsListener)
+    bus.off('background_tool:completed', backgroundToolCompletionListener)
   }
+}
+
+async function notifyBackgroundToolCompletion(options: {
+  payload: BusPayload
+  channels: Map<string, Channel>
+  addNotification(n: Omit<Notification, 'id' | 'createdAt'>): Notification
+}): Promise<void> {
+  const channelName = options.payload.data.channelName as string | undefined
+  const deliveryChannelId = options.payload.data.deliveryChannelId as string | undefined
+  if (!channelName || !deliveryChannelId || channelName === 'web') return
+
+  const channel = options.channels.get(channelName)
+  const text = buildBackgroundToolNotificationText(options.payload)
+  if (channel?.isConnected()) {
+    await channel.send(deliveryChannelId, text).catch((error) => {
+      console.error(
+        `[ZeRo OS] background tool completion notification failed for ${channelName}:${deliveryChannelId}:`,
+        describeError(error),
+      )
+      options.addNotification({
+        type: 'system',
+        severity: 'warn',
+        title: 'Background tool notification failed',
+        description: text,
+        source: 'runtime',
+        sessionId: options.payload.data.sessionId as string | undefined,
+        actionable: false,
+      })
+    })
+    return
+  }
+
+  options.addNotification({
+    type: 'system',
+    severity: 'info',
+    title: 'Background tool completed',
+    description: text,
+    source: 'runtime',
+    sessionId: options.payload.data.sessionId as string | undefined,
+    actionable: false,
+  })
+}
+
+function buildBackgroundToolNotificationText(payload: BusPayload): string {
+  const tool = (payload.data.tool as string | undefined) ?? 'tool'
+  const status = payload.data.status === 'success' ? 'completed' : 'failed'
+  const summary = (payload.data.outputSummary as string | undefined)?.trim()
+  return summary
+    ? `Background ${tool} task ${status}: ${summary}`
+    : `Background ${tool} task ${status}.`
 }
 
 function shouldPersistBusEvent(payload: BusPayload) {
@@ -343,6 +412,8 @@ function shouldPersistBusEvent(payload: BusPayload) {
     case 'repair:start':
     case 'repair:end':
     case 'fuse:trigger':
+    case 'background_tool:started':
+    case 'background_tool:completed':
       return true
     case 'session:update':
       return (

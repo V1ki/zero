@@ -11,6 +11,7 @@ export type ControlKind =
   | 'memory_nudge'
   | 'empty_retry'
   | 'queued_injection'
+  | 'background_tool_completed'
 
 export type ContentBlockType = 'text' | 'tool_use' | 'tool_result' | 'image' | 'thinking'
 

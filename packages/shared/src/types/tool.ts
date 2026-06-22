@@ -218,6 +218,18 @@ export interface RunningToolRegistry {
   get(toolUseId: string): RunningToolHandle | undefined
 }
 
+export interface BackgroundToolExecutionInput {
+  toolName: string
+  toolUseId: string
+  inputSummary: string
+  execute(): Promise<ToolResult>
+}
+
+export interface BackgroundToolTaskSink {
+  readonly thresholdMs: number
+  run(input: BackgroundToolExecutionInput): Promise<ToolResult>
+}
+
 export interface ToolContext {
   sessionId: string
   currentModel?: string
@@ -280,6 +292,7 @@ export interface ToolContext {
   }
   agentControl?: AgentControlHandle
   runningToolRegistry?: RunningToolRegistry
+  backgroundToolTasks?: BackgroundToolTaskSink
   /** P3a: 会话内活文档折叠句柄。memory create 命中同主题时改走 update（合并正文），治会话内快照爆发。 */
   liveDocHandle?: {
     route(input: {

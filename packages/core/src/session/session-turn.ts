@@ -76,6 +76,8 @@ export async function processSessionMessageTurn({
     createdAt: now(),
     images: options?.images,
     source: options?.source,
+    messageType: options?.messageType,
+    controlKind: options?.controlKind,
   })
   const imageDelegationFiles = supportsVision(currentModel?.modelConfig)
     ? undefined

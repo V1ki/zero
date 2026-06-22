@@ -1,6 +1,6 @@
 import type { ProviderAdapter } from '@zero-os/model'
 import type { UsagePurpose } from '@zero-os/observe'
-import type { Message, ToolContext } from '@zero-os/shared'
+import type { Message, ToolContext, ToolResult } from '@zero-os/shared'
 import { now, toErrorMessage } from '@zero-os/shared'
 import type { ToolRegistry } from '../tool/registry'
 import { createAgentLoopHooks } from './agent-hooks'
@@ -13,6 +13,8 @@ import {
   prepareConversationHistoryWithCompaction,
 } from './context'
 import type { QueuedMessage } from './queue'
+
+const BACKGROUND_BASH_TIMEOUT_MS = 60 * 60 * 1000
 
 export type { AgentConfig, AgentContext, AgentObservability } from './agent-types'
 
@@ -234,6 +236,10 @@ function createAgentToolExecutor(options: {
         toolName,
         abortable: toolName === 'bash',
       })
+      const backgroundTasks = options.toolContext.backgroundToolTasks
+      const executionInput = prepareToolInputForBackgroundExecution(toolName, input, {
+        backgroundEnabled: !!backgroundTasks,
+      })
       const toolContext: ToolContext = {
         ...options.toolContext,
         currentRequestId: options.executionState.currentRequestId,
@@ -242,14 +248,52 @@ function createAgentToolExecutor(options: {
         tracer: options.toolContext.tracer,
       }
 
-      const result = await tool.run(toolContext, input)
-      runningToolHandle?.markFinished({
-        finishedAt: now(),
-        cause: 'completed',
-        success: result.success,
-        outputSummary: result.outputSummary,
+      const runTool = async (): Promise<ToolResult> => {
+        const result = await tool.run(toolContext, executionInput)
+        runningToolHandle?.markFinished({
+          finishedAt: now(),
+          cause: 'completed',
+          success: result.success,
+          outputSummary: result.outputSummary,
+        })
+        return result
+      }
+
+      if (!backgroundTasks) {
+        return runTool()
+      }
+
+      return backgroundTasks.run({
+        toolName,
+        toolUseId,
+        inputSummary: summarizeToolInput(executionInput, options.toolContext),
+        execute: runTool,
       })
-      return result
     },
   }
+}
+
+function prepareToolInputForBackgroundExecution(
+  toolName: string,
+  input: Record<string, unknown>,
+  options: { backgroundEnabled: boolean },
+): Record<string, unknown> {
+  if (!options.backgroundEnabled || toolName !== 'bash' || 'timeout' in input) {
+    return input
+  }
+
+  return {
+    ...input,
+    timeout: BACKGROUND_BASH_TIMEOUT_MS,
+  }
+}
+
+function summarizeToolInput(input: Record<string, unknown>, context: ToolContext): string {
+  let summary: string
+  try {
+    summary = JSON.stringify(input)
+  } catch {
+    summary = '[unserializable tool input]'
+  }
+  return context.secretFilter?.filter(summary) ?? summary
 }

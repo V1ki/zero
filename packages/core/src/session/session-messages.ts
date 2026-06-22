@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { Message, MessageChannelSource } from '@zero-os/shared'
+import type { ControlKind, Message, MessageChannelSource, MessageType } from '@zero-os/shared'
 import { generateId, now } from '@zero-os/shared'
 
 export interface SessionImageAttachment {
@@ -48,7 +48,8 @@ export function createUserMessage(options: {
   createdAt: string
   images?: SessionImageAttachment[]
   source?: MessageChannelSource
-  messageType?: Message['messageType']
+  messageType?: MessageType
+  controlKind?: ControlKind
 }): Message {
   const content: Message['content'] = []
   if (options.text.trim().length > 0) {
@@ -71,6 +72,9 @@ export function createUserMessage(options: {
 
   if (options.source) {
     message.source = options.source
+  }
+  if (options.controlKind) {
+    message.controlKind = options.controlKind
   }
 
   return message

@@ -17,6 +17,7 @@ import type { AgentSnapshot } from '../agent/agent-control'
 import { allocateBudget } from '../agent/budget'
 import { estimateConversationTokens } from '../agent/context'
 import type { ToolRegistry } from '../tool/registry'
+import type { BackgroundToolCompletionEvent } from './background-tool-tasks'
 import {
   SessionAgentRuntimeController,
   type SessionAgentRuntimeInitOptions,
@@ -103,6 +104,7 @@ export class Session {
       toolRegistry: this.toolRegistry,
       deps: this.deps,
       logger: this.logger,
+      onBackgroundToolCompletion: (event) => this.handleBackgroundToolCompletion(event),
     })
     this.snapshotRecorder = new SessionSnapshotRecorder({
       sessionId: this.data.id,
@@ -183,6 +185,15 @@ export class Session {
       applyPendingAgentRefresh: () => this.controllers.runtimeRefresh.applyPending(),
       processMessage: (message, turnOptions) => this.processMessage(message, turnOptions),
       persistState: () => this.persistState(),
+    })
+  }
+
+  private async handleBackgroundToolCompletion(
+    event: BackgroundToolCompletionEvent,
+  ): Promise<void> {
+    await this.handleMessage(event.xml, {
+      messageType: 'control',
+      controlKind: 'background_tool_completed',
     })
   }
 
@@ -383,6 +394,7 @@ export class Session {
         deps,
         timelineCompactionBlocks,
         getAgentName: () => session.getAgentName(),
+        onBackgroundToolCompletion: (event) => session.handleBackgroundToolCompletion(event),
       }),
     )
     session.controllers = createSessionControllers({
@@ -520,6 +532,8 @@ async function handleSessionMessageEntry(options: {
       content: options.content,
       images: options.handleOptions?.images,
       source: options.handleOptions?.source,
+      messageType: options.handleOptions?.messageType,
+      controlKind: options.handleOptions?.controlKind,
       messages: options.messages,
       data: options.sessionData,
       persistState: options.persistState,

@@ -35,6 +35,8 @@ export class SessionTurnRuntime {
     content: string
     images?: SessionImageAttachment[]
     source?: MessageChannelSource
+    messageType?: Message['messageType']
+    controlKind?: Message['controlKind']
     messages: Message[]
     data: SessionData
     persistState(): void
@@ -61,7 +63,8 @@ export class SessionTurnRuntime {
         createdAt: timestamp,
         images: options.images,
         source: options.source,
-        messageType: 'queued',
+        messageType: options.messageType ?? 'queued',
+        controlKind: options.controlKind,
       }),
     )
     options.data.updatedAt = timestamp

@@ -12,6 +12,10 @@ import { Agent, type AgentConfig, type AgentObservability } from '../agent/agent
 import { AgentControl, type AgentSnapshot } from '../agent/agent-control'
 import { CONTEXT_PARAMS } from '../agent/params'
 import type { ToolRegistry } from '../tool/registry'
+import {
+  type BackgroundToolCompletionEvent,
+  BackgroundToolTaskManager,
+} from './background-tool-tasks'
 import { createLiveDocHandle } from './live-doc'
 import { SessionRunningToolRegistry, requestSessionRunningToolAbort } from './running-tool-registry'
 import type { SessionDeps } from './session-types'
@@ -27,6 +31,7 @@ export class SessionAgentRuntimeController {
   private lastAgentConfig: AgentConfig | null = null
   private agentControl: AgentControl
   private runningToolRegistry = new SessionRunningToolRegistry()
+  private backgroundToolTasks: BackgroundToolTaskManager
   private liveDocs = new Map<string, string>()
 
   constructor(
@@ -36,11 +41,27 @@ export class SessionAgentRuntimeController {
       toolRegistry: ToolRegistry
       deps: SessionDeps
       logger: ToolLogger
+      onBackgroundToolCompletion(event: BackgroundToolCompletionEvent): Promise<void> | void
     },
   ) {
     this.agentControl = new AgentControl({
       tracer: options.deps.tracer,
       logger: options.logger,
+    })
+    this.backgroundToolTasks = new BackgroundToolTaskManager({
+      sessionId: options.data.id,
+      logger: options.logger,
+      secretFilter: options.deps.secretFilter,
+      channelBinding: options.data.channelId
+        ? {
+            channelName: options.data.channelName ?? options.data.source,
+            channelId: options.data.channelId,
+            participantId: options.data.participantId,
+            deliveryChannelId: options.data.channelId,
+          }
+        : undefined,
+      emitBusEvent: (topic, data) => options.deps.bus?.emit(topic, data),
+      onComplete: options.onBackgroundToolCompletion,
     })
   }
 
@@ -76,6 +97,7 @@ export class SessionAgentRuntimeController {
       logger: this.options.logger,
       agentControl: this.agentControl,
       runningToolRegistry: this.runningToolRegistry,
+      backgroundToolTasks: this.backgroundToolTasks,
       liveDocs: this.liveDocs,
       getCurrentSnapshotId: initOptions.getCurrentSnapshotId,
       onContextCompressed: initOptions.onContextCompressed,
@@ -116,6 +138,7 @@ function createSessionAgentRuntime(options: {
   logger: ToolLogger
   agentControl: AgentControl
   runningToolRegistry: SessionRunningToolRegistry
+  backgroundToolTasks: BackgroundToolTaskManager
   liveDocs: Map<string, string>
   getCurrentSnapshotId: () => string | undefined
   onContextCompressed: NonNullable<AgentObservability['onContextCompressed']>
@@ -152,6 +175,7 @@ function createSessionAgentRuntime(options: {
       logger: options.logger,
       agentControl: options.agentControl,
       runningToolRegistry: options.runningToolRegistry,
+      backgroundToolTasks: options.backgroundToolTasks,
       liveDocs: options.liveDocs,
       projectRoot,
       workspacePath,
@@ -186,6 +210,7 @@ function createSessionToolContext(options: {
   logger: ToolLogger
   agentControl: AgentControl
   runningToolRegistry: SessionRunningToolRegistry
+  backgroundToolTasks: BackgroundToolTaskManager
   liveDocs: Map<string, string>
   projectRoot: string
   workspacePath: string
@@ -223,6 +248,7 @@ function createSessionToolContext(options: {
     scheduleStore: options.deps.scheduleStore,
     agentControl: options.agentControl,
     runningToolRegistry: options.runningToolRegistry,
+    backgroundToolTasks: options.backgroundToolTasks,
     liveDocHandle: CONTEXT_PARAMS.memory.liveDocEnabled
       ? createLiveDocHandle(options.liveDocs, options.deps.memoryStore)
       : undefined,
