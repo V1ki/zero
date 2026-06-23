@@ -63,7 +63,7 @@ describe('buildRoleBlock', () => {
 })
 
 describe('buildRulesBlock', () => {
-  test('returns 8 rules in <rules> tags', () => {
+  test('returns 9 rules in <rules> tags', () => {
     const result = buildRulesBlock()
 
     expect(result).toStartWith('<rules>')
@@ -78,11 +78,12 @@ describe('buildRulesBlock', () => {
     expect(result).toContain('每完成一个阶段性目标后')
     expect(result).toContain('阶段性汇报用于同步进度')
     expect(result).toContain('<system-reminder> 是系统注入的内部运行时提示')
+    expect(result).toContain('<system_event> 是系统注入的运行时控制事件')
 
-    // Count lines inside the tags (8 rules = 8 lines)
+    // Count lines inside the tags (9 rules = 9 lines)
     const inner = result.replace('<rules>\n', '').replace('\n</rules>', '')
     const lines = inner.split('\n').filter((l) => l.trim().length > 0)
-    expect(lines.length).toBe(8)
+    expect(lines.length).toBe(9)
   })
 })
 
@@ -144,6 +145,10 @@ describe('buildToolRulesBlock', () => {
     expect(result).toContain('Read：优先使用 Read 查看文件内容')
     expect(result).toContain('Read Image：用于读取本地 PNG/JPEG/WebP 图片')
     expect(result).toContain('Bash：命令在工作目录中执行')
+    expect(result).toContain('长时间任务不要通过 sleep 轮询占住前台')
+    expect(result).toContain('系统会自动转入后台')
+    expect(result).toContain('background_tool.completed')
+    expect(result).toContain('timeout 只用于限制失控命令')
     expect(result).toContain('envSecrets')
     expect(result).toContain('stdinSecretRef')
     expect(result).toContain('Memory Search：回答过往工作、决策、偏好前')

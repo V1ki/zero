@@ -7,7 +7,10 @@ import type {
   ToolLogger,
 } from '@zero-os/shared'
 import type { AgentConfig } from '../agent/agent'
-import { sanitizeConversationHistoryForSignedThinkingToolUse } from '../agent/context'
+import {
+  repairInterleavedToolResultOrder,
+  sanitizeConversationHistoryForSignedThinkingToolUse,
+} from '../agent/context'
 import type { ToolRegistry } from '../tool/registry'
 import type { BackgroundToolCompletionEvent } from './background-tool-tasks'
 import { SessionAgentRuntimeController } from './session-agent-controller'
@@ -87,10 +90,14 @@ export function prepareSessionRestoreState(options: {
   const { data, messages, modelRouter, deps } = options
   const normalizedData = normalizeSessionDataForRestore(data, modelRouter)
   const activeModel = modelRouter.resolveModel(normalizedData.currentModel)
+  const repairedMessages = repairInterleavedToolResultOrder(messages)
   const restoredMessages =
     activeModel?.adapter.apiType === 'anthropic-deepseek'
-      ? sanitizeConversationHistoryForSignedThinkingToolUse(messages)
-      : messages
+      ? sanitizeConversationHistoryForSignedThinkingToolUse(repairedMessages)
+      : repairedMessages
+  if (restoredMessages !== messages) {
+    deps.sessionDb?.saveMessages(data.id, restoredMessages)
+  }
 
   return {
     data: normalizedData,

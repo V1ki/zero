@@ -809,48 +809,114 @@ export function sanitizeConversationHistoryForSignedThinkingToolUse(
     : sanitized
 }
 
+function isMergeableInterleavedToolMessage(message: Message): boolean {
+  return (
+    message.messageType === 'queued' ||
+    (message.messageType === 'control' && message.controlKind === 'background_tool_completed')
+  )
+}
+
+function toolUseIds(message: Message): string[] {
+  if (message.role !== 'assistant') return []
+  return message.content.flatMap((block) =>
+    block.type === 'tool_use' && block.id ? [block.id] : [],
+  )
+}
+
+function toolResultIds(message: Message): Set<string> {
+  if (message.role !== 'user') return new Set()
+  return new Set(
+    message.content.flatMap((block) =>
+      block.type === 'tool_result' && block.toolUseId ? [block.toolUseId] : [],
+    ),
+  )
+}
+
 /**
- * Merge queued messages that sit between an assistant tool_use message and
- * its corresponding user tool_result message. The Anthropic API requires
+ * Reorder persisted history so tool_result carrier messages sit immediately
+ * after their assistant tool_use message. Unlike mergeInterleavedQueuedMessages,
+ * this preserves queued/control messages as standalone timeline records.
+ */
+export function repairInterleavedToolResultOrder(messages: Message[]): Message[] {
+  if (messages.length < 3) return messages
+
+  let repaired: Message[] | undefined
+  const current = () => repaired ?? messages
+
+  for (let i = 0; i < current().length - 1; i++) {
+    const assistant = current()[i]
+    const ids = toolUseIds(assistant)
+    if (ids.length === 0) continue
+
+    const nextIds = toolResultIds(current()[i + 1])
+    const missing = ids.filter((id) => !nextIds.has(id))
+    if (missing.length === 0) continue
+
+    let matchIndex: number | undefined
+    for (let j = i + 1; j < current().length; j++) {
+      const candidateIds = toolResultIds(current()[j])
+      if (missing.every((id) => candidateIds.has(id))) {
+        matchIndex = j
+        break
+      }
+      if (!isMergeableInterleavedToolMessage(current()[j])) {
+        break
+      }
+    }
+
+    if (matchIndex === undefined) continue
+
+    if (!repaired) repaired = [...messages]
+    const [toolResult] = repaired.splice(matchIndex, 1)
+    if (toolResult) repaired.splice(i + 1, 0, toolResult)
+    i++
+  }
+
+  return repaired ?? messages
+}
+
+/**
+ * Merge queued/control messages that sit between an assistant tool_use message
+ * and its corresponding user tool_result message. The Anthropic API requires
  * that every assistant message containing tool_use blocks is immediately
  * followed by a user message with the matching tool_result blocks.
  *
- * When a user message arrives while the agent is executing tools, the session
- * stores it as a standalone 'queued' message in the history. This can break
- * the tool_use → tool_result pairing. This function detects that pattern and
- * merges the queued content into the tool_result message.
+ * When a user message or background control event arrives while the agent is
+ * executing tools, the session stores it as a standalone message in the
+ * history. This can break the tool_use → tool_result pairing. This function
+ * detects that pattern and merges the interleaved content into the tool_result
+ * message used for the model prompt.
  */
 export function mergeInterleavedQueuedMessages(messages: Message[]): Message[] {
   if (messages.length < 3) return messages
 
-  // Phase 1: identify queued messages sandwiched between tool_use and tool_result
+  // Phase 1: identify mergeable messages sandwiched between tool_use and tool_result
   const indicesToSkip = new Set<number>()
-  const mergeInto = new Map<number, number[]>() // tool_result idx → queued indices
+  const mergeInto = new Map<number, number[]>() // tool_result idx -> interleaved indices
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i]
-    if (msg.role !== 'assistant' || !msg.content.some((b) => b.type === 'tool_use')) {
-      continue
-    }
+    const ids = toolUseIds(msg)
+    if (ids.length === 0) continue
 
-    // Scan forward past queued messages
-    const queuedIndices: number[] = []
+    // Scan forward past messages that are safe to fold into the next tool_result.
+    const interleavedIndices: number[] = []
     let j = i + 1
-    while (j < messages.length && messages[j].messageType === 'queued') {
-      queuedIndices.push(j)
+    while (j < messages.length && isMergeableInterleavedToolMessage(messages[j])) {
+      interleavedIndices.push(j)
       j++
     }
 
-    if (queuedIndices.length === 0) continue
+    if (interleavedIndices.length === 0) continue
 
     // Check if the next non-queued message is a user message with tool_result
     if (
       j < messages.length &&
       messages[j].role === 'user' &&
-      messages[j].content.some((b) => b.type === 'tool_result')
+      ids.every((id) => toolResultIds(messages[j]).has(id))
     ) {
-      for (const qi of queuedIndices) indicesToSkip.add(qi)
-      mergeInto.set(j, queuedIndices)
+      for (const qi of interleavedIndices) indicesToSkip.add(qi)
+      mergeInto.set(j, interleavedIndices)
     }
   }
 

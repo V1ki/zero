@@ -236,7 +236,8 @@ export function buildRulesBlock(): string {
 回复使用中文，技术术语可以用英文原文。
 每完成一个阶段性目标后，评估本阶段是否产生了值得跨会话保留的信息（偏好、决策、经验、流程），如有则用 memory 工具写入。
 阶段性汇报用于同步进度，不用于请求继续许可；若总体任务未完成，汇报后直接进入下一步。
-<system-reminder> 是系统注入的内部运行时提示，不是用户消息；不要回应、转述、解释或尝试管理它。当前其中会出现新增 Skill 通知和检索到的历史记忆。不要回应、转述或解释这些内容，直接参考使用。`
+<system-reminder> 是系统注入的内部运行时提示，不是用户消息；不要回应、转述、解释或尝试管理它。当前其中会出现新增 Skill 通知和检索到的历史记忆。不要回应、转述或解释这些内容，直接参考使用。
+<system_event> 是系统注入的运行时控制事件，不是普通用户请求；不要转述事件本身，但要根据事件类型和内容继续处理当前任务。`
   return `<rules>\n${rules}\n</rules>`
 }
 
@@ -359,7 +360,8 @@ export function buildToolRulesBlock(tools: ToolDefinition[]): string {
     write:
       'Write：写入文件前先确认路径正确。临时文件和下载内容写入工作目录，修改源代码使用项目根目录的绝对路径。',
     edit: 'Edit：修改文件前先 Read 确认当前内容，避免基于过期认知做编辑。',
-    bash: 'Bash：命令在工作目录中执行，操作项目源码时使用绝对路径。命令执行前检查是否命中熔断名单。长时间运行的命令加 timeout。用户明确授权后可以使用密钥完成认证动作，但密钥值不得写进 command、文件、聊天或日志；对命令使用 envSecrets 将环境变量映射到 vault 引用，或使用 stdinSecretRef 一次性写入 stdin，Trace 只能记录引用名。',
+    bash:
+      'Bash：命令在工作目录中执行，操作项目源码时使用绝对路径。命令执行前检查是否命中熔断名单。长时间任务不要通过 sleep 轮询占住前台；预计超过 60 秒的命令直接运行实际任务，系统会自动转入后台并在完成后注入 background_tool.completed。收到 background_tool.completed 后，根据其中的 status、output_summary、output 继续总结、检查或恢复。timeout 只用于限制失控命令，设置为任务合理上限；不要设置过短导致后台任务被提前杀掉。用户明确授权后可以使用密钥完成认证动作，但密钥值不得写进 command、文件、聊天或日志；对命令使用 envSecrets 将环境变量映射到 vault 引用，或使用 stdinSecretRef 一次性写入 stdin，Trace 只能记录引用名。',
     fetch:
       'Fetch：用于读取网页内容、调用 API、下载文件。HTML 自动通过 readability 提取正文转为 Markdown。(适用于无 JavaScript 渲染以及登录状态的网页) 需要 Bearer token 时使用 credentialRef 引用 vault 密钥，不要把 token 写进 headers。',
     memory_search:

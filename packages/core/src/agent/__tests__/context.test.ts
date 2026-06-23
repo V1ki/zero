@@ -16,6 +16,7 @@ import {
   mergeInterleavedQueuedMessages,
   prepareConversationHistory,
   prepareConversationHistoryWithCompaction,
+  repairInterleavedToolResultOrder,
   sanitizeConversationHistoryForSignedThinkingToolUse,
 } from '../context'
 
@@ -53,6 +54,14 @@ function makeNotificationUserText(text: string): Message {
   return {
     ...makeMessage('user', [{ type: 'text', text }]),
     messageType: 'notification',
+  }
+}
+
+function makeBackgroundToolCompletedControl(text: string): Message {
+  return {
+    ...makeMessage('user', [{ type: 'text', text }]),
+    messageType: 'control',
+    controlKind: 'background_tool_completed',
   }
 }
 
@@ -1188,6 +1197,31 @@ describe('mergeInterleavedQueuedMessages', () => {
     expect(textBlock).toBeDefined()
   })
 
+  test('merges background completion control between tool_use and tool_result', () => {
+    const messages = [
+      makeUserText('start watchdog'),
+      makeAssistantToolUse('bash', 'toolu_background'),
+      makeBackgroundToolCompletedControl(
+        '<system_event type="background_tool.completed"><background_task status="success" /></system_event>',
+      ),
+      makeToolResult('toolu_background', 'Background task started'),
+      makeAssistantText('done'),
+    ]
+    const result = mergeInterleavedQueuedMessages(messages)
+
+    expect(result.length).toBe(4)
+    const toolResultMsg = result[2]
+    expect(toolResultMsg.role).toBe('user')
+    expect(toolResultMsg.content.some((b) => b.type === 'tool_result')).toBe(true)
+    expect(
+      toolResultMsg.content.some(
+        (b) =>
+          b.type === 'text' &&
+          (b as { text: string }).text.includes('background_tool.completed'),
+      ),
+    ).toBe(true)
+  })
+
   test('merges multiple queued messages between tool_use and tool_result', () => {
     const messages = [
       makeUserText('start'),
@@ -1270,6 +1304,44 @@ describe('mergeInterleavedQueuedMessages', () => {
   })
 })
 
+describe('repairInterleavedToolResultOrder', () => {
+  test('moves background completion controls after the matching tool_result', () => {
+    const messages = [
+      makeUserText('start watchdog'),
+      makeAssistantToolUse('bash', 'toolu_background'),
+      makeBackgroundToolCompletedControl(
+        '<system_event type="background_tool.completed"><background_task status="success" /></system_event>',
+      ),
+      makeToolResult('toolu_background', 'Background task started'),
+      makeAssistantText('done'),
+    ]
+
+    const result = repairInterleavedToolResultOrder(messages)
+
+    expect(result).not.toBe(messages)
+    expect(result.map((message) => message.messageType)).toEqual([
+      'message',
+      'message',
+      'message',
+      'control',
+      'message',
+    ])
+    expect(result[2].content.some((block) => block.type === 'tool_result')).toBe(true)
+    expect(result[3].controlKind).toBe('background_tool_completed')
+  })
+
+  test('keeps unchanged histories by reference', () => {
+    const messages = [
+      makeUserText('start'),
+      makeAssistantToolUse('bash', 'toolu_ok'),
+      makeToolResult('toolu_ok', 'ok'),
+      makeAssistantText('done'),
+    ]
+
+    expect(repairInterleavedToolResultOrder(messages)).toBe(messages)
+  })
+})
+
 describe('prepareConversationHistory — queued message merging', () => {
   test('queued messages between tool_use and tool_result are merged before API call', () => {
     // Reproduces the exact bug: sess_20260318_1452_fei_adaa
@@ -1293,6 +1365,32 @@ describe('prepareConversationHistory — queued message merging', () => {
         expect(next.content.some((b) => b.type === 'tool_result')).toBe(true)
       }
     }
+  })
+
+  test('background completion controls between tool_use and tool_result are merged before API call', () => {
+    const messages = [
+      makeUserText('run long command'),
+      makeAssistantToolUse('bash', 'toolu_long'),
+      makeBackgroundToolCompletedControl(
+        '<system_event type="background_tool.completed"><background_task status="success" /></system_event>',
+      ),
+      makeToolResult('toolu_long', 'Background task started'),
+      makeUserText('现在处理得怎么样了'),
+    ]
+
+    const result = prepareConversationHistory(messages)
+    const toolUseIndex = result.findIndex(
+      (message) =>
+        message.role === 'assistant' && message.content.some((b) => b.type === 'tool_use'),
+    )
+    const next = result[toolUseIndex + 1]
+
+    expect(next).toBeDefined()
+    expect(next.role).toBe('user')
+    expect(next.content.some((b) => b.type === 'tool_result')).toBe(true)
+    expect(result.some((message) => message.controlKind === 'background_tool_completed')).toBe(
+      false,
+    )
   })
 })
 
