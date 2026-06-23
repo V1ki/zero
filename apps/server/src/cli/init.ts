@@ -13,17 +13,25 @@ export async function runInitCommand(options: {
   console.log('[ZeRo OS] Initializing...\n')
 
   let masterKey: Buffer
+  const hasExistingVault = existsSync(options.secretsPath)
   try {
     masterKey = await getMasterKey()
     console.log('  Master key: already exists in Keychain')
   } catch {
+    if (hasExistingVault) {
+      console.error('  Master key: missing in Keychain')
+      console.error(
+        '  Existing secrets vault cannot be opened without the original master key. Restore the Keychain item or recover the vault before re-running init.',
+      )
+      process.exit(1)
+    }
     masterKey = generateMasterKey()
     await setMasterKey(masterKey)
     console.log('  Master key: generated and stored in Keychain')
   }
 
   const vault = new Vault(masterKey, options.secretsPath)
-  if (!existsSync(options.secretsPath)) {
+  if (!hasExistingVault) {
     vault.save()
     console.log('  Secrets vault: created (.zero/secrets.enc)')
   } else {

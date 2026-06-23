@@ -2,36 +2,38 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { deleteMasterKey, generateMasterKey, getMasterKey, setMasterKey } from '../keychain'
 
 describe('macOS Keychain integration', () => {
+  const testTarget = {
+    service: `com.zero-os.vault.test.${process.pid}.${Date.now()}`,
+    account: 'master-key',
+  }
   const testKey = generateMasterKey()
-  let originalKey: Buffer | null = null
+  let previousMasterKeyEnv: string | undefined
 
   beforeAll(async () => {
-    try {
-      originalKey = await getMasterKey()
-    } catch {
-      originalKey = null
-    }
+    previousMasterKeyEnv = process.env.ZERO_MASTER_KEY_BASE64
+    delete process.env.ZERO_MASTER_KEY_BASE64
+    await deleteMasterKey(testTarget)
   })
 
   afterAll(async () => {
-    // Restore original key if it existed, otherwise clean up
-    if (originalKey) {
-      await setMasterKey(originalKey)
+    await deleteMasterKey(testTarget)
+    if (previousMasterKeyEnv === undefined) {
+      delete process.env.ZERO_MASTER_KEY_BASE64
     } else {
-      await deleteMasterKey()
+      process.env.ZERO_MASTER_KEY_BASE64 = previousMasterKeyEnv
     }
   })
 
   test('set and get master key round-trip', async () => {
-    await setMasterKey(testKey)
-    const retrieved = await getMasterKey()
+    await setMasterKey(testKey, testTarget)
+    const retrieved = await getMasterKey(testTarget)
     expect(retrieved).toEqual(testKey)
   })
 
   test('delete removes the key', async () => {
-    await setMasterKey(testKey)
-    await deleteMasterKey()
-    await expect(getMasterKey()).rejects.toThrow('Master key not found')
+    await setMasterKey(testKey, testTarget)
+    await deleteMasterKey(testTarget)
+    await expect(getMasterKey(testTarget)).rejects.toThrow('Master key not found')
   })
 
   test('generateMasterKey produces 32-byte key', () => {

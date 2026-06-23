@@ -111,20 +111,32 @@ function ensureRuntimeDirectories(zeroDir: string): void {
 }
 
 async function createSecretsRuntime(zeroDir: string): Promise<SecretsRuntime> {
+  const secretsPath = join(zeroDir, 'secrets.enc')
   let masterKey: Buffer
   try {
     masterKey = await getMasterKey()
     console.log('[ZeRo OS] Master key loaded from Keychain')
   } catch {
+    if (existsSync(secretsPath)) {
+      throw new Error(
+        '[ZeRo OS] Master key missing in Keychain for existing .zero/secrets.enc. Restore the original Keychain item or recover the vault before starting.',
+      )
+    }
     console.log('[ZeRo OS] First run — generating master key...')
     masterKey = generateMasterKey()
     await setMasterKey(masterKey)
     console.log('[ZeRo OS] Master key stored in Keychain')
   }
 
-  const secretsPath = join(zeroDir, 'secrets.enc')
   const vault = new Vault(masterKey, secretsPath)
-  vault.load()
+  try {
+    vault.load()
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    throw new Error(
+      `[ZeRo OS] Failed to decrypt secrets vault: ${detail}. The Keychain master key may not match .zero/secrets.enc; restore a matching Keychain item or vault backup.`,
+    )
+  }
   console.log(`[ZeRo OS] Secrets loaded (${vault.keys().length} keys)`)
 
   return {

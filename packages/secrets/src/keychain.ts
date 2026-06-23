@@ -1,5 +1,17 @@
-const SERVICE = 'com.zero-os.vault'
-const ACCOUNT = 'master-key'
+const DEFAULT_SERVICE = 'com.zero-os.vault'
+const DEFAULT_ACCOUNT = 'master-key'
+
+export interface KeychainTarget {
+  service?: string
+  account?: string
+}
+
+function resolveKeychainTarget(options: KeychainTarget = {}): Required<KeychainTarget> {
+  return {
+    service: options.service ?? DEFAULT_SERVICE,
+    account: options.account ?? DEFAULT_ACCOUNT,
+  }
+}
 
 function getEnvMasterKey(): Buffer | undefined {
   const encoded = process.env.ZERO_MASTER_KEY_BASE64?.trim()
@@ -10,17 +22,18 @@ function getEnvMasterKey(): Buffer | undefined {
 /**
  * Read the master key from macOS Keychain.
  */
-export async function getMasterKey(): Promise<Buffer> {
+export async function getMasterKey(options: KeychainTarget = {}): Promise<Buffer> {
   const envKey = getEnvMasterKey()
   if (envKey) return envKey
 
+  const { service, account } = resolveKeychainTarget(options)
   const proc = Bun.spawn(
-    ['security', 'find-generic-password', '-s', SERVICE, '-a', ACCOUNT, '-w'],
+    ['security', 'find-generic-password', '-s', service, '-a', account, '-w'],
     { stdout: 'pipe', stderr: 'pipe' },
   )
   const exitCode = await proc.exited
   if (exitCode !== 0) {
-    throw new Error(`Master key not found in Keychain (service: ${SERVICE})`)
+    throw new Error(`Master key not found in Keychain (service: ${service}, account: ${account})`)
   }
   const stdout = await new Response(proc.stdout).text()
   return Buffer.from(stdout.trim(), 'base64')
@@ -30,15 +43,16 @@ export async function getMasterKey(): Promise<Buffer> {
  * Store the master key in macOS Keychain.
  * Uses -U flag to update if already exists.
  */
-export async function setMasterKey(key: Buffer): Promise<void> {
+export async function setMasterKey(key: Buffer, options: KeychainTarget = {}): Promise<void> {
   if (getEnvMasterKey()) {
     process.env.ZERO_MASTER_KEY_BASE64 = key.toString('base64')
     return
   }
 
+  const { service, account } = resolveKeychainTarget(options)
   const encoded = key.toString('base64')
   // First try to delete existing entry (ignore errors)
-  const del = Bun.spawn(['security', 'delete-generic-password', '-s', SERVICE, '-a', ACCOUNT], {
+  const del = Bun.spawn(['security', 'delete-generic-password', '-s', service, '-a', account], {
     stdout: 'pipe',
     stderr: 'pipe',
   })
@@ -46,7 +60,7 @@ export async function setMasterKey(key: Buffer): Promise<void> {
 
   // Then add the new key
   const proc = Bun.spawn(
-    ['security', 'add-generic-password', '-s', SERVICE, '-a', ACCOUNT, '-w', encoded],
+    ['security', 'add-generic-password', '-s', service, '-a', account, '-w', encoded],
     { stdout: 'pipe', stderr: 'pipe' },
   )
   const exitCode = await proc.exited
@@ -59,13 +73,14 @@ export async function setMasterKey(key: Buffer): Promise<void> {
 /**
  * Delete the master key from macOS Keychain.
  */
-export async function deleteMasterKey(): Promise<void> {
+export async function deleteMasterKey(options: KeychainTarget = {}): Promise<void> {
   if (getEnvMasterKey()) {
     delete process.env.ZERO_MASTER_KEY_BASE64
     return
   }
 
-  const proc = Bun.spawn(['security', 'delete-generic-password', '-s', SERVICE, '-a', ACCOUNT], {
+  const { service, account } = resolveKeychainTarget(options)
+  const proc = Bun.spawn(['security', 'delete-generic-password', '-s', service, '-a', account], {
     stdout: 'pipe',
     stderr: 'pipe',
   })
