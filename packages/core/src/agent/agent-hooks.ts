@@ -56,7 +56,6 @@ import {
   buildTaskClosureDecisionPrompt,
   buildTaskClosurePrompt,
   buildTaskClosurePromptContext,
-  extractAssistantTail,
   extractAssistantText,
   hasAssistantText,
   parseTaskClosureDecision,
@@ -597,8 +596,7 @@ function createAgentEndTurnHandler({
     const shouldEvaluateTaskClosure =
       !toolContext.spawnedByRequestId &&
       !memoryNudge.isActive &&
-      hasAssistantText(response.content) &&
-      extractAssistantTail(response.content).length > 0
+      hasAssistantText(response.content)
 
     if (shouldEvaluateTaskClosure) {
       taskClosureEvaluation = await decideTaskClosure({
@@ -826,8 +824,7 @@ async function decideTaskClosure(options: {
   if (!hasAssistantText(options.response.content)) return endSkipped('no_assistant_text')
 
   const assistantText = extractAssistantText(options.response.content)
-  const assistantTail = extractAssistantTail(options.response.content)
-  if (!assistantText || !assistantTail) return endSkipped('empty_assistant_tail')
+  if (!assistantText) return endSkipped('empty_assistant_text')
 
   const preparedClassifier = prepareTaskClosureClassifierRequest({
     sessionId: options.sessionId,
@@ -835,7 +832,6 @@ async function decideTaskClosure(options: {
     appliedQueuedIntentText: options.appliedQueuedIntentText,
     messages: options.messages,
     assistantText,
-    assistantTail,
   })
   const classifierRequest = preparedClassifier.classifierRequest
 
@@ -917,13 +913,11 @@ function prepareTaskClosureClassifierRequest(options: {
   appliedQueuedIntentText: string | undefined
   messages: Message[]
   assistantText: string
-  assistantTail: string
 }): PreparedTaskClosureClassifierRequest {
   const promptContext = buildTaskClosurePromptContext(options.messages)
   const prompt = buildTaskClosureDecisionPrompt(
     options.userMessage,
     options.assistantText,
-    options.assistantTail,
     promptContext,
     options.appliedQueuedIntentText,
   )

@@ -29,7 +29,6 @@ export const TASK_CLOSURE_CLASSIFIER_SYSTEM_PROMPT =
 export function buildTaskClosureDecisionPrompt(
   userMessage: string,
   assistantText: string,
-  assistantTail: string,
   context?: TaskClosurePromptContext,
   appliedQueuedIntentText?: string,
 ): string {
@@ -48,6 +47,13 @@ export function buildTaskClosureDecisionPrompt(
 - 对研究/分析类任务，只有当 assistant 已覆盖原始材料的关键主张、扩展到主要相关信息、尽可能做了多源交叉验证，并明确区分已证实与未证实部分时，才可返回 finish。
 - 如果 assistant 当前更像第一轮读后总结、只分析了单一来源、或仍明确指出还有重要相关线索/来源值得继续查证，则返回 continue。
 - 如果继续查证、补充相关信息、拆分关键主张，会实质提升回答质量而不是只做边际润色，则返回 continue。
+
+后台任务额外规则：
+- 如果 <tool_calls_this_turn>、<user_message> 或 <assistant_text> 显示已有 background_tool.started / Background task started，且尚未看到对应的 background_tool.completed，而 assistant 当前是在说明后台任务仍在运行、会等待系统完成事件或完成后再继续，则返回 finish。这里的 finish 表示不要注入前台 task_closure continuation，把“等待已知后台完成事件”视为合法暂停态，不代表整个用户任务已经最终完成。
+- 不要把系统管理的后台任务等待判为 continue；continue 会把 agent 拉回前台，容易造成 sleep/ps/pgrep/lsof/wc/tail/ls/find/stat 之类人工轮询。
+- 不要把“等待 background_tool.completed”判为 block；block 只用于缺少用户信息、凭据、授权、登录态或不可逆外部动作。
+- 如果 assistant 声称后台任务产物已经完成、已验证或已发布，但没有 background_tool.completed 或其他成功工具记录支撑，则返回 block。
+- 如果 <user_message> 是 background_tool.completed，则根据其中的 status、output_summary、output 和后续工具记录判断；status=error 不一定代表任务失败，仍需看是否有可用产物和后续验收。
 
 特别示例：
 - 用户让你“看看某个帖子/链接，并把可能相关的信息也分析下”，而 assistant 只总结了当前内容或一两个来源，然后说“如果你愿意我还可以继续查更多相关信息/来源”，这通常应判为 continue，不是 finish。
@@ -79,11 +85,7 @@ ${appliedQueuedIntentText}
 
 <assistant_text>
 ${assistantText}
-</assistant_text>
-
-<assistant_tail>
-${assistantTail}
-</assistant_tail>`
+</assistant_text>`
 }
 
 interface ToolResultSummary {
@@ -136,6 +138,8 @@ export function extractToolDetail(
   result?: ToolResultSummary,
 ): string {
   const status = formatToolStatus(result)
+  const backgroundSummary = extractBackgroundToolSummary(result?.outputSummary)
+  if (backgroundSummary) return `${backgroundSummary} ${status}`
 
   switch (toolName.toLowerCase()) {
     case 'fetch': {
@@ -258,4 +262,15 @@ function sanitizeBashSummary(summary: string | undefined): string | undefined {
 
   const sanitized = trimmed.replace(/^(?:Executed|Command failed(?:\s*\([^)]*\))?):\s*/, '')
   return sanitized || trimmed
+}
+
+function extractBackgroundToolSummary(summary: string | undefined): string | undefined {
+  const trimmed = getTrimmedString(summary)
+  if (!trimmed) return undefined
+
+  if (/^Background task started:/i.test(trimmed)) return trimmed
+  if (trimmed.includes('background_tool.started')) return trimmed
+  if (trimmed.includes('background_tool.completed')) return trimmed
+
+  return undefined
 }

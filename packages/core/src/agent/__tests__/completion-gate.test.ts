@@ -88,7 +88,7 @@ function getLastUserMessage(request: CompletionRequest): Message | undefined {
 
 function isTaskClosureClassifierRequest(request: CompletionRequest): boolean {
   const text = getTextFromRequest(request)
-  return text.includes('任务收尾判定器') && text.includes('<assistant_tail>')
+  return text.includes('任务收尾判定器') && text.includes('<assistant_text>')
 }
 
 function withTrackedUsage(adapter: ProviderAdapter, metrics: MetricsDB): ProviderAdapter {
@@ -894,11 +894,12 @@ describe('Agent task closure gate', () => {
         },
         classifierRequest: {
           system: expect.stringContaining('严格的任务收尾判定器'),
-          prompt: expect.stringContaining('<assistant_tail>'),
+          prompt: expect.stringContaining('<assistant_text>'),
           maxTokens: 800,
         },
       },
     })
+    expect(JSON.stringify(closureSpan?.data)).not.toContain('<assistant_tail>')
   })
 
   test('persists invalid classifier output as task_closure_failed in trace data', async () => {
@@ -937,12 +938,13 @@ describe('Agent task closure gate', () => {
         },
         classifierRequest: {
           system: expect.stringContaining('严格的任务收尾判定器'),
-          prompt: expect.stringContaining('<assistant_tail>'),
+          prompt: expect.stringContaining('<assistant_text>'),
           maxTokens: 800,
         },
         classifierResponseRaw: 'not-json',
       },
     })
+    expect(JSON.stringify(closureSpan?.data)).not.toContain('<assistant_tail>')
   })
 
   test('uses trace-only session writes when tracer is file-backed', async () => {

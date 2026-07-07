@@ -213,7 +213,7 @@ function isTaskClosureClassifierRequest(request: CompletionRequest): boolean {
     .map((block) => block.text)
     .join('\n')
 
-  return combinedText.includes('任务收尾判定器') && combinedText.includes('<assistant_tail>')
+  return combinedText.includes('任务收尾判定器') && combinedText.includes('<assistant_text>')
 }
 
 function attachCustomAgent(

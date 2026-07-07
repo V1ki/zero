@@ -94,7 +94,6 @@ test('buildTaskClosureDecisionPrompt renders tool summary without task context',
   const prompt = buildTaskClosureDecisionPrompt(
     '看看这个链接, 然后把可能相关的信息也分析下',
     '这里是一版初步结论',
-    '如果你愿意，我可以继续查更多相关信息',
     {
       toolSummary: 'fetch reddit.com ✓ 共 1 次',
     },
@@ -102,6 +101,8 @@ test('buildTaskClosureDecisionPrompt renders tool summary without task context',
 
   expect(prompt).toContain('研究/分析类任务额外规则')
   expect(prompt).toContain('多源交叉验证')
+  expect(prompt).toContain('后台任务额外规则')
+  expect(prompt).toContain('等待已知后台完成事件')
   expect(prompt).toContain(
     '<tool_calls_this_turn>\nfetch reddit.com ✓ 共 1 次\n</tool_calls_this_turn>',
   )
@@ -114,7 +115,6 @@ test('buildTaskClosureDecisionPrompt includes tool call summary', () => {
   const prompt = buildTaskClosureDecisionPrompt(
     '2分钟后提醒我',
     '已设置好，2分钟后会提醒你',
-    '已设置好，2分钟后会提醒你',
     {
       toolSummary: 'schedule 1次: create ✓',
     },
@@ -125,7 +125,7 @@ test('buildTaskClosureDecisionPrompt includes tool call summary', () => {
 })
 
 test('buildTaskClosureDecisionPrompt renders none when no tool summary', () => {
-  const prompt = buildTaskClosureDecisionPrompt('你好', '你好！', '你好！')
+  const prompt = buildTaskClosureDecisionPrompt('你好', '你好！')
 
   expect(prompt).toContain('<tool_calls_this_turn>\nnone\n</tool_calls_this_turn>')
 })
@@ -134,7 +134,6 @@ test('buildTaskClosureDecisionPrompt includes applied queued intent when provide
   const prompt = buildTaskClosureDecisionPrompt(
     '先分析主贴',
     '这里是当前结论，已完成',
-    '这里是当前结论，已完成',
     undefined,
     '[10:30] 顺便核验一下官方 changelog',
   )
@@ -142,6 +141,7 @@ test('buildTaskClosureDecisionPrompt includes applied queued intent when provide
   expect(prompt).toContain('<applied_queued_messages>')
   expect(prompt).toContain('顺便核验一下官方 changelog')
   expect(prompt).not.toContain('<queued_message>')
+  expect(prompt).not.toContain('<assistant_tail>')
 })
 
 describe('extractToolDetail', () => {
@@ -161,6 +161,22 @@ describe('extractToolDetail', () => {
         { isError: false, outputSummary: 'Executed: bun test' },
       ),
     ).toBe('运行测试 ✓')
+
+    expect(
+      extractToolDetail(
+        'bash',
+        { command: 'bun run build', description: '构建项目' },
+        { isError: false, outputSummary: 'Background task started: bash (task_123)' },
+      ),
+    ).toBe('Background task started: bash (task_123) ✓')
+
+    expect(
+      extractToolDetail(
+        'codex',
+        { action: 'run' },
+        { isError: false, outputSummary: 'Background task started: codex (task_456)' },
+      ),
+    ).toBe('Background task started: codex (task_456) ✓')
 
     expect(
       extractToolDetail(
@@ -300,6 +316,31 @@ describe('buildTaskClosurePromptContext', () => {
     expect(buildTaskClosurePromptContext(messages)).toEqual({
       toolSummary:
         'fetch reddit.com ✓; bash 执行 运行测试 ✓; read 2 个文件: agent.ts ✓, task-closure.ts ✓; schedule 1次: create ✓',
+    })
+  })
+
+  test('preserves background tool started summaries in tool context', () => {
+    const messages: Message[] = [
+      makeMessage('assistant', [
+        {
+          type: 'tool_use',
+          id: 'codex-1',
+          name: 'codex',
+          input: { action: 'run' },
+        },
+      ]),
+      makeMessage('user', [
+        {
+          type: 'tool_result',
+          toolUseId: 'codex-1',
+          content: '<system_event type="background_tool.started" />',
+          outputSummary: 'Background task started: codex (task_456)',
+        },
+      ]),
+    ]
+
+    expect(buildTaskClosurePromptContext(messages)).toEqual({
+      toolSummary: 'codex 1次: Background task started: codex (task_456) ✓',
     })
   })
 
