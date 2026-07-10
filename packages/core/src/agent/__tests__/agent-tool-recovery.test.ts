@@ -501,7 +501,7 @@ describe('Agent tool recovery', () => {
             query: 'x.com browser login',
             mode: 'scored',
             options: expect.objectContaining({
-              minScore: 0.3,
+              minScore: 0.7,
             }),
             resultCount: 1,
             results: [
