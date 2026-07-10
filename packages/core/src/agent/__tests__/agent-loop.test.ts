@@ -7,7 +7,6 @@ import type {
   StreamEvent,
   ToolLogger,
 } from '@zero-os/shared'
-import { EMPTY_RESPONSE_RETRY_PROMPT } from '../../constants'
 import { AgentLoop, type ToolExecutor } from '../agent-loop'
 
 class ScriptedAdapter implements ProviderAdapter {
@@ -667,11 +666,47 @@ describe('AgentLoop', () => {
 
     const messages = await loop.run('hello', [])
 
-    expect(messages.map((message) => message.role)).toEqual(['user', 'user', 'assistant'])
-    expect(messages[1]?.messageType).toBe('control')
-    expect(messages[1]?.controlKind).toBe('empty_retry')
-    expect(messages[1]?.content).toEqual([{ type: 'text', text: EMPTY_RESPONSE_RETRY_PROMPT }])
+    expect(messages.map((message) => message.role)).toEqual(['user', 'assistant'])
+    expect(messages.some((message) => message.controlKind === 'empty_retry')).toBe(false)
     expect(messages.at(-1)?.content).toEqual([{ type: 'text', text: 'recovered' }])
+  })
+
+  test('ends normally after repeated completed responses with no assistant content', async () => {
+    const emptyResponse: CompletionResponse = {
+      id: 'resp_empty',
+      content: [],
+      stopReason: 'end_turn',
+      usage: { input: 0, output: 0 },
+      model: 'fake-model',
+    }
+    const loop = createLoop(
+      [emptyResponse, { ...emptyResponse, id: 'resp_empty_again' }],
+      createNoopExecutor(),
+    )
+
+    const messages = await loop.run('hello', [])
+
+    expect(messages.map((message) => message.role)).toEqual(['user'])
+    expect(messages.some((message) => message.controlKind === 'empty_retry')).toBe(false)
+  })
+
+  test('rejects empty responses that did not complete the turn', async () => {
+    const loop = createLoop(
+      [
+        {
+          id: 'resp_truncated',
+          content: [],
+          stopReason: 'max_tokens',
+          usage: { input: 1, output: 0 },
+          model: 'fake-model',
+        },
+      ],
+      createNoopExecutor(),
+    )
+
+    await expect(loop.run('hello', [])).rejects.toThrow(
+      'LLM returned empty response (stopReason=max_tokens)',
+    )
   })
 
   test("supports onEmptyResponse returning 'break' to end normally", async () => {

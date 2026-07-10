@@ -1,4 +1,3 @@
-import { computeCost } from '../cost'
 import type { ModelPricing } from '@zero-os/shared'
 import type {
   CompletionRequest,
@@ -6,6 +5,7 @@ import type {
   StreamEvent,
   TokenUsage,
 } from '@zero-os/shared'
+import { computeCost } from '../cost'
 import type { ProviderAdapter } from './base'
 
 export interface UsageRecorder {
@@ -34,6 +34,10 @@ export class TrackedAdapter implements ProviderAdapter {
 
   get apiType(): string {
     return this.inner.apiType
+  }
+
+  get supportsNonStreamingFallback(): boolean | undefined {
+    return this.inner.supportsNonStreamingFallback
   }
 
   async complete(req: CompletionRequest): Promise<CompletionResponse> {

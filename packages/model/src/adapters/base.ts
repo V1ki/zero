@@ -20,6 +20,13 @@ export interface ProviderAdapter {
   readonly apiType: string
 
   /**
+   * Whether `complete()` uses a transport distinct from `stream()` and can therefore act as a
+   * meaningful fallback after a stream failure. Defaults to true when omitted; wrappers must
+   * preserve or conservatively aggregate the inner adapters' value.
+   */
+  readonly supportsNonStreamingFallback?: boolean
+
+  /**
    * Send a completion request and return the full response.
    */
   complete(req: CompletionRequest): Promise<CompletionResponse>

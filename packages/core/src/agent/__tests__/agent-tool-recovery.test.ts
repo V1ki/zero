@@ -71,17 +71,10 @@ class EmptyResponseRecoveryAdapter implements ProviderAdapter {
   readonly apiType = 'fake-empty'
   completeCalls = 0
 
-  async complete(req: CompletionRequest): Promise<CompletionResponse> {
+  async complete(_req: CompletionRequest): Promise<CompletionResponse> {
     this.completeCalls++
-    const lastUserText =
-      [...req.messages]
-        .reverse()
-        .find((message) => message.role === 'user')
-        ?.content.filter((block) => block.type === 'text')
-        .map((block) => (block as { type: 'text'; text: string }).text)
-        .join('') ?? ''
 
-    if (lastUserText.includes('Your previous reply was empty.')) {
+    if (this.completeCalls > 1) {
       return {
         id: 'resp_recovered',
         content: [{ type: 'text', text: 'recovered after empty response' }],
@@ -402,6 +395,7 @@ describe('Agent tool recovery', () => {
       { type: 'text', text: 'recovered after empty response' },
     ])
     expect(messages.some((m) => m.role === 'assistant' && m.content.length === 0)).toBe(false)
+    expect(messages.some((m) => m.controlKind === 'empty_retry')).toBe(false)
     expect(adapter.completeCalls).toBeGreaterThanOrEqual(2)
   })
 

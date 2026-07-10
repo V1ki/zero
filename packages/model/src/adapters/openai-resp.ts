@@ -21,6 +21,8 @@ import { iterResponsesSseEvents } from './openai-resp-stream'
 import { mapOpenAIResponsesStreamEvents } from './openai-resp-stream'
 
 const DEFAULT_CHATGPT_INSTRUCTIONS = 'You are a helpful assistant.'
+// Applied independently to each fetch/read wait; this is not a whole-request deadline.
+const DEFAULT_CHATGPT_STREAM_IDLE_TIMEOUT_MS = 5 * 60_000
 const CHATGPT_PREEMPTIVE_REFRESH_WINDOW_MS = 15 * 60_000
 const CHATGPT_MIN_VALIDITY_MS = 60_000
 const CHATGPT_REAUTH_MESSAGE =
@@ -35,14 +37,16 @@ const CHATGPT_MISSING_CREDENTIALS_MESSAGE =
  */
 export class OpenAIResponsesAdapter implements ProviderAdapter {
   readonly apiType = 'openai_responses'
+  readonly supportsNonStreamingFallback: boolean
   private client: OpenAI | null
   private modelId: string
   private isChatGptProvider: boolean
   private chatGptTransport?: ChatGptResponsesTransport
 
-  constructor(config: AdapterConfig) {
+  constructor(config: AdapterConfig & { chatGptStreamIdleTimeoutMs?: number }) {
     this.isChatGptProvider =
       config.managedOAuthProvider === 'chatgpt' || config.providerName === 'chatgpt'
+    this.supportsNonStreamingFallback = !this.isChatGptProvider
     this.client = this.isChatGptProvider
       ? null
       : new OpenAI({
@@ -57,6 +61,7 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
         oauthToken: config.oauthToken,
         oauthTokenProvider: config.oauthTokenProvider,
         oauthTokenRefresher: config.oauthTokenRefresher,
+        idleTimeoutMs: resolveChatGptStreamIdleTimeoutMs(config.chatGptStreamIdleTimeoutMs),
       })
     }
   }
@@ -158,17 +163,21 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
 
   private async *streamFromChatGpt(req: CompletionRequest): AsyncIterable<StreamEvent> {
     const transport = this.getChatGptTransport()
-    const response = await transport.requestResponse(req)
+    const request = await transport.requestResponse(req)
 
-    if (!response.ok) {
-      const error = await response.text()
-      throw new Error(`ChatGPT request failed: ${response.status} ${error}`)
+    try {
+      if (!request.response.ok) {
+        const error = await request.readText()
+        throw buildChatGptHttpError(request.response.status, error)
+      }
+
+      yield* mapOpenAIResponsesStreamEvents(request.iterSseEvents(), {
+        doneReasonMode: 'response_status',
+        parseUsage: parseOpenAIResponseUsage,
+      })
+    } finally {
+      request.close()
     }
-
-    yield* mapOpenAIResponsesStreamEvents(transport.iterSseEvents(response), {
-      doneReasonMode: 'response_status',
-      parseUsage: parseOpenAIResponseUsage,
-    })
   }
 
   private buildChatGptBody(req: CompletionRequest) {
@@ -189,6 +198,7 @@ interface ChatGptResponsesTransportOptions {
   oauthToken?: string
   oauthTokenProvider?: OAuthTokenProvider
   oauthTokenRefresher?: OAuthTokenRefresher
+  idleTimeoutMs: number
 }
 
 class ChatGptResponsesTransport {
@@ -213,35 +223,36 @@ class ChatGptResponsesTransport {
   }
 
   async fetchEvents(req: CompletionRequest): Promise<ChatGptSseEvent[]> {
-    const response = await this.requestResponse(req)
+    const request = await this.requestResponse(req)
 
-    if (!response.ok) {
-      const error = await response.text()
-      throw new Error(`ChatGPT request failed: ${response.status} ${error}`)
-    }
+    try {
+      if (!request.response.ok) {
+        const error = await request.readText()
+        throw buildChatGptHttpError(request.response.status, error)
+      }
 
-    const events: ChatGptSseEvent[] = []
-    for await (const event of this.iterSseEvents(response)) {
-      events.push(event)
+      const events: ChatGptSseEvent[] = []
+      for await (const event of request.iterSseEvents()) {
+        events.push(event)
+      }
+      return events
+    } finally {
+      request.close()
     }
-    return events
   }
 
-  async requestResponse(req: CompletionRequest): Promise<Response> {
+  async requestResponse(req: CompletionRequest): Promise<TimedChatGptResponse> {
     const session = await this.getSession()
-    let response = await this.sendRequest(req, session)
+    let request = await this.sendRequest(req, session)
 
-    if (response.status !== 401 || !this.options.oauthTokenRefresher) {
-      return response
+    if (request.response.status !== 401 || !this.options.oauthTokenRefresher) {
+      return request
     }
 
+    request.close()
     await this.options.oauthTokenRefresher('unauthorized')
-    response = await this.sendRequest(req, this.getRequiredSession())
-    return response
-  }
-
-  async *iterSseEvents(response: Response): AsyncIterable<ChatGptSseEvent> {
-    yield* iterResponsesSseEvents(response)
+    request = await this.sendRequest(req, this.getRequiredSession())
+    return request
   }
 
   private stripModel(model: string): string {
@@ -251,19 +262,31 @@ class ChatGptResponsesTransport {
   private async sendRequest(
     req: CompletionRequest,
     session: ChatGptOAuthSession,
-  ): Promise<Response> {
-    return fetch(`${this.options.baseUrl}/responses`, {
-      method: 'POST',
-      headers: {
-        Authorization: `${getChatGptAuthorizationScheme(session.tokenType)} ${session.accessToken}`,
-        'chatgpt-account-id': session.accountId,
-        'OpenAI-Beta': 'responses=experimental',
-        originator: 'zero-os',
-        accept: 'text/event-stream',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify(this.buildBody(req)),
-    })
+  ): Promise<TimedChatGptResponse> {
+    const idleTimer = new ChatGptIdleTimer(this.options.idleTimeoutMs)
+
+    try {
+      const response = await idleTimer.waitFor(
+        fetch(`${this.options.baseUrl}/responses`, {
+          method: 'POST',
+          headers: {
+            Authorization: `${getChatGptAuthorizationScheme(session.tokenType)} ${session.accessToken}`,
+            'chatgpt-account-id': session.accountId,
+            'OpenAI-Beta': 'responses=experimental',
+            originator: 'zero-os',
+            accept: 'text/event-stream',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify(this.buildBody(req)),
+          signal: idleTimer.signal,
+        }),
+        'ChatGPT request',
+      )
+      return new TimedChatGptResponse(response, idleTimer)
+    } catch (error) {
+      idleTimer.close()
+      throw error
+    }
   }
 
   private async getSession(): Promise<ChatGptOAuthSession> {
@@ -309,6 +332,105 @@ class ChatGptResponsesTransport {
       }),
     ).toString()
   }
+}
+
+class TimedChatGptResponse {
+  constructor(
+    readonly response: Response,
+    private readonly idleTimer: ChatGptIdleTimer,
+  ) {}
+
+  readText(): Promise<string> {
+    return this.idleTimer.waitFor(this.response.text(), 'ChatGPT response body')
+  }
+
+  async *iterSseEvents(): AsyncIterable<ChatGptSseEvent> {
+    const iterator = iterResponsesSseEvents(this.response, {
+      requireCompleted: true,
+      signal: this.idleTimer.signal,
+    })[Symbol.asyncIterator]()
+
+    try {
+      while (true) {
+        const result = await this.idleTimer.waitFor(iterator.next(), 'ChatGPT response stream')
+        if (result.done) return
+        yield result.value
+        if (result.value.type === 'response.completed') return
+      }
+    } finally {
+      try {
+        await iterator.return?.()
+      } catch {
+        // Preserve the transport or protocol error that caused iteration to stop.
+      }
+      this.close()
+    }
+  }
+
+  close(): void {
+    this.idleTimer.close()
+  }
+}
+
+class ChatGptIdleTimer {
+  readonly signal: AbortSignal
+  private readonly controller = new AbortController()
+
+  constructor(private readonly idleTimeoutMs: number) {
+    this.signal = this.controller.signal
+  }
+
+  waitFor<T>(promise: Promise<T>, label: string): Promise<T> {
+    return withChatGptIdleTimeout(promise, this.idleTimeoutMs, label, () => this.close())
+  }
+
+  close(): void {
+    if (!this.controller.signal.aborted) {
+      this.controller.abort()
+    }
+  }
+}
+
+function withChatGptIdleTimeout<T>(
+  promise: Promise<T>,
+  idleTimeoutMs: number,
+  label: string,
+  onTimeout: () => void,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(buildChatGptIdleTimeoutError(label, idleTimeoutMs))
+      onTimeout()
+    }, idleTimeoutMs)
+  })
+
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
+}
+
+function buildChatGptIdleTimeoutError(label: string, idleTimeoutMs: number): Error {
+  return Object.assign(new Error(`${label} idle timed out after ${idleTimeoutMs}ms`), {
+    retryable: true,
+    error_type: 'stream_idle_timeout',
+  })
+}
+
+function buildChatGptHttpError(status: number, body: string): Error {
+  return Object.assign(new Error(`ChatGPT request failed: ${status} ${body}`), {
+    status,
+    retryable: status === 408 || status === 429 || status >= 500,
+    error_type: 'http_error',
+  })
+}
+
+function resolveChatGptStreamIdleTimeoutMs(idleTimeoutMs?: number): number {
+  if (idleTimeoutMs === undefined) return DEFAULT_CHATGPT_STREAM_IDLE_TIMEOUT_MS
+  if (!Number.isFinite(idleTimeoutMs) || idleTimeoutMs <= 0) {
+    throw new Error('chatGptStreamIdleTimeoutMs must be a positive finite number')
+  }
+  return idleTimeoutMs
 }
 
 function isChatGptSessionExpiring(session: ChatGptOAuthSession, minValidityMs: number): boolean {

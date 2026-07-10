@@ -17,7 +17,6 @@ import {
   now,
   toErrorMessage,
 } from '@zero-os/shared'
-import { EMPTY_RESPONSE_RETRY_PROMPT } from '../constants'
 import { CONTEXT_PARAMS } from './params'
 
 export type ToolExecutionResult = ToolResult
@@ -136,6 +135,7 @@ interface StreamErrorDetails {
   status?: number
   requestId?: string
   errorType?: string
+  retryable?: boolean
 }
 
 interface CompleteFromStreamOptions {
@@ -320,19 +320,25 @@ function getStreamErrorDetails(streamErr: unknown): StreamErrorDetails {
           ? data.requestId
           : anthropicPayload?.requestId,
     errorType: typeof data.error_type === 'string' ? data.error_type : anthropicPayload?.errorType,
+    retryable: typeof data.retryable === 'boolean' ? data.retryable : undefined,
   }
 }
 
 function isTransientStreamError(errorDetails: StreamErrorDetails): boolean {
   const transientTypes = ['overloaded_error', 'api_error']
   const transientStatuses = [429, 503, 529]
+  if (errorDetails.retryable === true) return true
   if (errorDetails.errorType && transientTypes.includes(errorDetails.errorType)) return true
   if (errorDetails.status && transientStatuses.includes(errorDetails.status)) return true
   return false
 }
 
-function shouldSkipStreamFallback(apiType: string): boolean {
-  return apiType === 'anthropic_messages' || apiType === 'anthropic-deepseek'
+function shouldSkipStreamFallback(adapter: ProviderAdapter): boolean {
+  return (
+    adapter.supportsNonStreamingFallback === false ||
+    adapter.apiType === 'anthropic_messages' ||
+    adapter.apiType === 'anthropic-deepseek'
+  )
 }
 
 function mapFinishReason(reason?: string): CompletionResponse['stopReason'] {
@@ -444,37 +450,42 @@ export class AgentLoop {
 
     let emptyResponseRetryCount = 0
 
-    while (this.hasRemainingIterations(ctx.iteration)) {
+    iterationLoop: while (this.hasRemainingIterations(ctx.iteration)) {
       ctx.iteration += 1
       const request = this.buildRequest(messages, ctx)
-      const response = await this.complete(request, ctx)
+      let response = await this.complete(request, ctx)
 
-      if (response.content.length === 0) {
+      while (response.content.length === 0) {
         this.config.logger.warn('llm_empty_response', {
           sessionId: this.config.sessionId,
           stopReason: response.stopReason,
           retryCount: emptyResponseRetryCount,
         })
 
+        if (response.stopReason !== 'end_turn') {
+          throw new Error(`LLM returned empty response (stopReason=${response.stopReason})`)
+        }
+
         const decision =
           this.hooks.onEmptyResponse?.(emptyResponseRetryCount, ctx) ??
-          emptyResponseRetryCount < CONTEXT_PARAMS.completion.maxEmptyResponseRetries
+          (emptyResponseRetryCount < CONTEXT_PARAMS.completion.maxEmptyResponseRetries
+            ? true
+            : 'break')
 
         if (decision === 'break') {
-          break
+          break iterationLoop
         }
 
         if (typeof decision === 'object' && decision.action === 'continue') {
           messages.push(decision.continuationMessage)
           this.notifyNewMessage(decision.continuationMessage, ctx)
-          continue
+          continue iterationLoop
         }
 
         if (decision === true) {
-          const retryMsg = this.buildPlainUserMessage(EMPTY_RESPONSE_RETRY_PROMPT)
-          messages.push(retryMsg)
-          this.notifyNewMessage(retryMsg, ctx)
           emptyResponseRetryCount++
+          // Replay the same request inside this iteration without synthesizing conversation history.
+          response = await this.complete(request, ctx)
           continue
         }
 
@@ -597,18 +608,6 @@ export class AgentLoop {
     }
   }
 
-  private buildPlainUserMessage(text: string): Message {
-    return {
-      id: generateId(),
-      sessionId: this.config.sessionId,
-      role: 'user',
-      messageType: 'control',
-      controlKind: 'empty_retry',
-      content: [{ type: 'text', text }],
-      createdAt: now(),
-    }
-  }
-
   private buildAssistantMessage(response: CompletionResponse, ctx: LoopIterationContext): Message {
     const content = this.hooks.filterAssistantContent?.(response.content, ctx) ?? response.content
     this.assertValidDeepSeekThinkingContent(content)
@@ -701,13 +700,10 @@ async function completeWithStreamFallback({
   request,
   ctx,
 }: CompleteAgentLoopRequestOptions): Promise<CompletionResponse> {
-  const maxStreamRetries = 1
   const maxTransientRetries = 3
-  let lastStreamErr: unknown
   let transientAttempts = 0
-  let emptyStreamAttempts = 0
 
-  for (let attempt = 0; attempt <= maxStreamRetries + maxTransientRetries; attempt++) {
+  while (true) {
     try {
       const streamed = await completeFromStream({
         adapter: config.adapter,
@@ -715,30 +711,16 @@ async function completeWithStreamFallback({
         ctx,
         onTextDelta: hooks.onTextDelta,
       })
-      if (streamed.content.length === 0) {
-        if (emptyStreamAttempts < maxStreamRetries) {
-          emptyStreamAttempts++
-          config.logger.warn('llm_stream_empty_retry', {
-            sessionId: config.sessionId,
-            apiType: config.adapter.apiType,
-            attempt: emptyStreamAttempts,
-          })
-          continue
-        }
-
-        if (!shouldSkipStreamFallback(config.adapter.apiType)) {
-          config.logger.warn('llm_stream_empty_fallback_to_complete', {
-            sessionId: config.sessionId,
-            apiType: config.adapter.apiType,
-          })
-          return await config.adapter.complete({ ...request, stream: false })
-        }
-
+      if (streamed.content.length > 0 || shouldSkipStreamFallback(config.adapter)) {
         return streamed
       }
-      return streamed
+
+      config.logger.warn('llm_stream_empty_fallback_to_complete', {
+        sessionId: config.sessionId,
+        apiType: config.adapter.apiType,
+      })
+      return await config.adapter.complete({ ...request, stream: false })
     } catch (streamErr) {
-      lastStreamErr = streamErr
       const errorDetails = getStreamErrorDetails(streamErr)
 
       if (transientAttempts < maxTransientRetries && isTransientStreamError(errorDetails)) {
@@ -759,7 +741,7 @@ async function completeWithStreamFallback({
         continue
       }
 
-      const fallbackSkipped = shouldSkipStreamFallback(config.adapter.apiType)
+      const fallbackSkipped = shouldSkipStreamFallback(config.adapter)
       config.logger.warn('llm_stream_fallback_to_complete', {
         sessionId: config.sessionId,
         apiType: config.adapter.apiType,
@@ -775,8 +757,6 @@ async function completeWithStreamFallback({
       return await config.adapter.complete({ ...request, stream: false })
     }
   }
-
-  throw lastStreamErr
 }
 
 function resolveTransientRetryDelay(config: AgentLoopConfig, attempt: number): number {

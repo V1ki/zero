@@ -34,6 +34,10 @@ export class ModelPoolAdapter implements ProviderAdapter {
   readonly apiType = 'model_pool'
   private readonly selector: ModelPoolMemberSelector
 
+  get supportsNonStreamingFallback(): boolean {
+    return this.members.every((member) => member.adapter.supportsNonStreamingFallback !== false)
+  }
+
   constructor(
     private readonly logicalLabel: string,
     private readonly members: ModelPoolAdapterMember[],

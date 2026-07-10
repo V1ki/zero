@@ -82,6 +82,14 @@ function createPool(
 }
 
 describe('ModelPoolAdapter', () => {
+  test('disables stream fallback when any member lacks a distinct complete transport', () => {
+    const first = new FakeAdapter('personal')
+    const second = new FakeAdapter('work')
+    Object.assign(first, { supportsNonStreamingFallback: false })
+
+    expect(createPool(first, second).supportsNonStreamingFallback).toBe(false)
+  })
+
   test('sticks to the selected member for the same session', async () => {
     const first = new FakeAdapter('personal')
     const second = new FakeAdapter('work')

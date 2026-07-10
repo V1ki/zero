@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { CompletionRequest, CompletionResponse, StreamEvent } from '@zero-os/shared'
-import { TrackedAdapter, type UsageRecorder } from '../adapters/tracked'
 import type { ProviderAdapter } from '../adapters/base'
+import { TrackedAdapter, type UsageRecorder } from '../adapters/tracked'
 
 class FakeAdapter implements ProviderAdapter {
   readonly apiType = 'fake-tracked'
@@ -39,6 +39,24 @@ class FakeAdapter implements ProviderAdapter {
 }
 
 describe('TrackedAdapter', () => {
+  test('preserves the inner adapter streaming fallback capability', () => {
+    const inner = new FakeAdapter({
+      id: 'unused',
+      content: [],
+      stopReason: 'end_turn',
+      usage: { input: 0, output: 0 },
+      model: 'unused',
+    })
+    Object.assign(inner, { supportsNonStreamingFallback: false })
+    const adapter = new TrackedAdapter(
+      inner,
+      { record: () => {} },
+      { providerName: 'chatgpt', modelLabel: 'chatgpt/gpt-test' },
+    )
+
+    expect(adapter.supportsNonStreamingFallback).toBe(false)
+  })
+
   test('records completion usage when request meta is present', async () => {
     const recorded: Parameters<UsageRecorder['record']>[0][] = []
     const adapter = new TrackedAdapter(
@@ -189,10 +207,12 @@ describe('TrackedAdapter', () => {
       },
     })
 
-    await expect((async () => {
-      for await (const _event of iterator) {
-      }
-    })()).rejects.toThrow('stream aborted')
+    await expect(
+      (async () => {
+        for await (const _event of iterator) {
+        }
+      })(),
+    ).rejects.toThrow('stream aborted')
     expect(recorded).toEqual([])
   })
 })

@@ -419,7 +419,7 @@ describe('Agent streaming callback', () => {
     expect(warnings.some((w) => w.event === 'llm_stream_fallback_to_complete')).toBe(false)
   })
 
-  test('empty stream retry remains available after a transient retry', async () => {
+  test('completed empty response retry remains available after a transient stream retry', async () => {
     let streamCalls = 0
     const adapter: ProviderAdapter = {
       apiType: 'anthropic_messages' as const,
@@ -446,10 +446,14 @@ describe('Agent streaming callback', () => {
         }
 
         if (streamCalls === 2) {
-          // This yields done without text, causing "stream returned empty content".
+          // A completed response with no assistant content is valid and handled by AgentLoop.
           yield {
             type: 'done' as const,
-            data: { finishReason: 'end_turn', usage: { input: 1, output: 1 }, model: 'claude-test' },
+            data: {
+              finishReason: 'end_turn',
+              usage: { input: 1, output: 1 },
+              model: 'claude-test',
+            },
           }
           return
         }
@@ -481,7 +485,8 @@ describe('Agent streaming callback', () => {
 
     expect(streamCalls).toBe(3)
     expect(text).toBe('recovered after empty retry')
-    expect(warnings.some((w) => w.event === 'llm_stream_empty_retry')).toBe(true)
+    expect(warnings.some((w) => w.event === 'llm_empty_response')).toBe(true)
+    expect(warnings.some((w) => w.event === 'llm_stream_empty_retry')).toBe(false)
     expect(warnings.some((w) => w.event === 'llm_stream_fallback_to_complete')).toBe(false)
   })
 
@@ -509,7 +514,57 @@ describe('Agent streaming callback', () => {
     })
   })
 
-  test('empty stream content retries streaming before giving up', async () => {
+  test('retryable Responses stream errors retry without a duplicate complete fallback', async () => {
+    let streamCalls = 0
+    let completeCalls = 0
+    const streamError = Object.assign(new Error('stream closed before response.completed'), {
+      retryable: true,
+      error_type: 'response_stream_ended',
+    })
+    const adapter: ProviderAdapter = {
+      apiType: 'openai_responses',
+      supportsNonStreamingFallback: false,
+      async complete() {
+        completeCalls++
+        return {
+          id: 'resp-should-not-run',
+          content: [{ type: 'text', text: 'unexpected' }],
+          stopReason: 'end_turn',
+          usage: { input: 1, output: 1 },
+          model: 'gpt-test',
+        }
+      },
+      async *stream() {
+        streamCalls++
+        yield* failStream(streamError)
+      },
+      async healthCheck() {
+        return true
+      },
+    }
+    const warnings: Array<{ event: string; data?: Record<string, unknown> }> = []
+    const agent = createAgent(adapter, {
+      info: () => {},
+      warn: (event, data) => warnings.push({ event, data }),
+      error: () => {},
+    })
+
+    await expect(agent.run(createContext(), 'say hi')).rejects.toThrow(
+      'stream closed before response.completed',
+    )
+
+    expect(streamCalls).toBe(4)
+    expect(completeCalls).toBe(0)
+    expect(
+      warnings.filter((warning) => warning.event === 'llm_stream_transient_retry'),
+    ).toHaveLength(3)
+    expect(warnings.at(-1)).toMatchObject({
+      event: 'llm_stream_fallback_to_complete',
+      data: { fallbackSkipped: true },
+    })
+  })
+
+  test('completed empty response retries once without adding a control message', async () => {
     let streamCalls = 0
     const adapter: ProviderAdapter = {
       apiType: 'anthropic_messages',
@@ -564,12 +619,13 @@ describe('Agent streaming callback', () => {
 
     expect(streamCalls).toBe(2)
     expect(text).toBe('recovered')
-    // Should log the retry warning, not the fallback warning
-    expect(warnings.some((w) => w.event === 'llm_stream_empty_retry')).toBe(true)
+    expect(warnings.some((w) => w.event === 'llm_empty_response')).toBe(true)
+    expect(warnings.some((w) => w.event === 'llm_stream_empty_retry')).toBe(false)
     expect(warnings.some((w) => w.event === 'llm_stream_fallback_to_complete')).toBe(false)
   })
 
-  test('Anthropic empty stream exhausts stream retries, then surfaces as an empty response error', async () => {
+  test('repeated completed empty responses end normally without a fallback request', async () => {
+    let streamCalls = 0
     const adapter: ProviderAdapter = {
       apiType: 'anthropic_messages',
       async complete() {
@@ -582,7 +638,7 @@ describe('Agent streaming callback', () => {
         }
       },
       async *stream() {
-        // Always return empty
+        streamCalls++
         yield {
           type: 'done' as const,
           data: { finishReason: 'end_turn', usage: { input: 1, output: 0 }, model: 'claude-test' },
@@ -600,11 +656,12 @@ describe('Agent streaming callback', () => {
       error: () => {},
     })
 
-    await expect(agent.run(createContext(), 'say hi')).rejects.toThrow(
-      'LLM returned empty response (stopReason=end_turn)',
-    )
-    // Stream retry warning remains, but the final handling now happens in run()
-    expect(warnings.some((w) => w.event === 'llm_stream_empty_retry')).toBe(true)
+    const messages = await agent.run(createContext(), 'say hi')
+
+    expect(streamCalls).toBe(2)
+    expect(messages.some((message) => message.role === 'assistant')).toBe(false)
+    expect(messages.some((message) => message.controlKind === 'empty_retry')).toBe(false)
+    expect(warnings.some((w) => w.event === 'llm_stream_empty_retry')).toBe(false)
     expect(warnings.some((w) => w.event === 'llm_empty_response')).toBe(true)
     expect(warnings.some((w) => w.event === 'llm_stream_fallback_to_complete')).toBe(false)
   })

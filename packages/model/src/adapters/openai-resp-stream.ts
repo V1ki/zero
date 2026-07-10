@@ -12,38 +12,174 @@ interface OpenAIResponsesStreamMapperOptions {
   parseUsage(usage?: ResponseUsageLike | null): TokenUsage
 }
 
-export async function* iterResponsesSseEvents(response: Response): AsyncIterable<ChatGptSseEvent> {
+interface ResponsesSseIteratorOptions {
+  requireCompleted?: boolean
+  signal?: AbortSignal
+}
+
+interface ResponsesStreamErrorOptions {
+  retryable: boolean
+  status?: number
+  requestId?: string
+  errorType?: string
+}
+
+export class ResponsesStreamError extends Error {
+  readonly retryable: boolean
+  readonly status?: number
+  readonly request_id?: string
+  readonly error_type?: string
+
+  constructor(message: string, options: ResponsesStreamErrorOptions) {
+    super(message)
+    this.name = 'ResponsesStreamError'
+    this.retryable = options.retryable
+    this.status = options.status
+    this.request_id = options.requestId
+    this.error_type = options.errorType
+  }
+}
+
+export async function* iterResponsesSseEvents(
+  response: Response,
+  options: ResponsesSseIteratorOptions = {},
+): AsyncIterable<ChatGptSseEvent> {
   const reader = response.body?.getReader()
-  if (!reader) return
+  if (!reader) {
+    if (options.requireCompleted) {
+      throw buildPrematureStreamEndError('body was empty')
+    }
+    return
+  }
 
   const decoder = new TextDecoder()
   let buffer = ''
-
-  while (true) {
-    const { value, done } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-
-    while (true) {
-      const boundary = buffer.indexOf('\n\n')
-      if (boundary === -1) break
-      const rawEvent = buffer.slice(0, boundary)
-      buffer = buffer.slice(boundary + 2)
-
-      const data = rawEvent
-        .split('\n')
-        .filter((line) => line.startsWith('data:'))
-        .map((line) => line.slice(5).trim())
-        .join('\n')
-        .trim()
-
-      if (!data || data === '[DONE]') continue
-
-      try {
-        yield JSON.parse(data) as ChatGptSseEvent
-      } catch {}
-    }
+  let sawCompleted = false
+  const cancelReader = () => {
+    void reader.cancel(options.signal?.reason).catch(() => {})
   }
+
+  if (options.signal?.aborted) {
+    cancelReader()
+  } else {
+    options.signal?.addEventListener('abort', cancelReader, { once: true })
+  }
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      while (true) {
+        const boundary = buffer.indexOf('\n\n')
+        if (boundary === -1) break
+        const rawEvent = buffer.slice(0, boundary)
+        buffer = buffer.slice(boundary + 2)
+
+        const event = parseResponsesSseEvent(rawEvent)
+        if (!event) continue
+        if (options.requireCompleted) {
+          const terminalError = buildTerminalStreamError(event)
+          if (terminalError) throw terminalError
+        }
+
+        yield event
+        if (event.type === 'response.completed') {
+          sawCompleted = true
+          return
+        }
+      }
+    }
+
+    buffer += decoder.decode()
+    const tailEvent = parseResponsesSseEvent(buffer)
+    if (tailEvent) {
+      if (options.requireCompleted) {
+        const terminalError = buildTerminalStreamError(tailEvent)
+        if (terminalError) throw terminalError
+      }
+
+      yield tailEvent
+      if (tailEvent.type === 'response.completed') {
+        sawCompleted = true
+        return
+      }
+    }
+  } finally {
+    options.signal?.removeEventListener('abort', cancelReader)
+    reader.releaseLock()
+  }
+
+  if (options.requireCompleted && !sawCompleted) {
+    throw buildPrematureStreamEndError('stream closed before response.completed')
+  }
+}
+
+function parseResponsesSseEvent(rawEvent: string): ChatGptSseEvent | undefined {
+  const data = rawEvent
+    .split('\n')
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).trim())
+    .join('\n')
+    .trim()
+
+  if (!data || data === '[DONE]') return undefined
+
+  try {
+    return JSON.parse(data) as ChatGptSseEvent
+  } catch {
+    return undefined
+  }
+}
+
+function buildTerminalStreamError(event: ChatGptSseEvent): ResponsesStreamError | undefined {
+  if (event.type === 'response.incomplete') {
+    const details = getRecordValue(event.response ?? {}, 'incomplete_details')
+    const reason = details ? getRecordString(details, 'reason') : undefined
+    return new ResponsesStreamError(`ChatGPT response incomplete: ${reason ?? 'unknown reason'}`, {
+      retryable: true,
+      errorType: 'response_incomplete',
+    })
+  }
+
+  if (event.type !== 'response.failed') return undefined
+
+  const response = event.response ?? {}
+  const error = getRecordValue(response, 'error') ?? {}
+  const code = getRecordString(error, 'code') ?? getRecordString(error, 'type')
+  const message = getRecordString(error, 'message') ?? code ?? 'unknown error'
+  const status = getRecordNumber(error, 'status') ?? getRecordNumber(response, 'status_code')
+  const requestId = getRecordString(response, 'id')
+
+  return new ResponsesStreamError(`ChatGPT response failed: ${message}`, {
+    retryable: !isNonRetryableResponseFailure(code),
+    status,
+    requestId,
+    errorType: code ?? 'response_failed',
+  })
+}
+
+function buildPrematureStreamEndError(reason: string): ResponsesStreamError {
+  return new ResponsesStreamError(`ChatGPT response ${reason}`, {
+    retryable: true,
+    errorType: 'response_stream_ended',
+  })
+}
+
+function isNonRetryableResponseFailure(code?: string): boolean {
+  return (
+    code !== undefined &&
+    [
+      'bio_policy',
+      'content_policy_violation',
+      'context_length_exceeded',
+      'insufficient_quota',
+      'invalid_prompt',
+      'invalid_request_error',
+      'usage_not_included',
+    ].includes(code)
+  )
 }
 
 export async function* mapOpenAIResponsesStreamEvents(
@@ -171,4 +307,9 @@ function getRecordValue<T extends Record<string, unknown>>(
 function getRecordString(record: Record<string, unknown>, key: string): string | undefined {
   const value = record[key]
   return typeof value === 'string' ? value : undefined
+}
+
+function getRecordNumber(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key]
+  return typeof value === 'number' ? value : undefined
 }

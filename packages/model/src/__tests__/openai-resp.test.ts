@@ -786,4 +786,355 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
       globalThis.fetch = originalFetch
     }
   })
+
+  test('ChatGPT requests idle-time out and abort when fetch never settles', async () => {
+    const chatgptAdapter = new OpenAIResponsesAdapter({
+      providerName: 'chatgpt',
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
+      modelConfig: {
+        modelId: 'gpt-5.4',
+        maxContext: 128000,
+        maxOutput: 8192,
+        capabilities: [],
+        tags: [],
+      },
+      oauthToken: makeChatGptSessionJson(
+        'acct_123',
+        Date.now() + 2 * 60 * 60 * 1000,
+        'access-token',
+      ),
+      chatGptStreamIdleTimeoutMs: 20,
+    })
+
+    const originalFetch = globalThis.fetch
+    const requestState: { signal?: AbortSignal } = {}
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestState.signal = init?.signal ?? undefined
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('request aborted')))
+      })
+    }) as unknown as typeof fetch
+
+    try {
+      await expect(chatgptAdapter.complete({ messages: [], stream: false })).rejects.toThrow(
+        'ChatGPT request idle timed out after 20ms',
+      )
+      expect(requestState.signal?.aborted).toBe(true)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('ChatGPT requests idle-time out when the SSE response body never settles', async () => {
+    const chatgptAdapter = new OpenAIResponsesAdapter({
+      providerName: 'chatgpt',
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
+      modelConfig: {
+        modelId: 'gpt-5.4',
+        maxContext: 128000,
+        maxOutput: 8192,
+        capabilities: [],
+        tags: [],
+      },
+      oauthToken: makeChatGptSessionJson(
+        'acct_123',
+        Date.now() + 2 * 60 * 60 * 1000,
+        'access-token',
+      ),
+      chatGptStreamIdleTimeoutMs: 20,
+    })
+
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(
+        new ReadableStream({
+          pull: () => new Promise<void>(() => {}),
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        },
+      )) as unknown as typeof fetch
+
+    try {
+      await expect(chatgptAdapter.complete({ messages: [], stream: false })).rejects.toThrow(
+        'ChatGPT response stream idle timed out after 20ms',
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('ChatGPT completes when response.completed arrives before the SSE body closes', async () => {
+    const chatgptAdapter = new OpenAIResponsesAdapter({
+      providerName: 'chatgpt',
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
+      modelConfig: {
+        modelId: 'gpt-5.4',
+        maxContext: 128000,
+        maxOutput: 8192,
+        capabilities: [],
+        tags: [],
+      },
+      oauthToken: makeChatGptSessionJson(
+        'acct_123',
+        Date.now() + 2 * 60 * 60 * 1000,
+        'access-token',
+      ),
+      chatGptStreamIdleTimeoutMs: 100,
+    })
+
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      const encoder = new TextEncoder()
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                [
+                  'data: {"type":"response.output_text.delta","delta":"done"}',
+                  '',
+                  'data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.4","status":"completed","usage":{}}}',
+                  '',
+                  '',
+                ].join('\n'),
+              ),
+            )
+          },
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        },
+      )
+    }) as unknown as typeof fetch
+
+    try {
+      const response = await chatgptAdapter.complete({ messages: [], stream: false })
+      expect(response.content).toEqual([{ type: 'text', text: 'done' }])
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('ChatGPT resets the idle timeout after each SSE event', async () => {
+    const chatgptAdapter = new OpenAIResponsesAdapter({
+      providerName: 'chatgpt',
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
+      modelConfig: {
+        modelId: 'gpt-5.4',
+        maxContext: 128000,
+        maxOutput: 8192,
+        capabilities: [],
+        tags: [],
+      },
+      oauthToken: makeChatGptSessionJson(
+        'acct_123',
+        Date.now() + 2 * 60 * 60 * 1000,
+        'access-token',
+      ),
+      chatGptStreamIdleTimeoutMs: 100,
+    })
+
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      const encoder = new TextEncoder()
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode('data: {"type":"response.created"}\n\n'))
+            setTimeout(() => {
+              controller.enqueue(
+                encoder.encode(
+                  'data: {"type":"response.output_text.delta","delta":"still working"}\n\n',
+                ),
+              )
+            }, 60)
+            setTimeout(() => {
+              controller.enqueue(
+                encoder.encode(
+                  'data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.4","status":"completed","usage":{}}}\n\n',
+                ),
+              )
+            }, 120)
+          },
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        },
+      )
+    }) as unknown as typeof fetch
+
+    try {
+      const response = await chatgptAdapter.complete({ messages: [], stream: false })
+      expect(response.content).toEqual([{ type: 'text', text: 'still working' }])
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('ChatGPT rejects an SSE stream that closes before response.completed', async () => {
+    const chatgptAdapter = new OpenAIResponsesAdapter({
+      providerName: 'chatgpt',
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
+      modelConfig: {
+        modelId: 'gpt-5.4',
+        maxContext: 128000,
+        maxOutput: 8192,
+        capabilities: [],
+        tags: [],
+      },
+      oauthToken: makeChatGptSessionJson(
+        'acct_123',
+        Date.now() + 2 * 60 * 60 * 1000,
+        'access-token',
+      ),
+    })
+
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response('data: {"type":"response.output_text.delta","delta":"partial"}\n\n', {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })) as unknown as typeof fetch
+
+    try {
+      await expect(chatgptAdapter.complete({ messages: [], stream: false })).rejects.toThrow(
+        'ChatGPT response stream closed before response.completed',
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('ChatGPT surfaces response.incomplete instead of treating it as an empty completion', async () => {
+    const chatgptAdapter = new OpenAIResponsesAdapter({
+      providerName: 'chatgpt',
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
+      modelConfig: {
+        modelId: 'gpt-5.4',
+        maxContext: 128000,
+        maxOutput: 8192,
+        capabilities: [],
+        tags: [],
+      },
+      oauthToken: makeChatGptSessionJson(
+        'acct_123',
+        Date.now() + 2 * 60 * 60 * 1000,
+        'access-token',
+      ),
+    })
+
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(
+        'data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}\n\n',
+        {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        },
+      )) as unknown as typeof fetch
+
+    try {
+      await expect(chatgptAdapter.complete({ messages: [], stream: false })).rejects.toThrow(
+        'ChatGPT response incomplete: max_output_tokens',
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('ChatGPT surfaces response.failed with its retry classification', async () => {
+    const chatgptAdapter = new OpenAIResponsesAdapter({
+      providerName: 'chatgpt',
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
+      modelConfig: {
+        modelId: 'gpt-5.4',
+        maxContext: 128000,
+        maxOutput: 8192,
+        capabilities: [],
+        tags: [],
+      },
+      oauthToken: makeChatGptSessionJson(
+        'acct_123',
+        Date.now() + 2 * 60 * 60 * 1000,
+        'access-token',
+      ),
+    })
+
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(
+        'data: {"type":"response.failed","response":{"id":"resp_failed","error":{"code":"invalid_prompt","message":"request rejected"}}}\n\n',
+        {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        },
+      )) as unknown as typeof fetch
+
+    try {
+      let caught: unknown
+      try {
+        await chatgptAdapter.complete({ messages: [], stream: false })
+      } catch (error) {
+        caught = error
+      }
+
+      expect(caught).toMatchObject({
+        message: 'ChatGPT response failed: request rejected',
+        retryable: false,
+        request_id: 'resp_failed',
+        error_type: 'invalid_prompt',
+      })
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('ChatGPT accepts response.completed with no assistant content', async () => {
+    const chatgptAdapter = new OpenAIResponsesAdapter({
+      providerName: 'chatgpt',
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
+      modelConfig: {
+        modelId: 'gpt-5.4',
+        maxContext: 128000,
+        maxOutput: 8192,
+        capabilities: [],
+        tags: [],
+      },
+      oauthToken: makeChatGptSessionJson(
+        'acct_123',
+        Date.now() + 2 * 60 * 60 * 1000,
+        'access-token',
+      ),
+    })
+
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(
+        'data: {"type":"response.completed","response":{"id":"resp_empty","model":"gpt-5.4","status":"completed","usage":{}}}\n\n',
+        {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        },
+      )) as unknown as typeof fetch
+
+    try {
+      const response = await chatgptAdapter.complete({ messages: [], stream: false })
+      expect(response.content).toEqual([])
+      expect(response.stopReason).toBe('end_turn')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
 })

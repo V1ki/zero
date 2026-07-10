@@ -1198,7 +1198,7 @@ function handleEmptyResponse(
     return 'break'
   }
 
-  return retryCount < CONTEXT_PARAMS.completion.maxEmptyResponseRetries
+  return retryCount < CONTEXT_PARAMS.completion.maxEmptyResponseRetries ? true : 'break'
 }
 
 interface ProcessAgentToolResultsOptions {
