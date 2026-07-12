@@ -16,11 +16,13 @@ import type {
   ConfigTab,
   ModelPoolDraft,
   ModelPoolView,
+  RuntimeModelPoolView,
 } from './config-shared'
 
 export function useConfigPageState() {
   const [config, setConfig] = useState<ConfigData | null>(null)
   const [oauthConnecting, setOauthConnecting] = useState<string | null>(null)
+  const [catalogRefreshing, setCatalogRefreshing] = useState<string | null>(null)
   const [channels, setChannels] = useState<ChannelConfig[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<ConfigTab>('models')
@@ -140,6 +142,7 @@ export function useConfigPageState() {
       const res = await apiPut<{
         defaultModel: string
         modelPools: Record<string, ModelPoolView>
+        runtimeModelPools: Record<string, RuntimeModelPoolView>
       }>('/api/config', { defaultModel: model })
       setConfig((prev) =>
         prev
@@ -147,6 +150,7 @@ export function useConfigPageState() {
               ...prev,
               defaultModel: res.defaultModel,
               modelPools: res.modelPools ?? prev.modelPools,
+              runtimeModelPools: res.runtimeModelPools ?? prev.runtimeModelPools,
             }
           : prev,
       )
@@ -191,6 +195,31 @@ export function useConfigPageState() {
     }
   }
 
+  async function handleRefreshModelCatalog(provider: string) {
+    setCatalogRefreshing(provider)
+    try {
+      const result = await apiPost<{
+        discovered: number
+        verified: number
+        unavailable: number
+        errors: Array<{ providerName: string; message: string }>
+      }>(`/api/providers/${provider}/models/refresh`, {})
+      await loadConfig()
+      if (result.errors.length > 0) {
+        addToast('error', `Model refresh failed: ${result.errors[0].message}`)
+      } else {
+        addToast(
+          'success',
+          `Models refreshed: ${result.verified} verified, ${result.unavailable} unavailable`,
+        )
+      }
+    } catch {
+      // Error toast handled by api layer.
+    } finally {
+      setCatalogRefreshing(null)
+    }
+  }
+
   function toggleReveal(key: string) {
     setRevealedKeys((prev) => {
       const next = new Set(prev)
@@ -211,6 +240,7 @@ export function useConfigPageState() {
     providers: config?.providers ?? {},
     ...modelPools,
     oauthConnecting,
+    catalogRefreshing,
     channels,
     loading,
     tab,
@@ -238,6 +268,7 @@ export function useConfigPageState() {
     handleSetContextCompactionModel,
     handleSetDefaultModel,
     handleConnectOAuthProvider,
+    handleRefreshModelCatalog,
     toggleReveal,
     handleCancelAddSecret,
   }
@@ -433,6 +464,7 @@ function useModelPoolState(options: ModelPoolStateOptions) {
         defaultModel: string
         fallbackChain: string[]
         modelPools: Record<string, ModelPoolView>
+        runtimeModelPools: Record<string, RuntimeModelPoolView>
         taskClosureModel: string | null
         contextCompactionModel: string | null
       }>('/api/config', { modelPools })
@@ -443,6 +475,7 @@ function useModelPoolState(options: ModelPoolStateOptions) {
               defaultModel: res.defaultModel,
               fallbackChain: res.fallbackChain,
               modelPools: res.modelPools,
+              runtimeModelPools: res.runtimeModelPools,
               taskClosureModel: res.taskClosureModel,
               contextCompactionModel: res.contextCompactionModel,
             }

@@ -1,4 +1,4 @@
-import type { ListedModelPool, ModelRegistry, ModelRouter, ResolvedModel } from '@zero-os/model'
+import type { ListedModelPool, ModelRouter, ResolvedModel } from '@zero-os/model'
 import type {
   ChannelCapabilities,
   Message,
@@ -145,14 +145,15 @@ export class SessionClientStateController {
   ) {}
 
   listModels(): string[] {
-    return this.options.modelRouter
+    const physicalModels = this.options.modelRouter
       .getRegistry()
       .listModels()
       .map((model) => `${model.providerName}/${model.modelName}`)
+    return [...this.options.modelRouter.listModelRoutes(), ...physicalModels]
   }
 
   listModelGroups(): SessionModelListGroup[] {
-    return listSessionModelGroups(this.options.modelRouter.getRegistry())
+    return listSessionModelGroups(this.options.modelRouter)
   }
 
   getReasoningEffort(): ReasoningEffort | undefined {
@@ -317,7 +318,8 @@ function ensureSessionChannelContext(options: {
   return true
 }
 
-function listSessionModelGroups(registry: ModelRegistry): SessionModelListGroup[] {
+function listSessionModelGroups(modelRouter: ModelRouter): SessionModelListGroup[] {
+  const registry = modelRouter.getRegistry()
   const pools = registry.listModelPools()
   const poolNames = new Set(pools.map((pool) => pool.name))
   const memberNames = new Set(pools.flatMap((pool) => pool.members.map((member) => member.model)))
@@ -333,7 +335,8 @@ function listSessionModelGroups(registry: ModelRegistry): SessionModelListGroup[
     .filter((model) => !poolNames.has(model) && !memberNames.has(model))
     .map((model) => ({ model }))
 
-  return [...groupedPools, ...standaloneModels]
+  const routes = modelRouter.listModelRoutes().map((model) => ({ model }))
+  return [...routes, ...groupedPools, ...standaloneModels]
 }
 
 function formatPoolMembers(pool: ListedModelPool): string[] {

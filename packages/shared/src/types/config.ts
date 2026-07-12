@@ -44,6 +44,7 @@ export interface ModelConfig {
   maxContext: number
   maxOutput: number
   reasoningEffort?: ReasoningEffort
+  supportedReasoningEfforts?: ReasoningEffort[]
   thinkingTokens?: number
   extraBody?: Record<string, unknown>
   capabilities: string[]
@@ -51,11 +52,36 @@ export interface ModelConfig {
   pricing?: ModelPricing
 }
 
+export interface ModelDiscoveryConfig {
+  enabled?: boolean
+  refreshIntervalMs?: number
+  timeoutMs?: number
+  clientVersion?: string
+  allow?: string[]
+  deny?: string[]
+}
+
 export interface ProviderConfig {
   apiType: ApiType
   baseUrl: string
   auth: AuthConfig
   models: Record<string, ModelConfig>
+  discovery?: ModelDiscoveryConfig
+}
+
+export type ModelRoutePreference = 'priority' | 'newest' | 'quality' | 'balanced' | 'fast'
+
+export interface ModelRouteConfig {
+  models?: string[]
+  providers?: string[]
+  family?: string
+  lanes?: string[]
+  requires?: string[]
+  tags?: string[]
+  minContext?: number
+  minOutput?: number
+  prefer?: ModelRoutePreference
+  reasoningEffort?: ReasoningEffort | 'auto'
 }
 
 export type ModelPoolStrategy =
@@ -166,6 +192,7 @@ export interface EmbeddingModelConfig {
 export interface SystemConfig {
   providers: Record<string, ProviderConfig>
   modelPools?: Record<string, ModelPoolConfig>
+  modelRoutes?: Record<string, ModelRouteConfig>
   defaultModel: string
   fallbackChain: string[]
   schedules: ScheduleConfig[]

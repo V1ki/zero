@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { SystemConfig } from '@zero-os/shared'
+import type { ModelCatalogEntry } from '../catalog/types'
 import { ModelRegistry } from '../registry'
 
 const config: SystemConfig = {
@@ -50,6 +51,73 @@ const secrets = new Map([
   ['api_key', 'sk-test-key'],
   ['anthropic_key', 'sk-ant-test'],
 ])
+
+function createCatalogEntry(
+  providerName: string,
+  modelId: string,
+  status: ModelCatalogEntry['status'] = 'verified',
+): ModelCatalogEntry {
+  return {
+    providerName,
+    providerKind: 'chatgpt',
+    accountFingerprint: `account-${providerName}`,
+    transport: 'openai_responses:https://chatgpt.com/backend-api/codex',
+    apiType: 'openai_responses',
+    modelName: modelId,
+    modelId,
+    family: 'gpt',
+    version: '5.6',
+    lane: 'sol',
+    modelConfig: {
+      modelId,
+      maxContext: 372000,
+      maxOutput: 128000,
+      capabilities: ['tools', 'vision', 'reasoning'],
+      tags: ['codex', 'frontier'],
+    },
+    status,
+    source: 'provider',
+    provenance: {},
+    metadataHash: `${providerName}-${modelId}`,
+    discoveredAt: '2026-07-10T00:00:00.000Z',
+    verifiedAt: '2026-07-10T00:00:01.000Z',
+    lastSeenAt: '2026-07-10T00:00:01.000Z',
+  }
+}
+
+function createSubscriptionConfig(modelId?: string): SystemConfig {
+  const model = modelId
+    ? {
+        [modelId]: {
+          modelId,
+          maxContext: 372000,
+          maxOutput: 128000,
+          capabilities: ['tools', 'vision', 'reasoning'],
+          tags: ['codex'],
+        },
+      }
+    : {}
+  return {
+    providers: {
+      chatgpt: {
+        apiType: 'openai_responses',
+        baseUrl: 'https://chatgpt.com/backend-api/codex',
+        auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth' },
+        models: structuredClone(model),
+      },
+      'chatgpt-personal': {
+        apiType: 'openai_responses',
+        baseUrl: 'https://chatgpt.com/backend-api/codex',
+        auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_personal_oauth' },
+        models: structuredClone(model),
+      },
+    },
+    defaultModel: modelId ? `chatgpt/${modelId}` : 'pool/gpt-5.6-sol',
+    fallbackChain: [],
+    schedules: [],
+    fuseList: [],
+  }
+}
 
 describe('ModelRegistry', () => {
   test('resolve finds exact model', () => {
@@ -109,6 +177,7 @@ describe('ModelRegistry', () => {
         providerName: 'pooled',
         modelName: 'gpt-5.5',
         name: 'pooled/gpt-5.5',
+        source: 'configured',
         strategy: 'sticky_quota_aware_failover',
         members: [
           { model: 'test-anthropic/claude-sonnet', priority: 1 },
@@ -116,6 +185,142 @@ describe('ModelRegistry', () => {
         ],
       },
     ])
+  })
+
+  test('synthesizes a canonical pool from matching models discovered by subscriptions', () => {
+    const catalogEntries = [
+      createCatalogEntry('chatgpt-personal', 'gpt-5.6-sol'),
+      createCatalogEntry('chatgpt', 'gpt-5.6-sol'),
+    ]
+    const registry = new ModelRegistry(createSubscriptionConfig(), new Map(), { catalogEntries })
+
+    expect(registry.listModelPools()).toEqual([
+      {
+        providerName: 'pool',
+        modelName: 'gpt-5.6-sol',
+        name: 'pool/gpt-5.6-sol',
+        source: 'catalog',
+        strategy: 'sticky_quota_aware_failover',
+        members: [
+          { model: 'chatgpt/gpt-5.6-sol', priority: 0 },
+          { model: 'chatgpt-personal/gpt-5.6-sol', priority: 1 },
+        ],
+      },
+    ])
+    expect(registry.resolve('pool/gpt-5.6-sol')).toMatchObject({
+      providerName: 'pool',
+      modelName: 'gpt-5.6-sol',
+    })
+    expect(registry.resolve('gpt-5.6-sol')).toMatchObject({
+      providerName: 'pool',
+      modelName: 'gpt-5.6-sol',
+    })
+    expect(registry.resolve('chatgpt/gpt-5.6-sol')).toMatchObject({
+      providerName: 'chatgpt',
+      modelName: 'gpt-5.6-sol',
+    })
+  })
+
+  test('excludes unavailable subscriptions from synthesized catalog pools', () => {
+    const registry = new ModelRegistry(createSubscriptionConfig(), new Map(), {
+      catalogEntries: [
+        createCatalogEntry('chatgpt', 'gpt-5.6-sol'),
+        createCatalogEntry('chatgpt-personal', 'gpt-5.6-sol', 'unavailable'),
+      ],
+    })
+
+    expect(registry.listModelPools()[0]).toMatchObject({
+      name: 'pool/gpt-5.6-sol',
+      source: 'catalog',
+      members: [{ model: 'chatgpt/gpt-5.6-sol', priority: 0 }],
+    })
+  })
+
+  test('keeps an explicit canonical pool as the policy override', () => {
+    const subscriptionConfig = createSubscriptionConfig('gpt-5.6-sol')
+    subscriptionConfig.modelPools = {
+      'pool/gpt-5.6-sol': {
+        strategy: 'priority_failover',
+        members: [{ model: 'chatgpt-personal/gpt-5.6-sol', priority: 9 }],
+      },
+    }
+    const registry = new ModelRegistry(subscriptionConfig, new Map(), {
+      catalogEntries: [
+        createCatalogEntry('chatgpt', 'gpt-5.6-sol'),
+        createCatalogEntry('chatgpt-personal', 'gpt-5.6-sol'),
+      ],
+    })
+
+    expect(registry.listModelPools()).toEqual([
+      {
+        providerName: 'pool',
+        modelName: 'gpt-5.6-sol',
+        name: 'pool/gpt-5.6-sol',
+        source: 'configured',
+        strategy: 'priority_failover',
+        members: [{ model: 'chatgpt-personal/gpt-5.6-sol', priority: 9 }],
+      },
+    ])
+  })
+
+  test('maps a legacy homogeneous subscription pool to its canonical runtime identity', () => {
+    const subscriptionConfig = createSubscriptionConfig('gpt-5.5')
+    subscriptionConfig.modelPools = {
+      'chatgpt/gpt-5.5': {
+        strategy: 'sticky_quota_aware_failover',
+        members: [{ model: 'chatgpt/gpt-5.5' }, { model: 'chatgpt-personal/gpt-5.5' }],
+      },
+    }
+    const registry = new ModelRegistry(subscriptionConfig, new Map())
+
+    expect(registry.listModelPools()).toEqual([
+      {
+        providerName: 'pool',
+        modelName: 'gpt-5.5',
+        name: 'pool/gpt-5.5',
+        source: 'configured',
+        strategy: 'sticky_quota_aware_failover',
+        members: [
+          { model: 'chatgpt/gpt-5.5', priority: 0 },
+          { model: 'chatgpt-personal/gpt-5.5', priority: 1 },
+        ],
+      },
+    ])
+    expect(registry.resolve('chatgpt/gpt-5.5')).toMatchObject({
+      providerName: 'pool',
+      modelName: 'gpt-5.5',
+    })
+    expect(registry.resolve('chatgpt-personal/gpt-5.5')).toMatchObject({
+      providerName: 'chatgpt-personal',
+      modelName: 'gpt-5.5',
+    })
+  })
+
+  test('uses conservative metadata for heterogeneous model pools', () => {
+    const registry = new ModelRegistry(
+      {
+        ...config,
+        modelPools: {
+          'pool/coding': {
+            strategy: 'priority_failover',
+            members: [
+              { model: 'openai-codex/gpt-5.3-codex-medium' },
+              { model: 'test-anthropic/claude-sonnet' },
+            ],
+          },
+        },
+      },
+      secrets,
+    )
+
+    const pool = registry.resolve('pool/coding')
+
+    expect(pool?.modelConfig).toMatchObject({
+      modelId: 'pool/coding',
+      maxContext: 200000,
+      maxOutput: 8192,
+      capabilities: ['tools', 'vision'],
+    })
   })
 
   test('resolve finds newly added anthropic/claude-sonnet-4-6', () => {

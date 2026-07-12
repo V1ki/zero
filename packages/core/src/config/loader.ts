@@ -4,9 +4,12 @@ import type {
   ChannelInstanceConfig,
   FuseRule,
   ManagedOAuthProviderKind,
+  ModelDiscoveryConfig,
   ModelPoolConfig,
   ModelPoolStrategy,
   ModelPricing,
+  ModelRouteConfig,
+  ModelRoutePreference,
   SystemConfig,
 } from '@zero-os/shared'
 import { readString } from '../yaml'
@@ -36,11 +39,22 @@ function normalizeConfig(raw: Record<string, unknown>): SystemConfig {
     const models: SystemConfig['providers'][string]['models'] = {}
 
     for (const [mName, m] of Object.entries(rawModels)) {
+      const supportedReasoningEfforts = readStringArray(
+        m,
+        'supportedReasoningEfforts',
+        'supported_reasoning_efforts',
+      )
+        ?.map((effort) => normalizeReasoningEffort(effort))
+        .filter((effort): effort is NonNullable<typeof effort> => effort !== undefined)
+
       models[mName] = {
         modelId: (m.model_id as string) ?? mName,
         maxContext: (m.max_context as number) ?? 128000,
         maxOutput: (m.max_output as number) ?? 8192,
         reasoningEffort: normalizeReasoningEffort(m.reasoning_effort as string | undefined),
+        ...(supportedReasoningEfforts?.length
+          ? { supportedReasoningEfforts: Array.from(new Set(supportedReasoningEfforts)) }
+          : {}),
         thinkingTokens: m.thinking_tokens as number | undefined,
         extraBody: isRecord(m.extra_body) ? m.extra_body : undefined,
         capabilities: (m.capabilities as string[]) ?? [],
@@ -49,6 +63,7 @@ function normalizeConfig(raw: Record<string, unknown>): SystemConfig {
       }
     }
 
+    const discovery = normalizeModelDiscoveryConfig(p.discovery)
     providers[name] = {
       apiType: p.api_type as string as SystemConfig['providers'][string]['apiType'],
       baseUrl: (p.base_url as string) ?? '',
@@ -61,10 +76,12 @@ function normalizeConfig(raw: Record<string, unknown>): SystemConfig {
           : {}),
       },
       models,
+      ...(discovery ? { discovery } : {}),
     }
   }
 
   const modelPools = normalizeModelPools(raw.model_pools as Record<string, unknown> | undefined)
+  const modelRoutes = normalizeModelRoutes(raw.model_routes)
 
   const rawChannels = Array.isArray(raw.channels)
     ? (raw.channels as Array<Record<string, unknown>>)
@@ -77,20 +94,27 @@ function normalizeConfig(raw: Record<string, unknown>): SystemConfig {
     (raw.default_model as string) ?? '',
     providers,
     modelPools,
+    modelRoutes,
   )
   const fallbackChain = ((raw.fallback_chain as string[]) ?? []).map((model) =>
-    normalizeModelReference(model, providers, modelPools),
+    normalizeModelReference(model, providers, modelPools, modelRoutes),
   )
   const taskClosureModel = raw.task_closure_model
-    ? normalizeModelReference(raw.task_closure_model as string, providers, modelPools)
+    ? normalizeModelReference(raw.task_closure_model as string, providers, modelPools, modelRoutes)
     : undefined
   const contextCompactionModel = raw.context_compaction_model
-    ? normalizeModelReference(raw.context_compaction_model as string, providers, modelPools)
+    ? normalizeModelReference(
+        raw.context_compaction_model as string,
+        providers,
+        modelPools,
+        modelRoutes,
+      )
     : undefined
 
   return {
     providers,
     ...(Object.keys(modelPools).length > 0 ? { modelPools } : {}),
+    ...(Object.keys(modelRoutes).length > 0 ? { modelRoutes } : {}),
     defaultModel,
     fallbackChain,
     schedules: (raw.schedules as SystemConfig['schedules']) ?? [],
@@ -108,9 +132,13 @@ function normalizeModelReference(
   value: string,
   providers: SystemConfig['providers'],
   modelPools: Record<string, ModelPoolConfig> = {},
+  modelRoutes: Record<string, ModelRouteConfig> = {},
 ): string {
   if (!value) return value
   if (modelPools[value]) {
+    return value
+  }
+  if (value.startsWith('route/') && modelRoutes[value.slice('route/'.length)]) {
     return value
   }
   if (value.includes('/')) {
@@ -128,6 +156,69 @@ function normalizeModelReference(
   const matches = [...poolMatches, ...providerMatches]
 
   return matches.length === 1 ? matches[0] : value
+}
+
+function normalizeModelDiscoveryConfig(raw: unknown): ModelDiscoveryConfig | undefined {
+  if (!isRecord(raw)) return undefined
+
+  const config: ModelDiscoveryConfig = {}
+  const enabled = readBoolean(raw, 'enabled')
+  const refreshIntervalMs = readNumber(raw, 'refreshIntervalMs', 'refresh_interval_ms')
+  const timeoutMs = readNumber(raw, 'timeoutMs', 'timeout_ms')
+  const clientVersion = readString(raw, 'clientVersion', 'client_version')
+  const allow = readStringArray(raw, 'allow')
+  const deny = readStringArray(raw, 'deny')
+
+  if (enabled !== undefined) config.enabled = enabled
+  if (refreshIntervalMs !== undefined) config.refreshIntervalMs = refreshIntervalMs
+  if (timeoutMs !== undefined) config.timeoutMs = timeoutMs
+  if (clientVersion) config.clientVersion = clientVersion
+  if (allow?.length) config.allow = allow
+  if (deny?.length) config.deny = deny
+
+  return config
+}
+
+function normalizeModelRoutes(raw: unknown): Record<string, ModelRouteConfig> {
+  if (!isRecord(raw)) return {}
+
+  const routes: Record<string, ModelRouteConfig> = {}
+  for (const [rawName, value] of Object.entries(raw)) {
+    const name = rawName.trim().replace(/^route\//, '')
+    if (!name || !isRecord(value)) continue
+
+    const prefer = normalizeModelRoutePreference(readString(value, 'prefer'))
+    const rawReasoning = readString(value, 'reasoningEffort', 'reasoning_effort')
+    const reasoningEffort =
+      rawReasoning === 'auto' ? 'auto' : normalizeReasoningEffort(rawReasoning)
+    const route: ModelRouteConfig = {
+      models: readStringArray(value, 'models'),
+      providers: readStringArray(value, 'providers'),
+      family: readString(value, 'family'),
+      lanes: readStringArray(value, 'lanes'),
+      requires: readStringArray(value, 'requires'),
+      tags: readStringArray(value, 'tags'),
+      minContext: readNumber(value, 'minContext', 'min_context'),
+      minOutput: readNumber(value, 'minOutput', 'min_output'),
+      prefer,
+      reasoningEffort,
+    }
+
+    routes[name] = Object.fromEntries(
+      Object.entries(route).filter(([, field]) => field !== undefined),
+    ) as ModelRouteConfig
+  }
+  return routes
+}
+
+function normalizeModelRoutePreference(value?: string): ModelRoutePreference | undefined {
+  return value === 'priority' ||
+    value === 'newest' ||
+    value === 'quality' ||
+    value === 'balanced' ||
+    value === 'fast'
+    ? value
+    : undefined
 }
 
 function normalizeManagedOAuthProvider(value: unknown): ManagedOAuthProviderKind | undefined {

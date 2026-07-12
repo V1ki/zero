@@ -24,12 +24,14 @@ const MODEL_POOL_STRATEGIES = new Set([
 const CONFIG_KEY_MAP: Record<string, string> = {
   defaultModel: 'default_model',
   fallbackChain: 'fallback_chain',
+  modelRoutes: 'model_routes',
   taskClosureModel: 'task_closure_model',
   contextCompactionModel: 'context_compaction_model',
 }
 
 export class ProviderControlService {
   private managedOAuth: ReturnType<typeof createManagedOAuthCoordinator> | undefined
+  private catalogOAuthReady = new Set<string>()
 
   constructor(private readonly zero: ZeroOS) {}
 
@@ -53,12 +55,21 @@ export class ProviderControlService {
     return {
       providers: await this.buildProvidersForConfig(),
       modelPools: config.modelPools ?? {},
-      defaultModel: config.defaultModel,
-      fallbackChain: config.fallbackChain,
+      runtimeModelPools: this.buildRuntimeModelPools(),
+      modelRoutes: config.modelRoutes ?? {},
+      modelCatalog: this.buildModelCatalogView(),
+      defaultModel: this.normalizeRuntimeModelReference(config.defaultModel),
+      fallbackChain: config.fallbackChain.map((model) =>
+        this.normalizeRuntimeModelReference(model),
+      ),
       schedules: config.schedules,
       fuseList: config.fuseList,
-      taskClosureModel: config.taskClosureModel ?? null,
-      contextCompactionModel: config.contextCompactionModel ?? null,
+      taskClosureModel: config.taskClosureModel
+        ? this.normalizeRuntimeModelReference(config.taskClosureModel)
+        : null,
+      contextCompactionModel: config.contextCompactionModel
+        ? this.normalizeRuntimeModelReference(config.contextCompactionModel)
+        : null,
       secrets: this.zero.vault.keys().map((key) => ({
         key,
         masked: isManagedOAuthTokenRef(key, config) ? 'oauth:configured' : 'configured',
@@ -74,15 +85,24 @@ export class ProviderControlService {
     const updated = this.readCurrentConfig()
     return {
       ok: true,
-      defaultModel: updated.defaultModel,
-      fallbackChain: updated.fallbackChain,
+      defaultModel: this.normalizeRuntimeModelReference(updated.defaultModel),
+      fallbackChain: updated.fallbackChain.map((model) =>
+        this.normalizeRuntimeModelReference(model),
+      ),
       modelPools: updated.modelPools ?? {},
-      taskClosureModel: updated.taskClosureModel ?? null,
-      contextCompactionModel: updated.contextCompactionModel ?? null,
+      runtimeModelPools: this.buildRuntimeModelPools(),
+      modelRoutes: updated.modelRoutes ?? {},
+      taskClosureModel: updated.taskClosureModel
+        ? this.normalizeRuntimeModelReference(updated.taskClosureModel)
+        : null,
+      contextCompactionModel: updated.contextCompactionModel
+        ? this.normalizeRuntimeModelReference(updated.contextCompactionModel)
+        : null,
     }
   }
 
   async startOAuth(provider: string) {
+    this.catalogOAuthReady.delete(provider)
     let currentConfig = this.readCurrentConfig()
     let oauth = this.getManagedOAuth(currentConfig)
     if (isManagedOAuthProvider(provider) && !currentConfig.providers[provider]) {
@@ -105,6 +125,7 @@ export class ProviderControlService {
   }
 
   async startChatGptOAuth() {
+    this.catalogOAuthReady.delete('chatgpt')
     prepareManagedOAuthProvider('chatgpt')
     await this.zero.reloadModelProviders()
     const oauth = this.getManagedOAuth(this.readCurrentConfig())
@@ -124,6 +145,23 @@ export class ProviderControlService {
           : oauth.getStatus(provider)
     if (refresh === 'hard' && status.state === 'connected') {
       this.markProviderAuthRecovered(provider, 'oauth_status_hard_refresh')
+    }
+    if (
+      status.state === 'connected' &&
+      status.authorized &&
+      !this.catalogOAuthReady.has(provider)
+    ) {
+      this.catalogOAuthReady.add(provider)
+      void this.zero.modelRouter
+        .refreshCatalog({
+          reason: 'oauth_connected',
+          providerNames: [provider],
+          force: true,
+        })
+        .then((result) => {
+          if (result.errors.length > 0) this.catalogOAuthReady.delete(provider)
+        })
+        .catch(() => this.catalogOAuthReady.delete(provider))
     }
     return status
   }
@@ -179,6 +217,20 @@ export class ProviderControlService {
     return { providers: this.zero.providerHealth.list() }
   }
 
+  getModelCatalog() {
+    return this.buildModelCatalogView()
+  }
+
+  async refreshModelCatalog(providerName: string) {
+    const result = await this.zero.modelRouter.refreshCatalog({
+      reason: 'manual',
+      providerNames: [providerName],
+      force: true,
+    })
+    if (!result.providerNames.includes(providerName)) return undefined
+    return { ...result, catalog: this.buildModelCatalogView() }
+  }
+
   async reloadModelProviders(body: Record<string, unknown>) {
     const recoveredProviders = normalizeRecoveredProviders(
       body.recoveredProviders ?? body.recoveredProvider,
@@ -190,11 +242,13 @@ export class ProviderControlService {
 
   saveSecret(key: string, value: string) {
     this.zero.vault.set(key, value)
+    this.refreshCatalogForSecretRef(key)
     return { ok: true, key }
   }
 
   deleteSecret(key: string) {
     this.zero.vault.delete(key)
+    this.refreshCatalogForSecretRef(key)
     return { ok: true, key }
   }
 
@@ -215,6 +269,10 @@ export class ProviderControlService {
   private async buildProvidersForConfig() {
     const config = this.readCurrentConfig()
     const managedOAuth = this.getManagedOAuth(config)
+    const listedModels = this.zero.modelRouter
+      .getRegistry()
+      .listModels()
+      .filter((model) => model.source !== 'pool')
     return Object.fromEntries(
       await Promise.all(
         Object.entries(config.providers).map(async ([name, provider]) => {
@@ -223,6 +281,28 @@ export class ProviderControlService {
           const oauthStatus = managedOAuth.supportsProvider(name)
             ? managedOAuth.getStatus(name)
             : undefined
+          const models = Object.fromEntries(
+            listedModels
+              .filter((model) => model.providerName === name)
+              .flatMap((model) => {
+                const resolved = this.zero.modelRouter.resolveModel(`${name}/${model.modelName}`)
+                if (!resolved) return []
+                return [
+                  [
+                    model.modelName,
+                    {
+                      ...resolved.modelConfig,
+                      source: model.source,
+                      status: model.status,
+                      displayName: model.displayName,
+                      family: model.family,
+                      version: model.version,
+                      lane: model.lane,
+                    },
+                  ],
+                ]
+              }),
+          )
 
           return [
             name,
@@ -236,7 +316,7 @@ export class ProviderControlService {
               authorized: oauthStatus ? oauthStatus.authorized : configured,
               oauthState: oauthStatus?.state,
               requiresRestart: oauthStatus?.requiresRestart ?? false,
-              models: provider.models,
+              models,
             },
           ]
         }),
@@ -248,6 +328,70 @@ export class ProviderControlService {
     if (providerName in this.zero.config.providers) {
       this.zero.providerHealth.markAuthRecovered(providerName, { source })
     }
+  }
+
+  private refreshCatalogForSecretRef(secretRef: string) {
+    const providerNames = Object.entries(this.readCurrentConfig().providers)
+      .filter(([, provider]) => {
+        return provider.auth.oauthTokenRef === secretRef || provider.auth.apiKeyRef === secretRef
+      })
+      .map(([providerName]) => providerName)
+    if (providerNames.length === 0) return
+    for (const providerName of providerNames) this.catalogOAuthReady.delete(providerName)
+    void this.zero.modelRouter.refreshCatalog({
+      reason: 'oauth_connected',
+      providerNames,
+      force: true,
+    })
+  }
+
+  private buildModelCatalogView() {
+    const snapshot = this.zero.modelRouter.getCatalogSnapshot()
+    return {
+      generation: snapshot?.generation ?? 0,
+      updatedAt: snapshot?.updatedAt ?? null,
+      entries: this.zero.modelRouter.getCatalogEntries().map((entry) => ({
+        providerName: entry.providerName,
+        modelName: entry.modelName,
+        modelId: entry.modelId,
+        displayName: entry.displayName,
+        family: entry.family,
+        version: entry.version,
+        lane: entry.lane,
+        status: entry.status,
+        source: entry.source,
+        maxContext: entry.modelConfig.maxContext,
+        maxOutput: entry.modelConfig.maxOutput,
+        capabilities: entry.modelConfig.capabilities,
+        defaultReasoningEffort: entry.modelConfig.reasoningEffort,
+        supportedReasoningEfforts: entry.modelConfig.supportedReasoningEfforts ?? [],
+        discoveredAt: entry.discoveredAt,
+        verifiedAt: entry.verifiedAt ?? null,
+        lastSeenAt: entry.lastSeenAt,
+        lastError: entry.lastError ?? null,
+      })),
+    }
+  }
+
+  private buildRuntimeModelPools() {
+    return Object.fromEntries(
+      this.zero.modelRouter
+        .getRegistry()
+        .listModelPools()
+        .map((pool) => [
+          pool.name,
+          {
+            source: pool.source,
+            strategy: pool.strategy,
+            members: pool.members,
+          },
+        ]),
+    )
+  }
+
+  private normalizeRuntimeModelReference(model: string): string {
+    if (model.startsWith('route/')) return model
+    return this.zero.modelRouter.normalizeModelReference(model) ?? model
   }
 }
 
@@ -314,6 +458,7 @@ export function applyProviderConfigUpdate(
   let nextConfig = rawConfig
 
   for (const [key, value] of Object.entries(body)) {
+    if (key === 'runtimeModelPools') continue
     if (key === 'modelPools') {
       const modelPools = normalizeModelPoolsForWrite(value)
       if (Object.keys(modelPools).length === 0) {

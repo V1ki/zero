@@ -250,7 +250,7 @@ describe('builtin commands', () => {
     const mockSession: MockSession = {
       data: {
         id: 'sess_model_pool_list',
-        currentModel: 'chatgpt/gpt-5.5',
+        currentModel: 'pool/gpt-5.5',
         createdAt: '2026-03-27T14:30:05',
         updatedAt: '2026-03-27T14:30:05',
       },
@@ -260,8 +260,8 @@ describe('builtin commands', () => {
       listModels: () => [],
       listModelGroups: () => [
         {
-          model: 'chatgpt/gpt-5.5',
-          members: ['chatgpt-personal/gpt-5.5', 'chatgpt-personal1/gpt-5.5'],
+          model: 'pool/gpt-5.5',
+          members: ['chatgpt/gpt-5.5', 'chatgpt-personal/gpt-5.5'],
         },
         { model: 'openai-codex/gpt-5.4-medium' },
       ],
@@ -282,7 +282,7 @@ describe('builtin commands', () => {
     expect(result).toEqual({
       handled: true,
       reply:
-        'Available models:\n- chatgpt/gpt-5.5\n  - chatgpt-personal/gpt-5.5\n  - chatgpt-personal1/gpt-5.5\n- openai-codex/gpt-5.4-medium',
+        'Available models:\n- pool/gpt-5.5\n  - chatgpt/gpt-5.5\n  - chatgpt-personal/gpt-5.5\n- openai-codex/gpt-5.4-medium',
     })
   })
 

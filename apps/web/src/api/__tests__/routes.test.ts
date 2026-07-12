@@ -352,6 +352,7 @@ describe('API Routes (Real)', () => {
     expect(data.defaultModel).toBe('openai-codex/gpt-5.4-medium')
     expect(data.providers).toBeDefined()
     expect(data.modelPools).toEqual({})
+    expect(data.runtimeModelPools).toEqual({})
     expect(data.taskClosureModel).toBeNull()
   })
 
@@ -654,6 +655,16 @@ fuse_list: []
           ],
         },
       })
+      expect(data.runtimeModelPools).toEqual({
+        'pooled/gpt-5.4-medium': {
+          source: 'configured',
+          strategy: 'sticky_quota_aware_failover',
+          members: [
+            { model: 'openai-codex/gpt-5.4-medium', priority: 0 },
+            { model: 'openai-codex/gpt-5.3-codex-medium', priority: 1 },
+          ],
+        },
+      })
 
       const raw = readYaml<Record<string, unknown>>(join(testDataDir, 'config.yaml'))
       expect(raw.default_model).toBe('pooled/gpt-5.4-medium')
@@ -763,6 +774,54 @@ fuse_list: []
     expect(
       data.models.some((m: { name: string }) => m.name === 'openai-codex/gpt-5.4-medium'),
     ).toBe(true)
+  })
+
+  test('GET /api/models exposes configured logical routes', async () => {
+    try {
+      const update = await app.request('/api/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          modelRoutes: {
+            latest: {
+              models: ['openai-codex/gpt-5.4-medium'],
+              prefer: 'priority',
+            },
+          },
+        }),
+      })
+      expect(update.status).toBe(200)
+
+      const res = await app.request('/api/models')
+      expect(res.status).toBe(200)
+      const data = await res.json()
+      expect(
+        data.models.some(
+          (model: { name: string; source: string }) =>
+            model.name === 'route/latest' && model.source === 'route',
+        ),
+      ).toBe(true)
+    } finally {
+      await app.request('/api/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelRoutes: {} }),
+      })
+    }
+  })
+
+  test('model catalog API reports state and rejects unsupported provider refreshes', async () => {
+    const catalogRes = await app.request('/api/providers/models/catalog')
+    expect(catalogRes.status).toBe(200)
+    const catalog = await catalogRes.json()
+    expect(catalog).toMatchObject({ generation: 0, entries: [] })
+
+    const refreshRes = await app.request('/api/providers/openai-codex/models/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+    expect(refreshRes.status).toBe(404)
   })
 
   test('POST /api/chat/model switches runtime model', async () => {

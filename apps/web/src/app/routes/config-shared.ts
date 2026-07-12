@@ -16,8 +16,42 @@ export interface ProviderView {
       maxOutput: number
       capabilities: string[]
       tags: string[]
+      supportedReasoningEfforts?: string[]
+      source?: 'manual' | 'provider'
+      status?: 'configured' | 'verified' | 'stale'
+      displayName?: string
+      family?: string
+      version?: string
+      lane?: string
     }
   >
+}
+
+export interface ModelCatalogEntryView {
+  providerName: string
+  modelName: string
+  modelId: string
+  displayName?: string
+  family?: string
+  version?: string
+  lane?: string
+  status: 'discovered' | 'verifying' | 'verified' | 'unavailable' | 'stale' | 'deprecated'
+  source: string
+  maxContext: number
+  maxOutput: number
+  capabilities: string[]
+  defaultReasoningEffort?: string
+  supportedReasoningEfforts: string[]
+  discoveredAt: string
+  verifiedAt: string | null
+  lastSeenAt: string
+  lastError: string | null
+}
+
+export interface ModelCatalogView {
+  generation: number
+  updatedAt: string | null
+  entries: ModelCatalogEntryView[]
 }
 
 interface ClaudeRateLimitWindow {
@@ -82,6 +116,10 @@ export interface ModelPoolView {
   members: ModelPoolMemberView[]
 }
 
+export interface RuntimeModelPoolView extends ModelPoolView {
+  source: 'configured' | 'catalog'
+}
+
 export interface ModelPoolDraftMember {
   id: string
   model: string
@@ -97,6 +135,9 @@ export interface ModelPoolDraft {
 export interface ConfigData {
   providers: Record<string, ProviderView>
   modelPools: Record<string, ModelPoolView>
+  runtimeModelPools?: Record<string, RuntimeModelPoolView>
+  modelRoutes?: Record<string, unknown>
+  modelCatalog?: ModelCatalogView
   defaultModel: string
   fallbackChain: string[]
   schedules: { name: string; cron: string; task: string }[]

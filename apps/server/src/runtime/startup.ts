@@ -222,7 +222,10 @@ function createStartupShutdownRuntime({
     sessionManager: core.sessionManager,
     channels,
     disposeRuntimeEventListeners,
-    disposePricing: () => core.litellmPricing.dispose(),
+    disposePricing: () => {
+      core.modelRouter.dispose()
+      core.litellmPricing.dispose()
+    },
     heartbeat: core.heartbeat,
     sessionDb: core.sessionDb,
     metrics: core.metrics,

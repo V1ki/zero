@@ -41,6 +41,18 @@ export function createProviderConfigRoutes(control: ProviderControlService) {
 
     .get('/providers/health', (c) => c.json(control.listProviderHealth()))
 
+    .get('/providers/models/catalog', (c) => c.json(control.getModelCatalog()))
+
+    .post('/providers/:provider/models/refresh', async (c) => {
+      try {
+        const result = await control.refreshModelCatalog(c.req.param('provider'))
+        if (!result) return c.json({ error: 'Provider does not support model discovery' }, 404)
+        return c.json(result)
+      } catch (error) {
+        return c.json({ error: toErrorMessage(error) }, 500)
+      }
+    })
+
     .post('/runtime/model-providers/reload', async (c) => {
       try {
         let body: Record<string, unknown> = {}

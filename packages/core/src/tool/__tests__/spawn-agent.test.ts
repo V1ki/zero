@@ -91,6 +91,7 @@ function createStubRouter(
     getAdapter: () => adapter,
     getModelLabel: () => 'test-provider/fake-spawn-subagent-model',
     getRegistry: () => registry,
+    listModelRoutes: () => [],
   } as unknown as ModelRouter
 }
 
@@ -125,6 +126,41 @@ const ctx = {
 }
 
 describe('SpawnAgentTool', () => {
+  test('refreshes model and route hints from the runtime registry', () => {
+    const adapter = new StaticResponseAdapter()
+    const models = [
+      {
+        providerName: 'test-provider',
+        modelName: 'model-a',
+        modelId: 'model-a',
+        tags: [],
+      },
+    ]
+    const resolved = {
+      adapter,
+      providerName: 'test-provider',
+      modelConfig: { capabilities: ['tools', 'reasoning'] },
+    }
+    const router = {
+      getRegistry: () => ({ listModels: () => models }),
+      resolveModel: () => resolved,
+      listModelRoutes: () => ['route/latest'],
+    } as unknown as ModelRouter
+    const tool = new SpawnAgentTool(router, createToolRegistry())
+
+    expect(JSON.stringify(tool.toDefinition())).toContain('test-provider/model-a')
+    models.push({
+      providerName: 'test-provider',
+      modelName: 'model-b',
+      modelId: 'model-b',
+      tags: [],
+    })
+
+    const refreshed = JSON.stringify(tool.toDefinition())
+    expect(refreshed).toContain('route/latest')
+    expect(refreshed).toContain('test-provider/model-b')
+  })
+
   test('inherits full parent tool context and clears agent control', async () => {
     const registry = createToolRegistry()
     const tool = new SpawnAgentTool(createStubRouter(new StaticResponseAdapter()), registry)

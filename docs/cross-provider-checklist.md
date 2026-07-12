@@ -196,6 +196,28 @@
   - ChatGPT unavailable 时切到 backup OpenAI provider。
   - fallback 后继续用同一份历史发起下一轮，验证行为稳定。
 
+## 11. Runtime Model Catalog 与逻辑路由
+
+- 风险点
+  - provider 目录可见不代表当前账号和 transport 可调用。
+  - 动态元数据变化可能让 route、context budget、vision/tool gate 或 metrics 归因失真。
+  - 热更新期间切换既有 session 会破坏 turn 稳定性。
+- 当前代码现状
+  - ChatGPT Codex driver 按 provider 实例、账号指纹、transport 和 API type 隔离目录，并以最小调用验证可用性。
+  - 手工模型优先于动态模型；发现失败保留 last-known-good 缓存。
+  - `route/<name>` 按能力、context/output 和偏好选择物理模型，session 随后固定物理 label。
+  - pool 元数据使用成员的最小 context/output、能力交集和 reasoning level 交集。
+  - usage、trace、pricing 查询继续使用最终 `provider/model`，动态模型缺少定价时成本按未知定价处理。
+- 需要的测试类型
+  - `unit`
+  - `integration`
+  - `e2e`
+- 建议测试场景
+  - 目录可见但 canary 返回 404 的模型不进入 Registry。
+  - OAuth 账号在刷新途中变化时，旧账号结果不能覆盖新账号。
+  - Catalog 热更新后既有 session 保持物理模型，新 session 使用最新 route。
+  - 动态模型用于 memory retrieval、closure、compaction 和 scheduler 时保持同一能力与预算语义。
+
 ## 覆盖矩阵
 
 | 维度 | 覆盖结论 | 依据 |
@@ -210,6 +232,7 @@
 | multimodal block 降级或保留策略 | 部分覆盖 | 本次已补 user image 在三种 API 的保留；但 capability-based 降级/拒绝还没有实现级测试。 |
 | 中断恢复 / 半完成 turn 切换 | 部分覆盖 | dangling/orphan 有 adapter 级测试；queued message + provider 切换的端到端场景仍主要依赖 core/agent 测试，model 包不足。 |
 | provider 默认行为差异与 fallback 策略 | 部分覆盖 | router fallback 健康检查本次已补；但 capability-aware fallback、context-aware fallback 仍未覆盖。 |
+| runtime model catalog 与逻辑路由 | 已覆盖 | 已覆盖账号/transport 隔离、canary、LKG、TTL、过滤、single-flight、route pin、pool 安全元数据及 API。 |
 
 ## 本轮识别出的主要缺口
 

@@ -47,6 +47,11 @@ export function createReloadModelProviders({
       oauthRefreshers: createOAuthRefreshers(config, vault),
       providerHealth,
     })
+    const catalogRefresh = await modelRouter.refreshCatalog({
+      reason: recoveredProviders.length > 0 ? 'oauth_connected' : 'config_reload',
+      ...(recoveredProviders.length > 0 ? { providerNames: recoveredProviders } : {}),
+      force: true,
+    })
     sessionManager.setTaskClosureModel(config.taskClosureModel)
     sessionManager.setContextCompactionModels({
       contextCompactionModel: config.contextCompactionModel,
@@ -56,6 +61,10 @@ export function createReloadModelProviders({
       event: 'model_providers_reloaded',
       providers: Object.keys(config.providers),
       recoveredProviders,
+      catalogGeneration: catalogRefresh.generation,
+      catalogVerified: catalogRefresh.verified,
+      catalogUnavailable: catalogRefresh.unavailable,
+      catalogErrors: catalogRefresh.errors.length,
     })
   }
 }

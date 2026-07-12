@@ -35,6 +35,149 @@ test.describe('Config Page', () => {
     await expect(page.locator('main span:has-text("Default")')).toBeVisible({ timeout: 10_000 })
   })
 
+  test('Models tab renders runtime catalog metadata, routes, and manual refresh', async ({
+    page,
+  }) => {
+    let refreshCalls = 0
+    await page.route('**/api/config', async (route) => {
+      if (route.request().method() !== 'GET') {
+        await route.continue()
+        return
+      }
+      const response = await route.fetch()
+      const config = (await response.json()) as Record<string, unknown> & {
+        providers: Record<string, unknown>
+      }
+      await route.fulfill({
+        response,
+        json: {
+          ...config,
+          providers: {
+            ...config.providers,
+            chatgpt: {
+              apiType: 'openai_responses',
+              baseUrl: 'https://chatgpt.com/backend-api/codex',
+              authType: 'oauth2',
+              managedOAuthProvider: 'chatgpt',
+              configured: true,
+              authorized: true,
+              oauthState: 'connected',
+              models: {
+                'gpt-5.6-sol': {
+                  modelId: 'gpt-5.6-sol',
+                  maxContext: 372000,
+                  maxOutput: 8192,
+                  capabilities: ['tools', 'vision', 'reasoning'],
+                  tags: ['codex', 'sol'],
+                  supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+                  source: 'provider',
+                  status: 'verified',
+                  displayName: 'GPT-5.6 Sol',
+                  family: 'gpt',
+                  version: '5.6',
+                  lane: 'sol',
+                },
+              },
+            },
+          },
+          modelRoutes: {
+            'coding-latest': {
+              providers: ['chatgpt'],
+              requires: ['tools', 'reasoning'],
+              prefer: 'quality',
+            },
+          },
+          runtimeModelPools: {
+            'pool/gpt-5.6-sol': {
+              source: 'catalog',
+              strategy: 'sticky_quota_aware_failover',
+              members: [
+                { model: 'chatgpt/gpt-5.6-sol', priority: 0 },
+                { model: 'chatgpt-personal/gpt-5.6-sol', priority: 1 },
+              ],
+            },
+          },
+          modelCatalog: {
+            generation: 7,
+            updatedAt: '2026-07-10T00:00:00.000Z',
+            entries: [
+              {
+                providerName: 'chatgpt',
+                modelName: 'gpt-5.6-sol',
+                modelId: 'gpt-5.6-sol',
+                displayName: 'GPT-5.6 Sol',
+                family: 'gpt',
+                version: '5.6',
+                lane: 'sol',
+                status: 'verified',
+                source: 'provider',
+                maxContext: 372000,
+                maxOutput: 8192,
+                capabilities: ['tools', 'vision', 'reasoning'],
+                defaultReasoningEffort: 'low',
+                supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+                discoveredAt: '2026-07-10T00:00:00.000Z',
+                verifiedAt: '2026-07-10T00:00:01.000Z',
+                lastSeenAt: '2026-07-10T00:00:01.000Z',
+                lastError: null,
+              },
+            ],
+          },
+        },
+      })
+    })
+    await page.route('**/api/providers/chatgpt/oauth/usage', async (route) => {
+      await route.fulfill({
+        json: {
+          provider: 'chatgpt',
+          usage: {
+            rateLimits: {
+              limitId: null,
+              limitName: null,
+              primary: null,
+              secondary: null,
+              credits: null,
+              planType: null,
+            },
+            rateLimitsByLimitId: null,
+          },
+        },
+      })
+    })
+    await page.route('**/api/providers/chatgpt/models/refresh', async (route) => {
+      refreshCalls++
+      await route.fulfill({
+        json: {
+          reason: 'manual',
+          providerNames: ['chatgpt'],
+          changed: false,
+          discovered: 1,
+          verified: 1,
+          unavailable: 0,
+          errors: [],
+          generation: 7,
+        },
+      })
+    })
+
+    await page.goto('/config')
+
+    await expect(page.getByText('Runtime Model Catalog')).toBeVisible()
+    await expect(page.getByText('Generation 7')).toBeVisible()
+    await expect(page.getByText('GPT-5.6 Sol')).toBeVisible()
+    await expect(page.getByText('provider · verified')).toBeVisible()
+    await expect(page.getByText('Automatic Pools')).toBeVisible()
+    await expect(page.getByText('pool/gpt-5.6-sol', { exact: true })).toBeVisible()
+    await expect(page.getByLabel('Default Model').locator('option')).toContainText([
+      'route/coding-latest · route',
+      'pool/gpt-5.6-sol · pool',
+    ])
+
+    await page.getByRole('button', { name: 'Refresh models' }).click()
+    await expect.poll(() => refreshCalls).toBe(1)
+    await expect(page.getByRole('button', { name: 'Refresh models' })).toBeEnabled()
+  })
+
   test('Models tab shows task closure model selector with default option', async ({ page }) => {
     await page.goto('/config')
     await expect(page.locator('main h3:has-text("Task Closure Model")')).toBeVisible({

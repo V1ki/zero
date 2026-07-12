@@ -258,17 +258,21 @@ bun zero provider login anthropic --name max
 ```
 
 Named logins create provider instances such as `chatgpt-work` with distinct vault refs, and a
-running server will reload model provider config automatically when reachable. To keep cache
-locality while failing over on exhausted accounts, define a logical model pool:
+running server will reload model provider config automatically when reachable. Verified Catalog
+entries with the same `model_id` are automatically grouped under `pool/<model_id>`, so two accounts
+that expose GPT-5.6 Sol use `pool/gpt-5.6-sol` without a `model_pools` entry. The pool keeps session
+cache locality and fails over on quota, authentication, or temporary availability errors.
+
+Use `model_pools` only to override automatic membership or ordering:
 
 ```yaml
 model_pools:
-  chatgpt/gpt-5.5:
+  pool/gpt-5.5:
     strategy: sticky_quota_aware_failover
     members:
       - chatgpt-personal/gpt-5.5
       - chatgpt-work/gpt-5.5
-default_model: chatgpt/gpt-5.5
+default_model: pool/gpt-5.5
 ```
 
 When X Premium OAuth is available at startup, ZeRo also registers `x_search`, a built-in tool that searches X posts through xAI's hosted `x_search` Responses tool. As a fallback, the tool can use a vault secret named `xai_api_key`.

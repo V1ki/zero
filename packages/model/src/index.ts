@@ -1,7 +1,7 @@
 export { ModelRegistry } from './registry'
-export type { ListedModel, ListedModelPool, ResolvedModel } from './registry'
+export type { ListedModel, ListedModelPool, ModelPoolSource, ResolvedModel } from './registry'
 export { ModelRouter } from './router'
-export type { ModelSwitchResult } from './router'
+export type { ModelRouterOptions, ModelSwitchResult } from './router'
 export { OpenAIChatAdapter } from './adapters/openai-chat'
 export { AnthropicAdapter, AnthropicDeepSeekAdapter } from './adapters/anthropic'
 export { OpenAIResponsesAdapter } from './adapters/openai-resp'
@@ -44,6 +44,35 @@ export type {
   ProviderRecoveryHint,
   ProviderRecoveryResolver,
 } from './provider-health'
+export { ModelCatalogCoordinator } from './catalog/coordinator'
+export type {
+  ModelCatalogCoordinatorOptions,
+  RefreshModelCatalogOptions,
+} from './catalog/coordinator'
+export { ModelCatalogStore } from './catalog/store'
+export { ChatGptCodexDiscoveryDriver, parseChatGptCodexModels } from './catalog/chatgpt-codex'
+export { mergeCatalogIntoConfig } from './catalog/merge'
+export type {
+  DiscoveredModel,
+  ModelCatalogEntry,
+  ModelCatalogFieldSource,
+  ModelCatalogRefreshReason,
+  ModelCatalogRefreshResult,
+  ModelCatalogSnapshot,
+  ModelCatalogSource,
+  ModelCatalogStatus,
+  ModelDiscoveryContext,
+  ModelDiscoveryDriver,
+  ModelDiscoveryResult,
+  ModelDiscoveryScope,
+  ModelVerificationResult,
+} from './catalog/types'
+export {
+  classifyRuntimeModelError,
+  ModelPolicyAdapter,
+  negotiateReasoningEffort,
+} from './adapters/model-policy'
+export type { RuntimeModelError, RuntimeModelErrorHandler } from './adapters/model-policy'
 
 /**
  * Simple API key authentication strategy.

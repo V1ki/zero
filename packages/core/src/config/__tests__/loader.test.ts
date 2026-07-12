@@ -391,6 +391,89 @@ context_compaction_model: deepseek-v4-flash
     expect(config.defaultModel).toBe('deepseek/deepseek-v4-pro')
     expect(config.contextCompactionModel).toBe('deepseek/deepseek-v4-flash')
   })
+
+  test('parses model discovery, supported reasoning levels, and logical routes', () => {
+    const configPath = join(tmpDir, 'model-catalog.yaml')
+    writeFileSync(
+      configPath,
+      `
+providers:
+  chatgpt:
+    api_type: openai_responses
+    base_url: https://chatgpt.com/backend-api/codex
+    auth:
+      type: oauth2
+      oauth_token_ref: chatgpt_oauth_token
+    discovery:
+      enabled: true
+      refresh_interval_ms: 21600000
+      timeout_ms: 30000
+      client_version: 2026.7.0
+      allow:
+        - gpt-5.*
+      deny:
+        - '*-preview'
+    models:
+      pinned:
+        model_id: gpt-5.5
+        max_context: 400000
+        max_output: 128000
+        reasoning_effort: high
+        supported_reasoning_efforts:
+          - low
+          - high
+          - max
+        capabilities:
+          - tools
+          - reasoning
+        tags:
+          - coding
+model_routes:
+  coding-latest:
+    providers:
+      - chatgpt
+    family: gpt
+    lanes:
+      - sol
+      - terra
+    requires:
+      - tools
+      - reasoning
+    min_context: 200000
+    prefer: quality
+    reasoning_effort: auto
+default_model: route/coding-latest
+fallback_chain:
+  - chatgpt/pinned
+`,
+    )
+
+    const config = loadConfig(configPath)
+
+    expect(config.providers.chatgpt.discovery).toEqual({
+      enabled: true,
+      refreshIntervalMs: 21600000,
+      timeoutMs: 30000,
+      clientVersion: '2026.7.0',
+      allow: ['gpt-5.*'],
+      deny: ['*-preview'],
+    })
+    expect(config.providers.chatgpt.models.pinned.supportedReasoningEfforts).toEqual([
+      'low',
+      'high',
+      'xhigh',
+    ])
+    expect(config.modelRoutes?.['coding-latest']).toEqual({
+      providers: ['chatgpt'],
+      family: 'gpt',
+      lanes: ['sol', 'terra'],
+      requires: ['tools', 'reasoning'],
+      minContext: 200000,
+      prefer: 'quality',
+      reasoningEffort: 'auto',
+    })
+    expect(config.defaultModel).toBe('route/coding-latest')
+  })
 })
 
 describe('loadFuseList', () => {

@@ -165,6 +165,10 @@ bun zero secret set openai_codex_api_key <value>
 - 不带 `--name` 时保持旧行为，例如写入 `chatgpt` / `chatgpt_oauth_token`
 - 带 `--name` 时创建独立 provider 实例，例如 `chatgpt-work` 和 `chatgpt_oauth_work`
 - 如果本地 Web server 正在运行，登录成功后会尝试热重载 model provider 配置
+- ChatGPT Codex provider 登录成功后会按账号和 transport 自动发现并验证模型；结果缓存在
+  `.zero/cache/model-catalog/catalog.json`
+- 多个订阅发现相同 `model_id` 后，会自动组成 `pool/<model_id>`；provider 配置顺序决定初始优先级
+- 自动发现失败不会清空已验证缓存或手工模型；配置页 Models 标签可手动执行 `Refresh models`
 - 如果热重载不可达，配置和 vault 仍会保存；下次启动或重启后生效
 
 示例：
@@ -175,7 +179,10 @@ bun zero provider login chatgpt --name work
 bun zero provider login anthropic --name max
 ```
 
-多个同类 OAuth 账号可以通过 `.zero/config.yaml` 的 `model_pools` 聚合为一个逻辑模型，并使用 `sticky_quota_aware_failover` 在单个 session 内尽量固定实际 provider，只有遇到额度或限流问题时才自动切换。
+自动 pool 使用 `sticky_quota_aware_failover`，在单个 session 内尽量固定实际 provider，只有遇到额度、认证或临时可用性问题时才切换。`.zero/config.yaml` 的 `model_pools` 只用于覆盖自动成员、顺序或策略，规范名称为 `pool/<model_id>`。
+
+动态模型、逻辑 route、过滤器、刷新触发和 API 说明见
+[`docs/model-catalog.md`](./model-catalog.md)。
 
 ### `bun zero secret list`
 

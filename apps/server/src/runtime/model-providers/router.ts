@@ -1,4 +1,12 @@
-import { LiteLLMPricing, ModelRouter, ProviderHealthRegistry } from '@zero-os/model'
+import { join } from 'node:path'
+import {
+  ChatGptCodexDiscoveryDriver,
+  LiteLLMPricing,
+  ModelCatalogCoordinator,
+  ModelCatalogStore,
+  ModelRouter,
+  ProviderHealthRegistry,
+} from '@zero-os/model'
 import type { MetricsDB } from '@zero-os/observe'
 import type { Vault } from '@zero-os/secrets'
 import type { SystemConfig } from '@zero-os/shared'
@@ -28,14 +36,30 @@ export async function createModelRouterRuntime(options: {
   const providerHealth = new ProviderHealthRegistry({
     recoveryResolver: createProviderRecoveryResolver(() => config, vault),
   })
+  const catalog = new ModelCatalogCoordinator({
+    config,
+    secretGetter: (ref) => vault.get(ref) ?? undefined,
+    store: new ModelCatalogStore(join(zeroDir, 'cache', 'model-catalog', 'catalog.json')),
+    drivers: [new ChatGptCodexDiscoveryDriver()],
+  })
+  await catalog.initialize()
   const modelRouter = new ModelRouter(config, new Map(vault.entries()), {
     secretGetter: (ref) => vault.get(ref) ?? undefined,
     usageRecorder,
     oauthRefreshers: createOAuthRefreshers(config, vault),
     providerHealth,
+    catalog,
   })
   const initResult = modelRouter.init()
   console.log(`[ZeRo OS] Model Router: ${initResult.message}`)
+  modelRouter.startCatalogAutoRefresh()
+  void modelRouter.refreshCatalog({ reason: 'startup' }).then((result) => {
+    if (result.changed || result.errors.length > 0) {
+      console.log(
+        `[ZeRo OS] Model Catalog: ${result.verified} verified, ${result.unavailable} unavailable, ${result.errors.length} errors`,
+      )
+    }
+  })
 
   return {
     litellmPricing,

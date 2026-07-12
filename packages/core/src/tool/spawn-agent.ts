@@ -2,7 +2,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ModelRouter } from '@zero-os/model'
 import type { MetricsDB } from '@zero-os/observe'
-import type { ToolContext, ToolResult } from '@zero-os/shared'
+import type { ToolContext, ToolDefinition, ToolResult } from '@zero-os/shared'
 import { generateId } from '@zero-os/shared'
 import { Agent, type AgentConfig, type AgentContext, type AgentObservability } from '../agent/agent'
 import { buildSystemPrompt } from '../agent/prompt'
@@ -72,7 +72,10 @@ export class SpawnAgentTool extends BaseTool {
     private metrics?: MetricsDB,
   ) {
     super()
+  }
 
+  override toDefinition(): ToolDefinition {
+    const definition = super.toDefinition()
     const models = this.modelRouter.getRegistry().listModels()
     const modelLabels = models.map((model) => {
       const label = `${model.providerName}/${model.modelName}`
@@ -80,8 +83,21 @@ export class SpawnAgentTool extends BaseTool {
       const capabilities = resolved?.modelConfig.capabilities ?? []
       return capabilities.length > 0 ? `${label} (${capabilities.join(', ')})` : label
     })
-    if (modelLabels.length > 0) {
-      this.parameters.properties.model.description = `Optional model override for this sub-agent. Defaults to the current session model. Available: ${modelLabels.join(', ')}`
+    const available = [...this.modelRouter.listModelRoutes(), ...modelLabels]
+    const description =
+      available.length > 0
+        ? `Optional model override for this sub-agent. Defaults to the current session model. Current routes and models: ${available.join(', ')}`
+        : this.parameters.properties.model.description
+
+    return {
+      ...definition,
+      parameters: {
+        ...this.parameters,
+        properties: {
+          ...this.parameters.properties,
+          model: { ...this.parameters.properties.model, description },
+        },
+      },
     }
   }
 

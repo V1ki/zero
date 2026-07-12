@@ -87,12 +87,13 @@ interface ScheduleTriggerOptions {
   addNotification(n: Omit<Notification, 'id' | 'createdAt'>): Notification
 }
 
-async function handleScheduleTrigger(
+export async function handleScheduleTrigger(
   schedConfig: ScheduleConfig,
   { sessionManager, channels, addNotification }: ScheduleTriggerOptions,
 ): Promise<void> {
   const binding = schedConfig.channel
   let session: Session
+  let shouldInitializeAgent = false
 
   if (binding) {
     const result = sessionManager.getOrCreateForChannel(
@@ -102,14 +103,20 @@ async function handleScheduleTrigger(
       binding.participantId,
     )
     session = result.session
-    if (result.isNew) {
-      session.initAgent({
-        name: `schedule-${schedConfig.name}`,
-        agentInstruction: schedConfig.instruction,
-      })
-    }
+    shouldInitializeAgent = result.isNew
   } else {
     session = sessionManager.create('scheduler')
+    shouldInitializeAgent = true
+  }
+
+  if (schedConfig.model) {
+    const switched = await session.switchModel(schedConfig.model)
+    if (!switched.success) {
+      throw new Error(`Schedule "${schedConfig.name}" model resolution failed: ${switched.message}`)
+    }
+  }
+
+  if (shouldInitializeAgent) {
     session.initAgent({
       name: `schedule-${schedConfig.name}`,
       agentInstruction: schedConfig.instruction,

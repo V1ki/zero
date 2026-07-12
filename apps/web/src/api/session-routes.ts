@@ -15,7 +15,7 @@ export function createSessionRoutes(zero: ZeroOS) {
 
   return new Hono()
     .get('/models', (c) => {
-      const models = zero.modelRouter
+      const physicalModels = zero.modelRouter
         .getRegistry()
         .listModels()
         .map((model) => ({
@@ -23,7 +23,28 @@ export function createSessionRoutes(zero: ZeroOS) {
           provider: model.providerName,
           modelId: model.modelId,
           tags: model.tags,
+          capabilities: model.capabilities,
+          maxContext: model.maxContext,
+          maxOutput: model.maxOutput,
+          source: model.source,
+          status: model.status,
+          displayName: model.displayName,
+          family: model.family,
+          version: model.version,
+          lane: model.lane,
         }))
+      const routes = zero.modelRouter.listModelRoutes().map((name) => ({
+        name,
+        provider: 'route',
+        modelId: name,
+        tags: ['route'],
+        capabilities: [],
+        maxContext: 0,
+        maxOutput: 0,
+        source: 'route',
+        status: 'configured',
+      }))
+      const models = [...routes, ...physicalModels]
       return c.json({ models })
     })
 

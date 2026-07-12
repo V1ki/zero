@@ -66,6 +66,27 @@ function createRouter() {
   return router
 }
 
+function createRouteRouter() {
+  const router = new ModelRouter(
+    {
+      ...config,
+      modelRoutes: {
+        latest: {
+          models: ['openai-codex/gpt-5.4-medium'],
+          requires: ['tools', 'reasoning'],
+          prefer: 'priority',
+          reasoningEffort: 'high',
+        },
+      },
+      defaultModel: 'route/latest',
+      fallbackChain: ['openai-codex/gpt-5.3-codex-medium'],
+    },
+    secrets,
+  )
+  router.init()
+  return router
+}
+
 function createTextOnlyRouter() {
   const textOnlyConfig: SystemConfig = {
     providers: {
@@ -284,6 +305,52 @@ describe('Session', () => {
 
     expect(models).toContain('openai-codex/gpt-5.3-codex-medium')
     expect(models).toContain('openai-codex/gpt-5.4-medium')
+  })
+
+  test('logical routes pin sessions to the selected physical model and remain usable by auxiliaries', () => {
+    const router = createRouteRouter()
+    const registry = createToolRegistry()
+    const session = new Session('web', router, registry, {
+      taskClosureModel: 'route/latest',
+      contextCompactionModel: 'route/latest',
+      projectRoot: testProject.projectRoot,
+    })
+    session.initAgent({ name: 'route-agent', agentInstruction: 'route test' })
+
+    expect(session.data.currentModel).toBe('openai-codex/gpt-5.4-medium')
+    expect(session.listModels()).toContain('route/latest')
+    const agent = getSessionAgentForTest<{
+      closureAdapter: unknown
+      contextCompactionAdapter: unknown
+    }>(session)
+    const routed = router.resolveModel('route/latest')
+    expect(agent?.closureAdapter).toBe(routed?.adapter)
+    expect(agent?.contextCompactionAdapter).toBe(routed?.adapter)
+
+    const changedRouteRouter = new ModelRouter(
+      {
+        ...config,
+        modelRoutes: {
+          latest: {
+            models: ['openai-codex/gpt-5.3-codex-medium'],
+            prefer: 'priority',
+          },
+        },
+        defaultModel: 'route/latest',
+      },
+      secrets,
+    )
+    changedRouteRouter.init()
+    const restored = Session.restore(
+      structuredClone(session.data),
+      [],
+      changedRouteRouter,
+      registry,
+      { projectRoot: testProject.projectRoot },
+    )
+
+    expect(changedRouteRouter.getDefaultModelLabel()).toBe('openai-codex/gpt-5.3-codex-medium')
+    expect(restored.data.currentModel).toBe('openai-codex/gpt-5.4-medium')
   })
 
   test('switchModel updates the session model label', async () => {

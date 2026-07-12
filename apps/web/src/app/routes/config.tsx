@@ -14,6 +14,7 @@ export function ConfigPage() {
     modelPoolSaving,
     newPoolName,
     oauthConnecting,
+    catalogRefreshing,
     channels,
     loading,
     tab,
@@ -52,6 +53,7 @@ export function ConfigPage() {
     handleRemoveModelPoolMember,
     handleSaveModelPools,
     handleConnectOAuthProvider,
+    handleRefreshModelCatalog,
     toggleReveal,
     handleCancelAddSecret,
   } = useConfigPageState()
@@ -96,12 +98,14 @@ export function ConfigPage() {
               modelPoolSaving={modelPoolSaving}
               newPoolName={newPoolName}
               oauthConnecting={oauthConnecting}
+              catalogRefreshing={catalogRefreshing}
               chatgptUsageByProvider={chatgptUsageByProvider}
               chatgptUsageStateByProvider={chatgptUsageStateByProvider}
               claudeUsageByProvider={claudeUsageByProvider}
               claudeUsageStateByProvider={claudeUsageStateByProvider}
               onNewPoolNameChange={setNewPoolName}
               onConnectOAuthProvider={handleConnectOAuthProvider}
+              onRefreshModelCatalog={handleRefreshModelCatalog}
               onSetDefaultModel={handleSetDefaultModel}
               onAddModelPool={handleAddModelPool}
               onUpdateModelPool={handleUpdateModelPool}

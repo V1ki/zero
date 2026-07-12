@@ -1,13 +1,13 @@
 import { FloppyDisk, Plus, Trash } from '@phosphor-icons/react'
 import {
-  MODEL_POOL_STRATEGIES,
-  getOAuthKind,
   type ChatGptUsageSnapshot,
   type ClaudeUsageSnapshot,
   type ConfigData,
+  MODEL_POOL_STRATEGIES,
   type ModelPoolDraft,
   type ModelPoolStrategy,
   type ProviderView,
+  getOAuthKind,
 } from './config-shared'
 
 type UsageState = 'idle' | 'loading' | 'ready' | 'error'
@@ -20,6 +20,11 @@ interface ConfiguredModel {
   maxOutput: number
   capabilities: string[]
   tags: string[]
+  source?: 'manual' | 'provider'
+  status?: 'configured' | 'verified' | 'stale'
+  displayName?: string
+  lane?: string
+  supportedReasoningEfforts?: string[]
 }
 
 interface ConfigModelsTabProps {
@@ -30,12 +35,14 @@ interface ConfigModelsTabProps {
   modelPoolSaving: boolean
   newPoolName: string
   oauthConnecting: string | null
+  catalogRefreshing: string | null
   chatgptUsageByProvider: Record<string, ChatGptUsageSnapshot>
   chatgptUsageStateByProvider: Record<string, UsageState>
   claudeUsageByProvider: Record<string, ClaudeUsageSnapshot | null>
   claudeUsageStateByProvider: Record<string, UsageState>
   onNewPoolNameChange: (value: string) => void
   onConnectOAuthProvider: (provider: string, label: string) => void
+  onRefreshModelCatalog: (provider: string) => void
   onSetDefaultModel: (model: string) => void
   onAddModelPool: (physicalModels: string[]) => void
   onUpdateModelPool: (id: string, patch: Partial<Omit<ModelPoolDraft, 'id'>>) => void
@@ -66,12 +73,14 @@ export function ConfigModelsTab({
   modelPoolSaving,
   newPoolName,
   oauthConnecting,
+  catalogRefreshing,
   chatgptUsageByProvider,
   chatgptUsageStateByProvider,
   claudeUsageByProvider,
   claudeUsageStateByProvider,
   onNewPoolNameChange,
   onConnectOAuthProvider,
+  onRefreshModelCatalog,
   onSetDefaultModel,
   onAddModelPool,
   onUpdateModelPool,
@@ -85,8 +94,9 @@ export function ConfigModelsTab({
 }: ConfigModelsTabProps) {
   const models = getConfiguredModels(providers)
   const physicalModelOptions = models.map((model) => `${model.provName}/${model.mName}`)
-  const poolModelOptions = Object.keys(config?.modelPools ?? {})
-  const allModelOptions = [...poolModelOptions, ...physicalModelOptions]
+  const poolModelOptions = Object.keys(config?.runtimeModelPools ?? config?.modelPools ?? {})
+  const routeModelOptions = Object.keys(config?.modelRoutes ?? {}).map((name) => `route/${name}`)
+  const allModelOptions = [...routeModelOptions, ...poolModelOptions, ...physicalModelOptions]
   const defaultModelOptions = withCurrentModelOption(allModelOptions, config?.defaultModel)
   const taskClosureModelOptions = withCurrentModelOption(allModelOptions, config?.taskClosureModel)
   const contextCompactionModelOptions = withCurrentModelOption(
@@ -98,11 +108,13 @@ export function ConfigModelsTab({
       <ProvidersCard
         providers={providers}
         oauthConnecting={oauthConnecting}
+        catalogRefreshing={catalogRefreshing}
         chatgptUsageByProvider={chatgptUsageByProvider}
         chatgptUsageStateByProvider={chatgptUsageStateByProvider}
         claudeUsageByProvider={claudeUsageByProvider}
         claudeUsageStateByProvider={claudeUsageStateByProvider}
         onConnectOAuthProvider={onConnectOAuthProvider}
+        onRefreshModelCatalog={onRefreshModelCatalog}
       />
 
       <div className="card p-5 animate-fade-up" style={{ animationDelay: '40ms' }}>
@@ -116,10 +128,22 @@ export function ConfigModelsTab({
               className="flex items-center justify-between py-2 border-b border-[var(--color-border)]"
             >
               <div>
-                <p className="text-[13px] text-[var(--color-text-primary)]">{`${m.provName}/${m.mName}`}</p>
+                <p className="text-[13px] text-[var(--color-text-primary)]">
+                  {m.displayName ?? `${m.provName}/${m.mName}`}
+                </p>
+                {m.displayName && (
+                  <p className="text-[11px] font-mono text-[var(--color-text-muted)]">{`${m.provName}/${m.mName}`}</p>
+                )}
                 <p className="text-[11px] font-mono text-[var(--color-text-muted)]">
                   {(m.maxContext / 1000).toFixed(0)}K context / {(m.maxOutput / 1000).toFixed(0)}K
                   output
+                </p>
+                <p className="text-[10px] text-[var(--color-text-disabled)] mt-1">
+                  {m.source ?? 'manual'} · {m.status ?? 'configured'}
+                  {m.lane ? ` · ${m.lane}` : ''}
+                  {m.supportedReasoningEfforts?.length
+                    ? ` · reasoning ${m.supportedReasoningEfforts.join('/')}`
+                    : ''}
                 </p>
                 {m.tags.length > 0 && (
                   <div className="flex gap-1 mt-1">
@@ -147,6 +171,8 @@ export function ConfigModelsTab({
         </div>
       </div>
 
+      <ModelCatalogCard config={config} />
+
       <div className="card p-5 animate-fade-up lg:col-span-2" style={{ animationDelay: '80ms' }}>
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -169,7 +195,11 @@ export function ConfigModelsTab({
                 {defaultModelOptions.map((model) => (
                   <option key={`default-${model}`} value={model}>
                     {model}
-                    {poolModelOptions.includes(model) ? ' · pool' : ''}
+                    {routeModelOptions.includes(model)
+                      ? ' · route'
+                      : poolModelOptions.includes(model)
+                        ? ' · pool'
+                        : ''}
                   </option>
                 ))}
               </select>
@@ -245,22 +275,95 @@ export function ConfigModelsTab({
   )
 }
 
+function ModelCatalogCard({ config }: { config: ConfigData | null }) {
+  const catalog = config?.modelCatalog
+  const automaticPools = Object.entries(config?.runtimeModelPools ?? {}).filter(
+    ([, pool]) => pool.source === 'catalog',
+  )
+  if ((!catalog || catalog.entries.length === 0) && automaticPools.length === 0) return null
+
+  return (
+    <div className="card p-5 animate-fade-up lg:col-span-2" style={{ animationDelay: '60ms' }}>
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <div>
+          <h3 className="text-[14px] font-semibold text-[var(--color-text-secondary)]">
+            Runtime Model Catalog
+          </h3>
+          <p className="text-[11px] text-[var(--color-text-muted)]">
+            Generation {catalog?.generation ?? 0} · verified models are activated automatically
+          </p>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+        {(catalog?.entries ?? []).map((entry) => (
+          <div
+            key={`${entry.providerName}/${entry.modelId}`}
+            className="rounded-lg border border-[var(--color-border)] px-3 py-2"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[12px] font-mono text-[var(--color-text-primary)]">
+                {entry.providerName}/{entry.modelName}
+              </span>
+              <span className={`text-[10px] ${catalogStatusClass(entry.status)}`}>
+                {entry.status}
+              </span>
+            </div>
+            <p className="text-[10px] text-[var(--color-text-muted)] mt-1">
+              {(entry.maxContext / 1000).toFixed(0)}K context
+              {entry.lane ? ` · ${entry.lane}` : ''}
+              {entry.defaultReasoningEffort ? ` · default ${entry.defaultReasoningEffort}` : ''}
+            </p>
+            {entry.lastError && <p className="text-[10px] text-red-400 mt-1">{entry.lastError}</p>}
+          </div>
+        ))}
+      </div>
+      {automaticPools.length > 0 && (
+        <div className="mt-4 border-t border-[var(--color-border)] pt-3">
+          <p className="text-[11px] font-semibold text-[var(--color-text-secondary)] mb-2">
+            Automatic Pools
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            {automaticPools.map(([name, pool]) => (
+              <div key={name} className="rounded-lg border border-[var(--color-border)] px-3 py-2">
+                <p className="text-[12px] font-mono text-[var(--color-text-primary)]">{name}</p>
+                <p className="text-[10px] text-[var(--color-text-muted)] mt-1">
+                  {pool.members.map((member) => member.model).join(' · ')}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function catalogStatusClass(status: string): string {
+  if (status === 'verified') return 'text-emerald-400'
+  if (status === 'unavailable' || status === 'deprecated') return 'text-red-400'
+  return 'text-amber-400'
+}
+
 function ProvidersCard({
   providers,
   oauthConnecting,
+  catalogRefreshing,
   chatgptUsageByProvider,
   chatgptUsageStateByProvider,
   claudeUsageByProvider,
   claudeUsageStateByProvider,
   onConnectOAuthProvider,
+  onRefreshModelCatalog,
 }: {
   providers: Record<string, ProviderView>
   oauthConnecting: string | null
+  catalogRefreshing: string | null
   chatgptUsageByProvider: Record<string, ChatGptUsageSnapshot>
   chatgptUsageStateByProvider: Record<string, UsageState>
   claudeUsageByProvider: Record<string, ClaudeUsageSnapshot | null>
   claudeUsageStateByProvider: Record<string, UsageState>
   onConnectOAuthProvider: (provider: string, label: string) => void
+  onRefreshModelCatalog: (provider: string) => void
 }) {
   const chatgptProvider = providers.chatgpt
   const xPremiumProvider = providers['x-premium']
@@ -277,11 +380,13 @@ function ProvidersCard({
             name={name}
             provider={provider}
             oauthConnecting={oauthConnecting}
+            catalogRefreshing={catalogRefreshing}
             chatgptUsage={chatgptUsageByProvider[name]}
             chatgptUsageState={chatgptUsageStateByProvider[name] ?? 'idle'}
             claudeUsage={claudeUsageByProvider[name]}
             claudeUsageState={claudeUsageStateByProvider[name] ?? 'idle'}
             onConnectOAuthProvider={onConnectOAuthProvider}
+            onRefreshModelCatalog={onRefreshModelCatalog}
           />
         ))}
         {!chatgptProvider && (
@@ -316,20 +421,24 @@ function ProviderRow({
   name,
   provider,
   oauthConnecting,
+  catalogRefreshing,
   chatgptUsage,
   chatgptUsageState,
   claudeUsage,
   claudeUsageState,
   onConnectOAuthProvider,
+  onRefreshModelCatalog,
 }: {
   name: string
   provider: ProviderView
   oauthConnecting: string | null
+  catalogRefreshing: string | null
   chatgptUsage?: ChatGptUsageSnapshot
   chatgptUsageState: UsageState
   claudeUsage?: ClaudeUsageSnapshot | null
   claudeUsageState: UsageState
   onConnectOAuthProvider: (provider: string, label: string) => void
+  onRefreshModelCatalog: (provider: string) => void
 }) {
   const badge = getProviderBadge(provider)
   const oauthKind = getOAuthKind(name, provider)
@@ -374,6 +483,16 @@ function ProviderRow({
               : provider.authorized
                 ? 'Reconnect'
                 : 'Connect'}
+          </button>
+        )}
+        {isChatgpt && provider.authorized && (
+          <button
+            type="button"
+            onClick={() => onRefreshModelCatalog(name)}
+            disabled={catalogRefreshing === name}
+            className="text-[11px] px-2 py-1 rounded-md bg-white/[0.05] text-[var(--color-text-secondary)] hover:bg-white/[0.08] disabled:opacity-50"
+          >
+            {catalogRefreshing === name ? 'Refreshing...' : 'Refresh models'}
           </button>
         )}
       </div>
@@ -610,7 +729,7 @@ function ModelPoolsEditor({
             type="text"
             value={newPoolName}
             onChange={(e) => onNewPoolNameChange(e.target.value)}
-            placeholder="chatgpt/gpt-5.5"
+            placeholder="pool/gpt-5.5"
             className="w-full sm:w-[240px] px-3 py-2 rounded-lg bg-[var(--color-bg-secondary)] border border-[var(--color-border)] text-[13px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-disabled)] focus:outline-none focus:border-[var(--color-accent)]"
           />
           <button
