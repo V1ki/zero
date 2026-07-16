@@ -145,7 +145,9 @@ describe('buildToolRulesBlock', () => {
     expect(result).toContain('Read：优先使用 Read 查看文件内容')
     expect(result).toContain('Read Image：用于读取本地 PNG/JPEG/WebP 图片')
     expect(result).toContain('Bash：命令在工作目录中执行')
-    expect(result).toContain('长时间任务不要通过 sleep 轮询占住前台')
+    expect(result).toContain('长时间任务禁止通过 sleep、ps、pgrep、lsof、wc、tail、ls、find、stat')
+    expect(result).toContain('收到 background_tool.started 后，如果下一步依赖后台结果')
+    expect(result).toContain('应结束当前轮并等待 background_tool.completed')
     expect(result).toContain('系统会自动转入后台')
     expect(result).toContain('background_tool.completed')
     expect(result).toContain('timeout 只用于限制失控命令')
@@ -185,6 +187,11 @@ describe('buildToolRulesBlock', () => {
     expect(result).toContain('当前模型不能直接看图')
     expect(result).toContain('tools=["read_image"]')
     expect(result).toContain('不要声称自己直接看到了图片')
+    expect(result).toContain('只适用于等待 spawn_agent 创建的子 agent 状态变化')
+    expect(result).toContain('不适用于 background tool task id')
+    expect(result).toContain(
+      '不要把 background_tool.started 中的 task id 或 tool_use_id 传给 wait_agent',
+    )
   })
 })
 

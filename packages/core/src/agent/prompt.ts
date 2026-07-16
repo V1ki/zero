@@ -360,8 +360,7 @@ export function buildToolRulesBlock(tools: ToolDefinition[]): string {
     write:
       'Write：写入文件前先确认路径正确。临时文件和下载内容写入工作目录，修改源代码使用项目根目录的绝对路径。',
     edit: 'Edit：修改文件前先 Read 确认当前内容，避免基于过期认知做编辑。',
-    bash:
-      'Bash：命令在工作目录中执行，操作项目源码时使用绝对路径。命令执行前检查是否命中熔断名单。长时间任务不要通过 sleep 轮询占住前台；预计超过 60 秒的命令直接运行实际任务，系统会自动转入后台并在完成后注入 background_tool.completed。收到 background_tool.completed 后，根据其中的 status、output_summary、output 继续总结、检查或恢复。timeout 只用于限制失控命令，设置为任务合理上限；不要设置过短导致后台任务被提前杀掉。用户明确授权后可以使用密钥完成认证动作，但密钥值不得写进 command、文件、聊天或日志；对命令使用 envSecrets 将环境变量映射到 vault 引用，或使用 stdinSecretRef 一次性写入 stdin，Trace 只能记录引用名。',
+    bash: 'Bash：命令在工作目录中执行，操作项目源码时使用绝对路径。命令执行前检查是否命中熔断名单。长时间任务禁止通过 sleep、ps、pgrep、lsof、wc、tail、ls、find、stat 等方式轮询或探测 background tool 状态，也不要占住前台等待后台结果；预计超过 60 秒的命令直接运行实际任务，系统会自动转入后台并在完成后注入 background_tool.completed。收到 background_tool.started 后，如果下一步依赖后台结果，应结束当前轮并等待 background_tool.completed，不要手动轮询产物或进程。收到 background_tool.completed 后，根据其中的 status、output_summary、output 继续总结、检查或恢复。timeout 只用于限制失控命令，设置为任务合理上限；不要设置过短导致后台任务被提前杀掉。用户明确授权后可以使用密钥完成认证动作，但密钥值不得写进 command、文件、聊天或日志；对命令使用 envSecrets 将环境变量映射到 vault 引用，或使用 stdinSecretRef 一次性写入 stdin，Trace 只能记录引用名。',
     fetch:
       'Fetch：用于读取网页内容、调用 API、下载文件。HTML 自动通过 readability 提取正文转为 Markdown。(适用于无 JavaScript 渲染以及登录状态的网页) 需要 Bearer token 时使用 credentialRef 引用 vault 密钥，不要把 token 写进 headers。',
     memory_search:
@@ -374,7 +373,7 @@ export function buildToolRulesBlock(tools: ToolDefinition[]): string {
     spawn_agent:
       'Spawn Agent：用于创建子 agent。spawn 立即返回 agent_id，不会阻塞。mode="standard"（默认）执行后自动完成；mode="interactive" 执行后进入等待状态，可通过 send_input 持续发送指令，最后用 close_agent 关闭。',
     wait_agent:
-      'Wait Agent：等待子 agent 状态变化。默认等待任意一个完成即返回（Promise.race 语义），设置 waitAll=true 等待全部。设置 resolveOn="ready" 可在 interactive agent 就绪时返回（而不是等到完成）。',
+      'Wait Agent：只适用于等待 spawn_agent 创建的子 agent 状态变化，不适用于 background tool task id。不要把 background_tool.started 中的 task id 或 tool_use_id 传给 wait_agent；后台工具任务应等待 background_tool.completed 通知。默认等待任意一个完成即返回（Promise.race 语义），设置 waitAll=true 等待全部。设置 resolveOn="ready" 可在 interactive agent 就绪时返回（而不是等到完成）。',
     close_agent:
       'Close Agent：关闭不再需要的子 agent，传入 spawn_agent 返回的 agent_id。interactive agent 必须通过 close_agent 终止。',
     send_input:

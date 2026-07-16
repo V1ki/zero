@@ -194,6 +194,8 @@ describe('BackgroundToolTaskManager', () => {
       execute: () => deferred.promise,
     })
     expect(foreground.output).toContain('background_tool.started')
+    expect(foreground.output).toContain('Do not manually poll with sleep, ps, pgrep, lsof')
+    expect(foreground.output).toContain('wait for the background_tool.completed system event')
 
     deferred.resolve({ success: true, output: 'slow output', outputSummary: 'slow done' })
     const completion = await waitFor(() => completions[0])

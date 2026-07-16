@@ -230,7 +230,7 @@ function buildBackgroundStartedOutput(task: BackgroundToolTaskRecord): string {
 <background_task id="${escapeXmlAttribute(task.id)}" tool_name="${escapeXmlAttribute(
     task.toolName,
   )}" tool_use_id="${escapeXmlAttribute(task.toolUseId)}" status="running">
-<message>Tool execution exceeded the foreground wait threshold and is continuing in the background. You will receive a background_tool.completed system event when it finishes.</message>
+<message>Tool execution exceeded the foreground wait threshold and is continuing in the background. Do not manually poll with sleep, ps, pgrep, lsof, wc, tail, ls, find, or stat. If the next step depends on this result, stop this turn and wait for the background_tool.completed system event; then continue from status, output_summary, and output.</message>
 </background_task>
 </system_event>`
 }
