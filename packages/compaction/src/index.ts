@@ -1,0 +1,8 @@
+export { buildCheckpointCandidate, computeCheckpointDigest } from './candidate'
+export { compareText, stableDigest, stableJson } from './hash'
+export { DEFAULT_COMPACTION_RUN_LIMITS, runCompactionHarness } from './harness'
+export { reduceTraceObservations } from './reducer'
+export type { TraceReduction } from './reducer'
+export { projectTraceEntry, readTraceSnapshot } from './trace-source'
+export type * from './types'
+export { validateCheckpointCandidate } from './validator'

@@ -75,6 +75,7 @@
       "name": "@zero-os/benchmark-zero-runtime",
       "version": "0.1.0",
       "dependencies": {
+        "@zero-os/compaction": "workspace:*",
         "@zero-os/core": "workspace:*",
         "@zero-os/model": "workspace:*",
         "@zero-os/observe": "workspace:*",
@@ -97,6 +98,10 @@
       "devDependencies": {
         "bun-types": "latest",
       },
+    },
+    "packages/compaction": {
+      "name": "@zero-os/compaction",
+      "version": "0.1.0",
     },
     "packages/core": {
       "name": "@zero-os/core",
@@ -660,6 +665,8 @@
     "@zero-os/benchmark-zero-runtime": ["@zero-os/benchmark-zero-runtime@workspace:benchmarks/zero-runtime"],
 
     "@zero-os/channel": ["@zero-os/channel@workspace:packages/channel"],
+
+    "@zero-os/compaction": ["@zero-os/compaction@workspace:packages/compaction"],
 
     "@zero-os/core": ["@zero-os/core@workspace:packages/core"],
 

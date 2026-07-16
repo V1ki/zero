@@ -9,6 +9,7 @@
     "check": "bunx tsc -p ../../tsconfig.check.json --noEmit"
   },
   "dependencies": {
+    "@zero-os/compaction": "workspace:*",
     "@zero-os/core": "workspace:*",
     "@zero-os/model": "workspace:*",
     "@zero-os/observe": "workspace:*",

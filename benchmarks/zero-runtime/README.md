@@ -44,6 +44,27 @@ a model-free proxy: it compares exact paths, URLs, tool arguments, and other ter
 the next historical turn against the compacted prompt projection. It is meant to catch
 context-loss risk before paying for full model replay.
 
+Run the independent, read-only compaction harness against a frozen trace prefix:
+
+```bash
+bun run compaction:harness-eval \
+  --session sess_20260707_0009_fei_55b4 \
+  --repeat 2
+```
+
+This path does not instantiate the normal Agent or write back to the source session. It streams
+`trace.jsonl`, collapses lifecycle snapshots by span, projects bounded typed observations, keeps
+error intervals and classified potential side effects, and produces a validated trace-diagnostic
+checkpoint plus a full change-point ledger. Raw request, response, input, output, and evidence
+payloads are represented only by counts and digests. The evaluator also binds the dry run to the
+current canonical message revision and active compaction-block heads when `sessions.db` is
+available, reports candidate and ledger bytes together, and verifies deterministic replay.
+
+This is deliberately a trace-sidecar evaluation. It does **not** claim that the candidate can
+replace canonical session messages, and it does not measure future-answer semantic quality. A
+semantic compaction worker must separately consume a frozen message prefix, previous checkpoints,
+and the uncompacted tail, then run goal/constraint/decision/evidence-handle recall tests.
+
 Run the prompt-variant benchmark with official DeepSeek v4 flash:
 
 ```bash

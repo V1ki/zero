@@ -16,6 +16,7 @@
     "zero": "bun run apps/server/src/cli.ts",
     "x-search:probe": "bun run benchmarks/x-search-usage-probe/run.ts",
     "compaction:quality": "bun run benchmarks/zero-runtime/compaction-quality-eval.ts",
+    "compaction:harness-eval": "bun run benchmarks/zero-runtime/compaction-harness-eval.ts",
     "compaction:prompt-bench": "bun run benchmarks/zero-runtime/compaction-prompt-benchmark.ts",
     "compaction:tool-io-digest": "bun run benchmarks/zero-runtime/tool-io-digest-benchmark.ts",
     "task-closure:prompt-bench": "bun run benchmarks/zero-runtime/task-closure-prompt-benchmark.ts"
