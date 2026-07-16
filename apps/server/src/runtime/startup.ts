@@ -217,6 +217,7 @@ function createStartupShutdownRuntime({
     bus,
     observability: core.observability,
     metrics: core.metrics,
+    sessionManager: core.sessionManager,
     channels,
     addNotification,
   })
@@ -312,6 +313,7 @@ interface RuntimeEventListenersOptions {
   bus: EventBus
   observability: ObservabilityStore
   metrics: MetricsDB
+  sessionManager: SessionManager
   channels: Map<string, Channel>
   addNotification(n: Omit<Notification, 'id' | 'createdAt'>): Notification
 }
@@ -320,6 +322,7 @@ function registerRuntimeEventListeners({
   bus,
   observability,
   metrics,
+  sessionManager,
   channels,
   addNotification,
 }: RuntimeEventListenersOptions): () => void {
@@ -355,6 +358,7 @@ function registerRuntimeEventListeners({
   const backgroundToolCompletionListener = (payload: BusPayload) => {
     void notifyBackgroundToolCompletion({
       payload,
+      sessionManager,
       channels,
       addNotification,
     })
@@ -375,6 +379,7 @@ function registerRuntimeEventListeners({
 
 async function notifyBackgroundToolCompletion(options: {
   payload: BusPayload
+  sessionManager: SessionManager
   channels: Map<string, Channel>
   addNotification(n: Omit<Notification, 'id' | 'createdAt'>): Notification
 }): Promise<void> {
@@ -383,7 +388,9 @@ async function notifyBackgroundToolCompletion(options: {
   if (!channelName || !deliveryChannelId || channelName === 'web') return
 
   const channel = options.channels.get(channelName)
-  const text = buildBackgroundToolNotificationText(options.payload)
+  const text = buildBackgroundToolNotificationText(options.payload, {
+    prefixSessionId: shouldPrefixBackgroundToolSessionId(options.payload, options.sessionManager),
+  })
   if (channel?.isConnected()) {
     await channel.send(deliveryChannelId, text).catch((error) => {
       console.error(
@@ -414,13 +421,38 @@ async function notifyBackgroundToolCompletion(options: {
   })
 }
 
-function buildBackgroundToolNotificationText(payload: BusPayload): string {
+export function buildBackgroundToolNotificationText(
+  payload: BusPayload,
+  options: { prefixSessionId?: boolean } = {},
+): string {
   const tool = (payload.data.tool as string | undefined) ?? 'tool'
   const status = payload.data.status === 'success' ? 'completed' : 'failed'
   const summary = (payload.data.outputSummary as string | undefined)?.trim()
-  return summary
+  const text = summary
     ? `Background ${tool} task ${status}: ${summary}`
     : `Background ${tool} task ${status}.`
+  const sessionId = (payload.data.sessionId as string | undefined)?.trim()
+  return options.prefixSessionId && sessionId ? `${sessionId}: ${text}` : text
+}
+
+export function shouldPrefixBackgroundToolSessionId(
+  payload: BusPayload,
+  sessionManager: Pick<SessionManager, 'isCurrentSessionForChannel'>,
+): boolean {
+  const sessionId = (payload.data.sessionId as string | undefined)?.trim()
+  const source = payload.data.source as SessionSource | undefined
+  const channelId = payload.data.channelId as string | undefined
+  const channelName = payload.data.channelName as string | undefined
+  const participantId = payload.data.participantId as string | undefined
+  if (!sessionId || !source || !channelId) return false
+
+  return !sessionManager.isCurrentSessionForChannel(
+    source,
+    channelId,
+    channelName,
+    sessionId,
+    participantId,
+  )
 }
 
 function shouldPersistBusEvent(payload: BusPayload) {
