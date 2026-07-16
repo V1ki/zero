@@ -52,14 +52,7 @@ export class SessionAgentRuntimeController {
       sessionId: options.data.id,
       logger: options.logger,
       secretFilter: options.deps.secretFilter,
-      channelBinding: options.data.channelId
-        ? {
-            channelName: options.data.channelName ?? options.data.source,
-            channelId: options.data.channelId,
-            participantId: options.data.participantId,
-            deliveryChannelId: options.data.channelId,
-          }
-        : undefined,
+      getChannelBinding: () => createBackgroundToolChannelBinding(options.data),
       emitBusEvent: (topic, data) => options.deps.bus?.emit(topic, data),
       onComplete: options.onBackgroundToolCompletion,
     })
@@ -235,15 +228,7 @@ function createSessionToolContext(options: {
     secretResolver: options.deps.secretResolver,
     memoryRetriever: options.deps.memoryRetriever,
     memoryStore: options.deps.memoryStore,
-    channelBinding: options.data.channelId
-      ? {
-          source: options.data.source,
-          channelName: options.data.channelName ?? options.data.source,
-          channelId: options.data.channelId,
-          participantId: options.data.participantId,
-          deliveryChannelId: options.data.channelId,
-        }
-      : undefined,
+    channelBinding: createToolChannelBinding(options.data),
     schedulerHandle: options.deps.schedulerHandle,
     scheduleStore: options.deps.scheduleStore,
     agentControl: options.agentControl,
@@ -252,6 +237,29 @@ function createSessionToolContext(options: {
     liveDocHandle: CONTEXT_PARAMS.memory.liveDocEnabled
       ? createLiveDocHandle(options.liveDocs, options.deps.memoryStore)
       : undefined,
+  }
+}
+
+function createToolChannelBinding(data: SessionData): ToolContext['channelBinding'] {
+  if (!data.channelId) return undefined
+  return {
+    source: data.source,
+    channelName: data.channelName ?? data.source,
+    channelId: data.channelId,
+    participantId: data.participantId,
+    deliveryChannelId: data.channelId,
+  }
+}
+
+function createBackgroundToolChannelBinding(data: SessionData) {
+  const binding = createToolChannelBinding(data)
+  if (!binding) return undefined
+  return {
+    source: binding.source,
+    channelName: binding.channelName,
+    channelId: binding.channelId,
+    participantId: binding.participantId,
+    deliveryChannelId: binding.deliveryChannelId,
   }
 }
 

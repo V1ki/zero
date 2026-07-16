@@ -65,6 +65,7 @@ export async function registerFeishuRuntimeChannel(
     const feishuAdapter = new FeishuAdapter(feishuChannel, {
       activeStreamingSessions,
     })
+    options.channelAdapters.set(channelName, feishuAdapter)
 
     feishuChannel.setMessageHandler(
       createRuntimeChannelMessageHandler(options, {

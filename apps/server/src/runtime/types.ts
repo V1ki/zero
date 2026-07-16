@@ -14,6 +14,7 @@ import type { OutputSecretFilter, Vault } from '@zero-os/secrets'
 import type { Notification } from '@zero-os/shared'
 import type { HeartbeatWriter } from '@zero-os/supervisor'
 import type { RepairEngine } from '@zero-os/supervisor'
+import type { ChannelAdapter } from '../channels/adapter'
 import type { EventBus } from './bus'
 import type { ChannelRuntimeDefinition } from './channel-runtime/types'
 
@@ -46,6 +47,7 @@ export interface ZeroOS {
   scheduler: CronScheduler
   bus: EventBus
   channels: Map<string, Channel>
+  channelAdapters: Map<string, ChannelAdapter>
   channelDefinitions: Map<string, ChannelRuntimeDefinition>
   notifications: Notification[]
   addNotification(n: Omit<Notification, 'id' | 'createdAt'>): Notification

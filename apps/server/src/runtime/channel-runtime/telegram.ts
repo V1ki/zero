@@ -1,7 +1,7 @@
 import { TelegramChannel } from '@zero-os/channel'
 import type { Vault } from '@zero-os/secrets'
 import type { ChannelInstanceConfig } from '@zero-os/shared'
-import { syncTelegramCommandMenu, TelegramAdapter } from '../../channels/telegram'
+import { TelegramAdapter, syncTelegramCommandMenu } from '../../channels/telegram'
 import {
   type ExternalChannelRegistrarOptions,
   buildAgentName,
@@ -42,6 +42,7 @@ export async function registerTelegramRuntimeChannel(
     const telegramAdapter = new TelegramAdapter(telegramChannel, {
       streaming: definition.streaming,
     })
+    options.channelAdapters.set(channelName, telegramAdapter)
 
     telegramChannel.setMessageHandler(
       createRuntimeChannelMessageHandler(options, {

@@ -5,6 +5,7 @@ import type { Message, SystemConfig } from '@zero-os/shared'
 import { BashTool } from '../../tool/bash'
 import { ReadTool } from '../../tool/read'
 import { ToolRegistry } from '../../tool/registry'
+import type { BackgroundToolCompletionEvent } from '../background-tool-tasks'
 import { SessionManager } from '../manager'
 import { createTestProjectRoot, getSessionAgentForTest } from './test-helpers'
 
@@ -530,5 +531,51 @@ describe('SessionManager', () => {
     expect(futureAgent?.closureAdapter).toBe(
       router.resolveModel('openai-codex/gpt-5.4-medium')?.adapter,
     )
+  })
+
+  test('setBackgroundToolCompletionHandler updates existing scoped sessions and future sessions', async () => {
+    const manager = createManager()
+    const existing = manager.getOrCreateForChannel(
+      'feishu',
+      'background-before',
+      'feishu',
+      'ou_before',
+    ).session
+    const handledTaskIds: string[] = []
+
+    manager.setBackgroundToolCompletionHandler(async (event) => {
+      handledTaskIds.push(event.task.id)
+      return true
+    })
+
+    const future = manager.getOrCreateForChannel(
+      'feishu',
+      'background-after',
+      'feishu',
+      'ou_after',
+    ).session
+    const triggerCompletion = async (session: typeof existing, taskId: string) => {
+      await (
+        session as unknown as {
+          handleBackgroundToolCompletion(event: BackgroundToolCompletionEvent): Promise<void>
+        }
+      ).handleBackgroundToolCompletion({
+        task: {
+          id: taskId,
+          sessionId: session.data.id,
+          toolName: 'slow_tool',
+          toolUseId: `call_${taskId}`,
+          inputSummary: '{}',
+          status: 'success',
+          startedAt: new Date().toISOString(),
+        },
+        xml: `<system_event type="background_tool.completed"><background_task id="${taskId}" /></system_event>`,
+      })
+    }
+
+    await triggerCompletion(existing, 'task_existing')
+    await triggerCompletion(future, 'task_future')
+
+    expect(handledTaskIds).toEqual(['task_existing', 'task_future'])
   })
 })

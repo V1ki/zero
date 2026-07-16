@@ -39,6 +39,10 @@ export type { RoleDefinition } from './agent/roles'
 // Session
 export { Session } from './session/session'
 export type { SessionDeps, HandleMessageOptions } from './session/session'
+export type {
+  BackgroundToolChannelBinding,
+  BackgroundToolCompletionEvent,
+} from './session/background-tool-tasks'
 export { SessionManager } from './session/manager'
 export type { InterruptedSessionRef } from './session/manager'
 

@@ -14,6 +14,7 @@ import { handleChannelMessage } from '../../message/handler'
 export interface ExternalChannelRegistrarOptions {
   zeroDir: string
   channels: Map<string, Channel>
+  channelAdapters: Map<string, ChannelAdapter>
   sessionManager: SessionManager
   commandRouter: CommandRouter
   metrics: MetricsDB

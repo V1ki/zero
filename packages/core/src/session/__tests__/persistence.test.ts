@@ -3,6 +3,7 @@ import type { ModelRouter } from '@zero-os/model'
 import { type ObservabilityStore, SessionDB } from '@zero-os/observe'
 import type { Message, Session as SessionData } from '@zero-os/shared'
 import { ToolRegistry } from '../../tool/registry'
+import type { BackgroundToolCompletionEvent } from '../background-tool-tasks'
 import { SessionManager } from '../manager'
 import { Session } from '../session'
 import { createTestModelRouter, createTestProjectRoot } from './test-helpers'
@@ -258,6 +259,78 @@ describe('Session Persistence', () => {
       expect(syncCalls).toEqual([{ sessionId: 'sess_mgr_side_new', isCurrent: true }])
       expect(eventCalls).toEqual([])
       expect(manager.get('sess_mgr_side_new')).toBeDefined()
+    } finally {
+      isolatedDb.close()
+    }
+  })
+
+  test('late background completion handler reaches sessions restored before channel startup', async () => {
+    const isolatedDb = SessionDB.createInMemory()
+    const isolatedModelRouter = createTestModelRouter()
+    const isolatedToolRegistry = new ToolRegistry()
+    const restoredAt = '2026-07-14T08:47:23.000Z'
+    const data = makeSessionData({
+      id: 'sess_restored_background_delivery',
+      source: 'feishu',
+      channelName: 'feishu',
+      channelId: 'chat_restored_background',
+      createdAt: restoredAt,
+      updatedAt: restoredAt,
+    })
+    isolatedDb.saveSession(data)
+    isolatedDb.saveBinding(
+      'feishu',
+      'chat_restored_background',
+      data.id,
+      'feishu',
+      restoredAt,
+      'ou_restored',
+    )
+
+    const manager = new SessionManager(
+      isolatedModelRouter,
+      isolatedToolRegistry,
+      { sessionDb: isolatedDb, projectRoot: testProject.projectRoot },
+      isolatedDb,
+    )
+
+    try {
+      expect(manager.restoreFromDB()).toBe(1)
+      const restored = expectDefined(manager.get(data.id))
+      const handled: BackgroundToolCompletionEvent[] = []
+
+      manager.setBackgroundToolCompletionHandler(async (event) => {
+        handled.push(event)
+        return true
+      })
+
+      const completionEvent: BackgroundToolCompletionEvent = {
+        task: {
+          id: 'task_restored_background',
+          sessionId: restored.data.id,
+          toolName: 'codex',
+          toolUseId: 'call_restored_background',
+          inputSummary: '{}',
+          status: 'success',
+          startedAt: restoredAt,
+        },
+        xml: '<system_event type="background_tool.completed" />',
+        channelBinding: {
+          source: 'feishu',
+          channelName: 'feishu',
+          channelId: 'chat_restored_background',
+          deliveryChannelId: 'chat_restored_background',
+          participantId: 'ou_restored',
+        },
+      }
+
+      await (
+        restored as unknown as {
+          handleBackgroundToolCompletion(event: BackgroundToolCompletionEvent): Promise<void>
+        }
+      ).handleBackgroundToolCompletion(completionEvent)
+
+      expect(handled).toEqual([completionEvent])
     } finally {
       isolatedDb.close()
     }

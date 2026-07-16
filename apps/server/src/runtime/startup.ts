@@ -16,6 +16,8 @@ import {
   describeError,
 } from '@zero-os/shared'
 import type { HeartbeatWriter } from '@zero-os/supervisor'
+import type { ChannelAdapter } from '../channels/adapter'
+import { createBackgroundToolCompletionDeliveryHandler } from '../message/background-delivery'
 import { writeRestartTrigger } from '../system/restart-trigger'
 import { rebuildWebBundle } from '../system/runtime'
 import type { BusPayload, EventBus } from './bus'
@@ -52,6 +54,7 @@ export interface StartupRuntime {
 
 interface StartupRuntimeShell {
   channels: Map<string, Channel>
+  channelAdapters: Map<string, ChannelAdapter>
   channelDefinitions: Map<string, ChannelRuntimeDefinition>
   notifications: Notification[]
   addNotification(n: Omit<Notification, 'id' | 'createdAt'>): Notification
@@ -120,6 +123,7 @@ export async function startStartupRuntimeChannels(runtime: StartupRuntime): Prom
     config: runtime.getConfig(),
     vault: runtime.core.vault,
     channels: runtime.zero.channels,
+    channelAdapters: runtime.zero.channelAdapters,
     channelDefinitions: runtime.zero.channelDefinitions,
     sessionManager: runtime.core.sessionManager,
     metrics: runtime.core.metrics,
@@ -151,6 +155,7 @@ async function createStartupRuntimeShell({
 }): Promise<StartupRuntimeShell> {
   core.heartbeat.setReady(false, 'starting_channels')
   const channels = new Map<string, Channel>()
+  const channelAdapters = new Map<string, ChannelAdapter>()
   const channelDefinitions = new Map<string, ChannelRuntimeDefinition>()
 
   configureRuntimeHeartbeat({
@@ -184,6 +189,7 @@ async function createStartupRuntimeShell({
 
   return {
     channels,
+    channelAdapters,
     channelDefinitions,
     notifications,
     addNotification,
@@ -240,6 +246,7 @@ interface StartExternalRuntimeChannelsOptions {
   config: SystemConfig
   vault: Vault
   channels: Map<string, Channel>
+  channelAdapters: Map<string, ChannelAdapter>
   channelDefinitions: Map<string, ChannelRuntimeDefinition>
   sessionManager: SessionManager
   metrics: MetricsDB
@@ -256,6 +263,7 @@ async function startExternalRuntimeChannels({
   config,
   vault,
   channels,
+  channelAdapters,
   channelDefinitions,
   sessionManager,
   metrics,
@@ -273,6 +281,7 @@ async function startExternalRuntimeChannels({
     config,
     vault,
     channels,
+    channelAdapters,
     channelDefinitions,
     sessionManager,
     commandRouter,
@@ -282,6 +291,13 @@ async function startExternalRuntimeChannels({
     isShuttingDown,
     registerFeishuStreamingSessionSet,
   })
+
+  sessionManager.setBackgroundToolCompletionHandler(
+    createBackgroundToolCompletionDeliveryHandler({
+      channelAdapters,
+      sessionManager,
+    }),
+  )
 
   console.log(`[ZeRo OS] ${channels.size} channels registered`)
 
@@ -633,6 +649,7 @@ function createZeroOSHandle({
     heartbeat: core.heartbeat,
     scheduler: core.scheduler,
     channels: shell.channels,
+    channelAdapters: shell.channelAdapters,
     channelDefinitions: shell.channelDefinitions,
     notifications: shell.notifications,
     addNotification: shell.addNotification,

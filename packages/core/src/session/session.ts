@@ -151,6 +151,12 @@ export class Session {
     this.controllers.channelContext.setCapabilities(capabilities)
   }
 
+  setBackgroundToolCompletionHandler(
+    handler: SessionDeps['backgroundToolCompletionHandler'],
+  ): void {
+    this.deps.backgroundToolCompletionHandler = handler
+  }
+
   isAgentInitialized(): boolean {
     return this.agentRuntime.isInitialized()
   }
@@ -191,10 +197,17 @@ export class Session {
   private async handleBackgroundToolCompletion(
     event: BackgroundToolCompletionEvent,
   ): Promise<void> {
-    await this.handleMessage(event.xml, {
-      messageType: 'control',
-      controlKind: 'background_tool_completed',
-    })
+    const run = (options?: HandleMessageOptions) =>
+      this.handleMessage(event.xml, {
+        ...options,
+        messageType: 'control',
+        controlKind: 'background_tool_completed',
+      })
+
+    const handled = await this.deps.backgroundToolCompletionHandler?.(event, run)
+    if (handled) return
+
+    await run()
   }
 
   async evaluateSessionMemory(prompt: string): Promise<void> {

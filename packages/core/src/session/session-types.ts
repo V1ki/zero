@@ -8,7 +8,35 @@ import type {
   SecretFilter,
   ToolContext,
 } from '@zero-os/shared'
+import type { BackgroundToolCompletionEvent } from './background-tool-tasks'
 import type { SessionImageAttachment } from './session-messages'
+
+/**
+ * Options for Session.handleMessage().
+ */
+export interface HandleMessageOptions {
+  /** Called synchronously for every new Message (user, assistant, tool_result). */
+  onProgress?: (msg: Message) => void
+  /** Called for every assistant text delta when the model supports streaming. */
+  onTextDelta?: (delta: string, meta: { role: 'assistant'; turnId: string }) => void
+  /** Image attachments (base64) to send alongside the text message. */
+  images?: SessionImageAttachment[]
+  /** Originating external channel message, used for follow-up events like message recall. */
+  source?: MessageChannelSource
+  /** Internal message classification for runtime-generated user-role events. */
+  messageType?: MessageType
+  /** Runtime control event kind when messageType is control. */
+  controlKind?: ControlKind
+  /** Called after a queued message is injected into a later model request and that request returns. */
+  onQueuedMessageApplied?: () => void
+}
+
+export type BackgroundToolCompletionRunner = (options?: HandleMessageOptions) => Promise<Message[]>
+
+export type BackgroundToolCompletionHandler = (
+  event: BackgroundToolCompletionEvent,
+  run: BackgroundToolCompletionRunner,
+) => Promise<boolean> | boolean
 
 /**
  * Dependencies injected into Session for observability, memory, and eventing.
@@ -35,26 +63,7 @@ export interface SessionDeps {
   taskClosureModel?: string
   contextCompactionModel?: string
   projectRoot?: string
-}
-
-/**
- * Options for Session.handleMessage().
- */
-export interface HandleMessageOptions {
-  /** Called synchronously for every new Message (user, assistant, tool_result). */
-  onProgress?: (msg: Message) => void
-  /** Called for every assistant text delta when the model supports streaming. */
-  onTextDelta?: (delta: string, meta: { role: 'assistant'; turnId: string }) => void
-  /** Image attachments (base64) to send alongside the text message. */
-  images?: SessionImageAttachment[]
-  /** Originating external channel message, used for follow-up events like message recall. */
-  source?: MessageChannelSource
-  /** Internal message classification for runtime-generated user-role events. */
-  messageType?: MessageType
-  /** Runtime control event kind when messageType is control. */
-  controlKind?: ControlKind
-  /** Called after a queued message is injected into a later model request and that request returns. */
-  onQueuedMessageApplied?: () => void
+  backgroundToolCompletionHandler?: BackgroundToolCompletionHandler
 }
 
 export interface ReasoningEffortUpdateResult {

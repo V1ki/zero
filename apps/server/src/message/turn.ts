@@ -1,6 +1,6 @@
 import type { IncomingMessage } from '@zero-os/channel'
 import type { HandleMessageOptions, Session } from '@zero-os/core'
-import { type ChannelCapabilities, describeError } from '@zero-os/shared'
+import { type ChannelCapabilities, type Message, describeError } from '@zero-os/shared'
 import type { ChannelAdapter, StreamAdapter, TypingHandle } from '../channels/adapter'
 import type { IncomingMessageContext, MessageHandlerDeps } from './context'
 import { MessageProgressDelivery } from './progress'
@@ -133,6 +133,65 @@ interface RunActiveMessageTurnOptions {
   canDeliverToCurrentSession(): boolean
 }
 
+type DeliveryHandleMessageOptions = Pick<HandleMessageOptions, 'onProgress' | 'onTextDelta'>
+
+export async function runMessageWithDelivery(options: {
+  channelAdapter: ChannelAdapter
+  channelName: string
+  chatId: string
+  messageId?: string | number
+  state: MessageTurnState
+  canDeliverToCurrentSession(): boolean
+  runMessage(deliveryOptions: DeliveryHandleMessageOptions): Promise<Message[]>
+}): Promise<void> {
+  options.state.typingHandle = await showTypingBestEffort({
+    channelAdapter: options.channelAdapter,
+    channelName: options.channelName,
+    chatId: options.chatId,
+    messageId: options.messageId,
+  })
+
+  options.state.streaming = await createStreamingBestEffort({
+    channelAdapter: options.channelAdapter,
+    channelName: options.channelName,
+    chatId: options.chatId,
+    messageId: options.messageId,
+  })
+
+  options.state.progressDelivery = new MessageProgressDelivery({
+    streaming: options.state.streaming,
+    channelAdapter: options.channelAdapter,
+    channelName: options.channelName,
+    chatId: options.chatId,
+    messageId: options.messageId,
+    canDeliverToCurrentSession: options.canDeliverToCurrentSession,
+  })
+
+  const replies = await options.runMessage({
+    onTextDelta: options.state.progressDelivery.onTextDelta,
+    onProgress: options.state.progressDelivery.onProgress,
+  })
+
+  await options.state.progressDelivery.flush()
+
+  options.state.streaming = await deliverAssistantReplies({
+    replies,
+    streaming: options.state.progressDelivery.streaming,
+    streamText: options.state.progressDelivery.streamText,
+    lastSentMsgId: options.state.progressDelivery.lastSentMsgId,
+    channelAdapter: options.channelAdapter,
+    channelName: options.channelName,
+    chatId: options.chatId,
+    messageId: options.messageId,
+    canDeliverToCurrentSession: options.canDeliverToCurrentSession,
+  })
+
+  await options.state.typingHandle?.clear().catch(() => {})
+  if (options.canDeliverToCurrentSession()) {
+    await options.channelAdapter.markDone?.(options.chatId, options.messageId).catch(() => {})
+  }
+}
+
 async function runActiveMessageTurn({
   session,
   msg,
@@ -144,54 +203,20 @@ async function runActiveMessageTurn({
 }: RunActiveMessageTurnOptions): Promise<void> {
   const { chatId, messageId } = incoming
 
-  state.typingHandle = await showTypingBestEffort({
+  await runMessageWithDelivery({
     channelAdapter: deps.channelAdapter,
     channelName: deps.channelName,
     chatId,
     messageId,
-  })
-
-  state.streaming = await createStreamingBestEffort({
-    channelAdapter: deps.channelAdapter,
-    channelName: deps.channelName,
-    chatId,
-    messageId,
-  })
-
-  state.progressDelivery = new MessageProgressDelivery({
-    streaming: state.streaming,
-    channelAdapter: deps.channelAdapter,
-    channelName: deps.channelName,
-    chatId,
-    messageId,
+    state,
     canDeliverToCurrentSession,
+    runMessage: (deliveryOptions) =>
+      session.handleMessage(messageContent, {
+        images: msg.images,
+        source: incoming.source,
+        ...deliveryOptions,
+      } satisfies HandleMessageOptions),
   })
-
-  const replies = await session.handleMessage(messageContent, {
-    images: msg.images,
-    source: incoming.source,
-    onTextDelta: state.progressDelivery.onTextDelta,
-    onProgress: state.progressDelivery.onProgress,
-  } satisfies HandleMessageOptions)
-
-  await state.progressDelivery.flush()
-
-  state.streaming = await deliverAssistantReplies({
-    replies,
-    streaming: state.progressDelivery.streaming,
-    streamText: state.progressDelivery.streamText,
-    lastSentMsgId: state.progressDelivery.lastSentMsgId,
-    channelAdapter: deps.channelAdapter,
-    channelName: deps.channelName,
-    chatId,
-    messageId,
-    canDeliverToCurrentSession,
-  })
-
-  await state.typingHandle?.clear().catch(() => {})
-  if (canDeliverToCurrentSession()) {
-    await deps.channelAdapter.markDone?.(chatId, messageId).catch(() => {})
-  }
 }
 
 async function showTypingBestEffort(options: {

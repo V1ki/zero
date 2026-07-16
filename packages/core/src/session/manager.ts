@@ -150,6 +150,15 @@ export class SessionManager {
     this.store.setContextCompactionModels(models)
   }
 
+  setBackgroundToolCompletionHandler(
+    handler: SessionDeps['backgroundToolCompletionHandler'],
+  ): void {
+    this.deps.backgroundToolCompletionHandler = handler
+    for (const session of this.sessions.values()) {
+      session.setBackgroundToolCompletionHandler(handler)
+    }
+  }
+
   getOrCreateForChannel(
     source: SessionSource,
     channelId: string,

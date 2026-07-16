@@ -67,6 +67,7 @@ export async function registerDingtalkRuntimeChannel(
 
   const channelName = definition.name
   const dingtalkAdapter = new DingtalkAdapter(dingtalkChannel)
+  options.channelAdapters.set(channelName, dingtalkAdapter)
   dingtalkChannel.setMessageHandler(
     createRuntimeChannelMessageHandler(options, {
       channelType: 'dingtalk',

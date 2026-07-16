@@ -31,6 +31,15 @@ export interface BackgroundToolTaskRecord {
 export interface BackgroundToolCompletionEvent {
   task: BackgroundToolTaskRecord
   xml: string
+  channelBinding?: BackgroundToolChannelBinding
+}
+
+export interface BackgroundToolChannelBinding {
+  source: string
+  channelName: string
+  channelId: string
+  participantId?: string
+  deliveryChannelId?: string
 }
 
 interface BackgroundToolTaskManagerOptions {
@@ -38,12 +47,8 @@ interface BackgroundToolTaskManagerOptions {
   thresholdMs?: number
   logger: ToolLogger
   secretFilter?: SecretFilter
-  channelBinding?: {
-    channelName: string
-    channelId: string
-    participantId?: string
-    deliveryChannelId?: string
-  }
+  channelBinding?: BackgroundToolChannelBinding
+  getChannelBinding?: () => BackgroundToolChannelBinding | undefined
   emitBusEvent?(topic: string, data: Record<string, unknown>): void
   onComplete(event: BackgroundToolCompletionEvent): Promise<void> | void
 }
@@ -168,6 +173,7 @@ export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
     task.outputSummary = this.filterAndTruncate(result.outputSummary, MAX_SUMMARY_CHARS)
     task.output = this.filterAndTruncate(result.output, MAX_OUTPUT_CHARS)
 
+    const channelBinding = this.getChannelBinding()
     this.options.emitBusEvent?.('background_tool:completed', {
       sessionId: task.sessionId,
       taskId: task.id,
@@ -178,17 +184,19 @@ export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
       durationMs: task.durationMs,
       startedAt: task.startedAt,
       completedAt,
-      ...this.getChannelEventData(),
+      ...this.getChannelEventData(channelBinding),
     })
 
     const xml = buildBackgroundToolCompletionXml(task)
-    Promise.resolve(this.options.onComplete({ task: { ...task }, xml })).catch((error) => {
-      this.options.logger.warn('background_tool_completion_injection_failed', {
-        sessionId: task.sessionId,
-        taskId: task.id,
-        error: toErrorMessage(error),
-      })
-    })
+    Promise.resolve(this.options.onComplete({ task: { ...task }, xml, channelBinding })).catch(
+      (error) => {
+        this.options.logger.warn('background_tool_completion_injection_failed', {
+          sessionId: task.sessionId,
+          taskId: task.id,
+          error: toErrorMessage(error),
+        })
+      },
+    )
   }
 
   private filterAndTruncate(value: string, maxChars: number): string {
@@ -196,13 +204,22 @@ export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
     return truncate(filtered, maxChars)
   }
 
-  private getChannelEventData(): Record<string, unknown> {
-    const binding = this.options.channelBinding
+  private getChannelBinding(): BackgroundToolChannelBinding | undefined {
+    const binding = this.options.getChannelBinding?.() ?? this.options.channelBinding
+    if (!binding) return undefined
+    return {
+      ...binding,
+      deliveryChannelId: binding.deliveryChannelId ?? binding.channelId,
+    }
+  }
+
+  private getChannelEventData(binding = this.getChannelBinding()): Record<string, unknown> {
     if (!binding) return {}
     return {
+      source: binding.source,
       channelName: binding.channelName,
       channelId: binding.channelId,
-      deliveryChannelId: binding.deliveryChannelId ?? binding.channelId,
+      deliveryChannelId: binding.deliveryChannelId,
       ...(binding.participantId ? { participantId: binding.participantId } : {}),
     }
   }

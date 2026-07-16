@@ -4,6 +4,7 @@ import type { MetricsDB } from '@zero-os/observe'
 import type { Vault } from '@zero-os/secrets'
 import type { ChannelInstanceConfig, SystemConfig } from '@zero-os/shared'
 import type { HeartbeatWriter } from '@zero-os/supervisor'
+import type { ChannelAdapter } from '../../channels/adapter'
 import { buildConfiguredDingtalkDefinition, registerDingtalkRuntimeChannel } from './dingtalk'
 import { buildConfiguredFeishuDefinition, registerFeishuRuntimeChannel } from './feishu'
 import type { ExternalChannelRegistrarOptions } from './runtime-common'
@@ -24,6 +25,7 @@ interface RegisterExternalRuntimeChannelsOptions {
   config: SystemConfig
   vault: Vault
   channels: Map<string, Channel>
+  channelAdapters: Map<string, ChannelAdapter>
   channelDefinitions: Map<string, ChannelRuntimeDefinition>
   sessionManager: SessionManager
   commandRouter: CommandRouter
@@ -39,6 +41,7 @@ export async function registerExternalRuntimeChannels({
   config,
   vault,
   channels,
+  channelAdapters,
   channelDefinitions,
   sessionManager,
   commandRouter,
@@ -52,6 +55,7 @@ export async function registerExternalRuntimeChannels({
   const registrarOptions = {
     zeroDir,
     channels,
+    channelAdapters,
     sessionManager,
     commandRouter,
     metrics,

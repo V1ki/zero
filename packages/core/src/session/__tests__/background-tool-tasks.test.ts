@@ -15,7 +15,7 @@ import {
   type BackgroundToolCompletionEvent,
   BackgroundToolTaskManager,
 } from '../background-tool-tasks'
-import { Session } from '../session'
+import { Session, type SessionDeps } from '../session'
 import {
   createTestModelRouter,
   createTestProjectRoot,
@@ -201,6 +201,73 @@ describe('BackgroundToolTaskManager', () => {
     expect(completion.xml).toContain('<system_event type="background_tool.completed">')
     expect(completion.xml).toContain('<output_summary>slow done</output_summary>')
   })
+
+  test('uses the latest channel binding when emitting background completion events', async () => {
+    const events: Array<{ topic: string; data: Record<string, unknown> }> = []
+    const completions: BackgroundToolCompletionEvent[] = []
+    const deferred = createDeferred<ToolResult>()
+    const channelState: {
+      binding?: {
+        source: string
+        channelName: string
+        channelId: string
+        participantId?: string
+        deliveryChannelId?: string
+      }
+    } = {}
+    const manager = new BackgroundToolTaskManager({
+      sessionId: 'sess-channel',
+      thresholdMs: 5,
+      logger: createLogger(),
+      getChannelBinding: () => channelState.binding,
+      emitBusEvent: (topic, data) => {
+        events.push({ topic, data })
+      },
+      onComplete: (event) => {
+        completions.push(event)
+      },
+    })
+
+    await manager.run({
+      toolName: 'slow_tool',
+      toolUseId: 'call_channel',
+      inputSummary: '{"query":"slow"}',
+      execute: () => deferred.promise,
+    })
+
+    expect(events[0]).toMatchObject({
+      topic: 'background_tool:started',
+      data: { sessionId: 'sess-channel' },
+    })
+    expect(events[0]?.data.channelName).toBeUndefined()
+
+    channelState.binding = {
+      source: 'feishu',
+      channelName: 'nanoclaw',
+      channelId: 'oc_feishu',
+      participantId: 'ou_user',
+    }
+    deferred.resolve({ success: true, output: 'slow output', outputSummary: 'slow done' })
+
+    const completion = await waitFor(() =>
+      events.find((event) => event.topic === 'background_tool:completed'),
+    )
+    expect(completion.data).toMatchObject({
+      sessionId: 'sess-channel',
+      source: 'feishu',
+      channelName: 'nanoclaw',
+      channelId: 'oc_feishu',
+      deliveryChannelId: 'oc_feishu',
+      participantId: 'ou_user',
+    })
+    expect(completions[0]?.channelBinding).toEqual({
+      source: 'feishu',
+      channelName: 'nanoclaw',
+      channelId: 'oc_feishu',
+      deliveryChannelId: 'oc_feishu',
+      participantId: 'ou_user',
+    })
+  })
 })
 
 describe('Agent background tool execution', () => {
@@ -349,12 +416,59 @@ describe('Session background completion injection', () => {
       controlKind: 'background_tool_completed',
     })
   })
+
+  test('delegates completion injection to a configured background handler', async () => {
+    const progressTexts: string[] = []
+    const session = createSessionWithTextAgent('handler', {
+      backgroundToolCompletionHandler: async (event, run) => {
+        expect(event.channelBinding?.channelName).toBe('feishu')
+        await run({
+          onProgress: (message) => {
+            if (message.role !== 'assistant') return
+            progressTexts.push(
+              message.content
+                .filter((block) => block.type === 'text')
+                .map((block) => block.text)
+                .join('\n'),
+            )
+          },
+        })
+        return true
+      },
+    })
+
+    await (
+      session as unknown as {
+        handleBackgroundToolCompletion(event: BackgroundToolCompletionEvent): Promise<void>
+      }
+    ).handleBackgroundToolCompletion({
+      task: {
+        id: 'task_handler',
+        sessionId: session.data.id,
+        toolName: 'slow_tool',
+        toolUseId: 'call_handler',
+        inputSummary: '{}',
+        status: 'success',
+        startedAt: new Date().toISOString(),
+      },
+      xml: '<system_event type="background_tool.completed"><background_task id="task_handler" /></system_event>',
+      channelBinding: {
+        source: 'feishu',
+        channelName: 'feishu',
+        channelId: 'chat_handler',
+        deliveryChannelId: 'chat_handler',
+      },
+    })
+
+    expect(progressTexts).toEqual(['noted background completion'])
+  })
 })
 
-function createSessionWithTextAgent(label: string): Session {
+function createSessionWithTextAgent(label: string, deps: SessionDeps = {}): Session {
   const registry = new ToolRegistry()
   const session = new Session('web', createTestModelRouter(), registry, {
-    projectRoot: testProject.projectRoot,
+    ...deps,
+    projectRoot: deps.projectRoot ?? testProject.projectRoot,
   })
   session.initAgent({ name: `background-${label}`, agentInstruction: 'background test' })
   setSessionAgentForTest(

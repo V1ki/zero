@@ -76,6 +76,7 @@ export async function registerWeixinRuntimeChannel(
 
   const channelName = definition.name
   const weixinAdapter = new WeixinAdapter(weixinChannel)
+  options.channelAdapters.set(channelName, weixinAdapter)
   weixinChannel.setMessageHandler(
     createRuntimeChannelMessageHandler(options, {
       channelType: 'weixin',
