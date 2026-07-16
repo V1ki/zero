@@ -9,7 +9,7 @@ const DEFAULT_TIMESTAMP = new Date('2026-03-23T00:00:00.000Z').toISOString()
 export type SessionHandleMessageOptions = {
   images?: IncomingMessage['images']
   source?: MessageChannelSource
-  onTextDelta?: (delta: string, meta: { turnId: string }) => void
+  onTextDelta?: (delta: string, meta: { role: 'assistant'; turnId: string }) => void
   onQueuedMessageApplied?: () => void
 }
 

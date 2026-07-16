@@ -128,7 +128,7 @@ describe('handleChannelMessage error recovery', () => {
       setChannelCapabilities: () => {},
       initAgent: () => {},
       handleMessage: async (_content: string, options?: SessionHandleMessageOptions) => {
-        options?.onTextDelta?.('report content here', { turnId: 'turn_1' })
+        options?.onTextDelta?.('report content here', { role: 'assistant', turnId: 'turn_1' })
         const err = new Error('stream returned empty content')
         ;(err as Error & { rolledBack?: boolean }).rolledBack = false
         throw err
@@ -173,7 +173,7 @@ describe('handleChannelMessage error recovery', () => {
       setChannelCapabilities: () => {},
       initAgent: () => {},
       handleMessage: async (_content: string, options?: SessionHandleMessageOptions) => {
-        options?.onTextDelta?.('partial text', { turnId: 'turn_1' })
+        options?.onTextDelta?.('partial text', { role: 'assistant', turnId: 'turn_1' })
         const err = new Error('total failure')
         ;(err as Error & { rolledBack?: boolean }).rolledBack = true
         throw err
