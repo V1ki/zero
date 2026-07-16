@@ -2,7 +2,7 @@ import type { ToolContext, ToolResult } from '@zero-os/shared'
 import { BaseTool } from './base'
 
 const DEFAULT_XAI_BASE_URL = 'https://api.x.ai/v1'
-const DEFAULT_X_SEARCH_MODEL = 'grok-4.20-reasoning'
+const DEFAULT_X_SEARCH_MODEL = 'grok-4.5'
 const DEFAULT_TIMEOUT_MS = 180_000
 const DEFAULT_MAX_RETRIES = 2
 const MAX_HANDLES = 10

@@ -64,7 +64,7 @@ describe('XSearchTool', () => {
       'User-Agent': 'Zero-OS/x-search',
     })
     expect(captured.body).toMatchObject({
-      model: 'grok-4.20-reasoning',
+      model: 'grok-4.5',
       store: false,
       input: [{ role: 'user', content: 'What are people saying about xAI on X?' }],
       tools: [
