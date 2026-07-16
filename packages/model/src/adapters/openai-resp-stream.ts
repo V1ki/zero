@@ -22,6 +22,9 @@ interface ResponsesStreamErrorOptions {
   status?: number
   requestId?: string
   errorType?: string
+  failureScope?: 'provider' | 'request' | 'transport'
+  cause?: unknown
+  code?: string
 }
 
 export class ResponsesStreamError extends Error {
@@ -29,14 +32,18 @@ export class ResponsesStreamError extends Error {
   readonly status?: number
   readonly request_id?: string
   readonly error_type?: string
+  readonly failure_scope?: 'provider' | 'request' | 'transport'
+  readonly code?: string
 
   constructor(message: string, options: ResponsesStreamErrorOptions) {
-    super(message)
+    super(message, options.cause === undefined ? undefined : { cause: options.cause })
     this.name = 'ResponsesStreamError'
     this.retryable = options.retryable
     this.status = options.status
     this.request_id = options.requestId
     this.error_type = options.errorType
+    this.failure_scope = options.failureScope
+    this.code = options.code
   }
 }
 
@@ -67,7 +74,7 @@ export async function* iterResponsesSseEvents(
 
   try {
     while (true) {
-      const { value, done } = await reader.read()
+      const { value, done } = await readResponsesStreamChunk(reader, options.signal)
       if (done) break
       buffer += decoder.decode(value, { stream: true })
 
@@ -116,6 +123,20 @@ export async function* iterResponsesSseEvents(
   }
 }
 
+async function readResponsesStreamChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal?: AbortSignal,
+) {
+  try {
+    return await reader.read()
+  } catch (error) {
+    if (signal?.aborted && signal.reason instanceof Error) {
+      throw signal.reason
+    }
+    throw buildStreamTransportError(error)
+  }
+}
+
 function parseResponsesSseEvent(rawEvent: string): ChatGptSseEvent | undefined {
   const data = rawEvent
     .split('\n')
@@ -140,6 +161,7 @@ function buildTerminalStreamError(event: ChatGptSseEvent): ResponsesStreamError 
     return new ResponsesStreamError(`ChatGPT response incomplete: ${reason ?? 'unknown reason'}`, {
       retryable: true,
       errorType: 'response_incomplete',
+      failureScope: 'request',
     })
   }
 
@@ -157,6 +179,7 @@ function buildTerminalStreamError(event: ChatGptSseEvent): ResponsesStreamError 
     status,
     requestId,
     errorType: code ?? 'response_failed',
+    failureScope: isProviderResponseFailure(code, status) ? 'provider' : 'request',
   })
 }
 
@@ -164,7 +187,43 @@ function buildPrematureStreamEndError(reason: string): ResponsesStreamError {
   return new ResponsesStreamError(`ChatGPT response ${reason}`, {
     retryable: true,
     errorType: 'response_stream_ended',
+    failureScope: 'transport',
   })
+}
+
+function buildStreamTransportError(error: unknown): ResponsesStreamError {
+  const message = error instanceof Error ? error.message : String(error)
+  return new ResponsesStreamError(`ChatGPT response stream transport failed: ${message}`, {
+    retryable: true,
+    errorType: 'response_stream_transport_error',
+    failureScope: 'transport',
+    cause: error,
+    code: getErrorCode(error),
+  })
+}
+
+function isProviderResponseFailure(code?: string, status?: number): boolean {
+  if (status === 408 || status === 429 || (status !== undefined && status >= 500)) return true
+  return (
+    code !== undefined &&
+    [
+      'api_error',
+      'internal_server_error',
+      'overloaded_error',
+      'rate_limit_exceeded',
+      'server_error',
+      'server_is_overloaded',
+      'server_overloaded',
+      'service_unavailable',
+      'slow_down',
+    ].includes(code)
+  )
+}
+
+function getErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined
+  const code = (error as { code?: unknown }).code
+  return typeof code === 'string' ? code : undefined
 }
 
 function isNonRetryableResponseFailure(code?: string): boolean {

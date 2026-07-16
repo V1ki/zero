@@ -817,10 +817,118 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
     }) as unknown as typeof fetch
 
     try {
-      await expect(chatgptAdapter.complete({ messages: [], stream: false })).rejects.toThrow(
-        'ChatGPT request idle timed out after 20ms',
-      )
+      let caught: unknown
+      try {
+        await chatgptAdapter.complete({ messages: [], stream: false })
+      } catch (error) {
+        caught = error
+      }
+
+      expect(caught).toMatchObject({
+        message: 'ChatGPT request idle timed out after 20ms',
+        retryable: true,
+        error_type: 'stream_idle_timeout',
+        failure_scope: 'transport',
+      })
       expect(requestState.signal?.aborted).toBe(true)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('ChatGPT normalizes raw request aborts before response headers', async () => {
+    const chatgptAdapter = new OpenAIResponsesAdapter({
+      providerName: 'chatgpt',
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
+      modelConfig: {
+        modelId: 'gpt-5.4',
+        maxContext: 128000,
+        maxOutput: 8192,
+        capabilities: [],
+        tags: [],
+      },
+      oauthToken: makeChatGptSessionJson(
+        'acct_123',
+        Date.now() + 2 * 60 * 60 * 1000,
+        'access-token',
+      ),
+    })
+
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      throw Object.assign(new Error('The operation was aborted.'), { code: 'ABORT_ERR' })
+    }) as unknown as typeof fetch
+
+    try {
+      let caught: unknown
+      try {
+        await chatgptAdapter.complete({ messages: [], stream: false })
+      } catch (error) {
+        caught = error
+      }
+
+      expect(caught).toMatchObject({
+        message: 'ChatGPT request transport failed: The operation was aborted.',
+        retryable: true,
+        error_type: 'request_transport_error',
+        failure_scope: 'transport',
+        code: 'ABORT_ERR',
+      })
+      expect((caught as Error).cause).toBeInstanceOf(Error)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('ChatGPT normalizes raw response body aborts as retryable transport errors', async () => {
+    const chatgptAdapter = new OpenAIResponsesAdapter({
+      providerName: 'chatgpt',
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
+      modelConfig: {
+        modelId: 'gpt-5.4',
+        maxContext: 128000,
+        maxOutput: 8192,
+        capabilities: [],
+        tags: [],
+      },
+      oauthToken: makeChatGptSessionJson(
+        'acct_123',
+        Date.now() + 2 * 60 * 60 * 1000,
+        'access-token',
+      ),
+    })
+
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(
+              Object.assign(new Error('The operation was aborted.'), { code: 'ABORT_ERR' }),
+            )
+          },
+        }),
+        { status: 503 },
+      )) as unknown as typeof fetch
+
+    try {
+      let caught: unknown
+      try {
+        await chatgptAdapter.complete({ messages: [], stream: false })
+      } catch (error) {
+        caught = error
+      }
+
+      expect(caught).toMatchObject({
+        message: 'ChatGPT response body transport failed: The operation was aborted.',
+        retryable: true,
+        error_type: 'response_body_transport_error',
+        failure_scope: 'transport',
+        code: 'ABORT_ERR',
+      })
+      expect((caught as Error).cause).toBeInstanceOf(Error)
     } finally {
       globalThis.fetch = originalFetch
     }
@@ -859,9 +967,75 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
       )) as unknown as typeof fetch
 
     try {
-      await expect(chatgptAdapter.complete({ messages: [], stream: false })).rejects.toThrow(
-        'ChatGPT response stream idle timed out after 20ms',
-      )
+      let caught: unknown
+      try {
+        await chatgptAdapter.complete({ messages: [], stream: false })
+      } catch (error) {
+        caught = error
+      }
+
+      expect(caught).toMatchObject({
+        message: 'ChatGPT response stream idle timed out after 20ms',
+        retryable: true,
+        error_type: 'stream_idle_timeout',
+        failure_scope: 'transport',
+      })
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('ChatGPT normalizes raw SSE reader aborts as retryable transport errors', async () => {
+    const chatgptAdapter = new OpenAIResponsesAdapter({
+      providerName: 'chatgpt',
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
+      modelConfig: {
+        modelId: 'gpt-5.4',
+        maxContext: 128000,
+        maxOutput: 8192,
+        capabilities: [],
+        tags: [],
+      },
+      oauthToken: makeChatGptSessionJson(
+        'acct_123',
+        Date.now() + 2 * 60 * 60 * 1000,
+        'access-token',
+      ),
+    })
+
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(
+              Object.assign(new Error('The operation was aborted.'), { code: 'ABORT_ERR' }),
+            )
+          },
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        },
+      )) as unknown as typeof fetch
+
+    try {
+      let caught: unknown
+      try {
+        await chatgptAdapter.complete({ messages: [], stream: false })
+      } catch (error) {
+        caught = error
+      }
+
+      expect(caught).toMatchObject({
+        message: 'ChatGPT response stream transport failed: The operation was aborted.',
+        retryable: true,
+        error_type: 'response_stream_transport_error',
+        failure_scope: 'transport',
+        code: 'ABORT_ERR',
+      })
+      expect((caught as Error).cause).toBeInstanceOf(Error)
     } finally {
       globalThis.fetch = originalFetch
     }
@@ -1044,9 +1218,19 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
       )) as unknown as typeof fetch
 
     try {
-      await expect(chatgptAdapter.complete({ messages: [], stream: false })).rejects.toThrow(
-        'ChatGPT response incomplete: max_output_tokens',
-      )
+      let caught: unknown
+      try {
+        await chatgptAdapter.complete({ messages: [], stream: false })
+      } catch (error) {
+        caught = error
+      }
+
+      expect(caught).toMatchObject({
+        message: 'ChatGPT response incomplete: max_output_tokens',
+        retryable: true,
+        error_type: 'response_incomplete',
+        failure_scope: 'request',
+      })
     } finally {
       globalThis.fetch = originalFetch
     }

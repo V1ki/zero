@@ -19,6 +19,9 @@ import {
 } from '@zero-os/shared'
 import { CONTEXT_PARAMS } from './params'
 
+const MAX_TRANSIENT_STREAM_RETRIES = 3
+const MAX_TRANSPORT_STREAM_RETRIES = 1
+
 export type ToolExecutionResult = ToolResult
 
 export interface ToolExecutor {
@@ -136,12 +139,20 @@ interface StreamErrorDetails {
   requestId?: string
   errorType?: string
   retryable?: boolean
+  failureScope?: string
+  code?: string
+  outerRetryable?: boolean
+}
+
+interface StreamAttemptProgress {
+  visibleOutputEmitted: boolean
 }
 
 interface CompleteFromStreamOptions {
   adapter: ProviderAdapter
   request: CompletionRequest
   ctx: LoopIterationContext
+  progress: StreamAttemptProgress
   onTextDelta?: (
     delta: string,
     meta: { role: 'assistant'; turnId: string },
@@ -153,6 +164,7 @@ async function completeFromStream({
   adapter,
   request,
   ctx,
+  progress,
   onTextDelta,
 }: CompleteFromStreamOptions): Promise<CompletionResponse> {
   const stream = adapter.stream({ ...request, stream: true })
@@ -175,6 +187,7 @@ async function completeFromStream({
       const delta = typeof data.text === 'string' ? data.text : ''
       if (!delta) continue
       textParts.push(delta)
+      progress.visibleOutputEmitted = true
       onTextDelta?.(delta, { role: 'assistant', turnId }, ctx)
       continue
     }
@@ -321,16 +334,26 @@ function getStreamErrorDetails(streamErr: unknown): StreamErrorDetails {
           : anthropicPayload?.requestId,
     errorType: typeof data.error_type === 'string' ? data.error_type : anthropicPayload?.errorType,
     retryable: typeof data.retryable === 'boolean' ? data.retryable : undefined,
+    failureScope: typeof data.failure_scope === 'string' ? data.failure_scope : undefined,
+    code: typeof data.code === 'string' ? data.code : undefined,
+    outerRetryable: typeof data.outer_retryable === 'boolean' ? data.outer_retryable : undefined,
   }
 }
 
-function isTransientStreamError(errorDetails: StreamErrorDetails): boolean {
+function isTransientStreamError(errorDetails: StreamErrorDetails, replaySafe: boolean): boolean {
+  if (!replaySafe || errorDetails.outerRetryable === false) return false
   const transientTypes = ['overloaded_error', 'api_error']
   const transientStatuses = [429, 503, 529]
   if (errorDetails.retryable === true) return true
   if (errorDetails.errorType && transientTypes.includes(errorDetails.errorType)) return true
   if (errorDetails.status && transientStatuses.includes(errorDetails.status)) return true
   return false
+}
+
+function resolveMaxTransientRetries(errorDetails: StreamErrorDetails): number {
+  return errorDetails.failureScope === 'transport'
+    ? MAX_TRANSPORT_STREAM_RETRIES
+    : MAX_TRANSIENT_STREAM_RETRIES
 }
 
 function shouldSkipStreamFallback(adapter: ProviderAdapter): boolean {
@@ -700,15 +723,16 @@ async function completeWithStreamFallback({
   request,
   ctx,
 }: CompleteAgentLoopRequestOptions): Promise<CompletionResponse> {
-  const maxTransientRetries = 3
   let transientAttempts = 0
 
   while (true) {
+    const progress: StreamAttemptProgress = { visibleOutputEmitted: false }
     try {
       const streamed = await completeFromStream({
         adapter: config.adapter,
         request,
         ctx,
+        progress,
         onTextDelta: hooks.onTextDelta,
       })
       if (streamed.content.length > 0 || shouldSkipStreamFallback(config.adapter)) {
@@ -722,8 +746,13 @@ async function completeWithStreamFallback({
       return await config.adapter.complete({ ...request, stream: false })
     } catch (streamErr) {
       const errorDetails = getStreamErrorDetails(streamErr)
+      const replaySafe = !progress.visibleOutputEmitted
+      const maxTransientRetries = resolveMaxTransientRetries(errorDetails)
 
-      if (transientAttempts < maxTransientRetries && isTransientStreamError(errorDetails)) {
+      if (
+        transientAttempts < maxTransientRetries &&
+        isTransientStreamError(errorDetails, replaySafe)
+      ) {
         transientAttempts++
         const delay = resolveTransientRetryDelay(config, transientAttempts)
         config.logger.warn('llm_stream_transient_retry', {
@@ -731,8 +760,12 @@ async function completeWithStreamFallback({
           apiType: config.adapter.apiType,
           error: errorDetails.message,
           errorType: errorDetails.errorType,
+          failureScope: errorDetails.failureScope,
+          code: errorDetails.code,
           status: errorDetails.status,
           requestId: errorDetails.requestId,
+          replaySafe,
+          outerRetryable: errorDetails.outerRetryable,
           attempt: transientAttempts,
           maxRetries: maxTransientRetries,
           delayMs: delay,
@@ -741,13 +774,21 @@ async function completeWithStreamFallback({
         continue
       }
 
-      const fallbackSkipped = shouldSkipStreamFallback(config.adapter)
+      const fallbackSkipped = !replaySafe || shouldSkipStreamFallback(config.adapter)
       config.logger.warn('llm_stream_fallback_to_complete', {
         sessionId: config.sessionId,
         apiType: config.adapter.apiType,
         error: errorDetails.message,
+        errorType: errorDetails.errorType,
+        retryable: errorDetails.retryable,
+        failureScope: errorDetails.failureScope,
+        code: errorDetails.code,
         status: errorDetails.status,
         requestId: errorDetails.requestId,
+        replaySafe,
+        outerRetryable: errorDetails.outerRetryable,
+        attempts: transientAttempts,
+        maxRetries: maxTransientRetries,
         fallbackSkipped,
       })
       if (fallbackSkipped) {

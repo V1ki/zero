@@ -263,6 +263,7 @@ class ChatGptResponsesTransport {
     req: CompletionRequest,
     session: ChatGptOAuthSession,
   ): Promise<TimedChatGptResponse> {
+    const body = JSON.stringify(this.buildBody(req))
     const idleTimer = new ChatGptIdleTimer(this.options.idleTimeoutMs)
 
     try {
@@ -277,15 +278,20 @@ class ChatGptResponsesTransport {
             accept: 'text/event-stream',
             'content-type': 'application/json',
           },
-          body: JSON.stringify(this.buildBody(req)),
+          body,
           signal: idleTimer.signal,
         }),
         'ChatGPT request',
       )
       return new TimedChatGptResponse(response, idleTimer)
     } catch (error) {
+      const normalized = normalizeChatGptTransportError(
+        error,
+        'ChatGPT request',
+        'request_transport_error',
+      )
       idleTimer.close()
-      throw error
+      throw normalized
     }
   }
 
@@ -340,8 +346,16 @@ class TimedChatGptResponse {
     private readonly idleTimer: ChatGptIdleTimer,
   ) {}
 
-  readText(): Promise<string> {
-    return this.idleTimer.waitFor(this.response.text(), 'ChatGPT response body')
+  async readText(): Promise<string> {
+    try {
+      return await this.idleTimer.waitFor(this.response.text(), 'ChatGPT response body')
+    } catch (error) {
+      throw normalizeChatGptTransportError(
+        error,
+        'ChatGPT response body',
+        'response_body_transport_error',
+      )
+    }
   }
 
   async *iterSseEvents(): AsyncIterable<ChatGptSseEvent> {
@@ -381,12 +395,12 @@ class ChatGptIdleTimer {
   }
 
   waitFor<T>(promise: Promise<T>, label: string): Promise<T> {
-    return withChatGptIdleTimeout(promise, this.idleTimeoutMs, label, () => this.close())
+    return withChatGptIdleTimeout(promise, this.idleTimeoutMs, label, (error) => this.close(error))
   }
 
-  close(): void {
+  close(reason?: unknown): void {
     if (!this.controller.signal.aborted) {
-      this.controller.abort()
+      this.controller.abort(reason)
     }
   }
 }
@@ -395,25 +409,50 @@ function withChatGptIdleTimeout<T>(
   promise: Promise<T>,
   idleTimeoutMs: number,
   label: string,
-  onTimeout: () => void,
+  onTimeout: (error: Error) => void,
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
+  let timeoutError: Error | undefined
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      reject(buildChatGptIdleTimeoutError(label, idleTimeoutMs))
-      onTimeout()
+      timeoutError = buildChatGptIdleTimeoutError(label, idleTimeoutMs)
+      onTimeout(timeoutError)
+      reject(timeoutError)
     }, idleTimeoutMs)
   })
 
-  return Promise.race([promise, timeout]).finally(() => {
-    if (timer) clearTimeout(timer)
-  })
+  return Promise.race([promise, timeout])
+    .catch((error) => {
+      throw timeoutError ?? error
+    })
+    .finally(() => {
+      if (timer) clearTimeout(timer)
+    })
 }
 
 function buildChatGptIdleTimeoutError(label: string, idleTimeoutMs: number): Error {
   return Object.assign(new Error(`${label} idle timed out after ${idleTimeoutMs}ms`), {
     retryable: true,
     error_type: 'stream_idle_timeout',
+    failure_scope: 'transport',
+  })
+}
+
+function normalizeChatGptTransportError(error: unknown, label: string, errorType: string): Error {
+  if (
+    error instanceof Error &&
+    typeof (error as Error & { retryable?: unknown }).retryable === 'boolean'
+  ) {
+    return error
+  }
+
+  const message = error instanceof Error ? error.message : String(error)
+  const code = getErrorCode(error)
+  return Object.assign(new Error(`${label} transport failed: ${message}`, { cause: error }), {
+    retryable: true,
+    error_type: errorType,
+    failure_scope: 'transport',
+    ...(code ? { code } : {}),
   })
 }
 
@@ -422,7 +461,14 @@ function buildChatGptHttpError(status: number, body: string): Error {
     status,
     retryable: status === 408 || status === 429 || status >= 500,
     error_type: 'http_error',
+    failure_scope: status === 408 || status === 429 || status >= 500 ? 'provider' : 'request',
   })
+}
+
+function getErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined
+  const code = (error as { code?: unknown }).code
+  return typeof code === 'string' ? code : undefined
 }
 
 function resolveChatGptStreamIdleTimeoutMs(idleTimeoutMs?: number): number {

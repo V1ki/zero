@@ -514,12 +514,14 @@ describe('Agent streaming callback', () => {
     })
   })
 
-  test('retryable Responses stream errors retry without a duplicate complete fallback', async () => {
+  test('retryable transport stream errors retry once without a complete fallback', async () => {
     let streamCalls = 0
     let completeCalls = 0
     const streamError = Object.assign(new Error('stream closed before response.completed'), {
       retryable: true,
       error_type: 'response_stream_ended',
+      failure_scope: 'transport',
+      code: 'ABORT_ERR',
     })
     const adapter: ProviderAdapter = {
       apiType: 'openai_responses',
@@ -553,14 +555,125 @@ describe('Agent streaming callback', () => {
       'stream closed before response.completed',
     )
 
-    expect(streamCalls).toBe(4)
+    expect(streamCalls).toBe(2)
     expect(completeCalls).toBe(0)
     expect(
       warnings.filter((warning) => warning.event === 'llm_stream_transient_retry'),
-    ).toHaveLength(3)
+    ).toHaveLength(1)
     expect(warnings.at(-1)).toMatchObject({
       event: 'llm_stream_fallback_to_complete',
-      data: { fallbackSkipped: true },
+      data: {
+        errorType: 'response_stream_ended',
+        failureScope: 'transport',
+        code: 'ABORT_ERR',
+        retryable: true,
+        replaySafe: true,
+        attempts: 1,
+        maxRetries: 1,
+        fallbackSkipped: true,
+      },
+    })
+  })
+
+  test('does not replay or complete-fallback after visible stream output', async () => {
+    let streamCalls = 0
+    let completeCalls = 0
+    const deltas: string[] = []
+    const streamError = Object.assign(new Error('connection closed after partial output'), {
+      retryable: true,
+      error_type: 'response_stream_transport_error',
+      failure_scope: 'transport',
+    })
+    const adapter: ProviderAdapter = {
+      apiType: 'fake-fallback',
+      async complete() {
+        completeCalls++
+        return {
+          id: 'resp-should-not-run',
+          content: [{ type: 'text', text: 'unexpected' }],
+          stopReason: 'end_turn',
+          usage: { input: 1, output: 1 },
+          model: 'gpt-test',
+        }
+      },
+      async *stream() {
+        streamCalls++
+        yield { type: 'text_delta', data: { text: 'partial' } }
+        throw streamError
+      },
+      async healthCheck() {
+        return true
+      },
+    }
+    const warnings: Array<{ event: string; data?: Record<string, unknown> }> = []
+    const agent = createAgent(adapter, {
+      info: () => {},
+      warn: (event, data) => warnings.push({ event, data }),
+      error: () => {},
+    })
+
+    await expect(
+      agent.run(createContext(), 'say hi', undefined, undefined, (delta) => deltas.push(delta)),
+    ).rejects.toBe(streamError)
+
+    expect(deltas).toEqual(['partial'])
+    expect(streamCalls).toBe(1)
+    expect(completeCalls).toBe(0)
+    expect(warnings.some((warning) => warning.event === 'llm_stream_transient_retry')).toBe(false)
+    expect(warnings.at(-1)).toMatchObject({
+      event: 'llm_stream_fallback_to_complete',
+      data: {
+        replaySafe: false,
+        attempts: 0,
+        maxRetries: 1,
+        fallbackSkipped: true,
+      },
+    })
+  })
+
+  test('does not replay a pool-exhausted transport error', async () => {
+    let streamCalls = 0
+    const streamError = Object.assign(new Error('all pool connections failed'), {
+      retryable: true,
+      error_type: 'response_stream_transport_error',
+      failure_scope: 'transport',
+      outer_retryable: false,
+      pool_exhausted: true,
+    })
+    const adapter: ProviderAdapter = {
+      apiType: 'model_pool',
+      supportsNonStreamingFallback: false,
+      async complete() {
+        throw new Error('complete should not run')
+      },
+      async *stream() {
+        streamCalls++
+        yield* failStream(streamError)
+      },
+      async healthCheck() {
+        return true
+      },
+    }
+    const warnings: Array<{ event: string; data?: Record<string, unknown> }> = []
+    const agent = createAgent(adapter, {
+      info: () => {},
+      warn: (event, data) => warnings.push({ event, data }),
+      error: () => {},
+    })
+
+    await expect(agent.run(createContext(), 'say hi')).rejects.toBe(streamError)
+
+    expect(streamCalls).toBe(1)
+    expect(warnings.some((warning) => warning.event === 'llm_stream_transient_retry')).toBe(false)
+    expect(warnings.at(-1)).toMatchObject({
+      event: 'llm_stream_fallback_to_complete',
+      data: {
+        replaySafe: true,
+        outerRetryable: false,
+        attempts: 0,
+        maxRetries: 1,
+        fallbackSkipped: true,
+      },
     })
   })
 

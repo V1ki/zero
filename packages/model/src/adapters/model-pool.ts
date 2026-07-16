@@ -29,6 +29,7 @@ export interface ModelPoolAdapterOptions {
 }
 
 type RetryablePoolFailure = 'quota_limited' | 'auth_error' | 'temporary_unavailable'
+type PoolFailure = RetryablePoolFailure | 'transport_retryable'
 
 export class ModelPoolAdapter implements ProviderAdapter {
   readonly apiType = 'model_pool'
@@ -50,37 +51,47 @@ export class ModelPoolAdapter implements ProviderAdapter {
   async complete(req: CompletionRequest): Promise<CompletionResponse> {
     const excluded = new Set<string>()
     let lastError: unknown
+    let attemptedMembers = 0
 
     while (excluded.size < this.members.length) {
       const member = await this.selector.select(req, excluded)
       if (!member) break
+      attemptedMembers++
 
       try {
         const response = await member.adapter.complete(this.forMember(req))
         this.health.markHealthy(member.providerName, member.modelName)
+        this.selector.markSuccessful(req, member)
         return response
       } catch (error) {
         lastError = error
         const failure = classifyPoolFailure(error)
         if (!failure) throw error
-        await this.markMemberFailure(member, failure, error)
+        if (failure !== 'transport_retryable') {
+          await this.markMemberFailure(member, failure, error)
+        }
         excluded.add(member.label)
       }
     }
 
-    throw (
-      lastError ??
-      createNoAvailableModelPoolProvidersError(this.logicalLabel, this.members, this.health)
+    throw resolveExhaustedModelPoolError(
+      lastError,
+      this.logicalLabel,
+      this.members,
+      this.health,
+      attemptedMembers,
     )
   }
 
   async *stream(req: CompletionRequest): AsyncIterable<StreamEvent> {
     const excluded = new Set<string>()
     let lastError: unknown
+    let attemptedMembers = 0
 
     while (excluded.size < this.members.length) {
       const member = await this.selector.select(req, excluded)
       if (!member) break
+      attemptedMembers++
       let yielded = false
 
       try {
@@ -89,19 +100,26 @@ export class ModelPoolAdapter implements ProviderAdapter {
           yield event
         }
         this.health.markHealthy(member.providerName, member.modelName)
+        this.selector.markSuccessful(req, member)
         return
       } catch (error) {
         lastError = error
         const failure = classifyPoolFailure(error)
-        if (!failure || yielded) throw error
-        await this.markMemberFailure(member, failure, error)
+        if (!failure) throw error
+        if (failure !== 'transport_retryable') {
+          await this.markMemberFailure(member, failure, error)
+        }
+        if (yielded) throw error
         excluded.add(member.label)
       }
     }
 
-    throw (
-      lastError ??
-      createNoAvailableModelPoolProvidersError(this.logicalLabel, this.members, this.health)
+    throw resolveExhaustedModelPoolError(
+      lastError,
+      this.logicalLabel,
+      this.members,
+      this.health,
+      attemptedMembers,
     )
   }
 
@@ -173,9 +191,6 @@ class ModelPoolMemberSelector {
     for (const member of this.sortedMembers()) {
       if (excluded.has(member.label)) continue
       if (!(await this.isAvailable(member))) continue
-      if (this.options.sticky) {
-        this.stickyMembers.set(stickyKey, member.label)
-      }
       this.options.onMemberSelected?.({ logicalLabel: this.logicalLabel, sessionId, member })
       return member
     }
@@ -185,6 +200,11 @@ class ModelPoolMemberSelector {
 
   sortedMembers(): ModelPoolAdapterMember[] {
     return sortModelPoolMembers(this.members)
+  }
+
+  markSuccessful(req: CompletionRequest, member: ModelPoolAdapterMember): void {
+    if (!this.options.sticky) return
+    this.stickyMembers.set(req.meta?.sessionId ?? '__global__', member.label)
   }
 
   private async isAvailable(member: ModelPoolAdapterMember): Promise<boolean> {
@@ -212,6 +232,32 @@ function createNoAvailableModelPoolProvidersError(
   return new Error(
     `No available providers for model pool ${logicalLabel}${details ? ` (${details})` : ''}`,
   )
+}
+
+function resolveExhaustedModelPoolError(
+  lastError: unknown,
+  logicalLabel: string,
+  members: readonly ModelPoolAdapterMember[],
+  health: ProviderHealthRegistry,
+  attemptedMembers: number,
+): unknown {
+  if (lastError === undefined) {
+    return createNoAvailableModelPoolProvidersError(logicalLabel, members, health)
+  }
+  if (attemptedMembers <= 1) return lastError
+  return markPoolAttemptExhausted(lastError)
+}
+
+function markPoolAttemptExhausted(error: unknown): unknown {
+  const metadata = { outer_retryable: false, pool_exhausted: true }
+  if (error && typeof error === 'object') {
+    try {
+      return Object.assign(error, metadata)
+    } catch {
+      // Fall through to a wrapper when an adapter exposes a frozen error object.
+    }
+  }
+  return Object.assign(new Error(getPoolFailureMessage(error), { cause: error }), metadata)
 }
 
 async function markModelPoolMemberFailure(
@@ -252,28 +298,29 @@ function sortModelPoolMembers(
   return [...members].sort((left, right) => left.priority - right.priority)
 }
 
-function classifyPoolFailure(error: unknown): RetryablePoolFailure | undefined {
+function classifyPoolFailure(error: unknown): PoolFailure | undefined {
   const status = errorStatus(error)
   const message = getPoolFailureMessage(error).toLowerCase()
+  const errorType = getErrorStringProperty(error, 'error_type')?.toLowerCase()
+  const failureScope = getErrorStringProperty(error, 'failure_scope')
 
-  if (
-    status === 429 ||
-    message.includes('rate limit') ||
-    message.includes('usage limit') ||
-    message.includes('quota') ||
-    message.includes('exhausted') ||
-    message.includes('too many requests')
-  ) {
+  if (status === 429 || isQuotaFailureType(errorType)) {
     return 'quota_limited'
   }
 
-  if (status === 401 || status === 403 || isAuthFailureMessage(message)) {
+  if (status === 401 || status === 403 || isAuthFailureType(errorType)) {
     return 'auth_error'
   }
 
-  if ((status && status >= 500) || message.includes('temporarily unavailable')) {
+  if (failureScope === 'request') return undefined
+  if (isStructuredFailureScope(error, 'transport')) return 'transport_retryable'
+  if (isStructuredFailureScope(error, 'provider') || status === 408 || (status && status >= 500)) {
     return 'temporary_unavailable'
   }
+
+  if (isQuotaFailureMessage(message)) return 'quota_limited'
+  if (isAuthFailureMessage(message)) return 'auth_error'
+  if (message.includes('temporarily unavailable')) return 'temporary_unavailable'
 
   return undefined
 }
@@ -286,8 +333,66 @@ function getPoolFailureMessage(error: unknown): string {
 function getPoolFailureEvidence(error: unknown): Record<string, unknown> {
   return {
     status: errorStatus(error),
+    retryable: isStructuredRetryableError(error),
+    errorType: getErrorStringProperty(error, 'error_type'),
+    failureScope: getErrorStringProperty(error, 'failure_scope'),
+    code: getErrorStringProperty(error, 'code'),
+    requestId:
+      getErrorStringProperty(error, 'request_id') ?? getErrorStringProperty(error, 'requestId'),
     message: getPoolFailureMessage(error).slice(0, 500),
   }
+}
+
+function isStructuredRetryableError(error: unknown): boolean {
+  return Boolean(
+    error && typeof error === 'object' && (error as { retryable?: unknown }).retryable === true,
+  )
+}
+
+function isStructuredFailureScope(error: unknown, scope: 'provider' | 'transport'): boolean {
+  if (!isStructuredRetryableError(error)) return false
+  return getErrorStringProperty(error, 'failure_scope') === scope
+}
+
+function isQuotaFailureType(errorType?: string): boolean {
+  return Boolean(
+    errorType &&
+      [
+        'insufficient_quota',
+        'quota_exceeded',
+        'rate_limit_exceeded',
+        'too_many_requests',
+        'usage_limit_reached',
+      ].includes(errorType),
+  )
+}
+
+function isAuthFailureType(errorType?: string): boolean {
+  return Boolean(
+    errorType &&
+      [
+        'authentication_error',
+        'invalid_api_key',
+        'invalid_authentication',
+        'permission_denied',
+      ].includes(errorType),
+  )
+}
+
+function isQuotaFailureMessage(message: string): boolean {
+  return (
+    message.includes('rate limit') ||
+    message.includes('usage limit') ||
+    message.includes('quota') ||
+    message.includes('exhausted') ||
+    message.includes('too many requests')
+  )
+}
+
+function getErrorStringProperty(error: unknown, key: string): string | undefined {
+  if (!error || typeof error !== 'object') return undefined
+  const value = (error as Record<string, unknown>)[key]
+  return typeof value === 'string' ? value : undefined
 }
 
 function isAuthFailureMessage(message: string): boolean {
