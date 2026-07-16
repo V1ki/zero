@@ -343,6 +343,7 @@ function statusOnlyToolResult(block: ToolResultBlock): ToolResultBlock {
 const TIMELINE_RECOMPACT_STRATEGY = 'semantic_recompact_raw_history_v1'
 const TIMELINE_RECOMPACT_BOUNDARY_REASON =
   'Recompacted active timeline blocks from original raw messages and tool evidence because the projected prompt was still block-heavy or oversized.'
+const TIMELINE_SINGLE_BLOCK_RECOVERY_MARKER = 'single_block_oversize_recovery=1'
 const timelineCompactionStrategyVersion = 'timeline_compaction_block_v3'
 const deterministicFallbackPromptVersion = 'context_compaction_deterministic_fallback_v1'
 
@@ -713,6 +714,11 @@ function formatContextCompactionSummary(
 ): string {
   const source =
     modelOutput.model?.usedModel === 'deterministic-fallback' ? 'deterministic_fallback' : 'model'
+  const promptEvidence = episode.evidence.slice(
+    0,
+    CONTEXT_PARAMS.history.episodePromptEvidenceLimit,
+  )
+  const omittedEvidenceCount = episode.evidence.length - promptEvidence.length
   const lines = [
     `<context_compaction_summary source="${source}">`,
     'summary:',
@@ -735,10 +741,13 @@ function formatContextCompactionSummary(
     'key_evidence:',
     ...(modelOutput.keyEvidence ?? episode.needsRawReview).map((item) => `- ${item}`),
     'evidence_manifest:',
-    ...episode.evidence.map(
+    ...promptEvidence.map(
       (item) =>
         `- ${item.toolName}:${item.toolUseId}:${item.kind} path=${item.path} chars=${item.chars} sha256=${item.sha256.slice(0, 12)}`,
     ),
+    omittedEvidenceCount > 0
+      ? `- omitted_evidence_count=${omittedEvidenceCount} total_evidence_count=${episode.evidence.length}; full manifest remains in artifacts and trace metadata`
+      : '',
     '</context_compaction_summary>',
   ]
   return lines.filter((line) => line.trim().length > 0).join('\n')
@@ -1220,7 +1229,7 @@ function planTimelineRecompaction(
   activeBlocks: TimelineCompactionBlock[],
 ): TimelineRecompactionPlan | undefined {
   const sortedBlocks = sortTimelineCompactionBlocks(activeBlocks)
-  if (sortedBlocks.length <= 1) return undefined
+  if (sortedBlocks.length === 0) return undefined
 
   const projectedMessages = projectTimelineCompactionBlocks(
     messages,
@@ -1228,12 +1237,17 @@ function planTimelineRecompaction(
     messages[0]?.sessionId ?? 'session',
   )
   const projectedChars = stableJsonLength(projectedMessages)
+  const isSingleBlock = sortedBlocks.length === 1
   const blockHeavy =
     sortedBlocks.length >= CONTEXT_PARAMS.history.timelineRecompactBlockCountThreshold
-  const stillOversized =
-    projectedChars >= CONTEXT_PARAMS.history.timelineRecompactCharsThreshold &&
-    sortedBlocks.length >= 2
+  const stillOversized = projectedChars >= CONTEXT_PARAMS.history.timelineRecompactCharsThreshold
   if (!blockHeavy && !stillOversized) return undefined
+  if (
+    isSingleBlock &&
+    sortedBlocks[0]?.boundaryReason.includes(TIMELINE_SINGLE_BLOCK_RECOVERY_MARKER)
+  ) {
+    return undefined
+  }
 
   const messageIds = new Set(sortedBlocks.flatMap((block) => block.coveredMessageIds))
   const segment = messages.filter((message) => messageIds.has(message.id))
@@ -1246,7 +1260,10 @@ function planTimelineRecompaction(
     `projected_chars=${projectedChars}`,
     `threshold_blocks=${CONTEXT_PARAMS.history.timelineRecompactBlockCountThreshold}`,
     `threshold_chars=${CONTEXT_PARAMS.history.timelineRecompactCharsThreshold}`,
-  ].join(' ')
+    isSingleBlock ? TIMELINE_SINGLE_BLOCK_RECOVERY_MARKER : '',
+  ]
+    .filter((item) => item.length > 0)
+    .join(' ')
 
   return { segment, generation, reason }
 }

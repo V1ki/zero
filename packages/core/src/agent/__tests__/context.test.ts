@@ -19,6 +19,7 @@ import {
   repairInterleavedToolResultOrder,
   sanitizeConversationHistoryForSignedThinkingToolUse,
 } from '../context'
+import { CONTEXT_PARAMS } from '../params'
 
 function makeMessage(role: 'user' | 'assistant', content: ContentBlock[]): Message {
   return {
@@ -759,6 +760,50 @@ describe('prepareConversationHistory', () => {
     }
   })
 
+  test('caps the active prompt evidence manifest while retaining the full block evidence', async () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-evidence-cap-'))
+    const messages = buildConversation(12).map((message) => ({
+      ...message,
+      sessionId: 'sess_evidence_cap_fixture',
+    }))
+    let timelineCompactionBlocks: TimelineCompactionBlock[] = []
+
+    try {
+      await prepareConversationHistoryWithCompaction(messages, {
+        enableEpisodeCompaction: true,
+        evidenceWorkDir: workDir,
+        sessionId: 'sess_evidence_cap_fixture',
+        contextCompactor: async () => undefined,
+        onTimelineCompactionBlocksChanged: (blocks) => {
+          timelineCompactionBlocks = blocks
+        },
+      })
+      const activeBlock = expectDefined(
+        timelineCompactionBlocks.find((block) => block.status === 'active'),
+      )
+      const promptManifestStart = activeBlock.summary.lastIndexOf('evidence_manifest:\n')
+      const promptManifest = activeBlock.summary.slice(
+        promptManifestStart + 'evidence_manifest:\n'.length,
+        activeBlock.summary.indexOf('\n</context_compaction_summary>', promptManifestStart),
+      )
+      const manifestEntries = promptManifest.match(/^- .* sha256=[a-f0-9]{12}$/gm) ?? []
+      const omittedEvidenceCount =
+        activeBlock.evidence.length - CONTEXT_PARAMS.history.episodePromptEvidenceLimit
+
+      expect(activeBlock.evidence.length).toBeGreaterThan(
+        CONTEXT_PARAMS.history.episodePromptEvidenceLimit,
+      )
+      expect(activeBlock.evidenceCount).toBe(activeBlock.evidence.length)
+      expect(activeBlock.model?.usedModel).toBe('deterministic-fallback')
+      expect(manifestEntries).toHaveLength(CONTEXT_PARAMS.history.episodePromptEvidenceLimit)
+      expect(activeBlock.summary).toContain(
+        `omitted_evidence_count=${omittedEvidenceCount} total_evidence_count=${activeBlock.evidence.length}`,
+      )
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
+
   test('reuses existing immutable timeline compaction blocks without rewriting them', async () => {
     const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-reuse-'))
     const messages = buildLongToolConversation('sess_reuse_fixture')
@@ -947,6 +992,69 @@ describe('prepareConversationHistory', () => {
       expect(events.some((event) => event.lifecycle === 'created')).toBe(true)
       expect(JSON.stringify(result)).toContain('raw recompact')
       expect(JSON.stringify(result)).not.toContain('Full output of tool execution for turn 0')
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
+
+  test('recompacts one oversized active block once to recover a legacy giant prompt', async () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-single-recompact-'))
+    const messages = buildConversation(12).map((message) => ({
+      ...message,
+      sessionId: 'sess_single_recompact_fixture',
+    }))
+    const legacyBlock = {
+      ...makeTimelineBlock('timeline_compaction_legacy_giant', messages.slice(0, 36)),
+      summary: `LEGACY_GIANT_${'evidence path and sha '.repeat(9000)}`,
+    }
+    let timelineCompactionBlocks: TimelineCompactionBlock[] = [legacyBlock]
+    let compactorCalls = 0
+    const compactor = async (input: ContextCompactionModelInput) => {
+      compactorCalls++
+      return semanticCompactor('single oversized recovery')(input)
+    }
+
+    try {
+      const first = await prepareConversationHistoryWithCompaction(messages, {
+        enableEpisodeCompaction: true,
+        evidenceWorkDir: workDir,
+        sessionId: 'sess_single_recompact_fixture',
+        timelineCompactionBlocks,
+        contextCompactor: compactor,
+        onTimelineCompactionBlocksChanged: (blocks) => {
+          timelineCompactionBlocks = blocks
+        },
+      })
+      const activeBlock = expectDefined(
+        timelineCompactionBlocks.find((block) => block.status === 'active'),
+      )
+      const supersededBlock = expectDefined(
+        timelineCompactionBlocks.find((block) => block.id === legacyBlock.id),
+      )
+      let changedAgain = false
+      const second = await prepareConversationHistoryWithCompaction(messages, {
+        enableEpisodeCompaction: true,
+        evidenceWorkDir: workDir,
+        sessionId: 'sess_single_recompact_fixture',
+        timelineCompactionBlocks,
+        contextCompactor: compactor,
+        onTimelineCompactionBlocksChanged: () => {
+          changedAgain = true
+        },
+      })
+
+      expect(compactorCalls).toBe(1)
+      expect(activeBlock.id).not.toBe(legacyBlock.id)
+      expect(activeBlock.generation).toBe(2)
+      expect(activeBlock.strategy).toBe('semantic_recompact_raw_history_v1')
+      expect(activeBlock.supersedesBlockIds).toEqual([legacyBlock.id])
+      expect(activeBlock.boundaryReason).toContain('single_block_oversize_recovery=1')
+      expect(activeBlock.summary.length).toBeLessThan(legacyBlock.summary.length)
+      expect(supersededBlock.status).toBe('superseded')
+      expect(JSON.stringify(first)).toContain('single oversized recovery')
+      expect(JSON.stringify(first)).not.toContain('LEGACY_GIANT_')
+      expect(changedAgain).toBe(false)
+      expect(second).toEqual(first)
     } finally {
       rmSync(workDir, { recursive: true, force: true })
     }
@@ -1216,8 +1324,7 @@ describe('mergeInterleavedQueuedMessages', () => {
     expect(
       toolResultMsg.content.some(
         (b) =>
-          b.type === 'text' &&
-          (b as { text: string }).text.includes('background_tool.completed'),
+          b.type === 'text' && (b as { text: string }).text.includes('background_tool.completed'),
       ),
     ).toBe(true)
   })
