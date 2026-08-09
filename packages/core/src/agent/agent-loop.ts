@@ -268,10 +268,13 @@ async function completeFromStream({
   const reasoningContent = reasoningParts.length > 0 ? reasoningParts.join('') : undefined
   const reasoningSignature =
     reasoningSignatureParts.length > 0 ? reasoningSignatureParts.join('') : undefined
-  if (adapter.apiType === 'anthropic-deepseek' && reasoningContent && reasoningSignature) {
+  // DeepSeek may stream a signature without any thinking text when it skips visible
+  // reasoning before a tool call; persist the block anyway since the signature is
+  // required (and sufficient) for the history to be replayable.
+  if (adapter.apiType === 'anthropic-deepseek' && reasoningSignature) {
     content.push({
       type: 'thinking',
-      thinking: reasoningContent,
+      thinking: reasoningContent ?? '',
       signature: reasoningSignature,
     })
   }

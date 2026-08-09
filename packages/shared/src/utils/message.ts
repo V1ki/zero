@@ -5,11 +5,11 @@ function isTextBlock(block: ContentBlock): block is TextBlock {
 }
 
 export function isSignedThinkingBlock(block: ContentBlock): block is ThinkingBlock {
+  // The signature is what makes a thinking block replayable; DeepSeek may return
+  // signature-only thinking blocks (empty thinking text) before tool_use, and its
+  // API accepts them echoed back verbatim.
   return (
-    block.type === 'thinking' &&
-    block.thinking.trim().length > 0 &&
-    typeof block.signature === 'string' &&
-    block.signature.length > 0
+    block.type === 'thinking' && typeof block.signature === 'string' && block.signature.length > 0
   )
 }
 

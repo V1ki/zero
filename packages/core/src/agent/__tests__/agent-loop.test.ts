@@ -472,6 +472,55 @@ describe('AgentLoop', () => {
     })
   })
 
+  test('keeps DeepSeek streaming tool_use responses with signature-only thinking', async () => {
+    const adapter = new DeepSeekStreamAdapter([
+      [
+        { type: 'reasoning_signature', data: { signature: 'sig_stream' } },
+        { type: 'tool_use_start', data: { id: 'call_1', name: 'noop' } },
+        { type: 'tool_use_delta', data: { arguments: '{}' } },
+        { type: 'tool_use_end', data: { id: 'call_1' } },
+        {
+          type: 'done',
+          data: {
+            finishReason: 'tool_use',
+            usage: { input: 3, output: 2 },
+            model: 'deepseek-v4-flash',
+          },
+        },
+      ],
+      [
+        { type: 'text_delta', data: { text: 'finished' } },
+        {
+          type: 'done',
+          data: {
+            finishReason: 'end_turn',
+            usage: { input: 5, output: 1 },
+            model: 'deepseek-v4-flash',
+          },
+        },
+      ],
+    ])
+    let executed = false
+    const loop = createDeepSeekStreamLoop(
+      adapter,
+      createNoopExecutor(() => {
+        executed = true
+      }),
+    )
+
+    const messages = await loop.run('run tool', [])
+    const assistantWithTool = messages.find((message) =>
+      message.content.some((block) => block.type === 'tool_use'),
+    )
+
+    expect(executed).toBe(true)
+    expect(assistantWithTool?.content[0]).toEqual({
+      type: 'thinking',
+      thinking: '',
+      signature: 'sig_stream',
+    })
+  })
+
   test('keeps signed DeepSeek streaming final responses instead of synthesizing unsigned thinking', async () => {
     const adapter = new DeepSeekStreamAdapter([
       [

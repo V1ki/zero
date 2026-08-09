@@ -336,6 +336,19 @@ describe('prepareConversationHistory', () => {
     expect(sanitizeConversationHistoryForSignedThinkingToolUse(messages)).toBe(messages)
   })
 
+  test('sanitizeConversationHistoryForSignedThinkingToolUse preserves signature-only thinking turns', () => {
+    const messages = [
+      makeUserText('run tool'),
+      makeMessage('assistant', [
+        { type: 'thinking', thinking: '', signature: 'sig_1' },
+        { type: 'tool_use', id: 'call_with_empty_thinking', name: 'noop', input: {} },
+      ]),
+      makeToolResult('call_with_empty_thinking', 'tool output'),
+    ]
+
+    expect(sanitizeConversationHistoryForSignedThinkingToolUse(messages)).toBe(messages)
+  })
+
   test('drops signature-less thinking tool turns when thinking replay requires signatures', () => {
     const messages = [
       makeUserText('run tool'),

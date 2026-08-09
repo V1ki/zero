@@ -40,6 +40,6 @@
     }
   },
   "files": {
-    "ignore": ["node_modules", "dist", ".zero", "test-results", ".claude"]
+    "ignore": ["node_modules", "dist", ".zero", "test-results", ".claude", ".artifacts"]
   }
 }

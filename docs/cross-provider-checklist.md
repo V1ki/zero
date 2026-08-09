@@ -75,6 +75,7 @@
   - `OpenAIResponsesAdapter.parseResponse()` / `parseChatGptCompletion()` 会提取 reasoning summary 为 `reasoningContent`。
   - `collectStream()` 只聚合 text/tool_use/usage，不返回 reasoningContent。
   - `Message` 类型只有 `text | tool_use | tool_result | image`，没有 reasoning block，因此 reasoning 不会进入会话历史。
+  - `anthropic-deepseek` 是例外：DeepSeek 的 Anthropic 兼容端点要求带 tool_use 的 assistant 回合必须回传带签名的 thinking block，否则后续请求会被拒绝。ZeRo 会把签名 thinking block 持久化进历史并原样回传。实测 DeepSeek（尤其 flash）会返回"只有签名、thinking 文本为空"的 thinking block，其服务端接受该 block 原样回传，因此 ZeRo 以"签名存在"作为合法性判据（`isSignedThinkingBlock`），不再要求 thinking 文本非空；完全无签名的 tool_use 响应仍会被拒绝持久化。
 - 需要的测试类型
   - `unit`
   - `integration`
