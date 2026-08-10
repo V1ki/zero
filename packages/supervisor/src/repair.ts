@@ -37,8 +37,16 @@ export class RepairEngine {
   }
 
   shouldFuse(): boolean {
-    const recentFails = this.attempts.filter((a) => a.status === 'failed').length
-    return recentFails >= this.maxAttempts
+    // Only consecutive failures count toward the fuse. A single successful
+    // repair proves the system recovered and resets the streak, so isolated
+    // failures spread over a long process lifetime cannot permanently
+    // disable self-healing.
+    let consecutiveFails = 0
+    for (let i = this.attempts.length - 1; i >= 0; i--) {
+      if (this.attempts[i].status !== 'failed') break
+      consecutiveFails++
+    }
+    return consecutiveFails >= this.maxAttempts
   }
 
   /**

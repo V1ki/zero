@@ -119,6 +119,41 @@ describe('RepairEngine', () => {
     expect(engine.shouldFuse()).toBe(true)
   })
 
+  test('a successful repair resets the consecutive failure streak', async () => {
+    const engine = new RepairEngine(3)
+
+    for (let i = 0; i < 2; i++) {
+      await engine.runRepairCycle(
+        async () => 'diag',
+        async () => 'action',
+        async () => false,
+      )
+    }
+    await engine.runRepairCycle(
+      async () => 'diag',
+      async () => 'action',
+      async () => true,
+    )
+    for (let i = 0; i < 2; i++) {
+      await engine.runRepairCycle(
+        async () => 'diag',
+        async () => 'action',
+        async () => false,
+      )
+    }
+
+    // 4 failures total but never 3 in a row — must not fuse
+    expect(engine.getAttemptCount()).toBe(5)
+    expect(engine.shouldFuse()).toBe(false)
+
+    await engine.runRepairCycle(
+      async () => 'diag',
+      async () => 'action',
+      async () => false,
+    )
+    expect(engine.shouldFuse()).toBe(true)
+  })
+
   test('reset clears attempts and status', async () => {
     const engine = new RepairEngine()
 
