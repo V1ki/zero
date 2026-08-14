@@ -74,6 +74,8 @@ context_compaction_model: deepseek/deepseek-v4-flash
 - 稳定的旧工具密集 turn 可以在主 context compaction 请求前先做 digest。digest 模型只接收局部 tool IO，输出自然语言环境摘要，并保留原始证据用于审计/回看。
 - Tool digest 触发受当前参数控制：单个工具 raw IO 达到 `toolDigestMinRawChars` 时可单独摘要；多个相邻工具 pair 的 raw IO 合计达到 `toolDigestGroupMinRawChars` 时可分组摘要；每个 digest 请求最多包含 `toolDigestMaxPairs` 个 tool pair；每个工具进入 digest 请求的 raw 输出会受 `toolDigestMaxRawCharsPerTool` 限制。当前分组是基于待压缩 segment 内的 tool pair 顺序切块，不是语义聚类，也不会自己重新判断 turn 是否稳定。
 - Tool digest 是机会性优化，而不是强依赖。任何 digest 失败、输出过短或未触发阈值的工具 IO，都会回落到主 compaction 原有的 raw/evidence 输入路径，保证压缩链路不会因为前置摘要失败而丢失上下文。
+- Handle 保留：tool_result 降级为 summary（截断到 `summaryMaxChars`）或 status（`✓ success` / `✗ failed`）时，会从原文提取有界的 exact handle（URL、路径、带扩展名文件名、命令 flag），以 `retained_handles:` 行附在降级内容后，受 `handleRetentionMaxHandles` / `handleRetentionMaxChars` 约束。这保证重度降级后，后续 turn 仍能引用之前产出的 artifact 路径。
+- Timeline block 内嵌确定性 handle trail：block summary 在语义摘要之外附加一条 `retained_handles:` 行，由被覆盖的原始消息（tool_use 输入、tool_result、文本）按"最新优先"提取，受 `blockHandleRetentionMaxHandles` / `blockHandleRetentionMaxChars` 约束。该 trail 不依赖压缩模型质量，模型摘要遗漏 artifact 路径时仍可恢复引用。
 - 未完成 turn：如果某个 `tool_use` 没有配对的 `tool_result`，它所在的 turn 不会被压缩。
 - 阻塞 turn：以 `task_closure=block` 结束的 assistant 消息会携带 compact 元数据和分类原因，因此旧 replay 可以把该 episode 标记为 blocked，而不是压平成已完成工作。
 - Provider 合法性：被压缩的旧 turn 会同时从 replay 中移除 `tool_use` 和 `tool_result`；保留的 turn 仍保持合法配对。

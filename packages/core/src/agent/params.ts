@@ -100,6 +100,14 @@ export const CONTEXT_PARAMS = {
     summaryRetainTurns: 8,
     /** Summary truncation length (chars) */
     summaryMaxChars: 200,
+    /** When truncating tool results, retain up to N exact handles (paths/URLs/filenames). */
+    handleRetentionMaxHandles: 8,
+    /** Char budget for the retained-handle line appended to truncated tool results. */
+    handleRetentionMaxChars: 400,
+    /** Handle-trail cap for a timeline compaction block; blocks cover many messages. */
+    blockHandleRetentionMaxHandles: 64,
+    /** Char budget for the handle trail embedded in a timeline compaction block summary. */
+    blockHandleRetentionMaxChars: 3200,
   },
 
   /** Memory retrieval */

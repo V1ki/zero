@@ -539,6 +539,84 @@ describe('prepareConversationHistory', () => {
     expect(successBlock.truncationLevel).toBe('status')
   })
 
+  test('status-level reduction retains exact handles from old tool output', () => {
+    const messages: Message[] = []
+    const artifactPath = '/Users/v1ki/Desktop/test4_zero/.zero/workspace/shared/video_v4.mp4'
+    for (let i = 0; i < 12; i++) {
+      const toolId = `tool-${i}`
+      const output =
+        i === 0
+          ? `render ok, artifact written to ${artifactPath}, manifest https://example.com/run/${i}/manifest.json tail noise`
+          : `plain output for turn ${i}`
+      messages.push(makeUserText(`Question ${i}`))
+      messages.push(makeAssistantToolUse('bash', toolId))
+      messages.push(makeToolResult(toolId, output))
+      messages.push(makeAssistantText(`Reply ${i}`))
+    }
+
+    const result = prepareConversationHistory(messages)
+    const oldBlock = expectDefined(result[2].content.find((b) => b.type === 'tool_result'))
+
+    expect(oldBlock.truncationLevel).toBe('status')
+    expect(oldBlock.content).toContain('\u2713 success')
+    expect(oldBlock.content).toContain(artifactPath)
+    expect(oldBlock.content).toContain('https://example.com/run/0/manifest.json')
+  })
+
+  test('summary-level reduction retains handles that fall outside the summary window', () => {
+    const messages: Message[] = []
+    const latePath = '/Users/v1ki/Desktop/test4_zero/.zero/workspace/shared/cover.png'
+    for (let i = 0; i < 10; i++) {
+      const toolId = `tool-${i}`
+      const output =
+        i === 5 ? `${'head noise '.repeat(30)} saved to ${latePath}` : `plain output ${i}`
+      messages.push(makeUserText(`Question ${i}`))
+      messages.push(makeAssistantToolUse('bash', toolId))
+      messages.push(makeToolResult(toolId, output))
+      messages.push(makeAssistantText(`Reply ${i}`))
+    }
+
+    const result = prepareConversationHistory(messages)
+    // Chronological turn 5 (age 4) lands in the summary band.
+    const block = expectDefined(result[5 * 4 + 2].content.find((b) => b.type === 'tool_result'))
+
+    expect(block.truncationLevel).toBe('summary')
+    expect(block.content).toContain(latePath)
+  })
+
+  test('retained handles are capped and survive summary-to-status degradation', () => {
+    const messages: Message[] = []
+    const paths = Array.from({ length: 12 }, (_value, index) => `/tmp/h_${index}.txt`)
+    for (let i = 0; i < 12; i++) {
+      const toolId = `tool-${i}`
+      messages.push(makeUserText(`Question ${i}`))
+      messages.push(makeAssistantToolUse('bash', toolId))
+      // Long noise head keeps the handles outside the 200-char summary window;
+      // short paths keep the handle char budget from binding before the count cap.
+      messages.push(makeToolResult(toolId, `${'noise '.repeat(50)} ${paths.join(' ')}`))
+      messages.push(makeAssistantText(`Reply ${i}`))
+    }
+
+    const summaryResult = prepareConversationHistory(messages.slice(0, 9 * 4))
+    const summaryBlock = expectDefined(
+      summaryResult[2].content.find((b) => b.type === 'tool_result'),
+    )
+    expect(summaryBlock.truncationLevel).toBe('summary')
+    const retainedLine = summaryBlock.content.match(/retained_handles: ([^\n]*)/)
+    expect(retainedLine).not.toBeNull()
+    expect((retainedLine?.[1]?.match(/h_\d+\.txt/g) ?? []).length).toBe(
+      CONTEXT_PARAMS.history.handleRetentionMaxHandles,
+    )
+
+    const statusResult = prepareConversationHistory(messages)
+    const statusBlock = expectDefined(statusResult[2].content.find((b) => b.type === 'tool_result'))
+    expect(statusBlock.truncationLevel).toBe('status')
+    expect(statusBlock.content).toContain('h_0.txt')
+    expect((statusBlock.content.match(/h_\d+\.txt/g) ?? []).length).toBe(
+      CONTEXT_PARAMS.history.handleRetentionMaxHandles,
+    )
+  })
+
   test('leaves assistant messages untouched', () => {
     const messages = buildConversation(12)
     const result = prepareConversationHistory(messages)
@@ -768,6 +846,30 @@ describe('prepareConversationHistory', () => {
       expect(timelineCompactionBlocks[0].coveredMessageCount).toBeGreaterThan(0)
       expect(timelineCompactionBlocks[0].summary).toContain('<timeline_compaction_block')
       expect(timelineCompactionBlocks[0].summary).toContain('<working_state_compaction>')
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
+
+  test('block summary embeds deterministic retained handles from covered messages', async () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-handle-trail-'))
+    const messages = buildLongToolConversation()
+    try {
+      const result = await prepareConversationHistoryWithCompaction(messages, {
+        enableEpisodeCompaction: true,
+        evidenceWorkDir: workDir,
+        sessionId: 'sess_20260512_1006_fei_8161_fixture',
+        contextCompactor: semanticCompactor(),
+      })
+      const text = result
+        .flatMap((message) =>
+          message.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])),
+        )
+        .join('\n')
+
+      expect(text).toContain('retained_handles:')
+      expect(text).toContain('/repo/tmp/design.md')
+      expect(text).toContain('/repo/packages/core/src/agent/context.ts')
     } finally {
       rmSync(workDir, { recursive: true, force: true })
     }

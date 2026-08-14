@@ -324,7 +324,12 @@ function summarizeToolResult(block: ToolResultBlock): ToolResultBlock {
   const summary =
     block.outputSummary ?? block.content.slice(0, CONTEXT_PARAMS.history.summaryMaxChars)
   const truncated = summary.length < block.content.length ? `${summary}...` : summary
-  return { ...block, content: truncated, contentItems: undefined, truncationLevel: 'summary' }
+  return {
+    ...block,
+    content: appendRetainedHandles(truncated, block.content),
+    contentItems: undefined,
+    truncationLevel: 'summary',
+  }
 }
 
 function statusOnlyToolResult(block: ToolResultBlock): ToolResultBlock {
@@ -332,12 +337,91 @@ function statusOnlyToolResult(block: ToolResultBlock): ToolResultBlock {
     const errorSnippet = block.content.slice(0, 100)
     return {
       ...block,
-      content: `\u2717 failed: ${errorSnippet}`,
+      content: appendRetainedHandles(`\u2717 failed: ${errorSnippet}`, block.content),
       contentItems: undefined,
       truncationLevel: 'status',
     }
   }
-  return { ...block, content: '\u2713 success', contentItems: undefined, truncationLevel: 'status' }
+  return {
+    ...block,
+    content: appendRetainedHandles('\u2713 success', block.content),
+    contentItems: undefined,
+    truncationLevel: 'status',
+  }
+}
+
+const RETAINED_HANDLE_URL_PATTERN = /https?:\/\/[^\s"'<>）)、,；;]+/g
+// Paths are boundary-anchored so a segment like /tmp inside /repo/tmp/... is
+// never captured as a truncated path starting mid-token.
+const RETAINED_HANDLE_ABSOLUTE_PATH_PATTERN =
+  /(?:^|[\s"'(<（【=])(\/[A-Za-z0-9_.@+-]+(?:\/[A-Za-z0-9_.@+-]+)+)/g
+const RETAINED_HANDLE_RELATIVE_PATH_PATTERN =
+  /(?:^|[\s"'(<（【=])((?:\.zero|~|\.)\/[A-Za-z0-9_.@+-]+(?:\/[A-Za-z0-9_.@+-]+)*)/g
+const RETAINED_HANDLE_FILE_PATTERN = /[A-Za-z0-9_][A-Za-z0-9_.-]{2,}\.[A-Za-z][A-Za-z0-9]{0,7}/g
+const RETAINED_HANDLE_FLAG_PATTERN = /(?:^|[\s"'=(])-{1,2}[A-Za-z][A-Za-z0-9_-]{2,}/g
+
+/**
+ * Exact handles (URLs, paths, filenames, command flags) that later turns
+ * frequently reuse as tool arguments. Truncated tool results keep a bounded
+ * list of them so heavy compaction does not sever the link to previously
+ * produced artifacts.
+ */
+export function extractRetainedHandles(text: string): string[] {
+  const categories = extractRetainedHandlesByCategory(text)
+  return [...categories.urls, ...categories.paths, ...categories.files, ...categories.flags]
+}
+
+interface RetainedHandleCategories {
+  urls: string[]
+  paths: string[]
+  files: string[]
+  flags: string[]
+}
+
+function extractRetainedHandlesByCategory(text: string): RetainedHandleCategories {
+  const push = (list: string[], seen: Set<string>, value: string) => {
+    const handle = value.replace(/[.,;:)\]}>'"]+$/, '')
+    if (handle.length < 4 || seen.has(handle)) return
+    seen.add(handle)
+    list.push(handle)
+  }
+  const urls: string[] = []
+  const paths: string[] = []
+  const files: string[] = []
+  const flags: string[] = []
+  const urlSeen = new Set<string>()
+  const pathSeen = new Set<string>()
+  const fileSeen = new Set<string>()
+  const flagSeen = new Set<string>()
+  for (const match of text.matchAll(RETAINED_HANDLE_URL_PATTERN)) push(urls, urlSeen, match[0])
+  for (const match of text.matchAll(RETAINED_HANDLE_ABSOLUTE_PATH_PATTERN))
+    push(paths, pathSeen, match[1])
+  for (const match of text.matchAll(RETAINED_HANDLE_RELATIVE_PATH_PATTERN))
+    push(paths, pathSeen, match[1])
+  for (const match of text.matchAll(RETAINED_HANDLE_FILE_PATTERN)) {
+    // Skip bare filenames already contained in a longer path or URL handle.
+    const contained =
+      paths.some((path) => path.includes(match[0])) || urls.some((url) => url.includes(match[0]))
+    if (!contained) push(files, fileSeen, match[0])
+  }
+  for (const match of text.matchAll(RETAINED_HANDLE_FLAG_PATTERN)) push(flags, flagSeen, match[0])
+  return { urls, paths, files, flags }
+}
+
+function appendRetainedHandles(content: string, original: string): string {
+  const handles = extractRetainedHandles(original).filter((handle) => !content.includes(handle))
+  if (handles.length === 0) return content
+  const maxHandles = CONTEXT_PARAMS.history.handleRetentionMaxHandles
+  const maxChars = CONTEXT_PARAMS.history.handleRetentionMaxChars
+  const kept: string[] = []
+  let keptChars = 0
+  for (const handle of handles) {
+    if (kept.length >= maxHandles || keptChars + handle.length > maxChars) break
+    kept.push(handle)
+    keptChars += handle.length + 2
+  }
+  if (kept.length === 0) return content
+  return `${content}\nretained_handles: ${kept.join(', ')}`
 }
 
 const TIMELINE_RECOMPACT_STRATEGY = 'semantic_recompact_raw_history_v1'
@@ -573,6 +657,47 @@ function buildTimelineCompactionBlockId(
   ).slice(0, 16)}`
 }
 
+/**
+ * Deterministic handle trail for a compacted segment: bounded exact handles
+ * extracted from the covered raw messages. This survives even when the model
+ * summary drops artifact paths/URLs that later turns still need. The segment is
+ * scanned newest-first because recent artifacts are the most likely to be
+ * reused by upcoming tool calls.
+ */
+function formatSegmentRetainedHandles(segment: Message[]): string {
+  const maxHandles = CONTEXT_PARAMS.history.blockHandleRetentionMaxHandles
+  const maxChars = CONTEXT_PARAMS.history.blockHandleRetentionMaxChars
+  const handles: string[] = []
+  const seen = new Set<string>()
+  let keptChars = 0
+  const isFull = () => handles.length >= maxHandles || keptChars >= maxChars
+  const collect = (text: string) => {
+    for (const handle of extractRetainedHandles(text)) {
+      if (isFull() || keptChars + handle.length > maxChars) return
+      if (seen.has(handle)) continue
+      seen.add(handle)
+      handles.push(handle)
+      keptChars += handle.length + 2
+    }
+  }
+  const blockText = (block: ContentBlock): string => {
+    if (block.type === 'tool_use') return JSON.stringify(block.input)
+    if (block.type === 'tool_result')
+      return [block.outputSummary, block.content].filter(Boolean).join('\n')
+    if (block.type === 'text') return block.text
+    return ''
+  }
+  for (let index = segment.length - 1; index >= 0; index--) {
+    for (const block of segment[index].content) {
+      const text = blockText(block)
+      if (text) collect(text)
+    }
+    if (isFull()) break
+  }
+  if (handles.length === 0) return ''
+  return `retained_handles: ${handles.join(', ')}`
+}
+
 function buildTimelineCompactionPromptMessages(params: {
   blockId: string
   sessionId: string
@@ -604,6 +729,7 @@ function buildTimelineCompactionPromptMessages(params: {
     params.modelOutput.topics ? `topic_count: ${params.modelOutput.topics.length}` : '',
     'trace: context_compaction timeline_compaction_block',
     formatContextCompactionSummary(params.episode, params.modelOutput),
+    formatSegmentRetainedHandles(params.segment),
     'working_state:',
     params.workingStateSummary,
     '</timeline_compaction_block>',
