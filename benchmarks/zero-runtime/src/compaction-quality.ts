@@ -30,6 +30,7 @@ export interface CompactionQualityReport {
   }
   note: string
   sessions: SessionQualityResult[]
+  savingBuckets: SavingBucketResult[]
   checkpoints: CheckpointQualityResult[]
 }
 
@@ -66,9 +67,19 @@ export interface CheckpointQualityResult {
   compactedMessageCount: number
   activeBlockCount: number
   evidenceCount: number
+  noiseToolResultChars: number
+  noiseToolResultPercent: number | null
   topMissingTerms: string[]
   categoryScores: Record<string, number | null>
   cause: string
+}
+
+export interface SavingBucketResult {
+  label: string
+  checkpointCount: number
+  avgPromptSavingPercent: number
+  avgCompactScore: number | null
+  avgAccuracyLossPercent: number | null
 }
 
 interface SessionRow {
@@ -248,6 +259,7 @@ export async function runCompactionQualityEval(
       },
       note: qualityNote,
       sessions: summarizeSessions(rows, checkpoints),
+      savingBuckets: summarizeSavingBuckets(checkpoints),
       checkpoints,
     }
 
@@ -293,11 +305,29 @@ export function renderCompactionQualityMarkdown(report: CompactionQualityReport)
       ),
     ].join('\n'),
     '',
+    '## Saving vs Score',
+    '',
+    'Quality retention bucketed by prompt saving. Comparing variants at matched saving levels is the fair comparison; a variant that scores higher in the high-saving buckets keeps more task-relevant context under real pressure.',
+    '',
+    [
+      '| saving bucket | checkpoints | avg saving | avg compact score | avg accuracy loss |',
+      '| --- | ---: | ---: | ---: | ---: |',
+      ...report.savingBuckets.map((bucket) =>
+        markdownRow([
+          bucket.label,
+          bucket.checkpointCount,
+          formatPercent(bucket.avgPromptSavingPercent),
+          formatNullablePercent(bucket.avgCompactScore),
+          formatNullablePercent(bucket.avgAccuracyLossPercent),
+        ]),
+      ),
+    ].join('\n'),
+    '',
     '## Checkpoint Details',
     '',
     [
-      '| session | turn | saving | score | loss | terms | blocks | missing examples | cause | next user |',
-      '| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |',
+      '| session | turn | saving | score | loss | noise | terms | blocks | missing examples | cause | next user |',
+      '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |',
       ...report.checkpoints.map((checkpoint) =>
         markdownRow([
           `\`${checkpoint.sessionId}\``,
@@ -305,6 +335,7 @@ export function renderCompactionQualityMarkdown(report: CompactionQualityReport)
           formatPercent(checkpoint.promptSavingPercent),
           formatNullablePercent(checkpoint.compactScore),
           formatNullablePercent(checkpoint.accuracyLossPercent),
+          formatNullablePercent(checkpoint.noiseToolResultPercent),
           checkpoint.oracleTermCount,
           checkpoint.activeBlockCount,
           checkpoint.topMissingTerms.map((term) => `\`${escapeMarkdown(term)}\``).join(', ') || '-',
@@ -405,6 +436,7 @@ async function evaluateCheckpoint(params: {
   const rawTokens = estimateConversationTokens(prefixMessages)
   const compactTokens = estimateConversationTokens(compactedMessages)
   const compactionStats = summarizeCompactionStats(blockSnapshots.at(-1) ?? [])
+  const noise = computeNoiseToolResultChars(compactedMessages, scoring.terms)
   const compactScore = scoring.compact.score
   const baselineScore = scoring.baseline.score
   const accuracyLossPercent =
@@ -431,6 +463,9 @@ async function evaluateCheckpoint(params: {
     compactedMessageCount: compactionStats.compactedMessageCount,
     activeBlockCount: compactionStats.activeBlockCount,
     evidenceCount: compactionStats.evidenceCount,
+    noiseToolResultChars: noise.noiseChars,
+    noiseToolResultPercent:
+      compactPromptChars > 0 ? roundOne((noise.noiseChars / compactPromptChars) * 100) : null,
     topMissingTerms: scoring.compact.missingTerms.slice(0, 6).map((term) => term.term),
     categoryScores: scoring.compact.categoryScores,
     cause: inferLossCause({
@@ -446,13 +481,19 @@ async function evaluateCheckpoint(params: {
   }
 }
 
+// A real LLM summary names a handful of key entities, not a firehose of every
+// extracted term. Keeping these caps small prevents the stub from leaking the
+// oracle term extraction logic back into the scored projection.
+const STUB_SUMMARY_TERM_LIMIT = 12
+const STUB_FACT_TERM_LIMIT = 6
+
 async function deterministicCompactor(
   input: ContextCompactionModelInput,
 ): Promise<ContextCompactionModelOutput> {
   const signalText = collectMessagesSignalText(input.segment)
   const terms = extractTerms(signalText)
     .filter((term) => !isLikelyGenericTerm(term.normalized))
-    .slice(0, 60)
+    .slice(0, STUB_SUMMARY_TERM_LIMIT)
   const evidence = input.episode.evidence.slice(0, 12)
   const summary = [
     `覆盖 ${input.segment.length} 条历史消息，当前目标：${input.currentGoal}`,
@@ -490,7 +531,7 @@ async function deterministicCompactor(
     ],
     confirmedFacts: [
       ...input.episode.confirmedFacts,
-      ...terms.slice(0, 16).map((term) => term.term),
+      ...terms.slice(0, STUB_FACT_TERM_LIMIT).map((term) => term.term),
     ],
     userConstraints: terms
       .map((term) => term.term)
@@ -590,6 +631,58 @@ function summarizeCompactionStats(blocks: TimelineCompactionBlock[]): Compaction
     activeBlockCount: activeBlocks.length,
     evidenceCount: activeBlocks.reduce((sum, block) => sum + block.evidenceCount, 0),
   }
+}
+
+const savingBuckets = [
+  { label: 'saving<10%', min: 0, max: 10 },
+  { label: 'saving 10-50%', min: 10, max: 50 },
+  { label: 'saving 50-90%', min: 50, max: 90 },
+  { label: 'saving>=90%', min: 90, max: Number.POSITIVE_INFINITY },
+] as const
+
+export function summarizeSavingBuckets(
+  checkpoints: CheckpointQualityResult[],
+): SavingBucketResult[] {
+  return savingBuckets.map((bucket) => {
+    const items = checkpoints.filter(
+      (checkpoint) =>
+        checkpoint.promptSavingPercent >= bucket.min && checkpoint.promptSavingPercent < bucket.max,
+    )
+    return {
+      label: bucket.label,
+      checkpointCount: items.length,
+      avgPromptSavingPercent: avg(items.map((item) => item.promptSavingPercent)),
+      avgCompactScore: nullableAvg(items.map((item) => item.compactScore)),
+      avgAccuracyLossPercent: nullableAvg(items.map((item) => item.accuracyLossPercent)),
+    }
+  })
+}
+
+// Dead weight in the projection: chars of degraded (summary/status) tool_result
+// blocks that do not contain any oracle term. Full-retained recent results are
+// the working window and are intentionally excluded.
+function computeNoiseToolResultChars(
+  compactedMessages: Message[],
+  terms: WeightedTerm[],
+): { noiseChars: number; retainedToolResultChars: number } {
+  if (terms.length === 0) return { noiseChars: 0, retainedToolResultChars: 0 }
+  const normalizedTerms = terms.map((term) => term.normalized)
+  let noiseChars = 0
+  let retainedToolResultChars = 0
+  for (const message of compactedMessages) {
+    if (message.role !== 'user') continue
+    for (const block of message.content) {
+      if (block.type !== 'tool_result') continue
+      if (block.truncationLevel !== 'summary' && block.truncationLevel !== 'status') continue
+      const signalText = normalizeForMatch(blockToSignalText(block))
+      const blockChars = JSON.stringify(block).length
+      retainedToolResultChars += blockChars
+      if (!normalizedTerms.some((term) => signalText.includes(term))) {
+        noiseChars += blockChars
+      }
+    }
+  }
+  return { noiseChars, retainedToolResultChars }
 }
 
 function buildOracleTerms(prefixCorpus: string, futureWindow: Message[]): WeightedTerm[] {

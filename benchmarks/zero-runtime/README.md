@@ -44,6 +44,13 @@ a model-free proxy: it compares exact paths, URLs, tool arguments, and other ter
 the next historical turn against the compacted prompt projection. It is meant to catch
 context-loss risk before paying for full model replay.
 
+The report also includes a Saving vs Score table (checkpoints bucketed by prompt saving) so
+variants are compared at matched compression levels, and a noise column: the share of
+degraded (`summary`/`status`) tool_result chars in the projection that contain no oracle
+term, i.e. dead weight kept after truncation. The offline compactor stub injects only a
+small, realistic number of terms into its summaries, so scores reflect what the deterministic
+pipeline retains rather than term-extraction leakage from the stub.
+
 Run the independent, read-only compaction harness against a frozen trace prefix:
 
 ```bash
