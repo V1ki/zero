@@ -81,8 +81,7 @@ export class ChatGptCodexDiscoveryDriver implements ModelDiscoveryDriver {
       method: 'POST',
       headers: {
         ...buildHeaders(session, 'text/event-stream'),
-        'OpenAI-Beta': 'responses=experimental',
-        originator: 'zero-os-model-catalog',
+        originator: 'codex_cli_rs',
         'content-type': 'application/json',
       },
       body: JSON.stringify({
@@ -97,7 +96,6 @@ export class ChatGptCodexDiscoveryDriver implements ModelDiscoveryDriver {
           },
         ],
         text: { verbosity: 'low' },
-        service_tier: 'priority',
       }),
       signal: context.signal,
     })

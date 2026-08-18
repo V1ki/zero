@@ -787,6 +787,198 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
     }
   })
 
+  test('ChatGPT retries transient 5xx responses with backoff and eventually succeeds', async () => {
+    let requestCount = 0
+    const chatgptAdapter = new OpenAIResponsesAdapter({
+      providerName: 'chatgpt',
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
+      modelConfig: {
+        modelId: 'gpt-5.4',
+        maxContext: 128000,
+        maxOutput: 8192,
+        capabilities: [],
+        tags: [],
+      },
+      oauthToken: makeChatGptSessionJson(
+        'acct_123',
+        Date.now() + 2 * 60 * 60 * 1000,
+        'access-token',
+      ),
+      chatGptRetry: { maxAttempts: 4, baseDelayMs: 1 },
+    })
+
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      requestCount += 1
+      if (requestCount <= 2) {
+        return new Response('Our servers are currently overloaded.', { status: 503 })
+      }
+      return new Response(
+        [
+          'data: {"type":"response.output_text.delta","delta":"ok"}',
+          '',
+          'data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.4","status":"completed","usage":{}}}',
+          '',
+        ].join('\n'),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        },
+      )
+    }) as unknown as typeof fetch
+
+    try {
+      const response = await chatgptAdapter.complete({ messages: [], stream: false })
+      expect(requestCount).toBe(3)
+      expect(response.content).toEqual([{ type: 'text', text: 'ok' }])
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('ChatGPT gives up after exhausting 5xx retry attempts', async () => {
+    let requestCount = 0
+    const chatgptAdapter = new OpenAIResponsesAdapter({
+      providerName: 'chatgpt',
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
+      modelConfig: {
+        modelId: 'gpt-5.4',
+        maxContext: 128000,
+        maxOutput: 8192,
+        capabilities: [],
+        tags: [],
+      },
+      oauthToken: makeChatGptSessionJson(
+        'acct_123',
+        Date.now() + 2 * 60 * 60 * 1000,
+        'access-token',
+      ),
+      chatGptRetry: { maxAttempts: 3, baseDelayMs: 1 },
+    })
+
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      requestCount += 1
+      return new Response('Our servers are currently overloaded.', { status: 503 })
+    }) as unknown as typeof fetch
+
+    try {
+      let caught: unknown
+      try {
+        await chatgptAdapter.complete({ messages: [], stream: false })
+      } catch (error) {
+        caught = error
+      }
+
+      expect(requestCount).toBe(3)
+      expect(caught).toMatchObject({
+        status: 503,
+        retryable: true,
+        error_type: 'http_error',
+        failure_scope: 'provider',
+      })
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('ChatGPT does not retry 429 responses so the pool can fail over', async () => {
+    let requestCount = 0
+    const chatgptAdapter = new OpenAIResponsesAdapter({
+      providerName: 'chatgpt',
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
+      modelConfig: {
+        modelId: 'gpt-5.4',
+        maxContext: 128000,
+        maxOutput: 8192,
+        capabilities: [],
+        tags: [],
+      },
+      oauthToken: makeChatGptSessionJson(
+        'acct_123',
+        Date.now() + 2 * 60 * 60 * 1000,
+        'access-token',
+      ),
+      chatGptRetry: { maxAttempts: 4, baseDelayMs: 1 },
+    })
+
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      requestCount += 1
+      return new Response('rate limit', { status: 429 })
+    }) as unknown as typeof fetch
+
+    try {
+      let caught: unknown
+      try {
+        await chatgptAdapter.complete({ messages: [], stream: false })
+      } catch (error) {
+        caught = error
+      }
+
+      expect(requestCount).toBe(1)
+      expect(caught).toMatchObject({ status: 429 })
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('ChatGPT retries SSE response.failed server_is_overloaded failures', async () => {
+    let requestCount = 0
+    const chatgptAdapter = new OpenAIResponsesAdapter({
+      providerName: 'chatgpt',
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      auth: { type: 'oauth2', oauthTokenRef: 'chatgpt_oauth_token' },
+      modelConfig: {
+        modelId: 'gpt-5.4',
+        maxContext: 128000,
+        maxOutput: 8192,
+        capabilities: [],
+        tags: [],
+      },
+      oauthToken: makeChatGptSessionJson(
+        'acct_123',
+        Date.now() + 2 * 60 * 60 * 1000,
+        'access-token',
+      ),
+      chatGptRetry: { maxAttempts: 4, baseDelayMs: 1 },
+    })
+
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      requestCount += 1
+      if (requestCount <= 2) {
+        return new Response(
+          'data: {"type":"response.failed","response":{"id":"resp_busy","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}}\n\n',
+          { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+        )
+      }
+      return new Response(
+        [
+          'data: {"type":"response.output_text.delta","delta":"ok"}',
+          '',
+          'data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.4","status":"completed","usage":{}}}',
+          '',
+        ].join('\n'),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        },
+      )
+    }) as unknown as typeof fetch
+
+    try {
+      const response = await chatgptAdapter.complete({ messages: [], stream: false })
+      expect(requestCount).toBe(3)
+      expect(response.content).toEqual([{ type: 'text', text: 'ok' }])
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   test('ChatGPT requests idle-time out and abort when fetch never settles', async () => {
     const chatgptAdapter = new OpenAIResponsesAdapter({
       providerName: 'chatgpt',
@@ -805,6 +997,7 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
         'access-token',
       ),
       chatGptStreamIdleTimeoutMs: 20,
+      chatGptRetry: { maxAttempts: 1 },
     })
 
     const originalFetch = globalThis.fetch
@@ -853,6 +1046,7 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
         Date.now() + 2 * 60 * 60 * 1000,
         'access-token',
       ),
+      chatGptRetry: { maxAttempts: 1 },
     })
 
     const originalFetch = globalThis.fetch
@@ -898,6 +1092,7 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
         Date.now() + 2 * 60 * 60 * 1000,
         'access-token',
       ),
+      chatGptRetry: { maxAttempts: 1 },
     })
 
     const originalFetch = globalThis.fetch
@@ -952,6 +1147,7 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
         'access-token',
       ),
       chatGptStreamIdleTimeoutMs: 20,
+      chatGptRetry: { baseDelayMs: 1 },
     })
 
     const originalFetch = globalThis.fetch
@@ -1002,6 +1198,7 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
         Date.now() + 2 * 60 * 60 * 1000,
         'access-token',
       ),
+      chatGptRetry: { baseDelayMs: 1 },
     })
 
     const originalFetch = globalThis.fetch
@@ -1170,6 +1367,7 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
         Date.now() + 2 * 60 * 60 * 1000,
         'access-token',
       ),
+      chatGptRetry: { baseDelayMs: 1 },
     })
 
     const originalFetch = globalThis.fetch
@@ -1205,6 +1403,7 @@ describe('OpenAI Responses API Adapter (Pure Logic)', () => {
         Date.now() + 2 * 60 * 60 * 1000,
         'access-token',
       ),
+      chatGptRetry: { baseDelayMs: 1 },
     })
 
     const originalFetch = globalThis.fetch

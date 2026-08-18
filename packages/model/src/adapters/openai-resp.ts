@@ -29,6 +29,18 @@ const CHATGPT_REAUTH_MESSAGE =
   'ChatGPT OAuth session can no longer be refreshed. Please re-authenticate with `bun zero provider login chatgpt`.'
 const CHATGPT_MISSING_CREDENTIALS_MESSAGE =
   'ChatGPT OAuth credentials not found. Please run `bun zero provider login chatgpt`.'
+// Matches the official Codex CLI client identification; the backend routes and
+// prioritizes traffic by originator.
+const CHATGPT_ORIGINATOR = 'codex_cli_rs'
+// Mirrors the official Codex CLI transport retry policy: up to 4 attempts with
+// exponential backoff starting at 200ms (±10% jitter) for 5xx and transport errors.
+const CHATGPT_RETRY_MAX_ATTEMPTS = 4
+const CHATGPT_RETRY_BASE_DELAY_MS = 200
+
+export interface ChatGptRetryOptions {
+  maxAttempts?: number
+  baseDelayMs?: number
+}
 
 /**
  * OpenAI Responses API adapter.
@@ -43,7 +55,12 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
   private isChatGptProvider: boolean
   private chatGptTransport?: ChatGptResponsesTransport
 
-  constructor(config: AdapterConfig & { chatGptStreamIdleTimeoutMs?: number }) {
+  constructor(
+    config: AdapterConfig & {
+      chatGptStreamIdleTimeoutMs?: number
+      chatGptRetry?: ChatGptRetryOptions
+    },
+  ) {
     this.isChatGptProvider =
       config.managedOAuthProvider === 'chatgpt' || config.providerName === 'chatgpt'
     this.supportsNonStreamingFallback = !this.isChatGptProvider
@@ -62,6 +79,10 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
         oauthTokenProvider: config.oauthTokenProvider,
         oauthTokenRefresher: config.oauthTokenRefresher,
         idleTimeoutMs: resolveChatGptStreamIdleTimeoutMs(config.chatGptStreamIdleTimeoutMs),
+        retry: {
+          maxAttempts: Math.max(1, config.chatGptRetry?.maxAttempts ?? CHATGPT_RETRY_MAX_ATTEMPTS),
+          baseDelayMs: Math.max(0, config.chatGptRetry?.baseDelayMs ?? CHATGPT_RETRY_BASE_DELAY_MS),
+        },
       })
     }
   }
@@ -157,26 +178,52 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
   }
 
   private async completeFromChatGpt(req: CompletionRequest): Promise<CompletionResponse> {
-    const events = await this.getChatGptTransport().fetchEvents(req)
-    return parseChatGptCompletionEvents(events, this.modelId)
+    const transport = this.getChatGptTransport()
+    const { maxAttempts, baseDelayMs } = transport.retryOptions
+
+    // Stream-level retry: response.failed errors (e.g. server_is_overloaded) arrive
+    // as SSE events on a 200 response, below the HTTP-status retry in requestResponse.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const events = await transport.fetchEvents(req)
+        return parseChatGptCompletionEvents(events, this.modelId)
+      } catch (error) {
+        if (attempt >= maxAttempts || !isRetryableChatGptStreamFailure(error)) throw error
+        await waitForChatGptRetryDelay(attempt, baseDelayMs)
+      }
+    }
   }
 
   private async *streamFromChatGpt(req: CompletionRequest): AsyncIterable<StreamEvent> {
     const transport = this.getChatGptTransport()
-    const request = await transport.requestResponse(req)
+    const { maxAttempts, baseDelayMs } = transport.retryOptions
 
-    try {
-      if (!request.response.ok) {
-        const error = await request.readText()
-        throw buildChatGptHttpError(request.response.status, error)
+    for (let attempt = 1; ; attempt++) {
+      let yielded = false
+      let request: TimedChatGptResponse | undefined
+      try {
+        request = await transport.requestResponse(req)
+        if (!request.response.ok) {
+          const error = await request.readText()
+          throw buildChatGptHttpError(request.response.status, error)
+        }
+
+        for await (const event of mapOpenAIResponsesStreamEvents(request.iterSseEvents(), {
+          doneReasonMode: 'response_status',
+          parseUsage: parseOpenAIResponseUsage,
+        })) {
+          yielded = true
+          yield event
+        }
+        return
+      } catch (error) {
+        // Never retry after content was already emitted to the caller.
+        if (yielded || attempt >= maxAttempts || !isRetryableChatGptStreamFailure(error))
+          throw error
+        await waitForChatGptRetryDelay(attempt, baseDelayMs)
+      } finally {
+        request?.close()
       }
-
-      yield* mapOpenAIResponsesStreamEvents(request.iterSseEvents(), {
-        doneReasonMode: 'response_status',
-        parseUsage: parseOpenAIResponseUsage,
-      })
-    } finally {
-      request.close()
     }
   }
 
@@ -199,10 +246,15 @@ interface ChatGptResponsesTransportOptions {
   oauthTokenProvider?: OAuthTokenProvider
   oauthTokenRefresher?: OAuthTokenRefresher
   idleTimeoutMs: number
+  retry: Required<ChatGptRetryOptions>
 }
 
 class ChatGptResponsesTransport {
   constructor(private readonly options: ChatGptResponsesTransportOptions) {}
+
+  get retryOptions(): Required<ChatGptRetryOptions> {
+    return this.options.retry
+  }
 
   buildBody(req: CompletionRequest) {
     const tools = convertOpenAIResponsesTools(req.tools)
@@ -218,7 +270,6 @@ class ChatGptResponsesTransport {
       text: { verbosity: 'medium' },
       include: ['reasoning.encrypted_content'],
       prompt_cache_key: this.computePromptCacheKey(req),
-      service_tier: 'priority',
     }
   }
 
@@ -242,17 +293,36 @@ class ChatGptResponsesTransport {
   }
 
   async requestResponse(req: CompletionRequest): Promise<TimedChatGptResponse> {
-    const session = await this.getSession()
-    let request = await this.sendRequest(req, session)
+    let session = await this.getSession()
+    let refreshed = false
+    const maxAttempts = this.options.retry.maxAttempts
 
-    if (request.response.status !== 401 || !this.options.oauthTokenRefresher) {
+    for (let attempt = 1; ; attempt++) {
+      let request: TimedChatGptResponse
+      try {
+        request = await this.sendRequest(req, session)
+      } catch (error) {
+        if (attempt >= maxAttempts) throw error
+        await waitForChatGptRetryDelay(attempt, this.options.retry.baseDelayMs)
+        continue
+      }
+
+      if (request.response.status === 401 && this.options.oauthTokenRefresher && !refreshed) {
+        request.close()
+        refreshed = true
+        await this.options.oauthTokenRefresher('unauthorized')
+        session = this.getRequiredSession()
+        continue
+      }
+
+      if (request.response.status >= 500 && attempt < maxAttempts) {
+        request.close()
+        await waitForChatGptRetryDelay(attempt, this.options.retry.baseDelayMs)
+        continue
+      }
+
       return request
     }
-
-    request.close()
-    await this.options.oauthTokenRefresher('unauthorized')
-    request = await this.sendRequest(req, this.getRequiredSession())
-    return request
   }
 
   private stripModel(model: string): string {
@@ -273,8 +343,7 @@ class ChatGptResponsesTransport {
           headers: {
             Authorization: `${getChatGptAuthorizationScheme(session.tokenType)} ${session.accessToken}`,
             'chatgpt-account-id': session.accountId,
-            'OpenAI-Beta': 'responses=experimental',
-            originator: 'zero-os',
+            originator: CHATGPT_ORIGINATOR,
             accept: 'text/event-stream',
             'content-type': 'application/json',
           },
@@ -329,6 +398,10 @@ class ChatGptResponsesTransport {
   }
 
   private computePromptCacheKey(req: CompletionRequest): string {
+    // Stable per-session keys keep requests on warm prompt caches (the official
+    // Codex CLI uses its session id the same way); fall back to a content hash.
+    const sessionId = req.meta?.sessionId?.trim()
+    if (sessionId) return sessionId
     return Bun.hash(
       JSON.stringify({
         system: req.system,
@@ -436,6 +509,33 @@ function buildChatGptIdleTimeoutError(label: string, idleTimeoutMs: number): Err
     error_type: 'stream_idle_timeout',
     failure_scope: 'transport',
   })
+}
+
+function waitForChatGptRetryDelay(attempt: number, baseDelayMs: number): Promise<void> {
+  const exponential = baseDelayMs * 2 ** (attempt - 1)
+  const jittered = exponential * (0.9 + Math.random() * 0.2)
+  return new Promise((resolve) => setTimeout(resolve, jittered))
+}
+
+// Stream-level failures worth retrying in place: transient failures raised while
+// reading the SSE stream (e.g. response.failed server_is_overloaded, body aborts).
+// http_error / request_transport_error were already retried by the request layer,
+// and quota signals (429, rate_limit_exceeded) are left for the model pool to
+// fail over to another member instead of retrying the same account.
+function isRetryableChatGptStreamFailure(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const record = error as { retryable?: unknown; status?: unknown; error_type?: unknown }
+  if (record.retryable !== true) return false
+  if (record.status === 429) return false
+  if (
+    record.error_type === 'rate_limit_exceeded' ||
+    record.error_type === 'insufficient_quota' ||
+    record.error_type === 'http_error' ||
+    record.error_type === 'request_transport_error'
+  ) {
+    return false
+  }
+  return true
 }
 
 function normalizeChatGptTransportError(error: unknown, label: string, errorType: string): Error {
