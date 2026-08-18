@@ -13,6 +13,11 @@ const PIPE_GRACE_MS = 1000
 const FORCE_KILL_GRACE_MS = 750
 const DEFAULT_ABORT_MESSAGE = 'Command aborted by user from Session Detail.'
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
+// Unbounded subprocess output has taken the whole runtime down before (a broad
+// `rg` over multi-GB logs produced an OOM while the result was serialized into
+// the session). Keep the head plus a rolling tail and drop the middle.
+const MAX_CAPTURE_CHARS = 100_000
+const TAIL_CAPTURE_CHARS = 10_000
 
 interface BashInput {
   command: string
@@ -180,13 +185,31 @@ function createStreamCapture(stream?: ReadableStream<Uint8Array> | number | null
 
   const reader = stream.getReader()
   const decoder = new TextDecoder()
-  const chunks: string[] = []
+  const headChunks: string[] = []
+  let headChars = 0
+  let tail = ''
+  let totalChars = 0
   let flushed = false
+
+  const capture = (text: string) => {
+    if (!text) return
+    totalChars += text.length
+    let overflow = text
+    if (headChars < MAX_CAPTURE_CHARS) {
+      const piece = text.slice(0, MAX_CAPTURE_CHARS - headChars)
+      headChunks.push(piece)
+      headChars += piece.length
+      overflow = text.slice(piece.length)
+    }
+    if (overflow) {
+      tail = (tail + overflow).slice(-TAIL_CAPTURE_CHARS)
+    }
+  }
 
   const flushDecoder = () => {
     if (flushed) return
-    const tail = decoder.decode()
-    if (tail) chunks.push(tail)
+    const remainder = decoder.decode()
+    if (remainder) capture(remainder)
     flushed = true
   }
 
@@ -196,7 +219,7 @@ function createStreamCapture(stream?: ReadableStream<Uint8Array> | number | null
         const { value, done } = await reader.read()
         if (done) break
         if (value) {
-          chunks.push(decoder.decode(value, { stream: true }))
+          capture(decoder.decode(value, { stream: true }))
         }
       }
     } catch {
@@ -219,7 +242,12 @@ function createStreamCapture(stream?: ReadableStream<Uint8Array> | number | null
     },
     getText: () => {
       flushDecoder()
-      return chunks.join('')
+      const head = headChunks.join('')
+      const omittedChars = totalChars - head.length - tail.length
+      if (omittedChars <= 0) {
+        return tail ? head + tail : head
+      }
+      return `${head}\n\n[... output truncated: ${omittedChars} characters omitted, showing the first ${head.length} and last ${tail.length} ...]\n\n${tail}`
     },
   }
 }
@@ -283,7 +311,8 @@ async function writeProcessStdin(proc: ReturnType<typeof Bun.spawn>, text: strin
 export class BashTool extends BaseTool {
   kind = 'built-in' as const
   name = 'bash'
-  description = 'Execute a shell command and return output.'
+  description =
+    'Execute a shell command and return output. Very large output is truncated to the first 100,000 and last 10,000 characters; narrow results with rg/head/tail when you expect large output.'
   parameters = {
     type: 'object',
     properties: {

@@ -5,6 +5,8 @@ import {
   CodexTool,
   EditTool,
   FetchTool,
+  GlobTool,
+  GrepTool,
   MemoryReadTool,
   MemorySearchTool,
   MemoryTool,
@@ -24,7 +26,7 @@ import type { MetricsDB } from '@zero-os/observe'
 import type { Vault } from '@zero-os/secrets'
 import type { SystemConfig } from '@zero-os/shared'
 import { getManagedOAuthKindForProvider } from '../providers/managed-oauth'
-import { getXPremiumBaseUrl, XPremiumTokenManager } from '../providers/x-premium'
+import { XPremiumTokenManager, getXPremiumBaseUrl } from '../providers/x-premium'
 
 export interface RuntimeToolRegistryOptions {
   zeroDir: string
@@ -89,6 +91,8 @@ export function createRuntimeToolRegistry({
   toolRegistry.register(new ReadImageTool())
   toolRegistry.register(new WriteTool())
   toolRegistry.register(new EditTool())
+  toolRegistry.register(new GrepTool())
+  toolRegistry.register(new GlobTool())
   toolRegistry.register(new BashTool(fuseRules))
   toolRegistry.register(new FetchTool())
   toolRegistry.register(new MemorySearchTool())

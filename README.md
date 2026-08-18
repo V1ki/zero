@@ -281,6 +281,8 @@ default_model: pool/gpt-5.5
 
 When X Premium OAuth is available at startup, ZeRo also registers `x_search`, a built-in tool that searches X posts through xAI's hosted `x_search` Responses tool. As a fallback, the tool can use a vault secret named `xai_api_key`.
 
+For workspace search, agents get built-in `grep` and `glob` tools with bounded output: `grep` wraps ripgrep with a capped result count and clipped long lines, and `glob` finds files by pattern sorted by modification time with skipped `node_modules`/`.git`/`dist`. Agents should prefer them over running `rg`/`find` through `bash`, whose captured output is itself capped (first 100k plus last 10k characters) as a safety net against out-of-memory failures.
+
 ## Development Workflow
 
 ### Day-to-day commands
