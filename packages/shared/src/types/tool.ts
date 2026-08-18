@@ -228,6 +228,7 @@ export interface BackgroundToolExecutionInput {
 export interface BackgroundToolTaskSink {
   readonly thresholdMs: number
   run(input: BackgroundToolExecutionInput): Promise<ToolResult>
+  waitForCompletion?(taskId: string): Promise<ToolResult>
 }
 
 export interface ToolContext {
@@ -293,6 +294,13 @@ export interface ToolContext {
   agentControl?: AgentControlHandle
   runningToolRegistry?: RunningToolRegistry
   backgroundToolTasks?: BackgroundToolTaskSink
+  /**
+   * When true, backgrounded bash tool executions are awaited in-place by the
+   * tool executor (the model turn does not end until the task completes).
+   * Used by sub-agents so their turn loop does not terminate with pending
+   * background tasks (which caused premature "completed" states).
+   */
+  backgroundTaskWait?: boolean
   /** P3a: 会话内活文档折叠句柄。memory create 命中同主题时改走 update（合并正文），治会话内快照爆发。 */
   liveDocHandle?: {
     route(input: {
@@ -320,6 +328,11 @@ export interface ToolResult {
   outputSummary: string
   contentItems?: ToolResultContentItem[]
   artifacts?: string[]
+  /**
+   * When a bash tool execution is moved to the background, the result carries
+   * the background task id so executors in wait mode can await its completion.
+   */
+  backgroundTaskId?: string
 }
 
 export interface ToolRegistryEntry {

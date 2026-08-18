@@ -61,6 +61,7 @@ type ToolSettledResult =
 export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
   readonly thresholdMs: number
   private tasks = new Map<string, BackgroundToolTaskRecord>()
+  private waiters = new Map<string, Set<(result: ToolResult) => void>>()
 
   constructor(private readonly options: BackgroundToolTaskManagerOptions) {
     this.thresholdMs = options.thresholdMs ?? BACKGROUND_TOOL_TIMEOUT_MS
@@ -116,7 +117,32 @@ export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
       success: true,
       output: buildBackgroundStartedOutput(task),
       outputSummary: `Background task started: ${task.toolName} (${task.id})`,
+      backgroundTaskId: task.id,
     }
+  }
+
+  /**
+   * Wait until a background task reaches a terminal state and return its
+   * result as a ToolResult. Resolves immediately for already-completed tasks.
+   * Never rejects: unresolved waiters are released when the task completes
+   * (or when the process is torn down, via completeTask on error paths).
+   */
+  async waitForCompletion(taskId: string): Promise<ToolResult> {
+    const task = this.tasks.get(taskId)
+    if (!task) {
+      return {
+        success: false,
+        output: `Background task ${taskId} is no longer tracked.`,
+        outputSummary: 'Background task lost.',
+      }
+    }
+    if (task.status !== 'running') return taskResultFromRecord(task)
+
+    return new Promise<ToolResult>((resolve) => {
+      const waiters = this.waiters.get(taskId) ?? new Set<(r: ToolResult) => void>()
+      waiters.add(resolve)
+      this.waiters.set(taskId, waiters)
+    })
   }
 
   getTask(id: string): BackgroundToolTaskRecord | undefined {
@@ -197,6 +223,14 @@ export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
         })
       },
     )
+
+    // Release in-place waiters (sub-agent wait mode).
+    const taskWaiters = this.waiters.get(taskId)
+    if (taskWaiters) {
+      const result = taskResultFromRecord(task)
+      for (const resolve of taskWaiters) resolve(result)
+      this.waiters.delete(taskId)
+    }
   }
 
   private filterAndTruncate(value: string, maxChars: number): string {
@@ -225,8 +259,18 @@ export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
   }
 }
 
-function buildBackgroundStartedOutput(task: BackgroundToolTaskRecord): string {
-  return `<system_event type="background_tool.started">
+function taskResultFromRecord(task: BackgroundToolTaskRecord): ToolResult {
+  return {
+    success: task.status === 'success',
+    output:
+      task.output ??
+      `<system_event type="background_tool.completed"><background_task id="${task.id}" status="${task.status}"/></system_event>`,
+    outputSummary:
+      task.outputSummary ?? `Background task ${task.id} finished with status ${task.status}.`,
+  }
+}
+
+function buildBackgroundStartedOutput(task: BackgroundToolTaskRecord): string {  return `<system_event type="background_tool.started">
 <background_task id="${escapeXmlAttribute(task.id)}" tool_name="${escapeXmlAttribute(
     task.toolName,
   )}" tool_use_id="${escapeXmlAttribute(task.toolUseId)}" status="running">

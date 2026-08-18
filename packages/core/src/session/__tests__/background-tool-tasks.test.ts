@@ -204,6 +204,62 @@ describe('BackgroundToolTaskManager', () => {
     expect(completion.xml).toContain('<output_summary>slow done</output_summary>')
   })
 
+  test('waitForCompletion resolves when the background task finishes', async () => {
+    const deferred = createDeferred<ToolResult>()
+    const manager = new BackgroundToolTaskManager({
+      sessionId: 'sess-wait',
+      thresholdMs: 5,
+      logger: createLogger(),
+      onComplete: () => {},
+    })
+
+    const foreground = await manager.run({
+      toolName: 'slow_tool',
+      toolUseId: 'call_wait',
+      inputSummary: '{}',
+      execute: () => deferred.promise,
+    })
+    expect(foreground.backgroundTaskId).toBeDefined()
+
+    let resolved = false
+    const waiter = manager
+      .waitForCompletion(foreground.backgroundTaskId as string)
+      .then((result) => {
+        resolved = true
+        return result
+      })
+
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(resolved).toBe(false)
+
+    deferred.resolve({ success: true, output: 'waited output', outputSummary: 'waited done' })
+    const completed = await waiter
+    expect(completed.success).toBe(true)
+    expect(completed.output).toBe('waited output')
+    expect(completed.outputSummary).toBe('waited done')
+  })
+
+  test('waitForCompletion returns immediately for already-completed tasks', async () => {
+    const deferred = createDeferred<ToolResult>()
+    const manager = new BackgroundToolTaskManager({
+      sessionId: 'sess-wait-immediate',
+      thresholdMs: 5,
+      logger: createLogger(),
+      onComplete: () => {},
+    })
+
+    const foreground = await manager.run({
+      toolName: 'slow_tool',
+      toolUseId: 'call_wait2',
+      inputSummary: '{}',
+      execute: () => deferred.promise,
+    })
+    deferred.resolve({ success: true, output: 'done already', outputSummary: 'done' })
+    const completed = await manager.waitForCompletion(foreground.backgroundTaskId as string)
+    expect(completed.success).toBe(true)
+    expect(completed.output).toBe('done already')
+  })
+
   test('uses the latest channel binding when emitting background completion events', async () => {
     const events: Array<{ topic: string; data: Record<string, unknown> }> = []
     const completions: BackgroundToolCompletionEvent[] = []
@@ -315,8 +371,7 @@ describe('Agent background tool execution', () => {
     expect(completion.xml).toContain('later done')
   })
 
-  test('background bash calls without explicit timeout use a long runtime timeout', async () => {
-    const completions: BackgroundToolCompletionEvent[] = []
+  test('background bash calls without explicit timeout use a long runtime timeout', async () => {    const completions: BackgroundToolCompletionEvent[] = []
     const deferred = createDeferred<ToolResult>()
     const registry = new ToolRegistry()
     const bash = new CapturingBashTool(deferred.promise)
@@ -347,6 +402,57 @@ describe('Agent background tool execution', () => {
 
     deferred.resolve({ success: true, output: 'finished later', outputSummary: 'later done' })
     await waitFor(() => completions[0])
+  })
+
+  test('backgroundTaskWait mode holds the turn until the background task completes', async () => {
+    const completions: BackgroundToolCompletionEvent[] = []
+    const deferred = createDeferred<ToolResult>()
+    const registry = new ToolRegistry()
+    registry.register(new SlowTool(deferred.promise))
+    const adapter = new BackgroundToolAdapter()
+    const manager = new BackgroundToolTaskManager({
+      sessionId: 'sess-wait-mode',
+      thresholdMs: 5,
+      logger: createLogger(),
+      onComplete: (event) => {
+        completions.push(event)
+      },
+    })
+    const agent = new Agent(
+      { name: 'background-wait-agent', agentInstruction: 'test', promptMode: 'minimal' },
+      adapter,
+      registry,
+      {
+        sessionId: 'sess-wait-mode',
+        workDir: join(testProject.projectRoot, '.zero', 'workspace', 'background-wait-agent'),
+        logger: createLogger(),
+        backgroundToolTasks: manager,
+        backgroundTaskWait: true,
+      },
+    )
+
+    let runSettled = false
+    const runPromise = agent.run(createContext(registry), 'run slow tool').then(() => {
+      runSettled = true
+    })
+
+    // The turn must not end while the background task is still pending.
+    await new Promise((resolve) => setTimeout(resolve, 15))
+    expect(runSettled).toBe(false)
+
+    deferred.resolve({ success: true, output: 'waited in place', outputSummary: 'waited done' })
+    await runPromise
+    expect(runSettled).toBe(true)
+
+    // The model's second request must carry the completed result, not the
+    // background_tool.started placeholder.
+    const secondRequestText = adapter.requests[1]?.messages
+      .flatMap((message) => message.content)
+      .filter((block) => block.type === 'tool_result')
+      .map((block) => block.content)
+      .join('\n')
+    expect(secondRequestText).toContain('waited in place')
+    expect(secondRequestText).not.toContain('background_tool.started')
   })
 })
 

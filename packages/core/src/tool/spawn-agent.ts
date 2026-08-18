@@ -187,6 +187,7 @@ export class SpawnAgentTool extends BaseTool {
       spawnedByRequestId: ctx.currentRequestId,
       workDir: subWorkDir,
       agentControl: undefined,
+      backgroundTaskWait: true,
     }
 
     const agentConfig: AgentConfig = {
