@@ -103,11 +103,38 @@ export class CodexTool extends BaseTool {
 
   private codexPath: string
   private profile: string | undefined
+  /** Cached auto-approval flag: undefined = not yet detected. */
+  private approvalFlagCache: string | null | undefined = undefined
 
   constructor(options?: { codexPath?: string; profile?: string }) {
     super()
     this.codexPath = options?.codexPath ?? 'codex'
     this.profile = options?.profile ?? process.env.CODEX_PROFILE
+  }
+
+  /**
+   * Detect which auto-approval flag the installed Codex CLI supports.
+   * Returns null when detection fails (config.toml approval_policy is then the fallback).
+   */
+  private async detectApprovalFlag(): Promise<string | null> {
+    if (this.approvalFlagCache !== undefined) return this.approvalFlagCache
+    const candidates = ['--approve-for-me', '--full-auto']
+    try {
+      const help = await new Promise<string>((resolve, reject) => {
+        const proc = spawn(this.codexPath, ['exec', '--help'], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
+        let out = ''
+        proc.stdout.on('data', (d: Buffer) => (out += d.toString()))
+        proc.stderr.on('data', (d: Buffer) => (out += d.toString()))
+        proc.on('error', reject)
+        proc.on('close', () => resolve(out))
+      })
+      this.approvalFlagCache = candidates.find((c) => help.includes(c)) ?? null
+    } catch {
+      this.approvalFlagCache = null
+    }
+    return this.approvalFlagCache
   }
 
   protected async execute(ctx: ToolContext, input: unknown): Promise<ToolResult> {
@@ -123,8 +150,13 @@ export class CodexTool extends BaseTool {
       args.push('--model', model)
     }
 
-    // Full auto approval — delegates approval to model + sandboxes writes to workspace
-    args.push('--full-auto')
+    // Auto-approval: Codex CLI >= 0.147 removed `--full-auto` and uses
+    // `--approve-for-me` (auto review under workspace-write sandbox). Older CLIs
+    // still accept `--full-auto`. Detect once from `codex exec --help`, cache result.
+    const approvalFlag = await this.detectApprovalFlag()
+    if (approvalFlag) {
+      args.push(approvalFlag)
+    }
 
     if (this.profile) {
       args.push('--profile', this.profile)
