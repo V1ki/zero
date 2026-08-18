@@ -139,6 +139,39 @@ function createDeepSeekStreamLoop(
 }
 
 describe('AgentLoop', () => {
+  test('does not execute tool calls after the owning session is quarantined', async () => {
+    let toolCalls = 0
+    const loop = new AgentLoop(
+      {
+        adapter: new ScriptedAdapter([
+          {
+            id: 'resp_tool',
+            content: [{ type: 'tool_use', id: 'call_1', name: 'noop', input: {} }],
+            stopReason: 'tool_use',
+            usage: { input: 2, output: 2 },
+            model: 'fake-model',
+          },
+        ]),
+        sessionId: 'sess-agent-loop',
+        toolExecutor: createNoopExecutor(() => {
+          toolCalls++
+        }),
+        system: 'test system',
+        tools: [],
+        stream: false,
+        logger,
+      },
+      {
+        shouldAbort: () => true,
+      },
+    )
+
+    const messages = await loop.run('hello', [])
+
+    expect(toolCalls).toBe(0)
+    expect(messages.map((message) => message.role)).toEqual(['user'])
+  })
+
   test('returns user and assistant messages for a direct end_turn response', async () => {
     const loop = createLoop(
       [

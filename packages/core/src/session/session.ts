@@ -40,7 +40,7 @@ import { SessionSnapshotRecorder, buildSessionSnapshotContext } from './session-
 import type { SessionSnapshotContext } from './session-snapshots'
 import type { SessionStaticContext } from './session-static-context'
 import { processSessionMessageTurn } from './session-turn'
-import { SessionTurnRuntime } from './session-turn-runtime'
+import { type SessionTurnHealth, SessionTurnRuntime } from './session-turn-runtime'
 import type {
   HandleMessageOptions,
   ReasoningEffortUpdateResult,
@@ -466,6 +466,18 @@ export class Session {
 
   isTurnInProgress(): boolean {
     return this.turnRuntime.isTurnInProgress()
+  }
+
+  getTurnHealth(): Readonly<SessionTurnHealth> {
+    return this.turnRuntime.getHealth()
+  }
+
+  isTurnStalled(idleTimeoutMs: number): boolean {
+    return this.turnRuntime.isStalled(idleTimeoutMs)
+  }
+
+  requestTurnAbort(): boolean {
+    return this.turnRuntime.requestAbort()
   }
 
   waitForTurnComplete(): Promise<void> {

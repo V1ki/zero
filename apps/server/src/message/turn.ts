@@ -9,6 +9,8 @@ import { createCurrentSessionDeliveryGuard } from './session-delivery'
 import { createStreamingBestEffort } from './streaming'
 
 const TYPING_INDICATOR_TIMEOUT_MS = 3000
+const STALLED_SESSION_NOTICE_TIMEOUT_MS = 3000
+export const DEFAULT_SESSION_STALL_TIMEOUT_MS = 30 * 60_000
 
 export interface MessageTurnState {
   activeSessionId: string | null
@@ -75,12 +77,30 @@ export async function runMessageTurn(
   state: MessageTurnState,
 ): Promise<void> {
   const { chatId, participantId } = incoming
-  const { session, isNew } = deps.sessionManager.getOrCreateForChannel(
+  let { session, isNew } = deps.sessionManager.getOrCreateForChannel(
     deps.channelType,
     chatId,
     deps.channelName,
     participantId,
   )
+  const stalledRecovery = recoverStalledSessionForIncomingMessage({
+    session,
+    deps,
+    chatId,
+    participantId,
+  })
+  if (stalledRecovery) {
+    console.warn(
+      `[ZeRo OS] Quarantined stalled ${deps.channelName} session: ` +
+        `old=${stalledRecovery.previousSessionId} new=${stalledRecovery.session.data.id} ` +
+        `idle_ms=${stalledRecovery.idleForMs} queue_depth=${stalledRecovery.queueDepth}`,
+    )
+    session = stalledRecovery.session
+    isNew = true
+    // Do not let a broken channel delay initialization/acquisition of the fresh
+    // session. The notice is best-effort and bounded independently.
+    void notifyStalledSessionRecovery(incoming, stalledRecovery.queueDepth)
+  }
   state.activeSessionId = session.data.id
 
   const canDeliverToCurrentSession = createCurrentSessionDeliveryGuard({
@@ -120,6 +140,71 @@ export async function runMessageTurn(
     state,
     messageContent,
     canDeliverToCurrentSession,
+  })
+}
+
+function recoverStalledSessionForIncomingMessage(options: {
+  session: Session
+  deps: MessageHandlerDeps
+  chatId: string
+  participantId?: string
+}) {
+  const sessionWithHealth = options.session as Session & {
+    getTurnHealth?: Session['getTurnHealth']
+  }
+  if (typeof sessionWithHealth.getTurnHealth !== 'function') return null
+
+  const health = sessionWithHealth.getTurnHealth()
+  const stallTimeoutMs = options.deps.sessionStallTimeoutMs ?? DEFAULT_SESSION_STALL_TIMEOUT_MS
+  if (!health.inProgress || health.idleForMs < stallTimeoutMs) return null
+
+  const manager = options.deps.sessionManager as typeof options.deps.sessionManager & {
+    recoverStalledCurrentSessionForChannel?: SessionManagerStallRecovery
+  }
+  if (typeof manager.recoverStalledCurrentSessionForChannel !== 'function') return null
+
+  return manager.recoverStalledCurrentSessionForChannel(options.deps.channelType, options.chatId, {
+    channelName: options.deps.channelName,
+    participantId: options.participantId,
+    expectedSessionId: options.session.data.id,
+    stallTimeoutMs,
+  })
+}
+
+type SessionManagerStallRecovery =
+  MessageHandlerDeps['sessionManager']['recoverStalledCurrentSessionForChannel']
+
+async function notifyStalledSessionRecovery(
+  incoming: IncomingMessageContext,
+  quarantinedQueueDepth: number,
+): Promise<void> {
+  const queuedNotice =
+    quarantinedQueueDepth > 0
+      ? ` 旧会话中还有 ${quarantinedQueueDepth} 条排队消息，为避免重复执行未自动重放，请按需重发。`
+      : ''
+  try {
+    await withBestEffortTimeout(
+      incoming.reply(
+        `⚠️ 检测到上一会话长时间无进展，已隔离并创建新会话；本条消息会继续处理。${queuedNotice}`,
+      ),
+      STALLED_SESSION_NOTICE_TIMEOUT_MS,
+    )
+  } catch (error) {
+    console.warn('[ZeRo OS] Failed to send stalled-session recovery notice:', describeError(error))
+  }
+}
+
+function withBestEffortTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`operation timed out after ${timeoutMs}ms`))
+    }, timeoutMs)
+    timer.unref?.()
+  })
+
+  return Promise.race([operation, timeout]).finally(() => {
+    if (timer) clearTimeout(timer)
   })
 }
 

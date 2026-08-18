@@ -14,6 +14,8 @@ export interface MessageHandlerDeps {
   channelAdapter: ChannelAdapter
   metrics?: MetricsDB
   channelCapabilities?: ChannelCapabilities
+  /** Active-turn idle deadline before a new message quarantines the stalled session. */
+  sessionStallTimeoutMs?: number
   isShuttingDown: () => boolean
   /** Server-level pre-command hook (for /restart etc). Return true if handled. */
   onPreCommand?: (content: string, reply: (text: string) => Promise<void>) => Promise<boolean>

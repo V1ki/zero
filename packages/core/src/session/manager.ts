@@ -193,6 +193,14 @@ export class SessionManager {
     return this.channels.startNewForChannel(source, channelId, channelNameOrOptions)
   }
 
+  recoverStalledCurrentSessionForChannel(
+    source: SessionSource,
+    channelId: string,
+    options: RecoverStalledCurrentSessionForChannelOptions,
+  ): StalledSessionRecoveryResult | null {
+    return this.channels.recoverStalledCurrentSessionForChannel(source, channelId, options)
+  }
+
   remove(id: string): void {
     this.channels.remove(id)
   }
@@ -279,6 +287,20 @@ export interface StartNewForChannelOptions {
   channelName?: string
   participantId?: string
   previousStatus?: string
+}
+
+export interface RecoverStalledCurrentSessionForChannelOptions {
+  channelName?: string
+  participantId?: string
+  expectedSessionId: string
+  stallTimeoutMs: number
+}
+
+export interface StalledSessionRecoveryResult {
+  session: Session
+  previousSessionId: string
+  idleForMs: number
+  queueDepth: number
 }
 
 interface SessionModelScope {
@@ -663,6 +685,10 @@ interface SessionCurrentBindingCoordinatorOptions {
   pendingBackgroundEvaluations: Set<string>
 }
 
+interface SetCurrentSessionOptions {
+  evaluatePreviousSessionMemory?: boolean
+}
+
 type BindingEvent = 'binding_set' | 'binding_replaced' | 'binding_cleared' | 'session_backgrounded'
 
 class SessionCurrentBindingCoordinator {
@@ -722,6 +748,7 @@ class SessionCurrentBindingCoordinator {
     session: Session,
     channelName?: string,
     participantId?: string,
+    options: SetCurrentSessionOptions = {},
   ): { previousSessionId?: string } {
     session.ensureChannelContext(channelId, channelName, participantId)
     const {
@@ -751,7 +778,9 @@ class SessionCurrentBindingCoordinator {
         previousSessionId: previousBinding.sessionId,
       })
       if (previous) {
-        this.backgroundSession(previous, nextBinding)
+        this.backgroundSession(previous, nextBinding, {
+          evaluateSessionMemory: options.evaluatePreviousSessionMemory ?? true,
+        })
       }
     } else if (!previousBinding) {
       this.emitBindingEvent('binding_set', {
@@ -771,9 +800,12 @@ class SessionCurrentBindingCoordinator {
       participantId?: string
       sessionId: string
     },
+    options: {
+      evaluateSessionMemory: boolean
+    },
   ): void {
     // Losing the current binding is the handoff point: the old session becomes history-only
-    // immediately, and session-memory evaluation happens best-effort after any in-flight turn.
+    // immediately. Healthy handoffs evaluate memory best-effort after any in-flight turn.
     this.deps.observability?.syncSessionCurrentState(session.data.id, false)
     this.emitBindingEvent('session_backgrounded', {
       sessionId: session.data.id,
@@ -784,10 +816,12 @@ class SessionCurrentBindingCoordinator {
       replacedBySessionId: binding.sessionId,
     })
 
-    scheduleSessionBackgroundEvaluation({
-      session,
-      pendingBackgroundEvaluations: this.pendingBackgroundEvaluations,
-    })
+    if (options.evaluateSessionMemory) {
+      scheduleSessionBackgroundEvaluation({
+        session,
+        pendingBackgroundEvaluations: this.pendingBackgroundEvaluations,
+      })
+    }
   }
 
   private emitBindingEvent(
@@ -975,6 +1009,81 @@ class SessionChannelLifecycle {
       participantId,
     )
     return { session, previousSessionId }
+  }
+
+  recoverStalledCurrentSessionForChannel(
+    source: SessionSource,
+    channelId: string,
+    options: RecoverStalledCurrentSessionForChannelOptions,
+  ): StalledSessionRecoveryResult | null {
+    if (!Number.isFinite(options.stallTimeoutMs) || options.stallTimeoutMs < 0) {
+      return null
+    }
+
+    const binding = this.currentBindings.get(
+      source,
+      channelId,
+      options.channelName,
+      options.participantId,
+    )
+    if (!binding || binding.sessionId !== options.expectedSessionId) {
+      return null
+    }
+
+    const previous = this.store.restoreSessionById(binding.sessionId)
+    if (!previous) {
+      return null
+    }
+
+    if (!previous.isTurnStalled(options.stallTimeoutMs)) {
+      return null
+    }
+    const health = previous.getTurnHealth()
+    const executionAbortRequested = previous.requestTurnAbort()
+
+    const session = this.createChannelSession(source, {
+      channelId,
+      channelName: options.channelName,
+      participantId: options.participantId,
+      modelScope: {
+        channelId,
+        channelName: options.channelName,
+        participantId: options.participantId,
+      },
+    })
+    this.currentBindings.setCurrent(
+      source,
+      channelId,
+      session,
+      options.channelName,
+      options.participantId,
+      { evaluatePreviousSessionMemory: false },
+    )
+
+    this.deps.bus?.emit('session:update', {
+      sessionId: session.data.id,
+      event: 'session_stall_recovered',
+      source,
+      channelId,
+      channelName: options.channelName,
+      participantId: options.participantId,
+      previousSessionId: previous.data.id,
+      quarantinedSessionId: previous.data.id,
+      replacedBySessionId: session.data.id,
+      idleForMs: health.idleForMs,
+      stallTimeoutMs: options.stallTimeoutMs,
+      turnStartedAt: health.startedAt,
+      lastProgressAt: health.lastProgressAt,
+      queueDepth: health.queueDepth,
+      executionAbortRequested,
+    })
+
+    return {
+      session,
+      previousSessionId: previous.data.id,
+      idleForMs: health.idleForMs,
+      queueDepth: health.queueDepth,
+    }
   }
 
   remove(sessionId: string): void {

@@ -97,6 +97,7 @@ export async function processSessionMessageTurn({
       userMessage: content,
     }),
   ])
+  turnRuntime.markProgress()
 
   const dynamicContext = buildDynamicContext({
     newSkills: newSkills.length > 0 ? newSkills : undefined,
@@ -137,9 +138,14 @@ export async function processSessionMessageTurn({
   }
 
   const onNewMessage = (msg: Message) => {
+    turnRuntime.markProgress()
     messages.push(msg)
     sessionData.updatedAt = now()
     options?.onProgress?.(msg)
+  }
+  const onTextDelta = (delta: string, meta: { role: 'assistant'; turnId: string }) => {
+    turnRuntime.markProgress()
+    options?.onTextDelta?.(delta, meta)
   }
 
   if (!agent) {
@@ -153,10 +159,11 @@ export async function processSessionMessageTurn({
       content,
       imageDelegationFiles?.length ? undefined : options?.images,
       onNewMessage,
-      options?.onTextDelta,
+      onTextDelta,
       () => turnRuntime.shouldInterrupt(),
       () => turnRuntime.drainQueuedMessages(),
       { turnIndex: turnRuntime.allocateTurnIndex(), userMessageEntry },
+      () => turnRuntime.shouldAbort(),
     )
   } catch (error) {
     const rolledBack = applyFailedTurnRollback({

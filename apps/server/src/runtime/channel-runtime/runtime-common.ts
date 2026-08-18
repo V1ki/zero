@@ -20,6 +20,7 @@ export interface ExternalChannelRegistrarOptions {
   metrics: MetricsDB
   heartbeat: Pick<HeartbeatWriter, 'write'>
   agentInstruction: string
+  sessionStallTimeoutMs?: number
   isShuttingDown(): boolean
   registerFeishuStreamingSessionSet(sessionSet: Set<FeishuStreamingSession>): void
 }
@@ -62,6 +63,7 @@ export function createRuntimeChannelMessageHandler(
       channelAdapter: handlerOptions.channelAdapter,
       metrics: registrarOptions.metrics,
       channelCapabilities: handlerOptions.channelCapabilities,
+      sessionStallTimeoutMs: registrarOptions.sessionStallTimeoutMs,
       isShuttingDown: registrarOptions.isShuttingDown,
     })
   }

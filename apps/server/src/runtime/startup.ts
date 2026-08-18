@@ -19,8 +19,9 @@ import type { HeartbeatWriter } from '@zero-os/supervisor'
 import type { ChannelAdapter } from '../channels/adapter'
 import { createBackgroundToolCompletionDeliveryHandler } from '../message/background-delivery'
 import { writeRestartTrigger } from '../system/restart-trigger'
-import { rebuildWebBundle } from '../system/runtime'
+import { rebuildWebBundleAsync } from '../system/runtime'
 import type { BusPayload, EventBus } from './bus'
+import { type ChannelRecoveryController, createChannelRecoveryController } from './channel-recovery'
 import {
   registerExternalRuntimeChannels,
   registerWebRuntimeChannel,
@@ -49,6 +50,7 @@ export interface StartupRuntime {
   core: CoreRuntime
   zero: ZeroOS
   shutdownRuntime: ShutdownRuntime
+  channelRecovery: ChannelRecoveryController
   getConfig(): SystemConfig
 }
 
@@ -56,6 +58,7 @@ interface StartupRuntimeShell {
   channels: Map<string, Channel>
   channelAdapters: Map<string, ChannelAdapter>
   channelDefinitions: Map<string, ChannelRuntimeDefinition>
+  channelRecovery: ChannelRecoveryController
   notifications: Notification[]
   addNotification(n: Omit<Notification, 'id' | 'createdAt'>): Notification
 }
@@ -92,6 +95,7 @@ export async function createStartupRuntime({
     core,
     bus,
     channels: shell.channels,
+    channelRecovery: shell.channelRecovery,
     addNotification: shell.addNotification,
     skipProcessExit,
   })
@@ -111,6 +115,7 @@ export async function createStartupRuntime({
     core,
     zero: zeroHandle.zero,
     shutdownRuntime,
+    channelRecovery: shell.channelRecovery,
     getConfig: zeroHandle.getConfig,
   }
 }
@@ -132,6 +137,7 @@ export async function startStartupRuntimeChannels(runtime: StartupRuntime): Prom
     isShuttingDown: runtime.shutdownRuntime.isShuttingDown,
     registerFeishuStreamingSessionSet: runtime.shutdownRuntime.registerFeishuStreamingSessionSet,
   })
+  runtime.channelRecovery.start()
 }
 
 export function markStartupRuntimeReady(runtime: StartupRuntime): void {
@@ -157,12 +163,22 @@ async function createStartupRuntimeShell({
   const channels = new Map<string, Channel>()
   const channelAdapters = new Map<string, ChannelAdapter>()
   const channelDefinitions = new Map<string, ChannelRuntimeDefinition>()
+  const channelRecovery = createChannelRecoveryController({
+    channels,
+    channelDefinitions,
+    checkIntervalMs: config.recovery?.channelCheckIntervalMs,
+    disconnectedGraceMs: config.recovery?.channelDisconnectGraceMs,
+    baseBackoffMs: config.recovery?.channelBaseBackoffMs,
+    maxBackoffMs: config.recovery?.channelMaxBackoffMs,
+    recoveryTimeoutMs: config.recovery?.channelRecoveryTimeoutMs,
+  })
 
   configureRuntimeHeartbeat({
     bus,
     heartbeat: core.heartbeat,
     channels,
     channelDefinitions,
+    channelRecovery,
   })
   core.heartbeat.write()
 
@@ -191,6 +207,7 @@ async function createStartupRuntimeShell({
     channels,
     channelAdapters,
     channelDefinitions,
+    channelRecovery,
     notifications,
     addNotification,
   }
@@ -202,6 +219,7 @@ function createStartupShutdownRuntime({
   core,
   bus,
   channels,
+  channelRecovery,
   addNotification,
   skipProcessExit,
 }: {
@@ -210,6 +228,7 @@ function createStartupShutdownRuntime({
   core: CoreRuntime
   bus: EventBus
   channels: Map<string, Channel>
+  channelRecovery: ChannelRecoveryController
   addNotification(n: Omit<Notification, 'id' | 'createdAt'>): Notification
   skipProcessExit?: boolean
 }): ShutdownRuntime {
@@ -228,6 +247,7 @@ function createStartupShutdownRuntime({
     scheduler: core.scheduler,
     sessionManager: core.sessionManager,
     channels,
+    stopChannelRecovery: () => channelRecovery.stop(),
     disposeRuntimeEventListeners,
     disposePricing: () => {
       core.modelRouter.dispose()
@@ -289,6 +309,7 @@ async function startExternalRuntimeChannels({
     metrics,
     heartbeat,
     agentInstruction: DEFAULT_AGENT_INSTRUCTION,
+    sessionStallTimeoutMs: config.recovery?.sessionStallTimeoutMs,
     isShuttingDown,
     registerFeishuStreamingSessionSet,
   })
@@ -472,6 +493,7 @@ function shouldPersistBusEvent(payload: BusPayload) {
         payload.data.event === 'binding_replaced' ||
         payload.data.event === 'binding_cleared' ||
         payload.data.event === 'session_backgrounded' ||
+        payload.data.event === 'session_stall_recovered' ||
         payload.data.event === 'task_closure_decision' ||
         payload.data.event === 'task_closure_failed'
       )
@@ -485,6 +507,7 @@ interface RuntimeHeartbeatOptions {
   heartbeat: HeartbeatWriter
   channels: Map<string, Channel>
   channelDefinitions: Map<string, ChannelRuntimeDefinition>
+  channelRecovery: ChannelRecoveryController
 }
 
 function configureRuntimeHeartbeat({
@@ -492,15 +515,34 @@ function configureRuntimeHeartbeat({
   heartbeat,
   channels,
   channelDefinitions,
+  channelRecovery,
 }: RuntimeHeartbeatOptions): void {
-  heartbeat.setHealthMetricsProvider(() => ({
-    channels: Array.from(channels.entries()).map(([name, channel]) => ({
-      name,
-      type: channel.type,
-      connected: channel.isConnected(),
-      configured: channelDefinitions.get(name)?.configured ?? channel.type === 'web',
-    })),
-  }))
+  heartbeat.setHealthMetricsProvider(() => {
+    const recoveryByName = new Map(
+      channelRecovery.getSnapshot().map((snapshot) => [snapshot.name, snapshot]),
+    )
+    return {
+      channels: Array.from(channels.entries()).map(([name, channel]) => {
+        const recovery = recoveryByName.get(name)
+        return {
+          name,
+          type: channel.type,
+          connected: recovery?.connected ?? readChannelConnected(channel),
+          configured: channelDefinitions.get(name)?.configured ?? channel.type === 'web',
+          ...(recovery
+            ? {
+                recoveryState: recovery.state,
+                recoveryAttempts: recovery.attemptCount,
+                disconnectedSince: recovery.disconnectedSince,
+                nextRecoveryAt: recovery.nextAttemptAt,
+                lastRecoveredAt: recovery.lastRecoveredAt,
+                lastRecoveryError: recovery.lastError,
+              }
+            : {}),
+        }
+      }),
+    }
+  })
   heartbeat.setOnWrite((data) => {
     bus.emit('heartbeat', {
       status: data.health.status,
@@ -509,6 +551,14 @@ function configureRuntimeHeartbeat({
       timestamp: data.timestamp,
     })
   })
+}
+
+function readChannelConnected(channel: Channel): boolean {
+  try {
+    return channel.isConnected()
+  } catch {
+    return false
+  }
 }
 
 interface NotificationRuntimeOptions {
@@ -598,7 +648,7 @@ function createRestartCommand({
 
       await ctx.reply('Rebuilding web UI and restarting ZeRo OS...')
 
-      const build = rebuildWebBundle()
+      const build = await rebuildWebBundleAsync()
       if (!build.ok) {
         await ctx.reply(`Web rebuild failed, restart cancelled: ${build.error ?? 'unknown error'}`)
         return { handled: true }
@@ -683,6 +733,7 @@ function createZeroOSHandle({
     channels: shell.channels,
     channelAdapters: shell.channelAdapters,
     channelDefinitions: shell.channelDefinitions,
+    channelRecovery: shell.channelRecovery,
     notifications: shell.notifications,
     addNotification: shell.addNotification,
     reloadModelProviders,

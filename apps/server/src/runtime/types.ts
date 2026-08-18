@@ -16,6 +16,7 @@ import type { HeartbeatWriter } from '@zero-os/supervisor'
 import type { RepairEngine } from '@zero-os/supervisor'
 import type { ChannelAdapter } from '../channels/adapter'
 import type { EventBus } from './bus'
+import type { ChannelRecoveryController } from './channel-recovery'
 import type { ChannelRuntimeDefinition } from './channel-runtime/types'
 
 export interface StartOptions {
@@ -49,6 +50,7 @@ export interface ZeroOS {
   channels: Map<string, Channel>
   channelAdapters: Map<string, ChannelAdapter>
   channelDefinitions: Map<string, ChannelRuntimeDefinition>
+  channelRecovery: ChannelRecoveryController
   notifications: Notification[]
   addNotification(n: Omit<Notification, 'id' | 'createdAt'>): Notification
   reloadModelProviders(options?: ReloadModelProvidersOptions): Promise<void>

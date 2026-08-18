@@ -127,6 +127,7 @@ export interface AgentLoopHooks {
   ): Promise<{ toolResultBlocks: ContentBlock[]; additionalMessages?: Message[] }>
   afterToolResults?(ctx: LoopIterationContext): Promise<void>
   shouldInterrupt?(ctx: LoopIterationContext): boolean
+  shouldAbort?(ctx: LoopIterationContext): boolean
   onEmptyResponse?(
     retryCount: number,
     ctx: LoopIterationContext,
@@ -482,6 +483,9 @@ export class AgentLoop {
       let response = await this.complete(request, ctx)
 
       while (response.content.length === 0) {
+        if (this.hooks.shouldAbort?.(ctx)) {
+          break iterationLoop
+        }
         this.config.logger.warn('llm_empty_response', {
           sessionId: this.config.sessionId,
           stopReason: response.stopReason,
@@ -519,6 +523,9 @@ export class AgentLoop {
       }
 
       emptyResponseRetryCount = 0
+      if (this.hooks.shouldAbort?.(ctx)) {
+        break
+      }
 
       let assistantMsg: Message
       try {
@@ -542,6 +549,10 @@ export class AgentLoop {
       }
       messages.push(assistantMsg)
       this.notifyNewMessage(assistantMsg, ctx)
+
+      if (this.hooks.shouldAbort?.(ctx)) {
+        break
+      }
 
       if (response.stopReason !== 'tool_use') {
         const endTurnDecision = await this.hooks.onEndTurn?.(response, ctx)
@@ -576,6 +587,10 @@ export class AgentLoop {
       }
 
       await this.hooks.afterToolResults?.(ctx)
+
+      if (this.hooks.shouldAbort?.(ctx)) {
+        break
+      }
 
       if (this.hooks.shouldInterrupt?.(ctx)) {
         const finalRequest = this.buildRequest(messages, ctx)

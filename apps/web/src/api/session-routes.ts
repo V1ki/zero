@@ -1,10 +1,12 @@
-import { buildSessionInfoReply, parseSessionArgs } from '@zero-os/core'
+import { type Session, buildSessionInfoReply, parseSessionArgs } from '@zero-os/core'
 import { toErrorMessage } from '@zero-os/shared'
 import { Hono } from 'hono'
 import type { ZeroOS } from '../../../server/src/main'
 import type { SessionJudgeHistoryResponse, StoredSessionJudgeEntry } from '../session-judge-types'
 import { createSessionCacheEconomicsSummarizer, formatModelLabel } from './metrics-routes'
 import { runSessionJudge } from './session-judge'
+
+const DEFAULT_WEB_SESSION_STALL_TIMEOUT_MS = 30 * 60_000
 
 export function createSessionRoutes(zero: ZeroOS) {
   const summarizeSessionCacheEconomics = createSessionCacheEconomicsSummarizer(zero)
@@ -131,27 +133,24 @@ export function createSessionRoutes(zero: ZeroOS) {
             'web',
           )
         : zero.sessionManager.getOrCreateForChannel('web', 'default', 'web')
-      const session = selected?.session
+      let session = selected?.session
 
       if (!session) {
         return c.json({ error: 'Session not found' }, 404)
       }
 
-      if (!session.isAgentInitialized()) {
-        session.initAgent({
-          name: 'zero-web',
-          agentInstruction:
-            'You are ZeRo OS, an AI agent system running on macOS. Be helpful, concise, and accurate.',
-        })
-      }
-
       if (isSessionCommand) {
+        ensureWebSessionInitialized(session)
         return c.json({
           sessionId: session.data.id,
           reply: buildSessionInfoReply(session, zero.metrics),
           messages: [],
         })
       }
+
+      const stallResolution = recoverStalledWebSession(zero, session)
+      session = stallResolution.session
+      ensureWebSessionInitialized(session)
 
       const newMessages = await session.handleMessage(body.message)
 
@@ -164,8 +163,11 @@ export function createSessionRoutes(zero: ZeroOS) {
 
       return c.json({
         sessionId: session.data.id,
-        reply: replyText,
+        reply: stallResolution.recovery
+          ? `${stallResolution.recovery.warning}\n\n${replyText}`
+          : replyText,
         messages: newMessages,
+        ...(stallResolution.recovery ? { recovery: stallResolution.recovery } : {}),
       })
     })
 
@@ -507,6 +509,76 @@ export function createSessionRoutes(zero: ZeroOS) {
       }
       return c.json({ ok: true })
     })
+}
+
+function ensureWebSessionInitialized(session: Session): void {
+  if (session.isAgentInitialized()) return
+
+  session.initAgent({
+    name: 'zero-web',
+    agentInstruction:
+      'You are ZeRo OS, an AI agent system running on macOS. Be helpful, concise, and accurate.',
+  })
+}
+
+interface WebStalledSessionRecoveryMetadata {
+  reason: 'stalled_session'
+  previousSessionId: string
+  newSessionId: string
+  queueDepth: number
+  queuedMessagesReplayed: false
+  warning: string
+}
+
+function recoverStalledWebSession(
+  zero: ZeroOS,
+  selectedSession: Session,
+): { session: Session; recovery?: WebStalledSessionRecoveryMetadata } {
+  const health = selectedSession.getTurnHealth()
+  const configuredTimeoutMs = zero.config.recovery?.sessionStallTimeoutMs
+  const stallTimeoutMs =
+    configuredTimeoutMs !== undefined &&
+    Number.isFinite(configuredTimeoutMs) &&
+    configuredTimeoutMs >= 0
+      ? configuredTimeoutMs
+      : DEFAULT_WEB_SESSION_STALL_TIMEOUT_MS
+
+  if (!health.inProgress || health.idleForMs < stallTimeoutMs) {
+    return { session: selectedSession }
+  }
+
+  const recovered = zero.sessionManager.recoverStalledCurrentSessionForChannel('web', 'default', {
+    channelName: 'web',
+    expectedSessionId: selectedSession.data.id,
+    stallTimeoutMs,
+  })
+  if (recovered) {
+    console.warn(
+      `[ZeRo OS] Quarantined stalled web session: old=${recovered.previousSessionId} new=${recovered.session.data.id} idle_ms=${recovered.idleForMs} queue_depth=${recovered.queueDepth}`,
+    )
+    const queuedMessageWarning =
+      recovered.queueDepth > 0
+        ? `；旧会话中还有 ${recovered.queueDepth} 条排队消息，为避免重复执行未自动重放，请按需重发`
+        : ''
+    return {
+      session: recovered.session,
+      recovery: {
+        reason: 'stalled_session',
+        previousSessionId: recovered.previousSessionId,
+        newSessionId: recovered.session.data.id,
+        queueDepth: recovered.queueDepth,
+        queuedMessagesReplayed: false,
+        warning: `检测到上一会话长时间无进展，已隔离并创建新会话${queuedMessageWarning}。`,
+      },
+    }
+  }
+
+  // Another request may have rotated the binding after this request selected its session.
+  // Follow the winner instead of sending the new message into a quarantined session.
+  return {
+    session:
+      zero.sessionManager.getCurrentSessionForChannel('web', 'default', 'web') ?? selectedSession,
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

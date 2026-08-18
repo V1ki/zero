@@ -60,6 +60,7 @@ export class Agent {
     shouldInterrupt?: () => boolean,
     getQueuedMessages?: () => QueuedMessage[],
     requestLogMeta?: { turnIndex?: number; userMessageEntry?: Message },
+    shouldAbort?: () => boolean,
   ): Promise<Message[]> {
     const turnIndex = requestLogMeta?.turnIndex ?? 1
     const episodeCompactionEvents: EpisodeCompactionTraceEvent[] = []
@@ -122,6 +123,29 @@ export class Agent {
     }
 
     try {
+      const loopHooks = createAgentLoopHooks({
+        config: this.config,
+        adapter: this.adapter,
+        closureAdapter: this.closureAdapter,
+        toolContext: this.toolContext,
+        obs: this.obs,
+        context,
+        userMessage,
+        onNewMessage: (message) => {
+          emittedMessageCount++
+          onNewMessage?.(message)
+        },
+        onTextDelta,
+        shouldInterrupt,
+        getQueuedMessages,
+        turnIndex,
+        rootSpanId: rootSpan?.id,
+        executionState,
+        requestPurposeRef,
+        traceRecorder,
+      })
+      loopHooks.shouldAbort = shouldAbort
+
       const loop = new AgentLoop(
         {
           adapter: this.adapter,
@@ -144,27 +168,7 @@ export class Agent {
             ...(this.obs.parentSessionId ? { parentSessionId: this.obs.parentSessionId } : {}),
           }),
         },
-        createAgentLoopHooks({
-          config: this.config,
-          adapter: this.adapter,
-          closureAdapter: this.closureAdapter,
-          toolContext: this.toolContext,
-          obs: this.obs,
-          context,
-          userMessage,
-          onNewMessage: (message) => {
-            emittedMessageCount++
-            onNewMessage?.(message)
-          },
-          onTextDelta,
-          shouldInterrupt,
-          getQueuedMessages,
-          turnIndex,
-          rootSpanId: rootSpan?.id,
-          executionState,
-          requestPurposeRef,
-          traceRecorder,
-        }),
+        loopHooks,
       )
 
       const newMessages = await loop.run(
@@ -263,12 +267,31 @@ function createAgentToolExecutor(options: {
         return runTool()
       }
 
-      return backgroundTasks.run({
+      const managed = await backgroundTasks.run({
         toolName,
         toolUseId,
         inputSummary: summarizeToolInput(executionInput, options.toolContext),
         execute: runTool,
       })
+
+      // Sub-agent wait mode: when a bash execution moves to the background,
+      // await its completion in place so the agent turn loop does not end
+      // with pending background tasks (premature "completed" states).
+      if (
+        managed.backgroundTaskId &&
+        toolContext.backgroundTaskWait &&
+        backgroundTasks.waitForCompletion
+      ) {
+        const completed = await backgroundTasks.waitForCompletion(managed.backgroundTaskId)
+        runningToolHandle?.markFinished({
+          finishedAt: now(),
+          cause: 'completed',
+          success: completed.success,
+          outputSummary: completed.outputSummary,
+        })
+        return completed
+      }
+      return managed
     },
   }
 }

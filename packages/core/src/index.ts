@@ -44,7 +44,12 @@ export type {
   BackgroundToolCompletionEvent,
 } from './session/background-tool-tasks'
 export { SessionManager } from './session/manager'
-export type { InterruptedSessionRef } from './session/manager'
+export type {
+  InterruptedSessionRef,
+  RecoverStalledCurrentSessionForChannelOptions,
+  StalledSessionRecoveryResult,
+} from './session/manager'
+export type { SessionTurnHealth } from './session/session-turn-runtime'
 
 // Command
 export {

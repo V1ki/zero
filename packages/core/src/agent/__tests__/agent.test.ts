@@ -393,25 +393,8 @@ class ActiveTurnCaptureAdapter implements ProviderAdapter {
   readonly apiType = 'fake-active-turn'
   requests: CompletionRequest[] = []
   compactionRequests: CompletionRequest[] = []
-  toolDigestRequests: CompletionRequest[] = []
 
   async complete(req: CompletionRequest): Promise<CompletionResponse> {
-    if (req.meta?.purpose === 'tool_io_digest') {
-      this.toolDigestRequests.push(req)
-      return {
-        id: 'resp_tool_digest',
-        content: [
-          {
-            type: 'text',
-            text: '环境摘要：旧 bash 工具链输出已压缩；保留 old_tool_0/old_tool_1/old_tool_2 的 evidence path 和 old result summary。',
-          },
-        ],
-        stopReason: 'end_turn',
-        usage: { input: 10, output: 4 },
-        model: 'fake-tool-digest-model',
-      }
-    }
-
     if (req.meta?.purpose === 'compression') {
       this.compactionRequests.push(req)
       return {
@@ -477,20 +460,6 @@ class InvalidCompactionAdapter implements ProviderAdapter {
 
   async complete(req: CompletionRequest): Promise<CompletionResponse> {
     this.requests.push(req)
-    if (req.meta?.purpose === 'tool_io_digest') {
-      return {
-        id: `resp_tool_digest_${this.requests.length}`,
-        content: [
-          {
-            type: 'text',
-            text: '环境摘要：invalid compaction 测试里的旧工具输出已被局部环境摘要替代。',
-          },
-        ],
-        stopReason: 'end_turn',
-        usage: { input: 12, output: 3 },
-        model: 'fake-flash',
-      }
-    }
     return {
       id: `resp_invalid_compaction_${this.requests.length}`,
       content: [
@@ -761,7 +730,6 @@ describe('Agent', () => {
     try {
       await agent.run(context, 'current active task')
       expect(adapter.compactionRequests).toHaveLength(1)
-      expect(adapter.toolDigestRequests).toHaveLength(1)
       expect(adapter.requests.length).toBeGreaterThanOrEqual(2)
       const requestText = (request: CompletionRequest) =>
         request.messages

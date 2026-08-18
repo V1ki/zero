@@ -32,6 +32,7 @@ interface RegisterExternalRuntimeChannelsOptions {
   metrics: MetricsDB
   heartbeat: Pick<HeartbeatWriter, 'write'>
   agentInstruction: string
+  sessionStallTimeoutMs?: number
   isShuttingDown(): boolean
   registerFeishuStreamingSessionSet(sessionSet: Set<FeishuStreamingSession>): void
 }
@@ -48,6 +49,7 @@ export async function registerExternalRuntimeChannels({
   metrics,
   heartbeat,
   agentInstruction,
+  sessionStallTimeoutMs,
   isShuttingDown,
   registerFeishuStreamingSessionSet,
 }: RegisterExternalRuntimeChannelsOptions): Promise<void> {
@@ -61,6 +63,7 @@ export async function registerExternalRuntimeChannels({
     metrics,
     heartbeat,
     agentInstruction,
+    sessionStallTimeoutMs,
     isShuttingDown,
     registerFeishuStreamingSessionSet,
   }
