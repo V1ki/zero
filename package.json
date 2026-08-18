@@ -19,6 +19,7 @@
     "compaction:harness-eval": "bun run benchmarks/zero-runtime/compaction-harness-eval.ts",
     "compaction:prompt-bench": "bun run benchmarks/zero-runtime/compaction-prompt-benchmark.ts",
     "compaction:tool-io-digest": "bun run benchmarks/zero-runtime/tool-io-digest-benchmark.ts",
+    "logs:storage-audit": "bun run benchmarks/zero-runtime/log-storage-audit.ts",
     "task-closure:prompt-bench": "bun run benchmarks/zero-runtime/task-closure-prompt-benchmark.ts"
   },
   "devDependencies": {

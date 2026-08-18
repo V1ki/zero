@@ -24,6 +24,27 @@ Preview the current matrix without calling any model:
 bun run benchmarks/zero-runtime/src/cli.ts plan
 ```
 
+Audit the physical byte distribution of persisted session logs:
+
+```bash
+bun run logs:storage-audit
+bun run logs:storage-audit -- --percentile 90
+bun run logs:storage-audit -- --session sess_20260707_0009_fei_55b4
+bun run logs:storage-audit -- --format json
+```
+
+The audit reads a fixed snapshot of each selected file and never prints payload contents.
+`run.log` is reported by exact event and normalized storage category; `trace.jsonl` is
+reported independently by span kind and kind/status. Bytes are the complete physical JSONL
+record size, including its line ending. They are not the isolated byte size of a nested
+`request`, `response`, or tool-result field. `--percentile 90` applies the P90 threshold to
+non-empty `run.log` and `trace.jsonl` candidates separately and includes ties.
+
+The normalized `run.log` rollup uses five mutually exclusive buckets:
+`llm_request.raw_request`, `trace.* mirror`, `tool_call.raw_result`, compaction diagnostics,
+and other. Use the exact-event table to inspect entries grouped under other, such as
+`llm_request.raw_response` and `tool_call.raw_input`.
+
 Run the benchmark live:
 
 ```bash
