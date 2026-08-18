@@ -1061,11 +1061,11 @@ describe('prepareConversationHistory', () => {
 
   test('recompacts many existing blocks from original raw messages when no new tail exists', async () => {
     const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-recompact-'))
-    const messages = buildConversation(12).map((message) => ({
+    const messages = buildConversation(17).map((message) => ({
       ...message,
       sessionId: 'sess_recompact_fixture',
     }))
-    const existingBlocks = Array.from({ length: 9 }, (_, index) => {
+    const existingBlocks = Array.from({ length: 17 }, (_, index) => {
       const start = index * 4
       return makeTimelineBlock(
         `timeline_compaction_existing_${index}`,
@@ -1097,7 +1097,9 @@ describe('prepareConversationHistory', () => {
       expect(supersededBlocks).toHaveLength(existingBlocks.length)
       expect(activeBlock.generation).toBe(2)
       expect(activeBlock.strategy).toBe('semantic_recompact_raw_history_v1')
-      expect(activeBlock.supersedesBlockIds).toEqual(existingBlocks.map((block) => block.id))
+      expect([...(activeBlock.supersedesBlockIds ?? [])].sort()).toEqual(
+        existingBlocks.map((block) => block.id).sort(),
+      )
       expect(supersededBlocks.every((block) => block.supersededByBlockId === activeBlock.id)).toBe(
         true,
       )
@@ -1120,7 +1122,7 @@ describe('prepareConversationHistory', () => {
     }))
     const legacyBlock = {
       ...makeTimelineBlock('timeline_compaction_legacy_giant', messages.slice(0, 36)),
-      summary: `LEGACY_GIANT_${'evidence path and sha '.repeat(9000)}`,
+      summary: `LEGACY_GIANT_${'evidence path and sha '.repeat(15000)}`,
     }
     let timelineCompactionBlocks: TimelineCompactionBlock[] = [legacyBlock]
     let compactorCalls = 0
@@ -1177,11 +1179,11 @@ describe('prepareConversationHistory', () => {
 
   test('uses deterministic fallback when semantic recompact returns unusable output', async () => {
     const workDir = mkdtempSync(join(tmpdir(), 'zero-episode-recompact-fallback-'))
-    const messages = buildConversation(12).map((message) => ({
+    const messages = buildConversation(17).map((message) => ({
       ...message,
       sessionId: 'sess_recompact_fallback_fixture',
     }))
-    const existingBlocks = Array.from({ length: 9 }, (_, index) => {
+    const existingBlocks = Array.from({ length: 17 }, (_, index) => {
       const start = index * 4
       return makeTimelineBlock(
         `timeline_compaction_existing_fallback_${index}`,

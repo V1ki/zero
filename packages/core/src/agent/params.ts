@@ -69,9 +69,9 @@ export const CONTEXT_PARAMS = {
     /** Single-turn tails compact only when they are too large to keep waiting for a batch. */
     episodeUrgentCompactChars: 65536,
     /** Recompact many existing blocks from raw messages when the prompt lane becomes block-heavy. */
-    timelineRecompactBlockCountThreshold: 8,
+    timelineRecompactBlockCountThreshold: 16,
     /** Recompact existing blocks from raw messages when projected history remains large. */
-    timelineRecompactCharsThreshold: 140000,
+    timelineRecompactCharsThreshold: 280000,
     /** Apply tool-result recency reduction when even the current projected prompt is oversized. */
     promptPressureCharsThreshold: 180000,
     /** Under prompt pressure, keep only the most recent N tool_result payloads fully expanded. */
@@ -83,19 +83,11 @@ export const CONTEXT_PARAMS = {
     /** Prompt tool-observation cap; prevents deterministic fallback from becoming an IO dump. */
     episodePromptObservationLimit: 16,
     /** Max raw tool_result chars included per tool in the compaction model prompt. */
-    compactionPromptToolResultMaxChars: 24000,
+    compactionPromptToolResultMaxChars: 8000,
     /** Max covered_messages chars sent to the compaction model. */
-    compactionPromptTranscriptMaxChars: 180000,
-    /** Minimum raw tool IO chars before a single tool gets environment-digested. */
-    toolDigestMinRawChars: 12000,
-    /** Minimum combined raw tool IO chars before a local tool chain gets environment-digested. */
-    toolDigestGroupMinRawChars: 16000,
-    /** Max tool_use/tool_result pairs sent to one environment digest request. */
-    toolDigestMaxPairs: 4,
-    /** Max raw tool_result chars included per tool in the digest request. */
-    toolDigestMaxRawCharsPerTool: 24000,
-    /** Max output tokens for a tool environment digest request. */
-    toolDigestMaxOutputTokens: 2048,
+    compactionPromptTranscriptMaxChars: 60000,
+    /** Timeout for a single context compaction model request; on timeout the deterministic fallback is used. */
+    compactionModelTimeoutMs: 60000,
     /** Turns N+1..M: tool output truncated to summary */
     summaryRetainTurns: 8,
     /** Summary truncation length (chars) */

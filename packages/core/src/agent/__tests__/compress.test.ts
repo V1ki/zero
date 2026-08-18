@@ -4,7 +4,6 @@ import type { TraceSpan as ObserveTraceSpan } from '@zero-os/observe'
 import { type Message, type SecretFilter, generateId, now } from '@zero-os/shared'
 import {
   CONTEXT_COMPACTION_PROMPT_VERSION,
-  TOOL_ENVIRONMENT_DIGEST_PROMPT_VERSION,
   buildContextCompactionPrompt,
   compressConversation,
   generateContextCompaction,
@@ -498,35 +497,13 @@ describe('compressConversation', () => {
 })
 
 describe('generateContextCompaction', () => {
-  test('renders tool environment digests instead of raw tool result content', () => {
+  test('renders raw tool result content directly in the compaction prompt', () => {
     const input = makeContextCompactionInput()
-    const prompt = buildContextCompactionPrompt({
-      ...input,
-      toolEnvironmentDigests: [
-        {
-          id: 'tool_digest_fixture',
-          scope: 'single',
-          toolUseIds: ['tool_read_runner'],
-          messageIds: ['msg_tool_context', 'msg_result_context'],
-          rawChars: 48000,
-          digestChars: 120,
-          summary:
-            '环境摘要：K1/read 读取 /repo/packages/core/src/agent/compress.ts，结果显示 runner 已迁移。',
-          model: {
-            promptVersion: TOOL_ENVIRONMENT_DIGEST_PROMPT_VERSION,
-            usedModel: 'mock',
-            usedProvider: 'mock',
-          },
-        },
-      ],
-    })
+    const prompt = buildContextCompactionPrompt(input)
 
-    expect(prompt).toContain('<tool_environment_digests>')
-    expect(prompt).toContain('tool_digest_fixture')
-    expect(prompt).toContain('环境摘要')
-    expect(prompt).toContain('raw_replaced_by_tool_environment_digest=true')
-    expect(prompt).not.toContain('<tool_result_raw><![CDATA[')
-    expect(prompt).not.toContain('compress.ts now owns the context compaction model request runner')
+    expect(prompt).not.toContain('<tool_environment_digests>')
+    expect(prompt).toContain('<tool_result_raw><![CDATA[')
+    expect(prompt).toContain('compress.ts now owns the context compaction model request runner')
   })
 
   test('runs context compaction model request with trace, cost, and model metadata', async () => {
@@ -698,7 +675,7 @@ describe('generateContextCompaction', () => {
     })
   })
 
-  test('pre-digests large tool IO before the main context compaction request', async () => {
+  test('sends large tool IO truncated in a single compaction request', async () => {
     const input = makeContextCompactionInput()
     const resultBlock = input.segment[2]?.content.find((block) => block.type === 'tool_result')
     if (!resultBlock || resultBlock.type !== 'tool_result') throw new Error('missing tool_result')
@@ -714,38 +691,24 @@ describe('generateContextCompaction', () => {
       ...mockAdapter,
       async complete(request) {
         seenRequests.push(request)
-        if (request.meta?.purpose === 'tool_io_digest') {
-          return {
-            id: 'resp_tool_digest',
-            content: [
-              {
-                type: 'text' as const,
-                text: '环境摘要：K1/read 读取 /repo/packages/core/src/agent/compress.ts，输出显示 large tool output line，保留 --inspect；仍需回看 K1 raw evidence。',
-              },
-            ],
-            stopReason: 'end_turn' as const,
-            usage: { input: 300, output: 80 },
-            model: 'provider/raw-context-model',
-          }
-        }
         return {
           id: 'resp_context_compaction',
           content: [
             {
               type: 'text' as const,
               text: `<context_compaction prompt_version="${CONTEXT_COMPACTION_PROMPT_VERSION}">
-  <block_summary>context compaction 使用 tool digest 压缩了大工具输出。</block_summary>
+  <block_summary>context compaction 直接压缩了截断后的大工具输出。</block_summary>
   <topics>
     <topic id="T1" status="completed" message_refs="E1,E2,E3" tool_refs="K1" needs_raw_review="true">
-      <title>tool digest 接入</title>
-      <summary>主 compaction 基于 K1 的 tool_environment_digest 理解工具观察，而不是读取完整 raw。</summary>
-      <confirmed_facts><item>K1 digest 保留了 /repo/packages/core/src/agent/compress.ts 和 --inspect。</item></confirmed_facts>
-      <current_state><item>大工具输出进入 tool_environment_digest。</item></current_state>
+      <title>大工具输出截断</title>
+      <summary>主 compaction 基于截断后的 K1 raw 理解工具观察。</summary>
+      <confirmed_facts><item>K1 截断保留了 /repo/packages/core/src/agent/compress.ts 和 --inspect。</item></confirmed_facts>
+      <current_state><item>大工具输出以截断原文进入主压缩 prompt。</item></current_state>
       <evidence><item>K1 raw evidence 需要时再回看。</item></evidence>
     </topic>
   </topics>
-  <user_constraints><item>tool digest 不解释调用动机。</item></user_constraints>
-  <do_not_infer><item>不能把局部工具环境摘要当成用户完整目标。</item></do_not_infer>
+  <user_constraints><item>截断原文不解释调用动机。</item></user_constraints>
+  <do_not_infer><item>不能把截断后的局部原文当成完整输出。</item></do_not_infer>
 </context_compaction>`,
             },
           ],
@@ -771,36 +734,20 @@ describe('generateContextCompaction', () => {
     })
 
     expect(output?.validation?.status).toBe('passed')
-    expect(seenRequests.map((request) => request.meta?.purpose)).toEqual([
-      'tool_io_digest',
-      'compression',
-    ])
-    const digestPrompt = seenRequests[0]?.messages[0]?.content[0]
-    if (!digestPrompt || digestPrompt.type !== 'text') throw new Error('missing digest prompt')
-    expect(digestPrompt.text).toContain('不要解释工具为什么被调用')
-    expect(digestPrompt.text).toContain('/repo/packages/core/src/agent/compress.ts --inspect')
+    expect(seenRequests.map((request) => request.meta?.purpose)).toEqual(['compression'])
+    expect(seenRequests[0]?.maxTokens).toBe(4096)
 
-    const compactionPrompt = seenRequests[1]?.messages[0]?.content[0]
+    const compactionPrompt = seenRequests[0]?.messages[0]?.content[0]
     if (!compactionPrompt || compactionPrompt.type !== 'text') {
       throw new Error('missing compaction prompt')
     }
-    expect(compactionPrompt.text).toContain('<tool_environment_digests>')
-    expect(compactionPrompt.text).toContain('环境摘要：K1/read')
-    expect(compactionPrompt.text).toContain('raw_replaced_by_tool_environment_digest=true')
-    expect(compactionPrompt.text).not.toContain('<tool_result_raw><![CDATA[')
-    expect(compactionPrompt.text).not.toContain('secret-token')
+    expect(compactionPrompt.text).not.toContain('<tool_environment_digests>')
+    expect(compactionPrompt.text).toContain('<tool_result_raw><![CDATA[')
+    expect(compactionPrompt.text).toContain('raw_truncated=true')
+    expect(compactionPrompt.text).toContain('tool_result_raw_omitted')
     expect(trace.logSessionCalls.map((call) => call.event)).toEqual([
-      'tool_environment_digest.model_request',
-      'tool_environment_digest.model_response',
       'context_compaction.model_request',
       'context_compaction.model_response',
     ])
-    const contextSpanUpdate = trace.updateCalls.find((call) => {
-      const data = call.update.data as
-        | { contextCompactionModel?: { toolDigestCount?: number } }
-        | undefined
-      return data?.contextCompactionModel?.toolDigestCount === 1
-    })
-    expect(contextSpanUpdate).toBeDefined()
   })
 })
