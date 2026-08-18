@@ -48,21 +48,30 @@ describe('runShutdownSequence', () => {
           ],
         ]),
         activeStreamingSessionSets: [activeStreamingSessions],
+        stopChannelRecovery: () => calls.push('channel-recovery:stop'),
         disposeRuntimeEventListeners: () => calls.push('dispose:listeners'),
         disposePricing: () => calls.push('dispose:pricing'),
-        heartbeat: { stop: () => calls.push('heartbeat:stop') } as unknown as HeartbeatWriter,
+        heartbeat: {
+          setReady: (ready: boolean, stage: string) =>
+            calls.push(`heartbeat:ready:${ready}:${stage}`),
+          write: () => calls.push('heartbeat:write'),
+          stop: () => calls.push('heartbeat:stop'),
+        } as unknown as HeartbeatWriter,
         sessionDb: { close: () => calls.push('session-db:close') } as unknown as SessionDB,
         metrics: { close: () => calls.push('metrics:close') } as unknown as MetricsDB,
       })
 
       expect(calls).toEqual([
+        'heartbeat:ready:false:shutting_down',
+        'heartbeat:write',
+        'heartbeat:stop',
+        'channel-recovery:stop',
         'scheduler:stop',
         'sessions:drain:30000',
         'stream:abort:ZeRo OS is restarting...',
         'dispose:listeners',
         'dispose:pricing',
         'channel:stop',
-        'heartbeat:stop',
         'sessions:flush',
         'session-db:close',
         'metrics:close',

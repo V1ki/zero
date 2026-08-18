@@ -189,6 +189,21 @@ export interface EmbeddingModelConfig {
   dimensions?: number
 }
 
+export interface RuntimeRecoveryConfig {
+  /** How often configured channels are checked for a sustained disconnect. */
+  channelCheckIntervalMs?: number
+  /** Native channel reconnect grace period before ZeRo rebuilds the channel. */
+  channelDisconnectGraceMs?: number
+  /** Initial delay after an unsuccessful channel recovery attempt. */
+  channelBaseBackoffMs?: number
+  /** Maximum delay between channel recovery attempts. */
+  channelMaxBackoffMs?: number
+  /** Diagnostic deadline for a channel recovery operation. */
+  channelRecoveryTimeoutMs?: number
+  /** Maximum active-turn idle time before a new inbound message quarantines the session. */
+  sessionStallTimeoutMs?: number
+}
+
 export interface SystemConfig {
   providers: Record<string, ProviderConfig>
   modelPools?: Record<string, ModelPoolConfig>
@@ -201,6 +216,7 @@ export interface SystemConfig {
   taskClosureModel?: string
   contextCompactionModel?: string
   embedding?: EmbeddingModelConfig
+  recovery?: RuntimeRecoveryConfig
 }
 
 export interface SecretFilter {

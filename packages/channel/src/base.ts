@@ -20,6 +20,12 @@ export interface Channel {
   stop(): Promise<void>
 
   /**
+   * Recover this channel without restarting unrelated channels.
+   * Implementations may preserve channel-local delivery state across recovery.
+   */
+  recover?(): Promise<void>
+
+  /**
    * Send a message through the channel.
    */
   send(sessionId: string, content: string): Promise<void>

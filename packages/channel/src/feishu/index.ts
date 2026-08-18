@@ -41,6 +41,25 @@ export type { FeishuStreamingSession }
 type FeishuFileType = 'stream' | 'opus' | 'mp4' | 'pdf' | 'doc' | 'xls' | 'ppt'
 type FeishuInlineImageSource = 'send' | 'reply' | 'streaming'
 
+interface FeishuWsClient {
+  start(params: { eventDispatcher: lark.EventDispatcher }): Promise<void>
+  close(params?: { force?: boolean }): void
+}
+
+export interface FeishuChannelFactories {
+  createClient(options: ConstructorParameters<typeof lark.Client>[0]): lark.Client
+  createEventDispatcher(
+    options: ConstructorParameters<typeof lark.EventDispatcher>[0],
+  ): lark.EventDispatcher
+  createWsClient(options: ConstructorParameters<typeof lark.WSClient>[0]): FeishuWsClient
+}
+
+const defaultFeishuChannelFactories: FeishuChannelFactories = {
+  createClient: (options) => new lark.Client(options),
+  createEventDispatcher: (options) => new lark.EventDispatcher(options),
+  createWsClient: (options) => new lark.WSClient(options),
+}
+
 async function sendCreateWithFallback(
   client: lark.Client | null,
   sessionId: string,
@@ -369,17 +388,25 @@ export class FeishuChannel implements Channel {
 
   private client: lark.Client | null = null
   private eventDispatcher: lark.EventDispatcher | null = null
-  private wsClient: lark.WSClient | null = null
-  private connectionState = new FeishuConnectionState()
+  private wsClient: FeishuWsClient | null = null
+  private connectionState: FeishuConnectionState
   private config: FeishuChannelConfig
   private incomingReceiver: FeishuIncomingEventReceiver
   private mediaDelivery: FeishuMediaDelivery
   private messageDelivery: FeishuMessageDelivery
   private streamingDelivery: FeishuStreamingDelivery
+  private lifecycleGeneration = 0
+  private runningRequested = false
+  private activeStart: { generation: number; promise: Promise<void> } | null = null
+  private recoveryPromise: Promise<void> | null = null
 
-  constructor(config: FeishuChannelConfig) {
+  constructor(
+    config: FeishuChannelConfig,
+    private readonly factories: FeishuChannelFactories = defaultFeishuChannelFactories,
+  ) {
     this.config = config
     this.name = config.name ?? 'feishu'
+    this.connectionState = new FeishuConnectionState(this.name)
     const incomingBuilder = new FeishuIncomingMessageBuilder({
       getClient: () => this.client,
       downloadsDir: config.downloadsDir,
@@ -402,42 +429,52 @@ export class FeishuChannel implements Channel {
     })
   }
 
-  async start(): Promise<void> {
-    const sdkLogger = this.connectionState.createSdkLogger()
+  start(): Promise<void> {
+    this.runningRequested = true
 
-    this.client = new lark.Client({
-      appId: this.config.appId,
-      appSecret: this.config.appSecret,
-      loggerLevel: lark.LoggerLevel.error,
-      logger: sdkLogger,
+    if (this.recoveryPromise) return this.recoveryPromise
+
+    const activeStart = this.activeStart
+    if (activeStart?.generation === this.lifecycleGeneration) {
+      return activeStart.promise
+    }
+    if (this.wsClient) return Promise.resolve()
+
+    const generation = ++this.lifecycleGeneration
+    const promise = this.startGeneration(generation)
+    const trackedPromise = promise.finally(() => {
+      if (this.activeStart?.promise === trackedPromise) {
+        this.activeStart = null
+      }
     })
-
-    this.eventDispatcher = new lark.EventDispatcher({
-      encryptKey: this.config.encryptKey ?? '',
-      verificationToken: this.config.verificationToken ?? '',
-      loggerLevel: lark.LoggerLevel.error,
-      logger: sdkLogger,
-    })
-
-    this.incomingReceiver.register(this.eventDispatcher)
-
-    // Use WebSocket long connection for event delivery (no webhook/ngrok needed)
-    this.wsClient = new lark.WSClient({
-      appId: this.config.appId,
-      appSecret: this.config.appSecret,
-      loggerLevel: lark.LoggerLevel.trace,
-      logger: sdkLogger,
-    })
-    await this.wsClient.start({ eventDispatcher: this.eventDispatcher })
+    this.activeStart = { generation, promise: trackedPromise }
+    return trackedPromise
   }
 
   async stop(): Promise<void> {
-    this.wsClient?.close()
-    this.wsClient = null
+    this.runningRequested = false
+    this.lifecycleGeneration++
+    this.activeStart = null
+    this.recoveryPromise = null
+
+    const wsClient = this.detachClients()
     this.connectionState.reset()
-    this.client = null
-    this.eventDispatcher = null
     this.incomingReceiver.reset()
+    wsClient?.close()
+  }
+
+  recover(): Promise<void> {
+    this.runningRequested = true
+    if (this.recoveryPromise) return this.recoveryPromise
+
+    const promise = this.recoverTransport()
+    const trackedPromise = promise.finally(() => {
+      if (this.recoveryPromise === trackedPromise) {
+        this.recoveryPromise = null
+      }
+    })
+    this.recoveryPromise = trackedPromise
+    return trackedPromise
   }
 
   async send(sessionId: string, content: string): Promise<void> {
@@ -550,12 +587,106 @@ export class FeishuChannel implements Channel {
   ): Promise<void> {
     await this.mediaDelivery.sendFile(chatId, file, fileName, replyToMessageId)
   }
+
+  private async recoverTransport(): Promise<void> {
+    const generation = ++this.lifecycleGeneration
+    this.activeStart = null
+
+    const wsClient = this.detachClients()
+    this.connectionState.reset()
+    wsClient?.close({ force: true })
+
+    if (!this.runningRequested || generation !== this.lifecycleGeneration) return
+    await this.startGeneration(generation)
+  }
+
+  private async startGeneration(generation: number): Promise<void> {
+    const sdkLogger = this.connectionState.createSdkLogger({
+      isCurrent: () => this.runningRequested && generation === this.lifecycleGeneration,
+    })
+    const client = this.factories.createClient({
+      appId: this.config.appId,
+      appSecret: this.config.appSecret,
+      loggerLevel: lark.LoggerLevel.error,
+      logger: sdkLogger,
+    })
+    const eventDispatcher = this.factories.createEventDispatcher({
+      encryptKey: this.config.encryptKey ?? '',
+      verificationToken: this.config.verificationToken ?? '',
+      loggerLevel: lark.LoggerLevel.error,
+      logger: sdkLogger,
+    })
+    this.incomingReceiver.register(eventDispatcher)
+
+    // Use WebSocket long connection for event delivery (no webhook/ngrok needed).
+    const wsClient = this.factories.createWsClient({
+      appId: this.config.appId,
+      appSecret: this.config.appSecret,
+      loggerLevel: lark.LoggerLevel.trace,
+      logger: sdkLogger,
+    })
+
+    if (!this.runningRequested || generation !== this.lifecycleGeneration) {
+      this.closeRetiredTransport(wsClient)
+      return
+    }
+
+    this.client = client
+    this.eventDispatcher = eventDispatcher
+    this.wsClient = wsClient
+
+    try {
+      await wsClient.start({ eventDispatcher })
+    } catch (error) {
+      if (generation !== this.lifecycleGeneration || !this.runningRequested) {
+        this.closeRetiredTransport(wsClient)
+        return
+      }
+
+      this.lifecycleGeneration++
+      if (this.wsClient === wsClient) {
+        this.detachClients()
+        this.connectionState.reset()
+      }
+      this.closeRetiredTransport(wsClient)
+      throw error
+    }
+
+    if (
+      generation !== this.lifecycleGeneration ||
+      !this.runningRequested ||
+      this.wsClient !== wsClient
+    ) {
+      this.closeRetiredTransport(wsClient)
+    }
+  }
+
+  private detachClients(): FeishuWsClient | null {
+    const wsClient = this.wsClient
+    this.wsClient = null
+    this.client = null
+    this.eventDispatcher = null
+    return wsClient
+  }
+
+  private closeRetiredTransport(wsClient: FeishuWsClient): void {
+    try {
+      wsClient.close({ force: true })
+    } catch (error) {
+      console.warn(
+        `[FeishuChannel:${this.name}] Failed to close retired transport:`,
+        describeError(error),
+      )
+    }
+  }
 }
 
 type FeishuSdkLogLevel = 'error' | 'warn' | 'info' | 'debug' | 'trace'
 
 export class FeishuConnectionState {
   private connected = false
+
+  constructor(private readonly channelName = 'feishu') {}
 
   isConnected(): boolean {
     return this.connected
@@ -565,16 +696,18 @@ export class FeishuConnectionState {
     this.connected = false
   }
 
-  createSdkLogger() {
+  createSdkLogger(options: { isCurrent?: () => boolean } = {}) {
     const report = (level: FeishuSdkLogLevel, args: unknown[]) => {
       const message = this.describeLogValue(args)
       if (!message) return
 
-      this.updateFromSdkLog(level, message)
+      if (options.isCurrent?.() ?? true) {
+        this.updateFromSdkLog(level, message)
+      }
       if (level !== 'error' && level !== 'warn') return
 
       const log = level === 'error' ? console.error : console.warn
-      log('[FeishuSDK]', message)
+      log(`[FeishuSDK:${this.channelName}]`, message)
     }
 
     return {
@@ -592,7 +725,7 @@ export class FeishuConnectionState {
     const normalized = message.toLowerCase()
     if (normalized.includes('ws connect success') || normalized.includes('reconnect success')) {
       if (!this.connected) {
-        console.log('[FeishuChannel] WSClient connected')
+        console.log(`[FeishuChannel:${this.channelName}] WSClient connected`)
       }
       this.connected = true
       return

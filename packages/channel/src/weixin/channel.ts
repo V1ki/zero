@@ -66,8 +66,23 @@ export async function notifyStop(
   )
 }
 
-const DEFAULT_SLEEP = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms))
+function sleepUntilAborted(ms: number, getAbortSignal: () => AbortSignal | undefined): Promise<void> {
+  const abortSignal = getAbortSignal()
+  if (!abortSignal) return new Promise((resolve) => setTimeout(resolve, ms))
+  if (abortSignal.aborted) return Promise.reject(makeAbortError())
+
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      abortSignal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timeout)
+      reject(makeAbortError())
+    }
+    abortSignal.addEventListener('abort', onAbort, { once: true })
+  })
+}
 
 function createAbortableFetch(
   baseFetch: FetchImpl,
@@ -183,7 +198,7 @@ export class WeixinChannel implements Channel {
 
     const baseFetch = runtime.fetchImpl ?? globalThis.fetch
     this.fetchImpl = createAbortableFetch(baseFetch, () => this.pollAbort?.signal)
-    this.sleep = runtime.sleep ?? DEFAULT_SLEEP
+    this.sleep = runtime.sleep ?? ((ms) => sleepUntilAborted(ms, () => this.pollAbort?.signal))
     this.now = runtime.now ?? (() => Date.now())
     this.sessionPause = new WeixinSessionPauseState(this.now)
     this.delivery = new WeixinDelivery({
@@ -251,7 +266,6 @@ export class WeixinChannel implements Channel {
     this.pollAbort?.abort()
     const task = this.pollTask
     this.pollTask = null
-    this.pollAbort = null
     if (task) {
       try {
         await task
@@ -259,6 +273,7 @@ export class WeixinChannel implements Channel {
         // expected on abort
       }
     }
+    this.pollAbort = null
     try {
       const response = await notifyStop(
         { baseUrl: this.baseUrl, token: this.token },

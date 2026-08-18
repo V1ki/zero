@@ -12,6 +12,7 @@ interface ShutdownRuntimeOptions {
   scheduler: CronScheduler
   sessionManager: SessionManager
   channels: Map<string, Channel>
+  stopChannelRecovery?: () => void
   disposeRuntimeEventListeners(): void
   disposePricing(): void
   heartbeat: HeartbeatWriter
@@ -33,6 +34,7 @@ export interface ShutdownSequenceOptions {
   sessionManager: SessionManager
   channels: Map<string, Channel>
   activeStreamingSessionSets: Set<FeishuStreamingSession>[]
+  stopChannelRecovery?: () => void
   disposeRuntimeEventListeners(): void
   disposePricing(): void
   heartbeat: HeartbeatWriter
@@ -45,6 +47,7 @@ interface CloseShutdownResourcesOptions {
   disposeRuntimeEventListeners(): void
   disposePricing(): void
   heartbeat: HeartbeatWriter
+  heartbeatStoppedAtEntry?: boolean
   sessionManager: SessionManager
   sessionDb: SessionDB
   metrics: MetricsDB
@@ -56,6 +59,7 @@ export function createShutdownRuntime({
   scheduler,
   sessionManager,
   channels,
+  stopChannelRecovery,
   disposeRuntimeEventListeners,
   disposePricing,
   heartbeat,
@@ -81,6 +85,7 @@ export function createShutdownRuntime({
         sessionManager,
         channels,
         activeStreamingSessionSets,
+        stopChannelRecovery,
         disposeRuntimeEventListeners,
         disposePricing,
         heartbeat,
@@ -99,6 +104,7 @@ export async function runShutdownSequence({
   sessionManager,
   channels,
   activeStreamingSessionSets,
+  stopChannelRecovery,
   disposeRuntimeEventListeners,
   disposePricing,
   heartbeat,
@@ -106,6 +112,8 @@ export async function runShutdownSequence({
   metrics,
 }: ShutdownSequenceOptions): Promise<void> {
   console.log('\n[ZeRo OS] Shutting down...')
+  publishShuttingDownHeartbeat(heartbeat)
+  stopChannelRecovery?.()
   scheduler.stop()
   console.log('[ZeRo OS] Scheduler stopped')
 
@@ -122,6 +130,7 @@ export async function runShutdownSequence({
     disposeRuntimeEventListeners,
     disposePricing,
     heartbeat,
+    heartbeatStoppedAtEntry: true,
     sessionManager,
     sessionDb,
     metrics,
@@ -134,6 +143,7 @@ export async function closeShutdownResources({
   disposeRuntimeEventListeners,
   disposePricing,
   heartbeat,
+  heartbeatStoppedAtEntry,
   sessionManager,
   sessionDb,
   metrics,
@@ -144,8 +154,10 @@ export async function closeShutdownResources({
 
   await closeChannels(channels)
 
-  heartbeat.stop()
-  console.log('[ZeRo OS] Heartbeat stopped')
+  if (!heartbeatStoppedAtEntry) {
+    heartbeat.stop()
+    console.log('[ZeRo OS] Heartbeat stopped')
+  }
   sessionManager.flushAll()
   console.log('[ZeRo OS] Sessions flushed to DB')
   sessionDb.close()
@@ -161,4 +173,16 @@ async function closeChannels(channels: Map<string, Channel>): Promise<void> {
     } catch {}
   }
   console.log('[ZeRo OS] Channels closed')
+}
+
+function publishShuttingDownHeartbeat(heartbeat: HeartbeatWriter): void {
+  heartbeat.setReady(false, 'shutting_down')
+  try {
+    heartbeat.write()
+  } catch (error) {
+    console.warn('[ZeRo OS] Failed to publish shutting-down heartbeat:', error)
+  } finally {
+    heartbeat.stop()
+  }
+  console.log('[ZeRo OS] Heartbeat marked shutting down and stopped')
 }

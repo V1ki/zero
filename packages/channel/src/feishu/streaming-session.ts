@@ -38,6 +38,40 @@ interface FeishuStreamingSessionOptions {
     source: 'streaming',
   ) => Promise<void>
   deleteMessage: (messageId: string) => Promise<void>
+  /** Maximum duration for a streaming update or terminal cleanup request. */
+  operationTimeoutMs?: number
+  /** Maximum duration to wait for an in-flight flush before terminal cleanup proceeds. */
+  finalizationTimeoutMs?: number
+}
+
+const DEFAULT_OPERATION_TIMEOUT_MS = 15_000
+const DEFAULT_FINALIZATION_TIMEOUT_MS = 5_000
+
+function resolveTimeoutMs(value: number | undefined, fallback: number): number {
+  return value != null && Number.isFinite(value) && value > 0 ? value : fallback
+}
+
+function withTimeout<T>(operation: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`))
+    }, timeoutMs)
+    if (
+      timer &&
+      typeof timer === 'object' &&
+      'unref' in timer &&
+      typeof timer.unref === 'function'
+    ) {
+      timer.unref()
+    }
+  })
+
+  // Promise.race observes the operation even when the timeout wins, so a later
+  // rejection from an uncancellable SDK request cannot become unhandled.
+  return Promise.race([operation, timeout]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
 }
 
 async function createFeishuStreamingCard(client: lark.Client): Promise<string> {
@@ -105,6 +139,8 @@ export async function createFeishuStreamingSession({
   fallbackTarget,
   deliverUnresolvedInlineImages,
   deleteMessage,
+  operationTimeoutMs: configuredOperationTimeoutMs,
+  finalizationTimeoutMs: configuredFinalizationTimeoutMs,
 }: FeishuStreamingSessionOptions): Promise<FeishuStreamingSession> {
   const cardId = await createFeishuStreamingCard(client)
   let initialMessageId: string | null = null
@@ -124,6 +160,14 @@ export async function createFeishuStreamingSession({
   let lastFlushAt = 0
   let flushTimer: ReturnType<typeof setTimeout> | null = null
   let flushChain: Promise<void> = Promise.resolve()
+  const operationTimeoutMs = resolveTimeoutMs(
+    configuredOperationTimeoutMs,
+    DEFAULT_OPERATION_TIMEOUT_MS,
+  )
+  const finalizationTimeoutMs = resolveTimeoutMs(
+    configuredFinalizationTimeoutMs,
+    DEFAULT_FINALIZATION_TIMEOUT_MS,
+  )
   const renderStreamingMarkdown = (text: string) =>
     renderMarkdownForFeishu(text, { preserveExternalImages: true })
   const imageResolver = new FeishuImageResolver({
@@ -149,6 +193,11 @@ export async function createFeishuStreamingSession({
 
   const flushPending = async () => {
     clearFlushTimer()
+    if (closed) {
+      pendingText = null
+      return
+    }
+
     const text = pendingText
     const resolvedText = text == null ? null : imageResolver.resolveSync(text)
     if (resolvedText == null) {
@@ -162,15 +211,21 @@ export async function createFeishuStreamingSession({
 
     pendingText = null
     try {
-      await updateFeishuStreamingCardContent(client, {
-        cardId,
-        content: resolvedText,
-        sequence: nextSequence(),
-      })
-      lastDeliveredText = resolvedText
-      lastFlushAt = Date.now()
+      await withTimeout(
+        updateFeishuStreamingCardContent(client, {
+          cardId,
+          content: resolvedText,
+          sequence: nextSequence(),
+        }),
+        operationTimeoutMs,
+        'Feishu streaming card update',
+      )
+      if (!closed) {
+        lastDeliveredText = resolvedText
+        lastFlushAt = Date.now()
+      }
     } catch (error) {
-      pendingText = text
+      if (!closed) pendingText = text
       console.warn('[FeishuChannel] streaming update failed:', describeError(error))
     }
   }
@@ -188,28 +243,29 @@ export async function createFeishuStreamingSession({
     }, delay)
   }
 
-  const finalizeCard = async (
-    content: string,
-    logLabel: string,
-    options?: { alreadyClosed?: boolean },
-  ) => {
-    if (!options?.alreadyClosed) {
-      if (closed) return
-      closed = true
-      pendingText = null
-      clearFlushTimer()
-    }
-
+  const waitForFlushBeforeFinalization = async (logLabel: string) => {
     try {
-      await flushChain
-      await finalizeFeishuStreamingCard(client, {
-        cardId,
-        content,
-        sequence: nextSequence(),
-      })
-      lastDeliveredText = content
+      await withTimeout(flushChain, finalizationTimeoutMs, 'Feishu streaming flush finalization')
     } catch (error) {
       console.warn(`[FeishuChannel] ${logLabel}:`, describeError(error))
+    }
+  }
+
+  const finalizeCard = async (content: string, sequence: number, actionLabel: string) => {
+    await waitForFlushBeforeFinalization(`streaming ${actionLabel} flush wait failed`)
+    try {
+      await withTimeout(
+        finalizeFeishuStreamingCard(client, {
+          cardId,
+          content,
+          sequence,
+        }),
+        operationTimeoutMs,
+        'Feishu streaming card finalization',
+      )
+      lastDeliveredText = content
+    } catch (error) {
+      console.warn(`[FeishuChannel] streaming ${actionLabel} failed:`, describeError(error))
     }
   }
 
@@ -219,6 +275,14 @@ export async function createFeishuStreamingSession({
     pendingText = null
     clearFlushTimer()
     return true
+  }
+
+  const beginCardFinalization = () => {
+    if (!teardown()) return null
+    // Reserve the terminal sequence before waiting. Any already-dispatched
+    // update has a lower sequence and cannot supersede the terminal card if it
+    // completes after the bounded wait.
+    return nextSequence()
   }
 
   return {
@@ -232,32 +296,52 @@ export async function createFeishuStreamingSession({
       scheduleFlush()
     },
     complete: async (finalText: string) => {
+      const finalSequence = beginCardFinalization()
+      if (finalSequence == null) return
+
       const rendered = renderStreamingMarkdown(finalText)
       latestRenderedText = rendered
       let unresolvedImages: FeishuImageReference[] = []
       const finalRendered =
         imageResolver.hasImages(rendered) || imageResolver.pendingCount > 0
-          ? await imageResolver.resolveAll(rendered, 30_000)
+          ? await imageResolver.resolveAll(rendered, operationTimeoutMs)
           : imageResolver.resolveSync(rendered)
       unresolvedImages = imageResolver.collectUnresolved(rendered)
-      await finalizeCard(finalRendered, 'streaming completion failed')
-      await deliverUnresolvedInlineImages(unresolvedImages, fallbackTarget, 'streaming')
+      await finalizeCard(finalRendered, finalSequence, 'completion')
+      try {
+        await withTimeout(
+          deliverUnresolvedInlineImages(unresolvedImages, fallbackTarget, 'streaming'),
+          operationTimeoutMs,
+          'Feishu streaming unresolved image delivery',
+        )
+      } catch (error) {
+        console.warn(
+          '[FeishuChannel] streaming unresolved image delivery failed:',
+          describeError(error),
+        )
+      }
     },
     abort: async (errorMessage?: string) => {
-      if (!teardown()) return
+      const finalSequence = beginCardFinalization()
+      if (finalSequence == null) return
+
       let rendered = renderMarkdownForFeishu(
         errorMessage?.trim() || 'An error occurred while generating the response.',
       )
       rendered = imageResolver.resolveSync(rendered)
-      await finalizeCard(rendered, 'streaming abort failed', { alreadyClosed: true })
+      await finalizeCard(rendered, finalSequence, 'abort')
     },
     dismiss: async () => {
       if (!teardown()) return
 
       try {
-        await flushChain
+        await waitForFlushBeforeFinalization('streaming dismiss flush wait failed')
         if (messageId) {
-          await deleteMessage(messageId)
+          await withTimeout(
+            deleteMessage(messageId),
+            operationTimeoutMs,
+            'Feishu streaming message deletion',
+          )
         }
       } catch (error) {
         console.warn('[FeishuChannel] streaming dismiss failed:', describeError(error))

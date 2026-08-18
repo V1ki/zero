@@ -8,7 +8,7 @@ export type {
 export { WebChannel, WebMessageHandler } from './web'
 export type { WebSocketMessage, WebSocketResponse } from './web'
 export { FeishuChannel } from './feishu/index'
-export type { FeishuChannelConfig } from './feishu/index'
+export type { FeishuChannelConfig, FeishuChannelFactories } from './feishu/index'
 export type { FeishuStreamingSession } from './feishu/index'
 export { FeishuImageResolver } from './feishu/image-resolver'
 export { DingtalkChannel, DingtalkIncomingMessageBuilder } from './dingtalk/index'

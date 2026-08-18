@@ -294,6 +294,37 @@ describe('WeixinChannel lifecycle', () => {
     expect(ch.isConnected()).toBe(false)
   })
 
+  test('stop interrupts a session-expired polling pause', async () => {
+    let markPollStarted: (() => void) | undefined
+    const pollStarted = new Promise<void>((resolve) => {
+      markPollStarted = resolve
+    })
+    const fetchImpl: FetchImpl = async (url) => {
+      if (String(url).includes('getupdates')) {
+        markPollStarted?.()
+        return new Response(JSON.stringify({ errcode: -14 }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ ret: 0 }), { status: 200 })
+    }
+    const ch = new WeixinChannel(
+      { accountId: 'a', token: 't', homeDir: tempDir },
+      { fetchImpl },
+    )
+
+    await ch.start()
+    await pollStarted
+    await expect(
+      Promise.race([
+        ch.stop(),
+        Bun.sleep(100).then(() => {
+          throw new Error('stop timed out during session-expired polling pause')
+        }),
+      ]),
+    ).resolves.toBeUndefined()
+
+    expect(ch.isConnected()).toBe(false)
+  })
+
   test('start/stop matches OpenClaw by notifying lifecycle endpoints', async () => {
     let markFetchStarted: (() => void) | undefined
     const fetchStarted = new Promise<void>((resolve) => {

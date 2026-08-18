@@ -82,6 +82,7 @@ function normalizeConfig(raw: Record<string, unknown>): SystemConfig {
 
   const modelPools = normalizeModelPools(raw.model_pools as Record<string, unknown> | undefined)
   const modelRoutes = normalizeModelRoutes(raw.model_routes)
+  const recovery = normalizeRuntimeRecoveryConfig(raw.recovery)
 
   const rawChannels = Array.isArray(raw.channels)
     ? (raw.channels as Array<Record<string, unknown>>)
@@ -125,6 +126,7 @@ function normalizeConfig(raw: Record<string, unknown>): SystemConfig {
     ...(raw.embedding !== undefined
       ? { embedding: normalizeEmbeddingConfig(raw.embedding as Record<string, unknown>) }
       : {}),
+    ...(raw.recovery !== undefined ? { recovery } : {}),
   }
 }
 
@@ -359,6 +361,32 @@ function normalizeEmbeddingConfig(
     model: readString(raw, 'model') ?? '',
     dimensions: readNumber(raw, 'dimensions'),
   }
+}
+
+function normalizeRuntimeRecoveryConfig(raw: unknown): NonNullable<SystemConfig['recovery']> {
+  if (!isRecord(raw)) return {}
+
+  return {
+    ...readIntegerEntry(raw, 'channelCheckIntervalMs', false, 'channel_check_interval_ms'),
+    ...readIntegerEntry(raw, 'channelDisconnectGraceMs', true, 'channel_disconnect_grace_ms'),
+    ...readIntegerEntry(raw, 'channelBaseBackoffMs', true, 'channel_base_backoff_ms'),
+    ...readIntegerEntry(raw, 'channelMaxBackoffMs', true, 'channel_max_backoff_ms'),
+    ...readIntegerEntry(raw, 'channelRecoveryTimeoutMs', false, 'channel_recovery_timeout_ms'),
+    ...readIntegerEntry(raw, 'sessionStallTimeoutMs', false, 'session_stall_timeout_ms'),
+  }
+}
+
+function readIntegerEntry<T extends string>(
+  raw: Record<string, unknown>,
+  target: T,
+  allowZero: boolean,
+  ...keys: string[]
+): Partial<Record<T, number>> {
+  const value = readNumber(raw, target, ...keys)
+  const minimum = allowZero ? 0 : 1
+  return value !== undefined && Number.isInteger(value) && value >= minimum
+    ? ({ [target]: value } as Record<T, number>)
+    : {}
 }
 
 function readBoolean(raw: Record<string, unknown>, ...keys: string[]): boolean | undefined {
