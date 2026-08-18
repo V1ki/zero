@@ -25,6 +25,7 @@ import type { ManagedOAuthStatus } from '../oauth/status'
 const X_PREMIUM_PROVIDER = 'x-premium'
 const X_PREMIUM_OAUTH_SESSION_REF = 'x_premium_oauth_session'
 const X_PREMIUM_BASE_URL = 'https://api.x.ai/v1'
+const xPremiumRefreshesByVault = new WeakMap<Vault, Map<string, Promise<XPremiumOAuthSession>>>()
 
 export type XPremiumProviderInstanceOptions = OAuthProviderInstanceOptions
 
@@ -119,7 +120,7 @@ export const XAI_OAUTH_SCOPE = [
 export const XAI_REDIRECT_HOST = '127.0.0.1'
 export const XAI_REDIRECT_PORT = 56121
 export const XAI_REDIRECT_PATH = '/callback'
-export const X_PREMIUM_OAUTH_REQUEST_TIMEOUT_MS = 5_000
+export const X_PREMIUM_OAUTH_REQUEST_TIMEOUT_MS = 15_000
 export const X_PREMIUM_PREEMPTIVE_REFRESH_WINDOW_MS = 2 * 60_000
 export const X_PREMIUM_MIN_VALIDITY_MS = 60_000
 export const X_PREMIUM_REAUTH_MESSAGE =
@@ -235,6 +236,8 @@ export class XPremiumTokenManager extends OAuthTokenManagerBase<
   XPremiumRefreshReason
 > {
   private requestTimeoutMs: number
+  private readonly refreshes: Map<string, Promise<XPremiumOAuthSession>>
+  private readonly tokenRef: string
 
   constructor(vault: Vault, options: XPremiumOAuthInstanceOptions = {}) {
     const providerName = options.providerName ?? 'x-premium'
@@ -253,6 +256,21 @@ export class XPremiumTokenManager extends OAuthTokenManagerBase<
         isXPremiumSessionExpiring(session, minValidityMs),
     })
     this.requestTimeoutMs = requestTimeoutMs
+    this.refreshes = getXPremiumRefreshes(vault)
+    this.tokenRef = tokenRef
+  }
+
+  async refreshSession(reason: XPremiumRefreshReason): Promise<XPremiumOAuthSession> {
+    const existing = this.refreshes.get(this.tokenRef)
+    if (existing) return existing
+
+    const refresh = super.refreshSession(reason).finally(() => {
+      if (this.refreshes.get(this.tokenRef) === refresh) {
+        this.refreshes.delete(this.tokenRef)
+      }
+    })
+    this.refreshes.set(this.tokenRef, refresh)
+    return refresh
   }
 
   protected async performRefresh(
@@ -261,6 +279,15 @@ export class XPremiumTokenManager extends OAuthTokenManagerBase<
   ): Promise<XPremiumOAuthSession> {
     return await refreshXPremiumSession(currentSession, this.requestTimeoutMs)
   }
+}
+
+function getXPremiumRefreshes(vault: Vault): Map<string, Promise<XPremiumOAuthSession>> {
+  const existing = xPremiumRefreshesByVault.get(vault)
+  if (existing) return existing
+
+  const refreshes = new Map<string, Promise<XPremiumOAuthSession>>()
+  xPremiumRefreshesByVault.set(vault, refreshes)
+  return refreshes
 }
 
 export function readXPremiumSessionFromVault(

@@ -460,6 +460,9 @@ function ProviderRow({
             Authorized. Runtime reload may still be in progress.
           </p>
         )}
+        {canConnectOAuth && provider.oauthError && (
+          <p className="text-[11px] text-red-400 mt-1">{provider.oauthError}</p>
+        )}
         {isChatgpt && provider.authorized && (
           <ChatGptUsageBlock usage={chatgptUsage} usageState={chatgptUsageState} />
         )}

@@ -95,7 +95,12 @@ export async function refreshManagedOAuthStatus({
         force: options.force ?? options.strict === true,
       })
     } catch (error) {
-      if (options.strict) {
+      const storedStatus = readManagedOAuthStatus({
+        provider,
+        driver,
+        vault,
+      })
+      if (options.strict || storedStatus.state === 'expired') {
         return buildManagedOAuthRefreshErrorStatus(provider, error)
       }
       // Status reads stay best-effort; request paths still handle refresh errors explicitly.

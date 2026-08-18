@@ -6,9 +6,9 @@ import { join } from 'node:path'
 import { parseXPremiumOAuthSession, serializeXPremiumOAuthSession } from '@zero-os/model'
 import { Vault } from '@zero-os/secrets'
 import {
-  getXPremiumOAuthSessionRef,
   XPremiumOAuthDriver,
   XPremiumTokenManager,
+  getXPremiumOAuthSessionRef,
 } from '../providers/x-premium'
 
 const originalFetch = globalThis.fetch
@@ -176,6 +176,63 @@ describe('XPremiumTokenManager', () => {
       const stored = parseXPremiumOAuthSession(vault.get(getXPremiumOAuthSessionRef()))
       expect(stored).toEqual(refreshed)
     } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('coalesces refreshes for the same vault credential across manager instances', async () => {
+    const { dir, vault } = createVault()
+    const nowSeconds = Math.floor(Date.now() / 1000)
+    vault.set(
+      getXPremiumOAuthSessionRef(),
+      serializeXPremiumOAuthSession({
+        accessToken: makeJwt({ exp: nowSeconds + 30 }),
+        refreshToken: 'refresh-old',
+        expiresAt: Date.now() + 30_000,
+        tokenType: 'Bearer',
+        scopes: ['openid', 'profile'],
+        tokenEndpoint: discovery.token_endpoint,
+      }),
+    )
+
+    let fetchCalls = 0
+    let releaseRefresh: (() => void) | undefined
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve
+    })
+    globalThis.fetch = (async () => {
+      fetchCalls += 1
+      await refreshGate
+      return new Response(
+        JSON.stringify({
+          access_token: makeJwt({ exp: nowSeconds + 7200 }),
+          refresh_token: 'refresh-new',
+          expires_in: 7200,
+          token_type: 'bearer',
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      )
+    }) as unknown as typeof fetch
+
+    const firstManager = new XPremiumTokenManager(vault)
+    const secondManager = new XPremiumTokenManager(vault)
+
+    try {
+      const firstRefresh = firstManager.ensureFreshSession()
+      const secondRefresh = secondManager.ensureFreshSession()
+      expect(fetchCalls).toBe(1)
+
+      releaseRefresh?.()
+      const [firstSession, secondSession] = await Promise.all([firstRefresh, secondRefresh])
+
+      expect(firstSession).toEqual(secondSession)
+      expect(firstSession.refreshToken).toBe('refresh-new')
+      expect(fetchCalls).toBe(1)
+    } finally {
+      releaseRefresh?.()
       rmSync(dir, { recursive: true, force: true })
     }
   })

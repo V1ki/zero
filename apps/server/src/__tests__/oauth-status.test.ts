@@ -115,4 +115,30 @@ describe('OAuth status helpers', () => {
       requiresRestart: false,
     })
   })
+
+  test('soft refresh reports an error when the stored session is already expired', async () => {
+    let receivedForce: boolean | undefined
+
+    const status = await refreshManagedOAuthStatus({
+      provider: 'chatgpt',
+      driver: createDriver({
+        session: { expiresAt: Date.now() - 1_000 },
+        async onRefreshStatus(_vault, options) {
+          receivedForce = options?.force
+          throw new Error('refresh token invalid')
+        },
+      }),
+      vault: createVault(),
+      options: {},
+    })
+
+    expect(receivedForce).toBe(false)
+    expect(status).toEqual({
+      provider: 'chatgpt',
+      state: 'error',
+      authorized: false,
+      error: 'refresh token invalid',
+      requiresRestart: false,
+    })
+  })
 })

@@ -2,6 +2,7 @@ import type { Dispatch, SetStateAction } from 'react'
 import { useCallback, useEffect, useState } from 'react'
 import { apiFetch, apiPost, apiPut } from '../lib/api'
 import { useUIStore } from '../stores/ui'
+import { refreshExpiredOAuthProviders } from './config-oauth-refresh'
 import {
   createDraftId,
   createModelPoolDrafts,
@@ -46,7 +47,24 @@ export function useConfigPageState() {
 
   const loadConfig = useCallback(() => {
     const p1 = apiFetch<ConfigData>('/api/config')
-      .then(setConfig)
+      .then((nextConfig) => {
+        setConfig(nextConfig)
+        void refreshExpiredOAuthProviders(nextConfig.providers).then((patches) => {
+          if (Object.keys(patches).length === 0) return
+          setConfig((current) => {
+            if (!current) return current
+            const providers = { ...current.providers }
+            let changed = false
+            for (const [name, patch] of Object.entries(patches)) {
+              const provider = providers[name]
+              if (!provider || provider.oauthState !== 'expired') continue
+              providers[name] = { ...provider, ...patch }
+              changed = true
+            }
+            return changed ? { ...current, providers } : current
+          })
+        })
+      })
       .catch(() => {})
     const p2 = apiFetch<{ channels: ChannelConfig[] }>('/api/channels/config')
       .then((res) => setChannels(res.channels))

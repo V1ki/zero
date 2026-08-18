@@ -77,6 +77,38 @@ describe('provider login completion', () => {
     expect(logs.some((message) => message.includes('not completed automatically'))).toBe(false)
   })
 
+  test('surfaces OAuth initialization timeouts before offering pasted input', async () => {
+    let waitedForCompletion = false
+    const oauth: ProviderLoginOAuthClient = {
+      start: async () => {
+        throw new Error('OIDC discovery request timed out after 15000ms')
+      },
+      waitForCompletion: async () => {
+        waitedForCompletion = true
+        return connectedStatus()
+      },
+      completeFromInput: async () => {
+        throw new Error('unexpected manual completion')
+      },
+    }
+
+    await expect(
+      completeProviderLoginViaBrowser({
+        oauth,
+        providerName: 'x-premium',
+        label: 'X Premium',
+        deps: {
+          openBrowser: () => {
+            throw new Error('browser should not open')
+          },
+          reloadServer: async () => {},
+          log: () => {},
+        },
+      }),
+    ).rejects.toThrow('OIDC discovery request timed out after 15000ms')
+    expect(waitedForCompletion).toBe(false)
+  })
+
   test('manual input completion rejects non-connected statuses', async () => {
     const oauth: ProviderLoginOAuthClient = {
       start: async () => ({ url: 'https://auth.example/start' }),

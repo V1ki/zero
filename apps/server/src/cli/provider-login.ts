@@ -86,7 +86,12 @@ export async function runProviderCommand(options: {
   const oauth = createManagedOAuthCoordinator(vault, config)
   syncManagedOAuthCoordinator(oauth, config)
 
-  if (await completeProviderLoginViaBrowser({ oauth, providerName, label })) return
+  try {
+    if (await completeProviderLoginViaBrowser({ oauth, providerName, label })) return
+  } catch (error) {
+    console.error(`[ZeRo OS] Failed to start ${label} OAuth login:`, toErrorMessage(error))
+    process.exit(1)
+  }
 
   const pasted = prompt('Paste the callback URL or authorization code:')
   if (!pasted) {
@@ -149,13 +154,13 @@ export async function completeProviderLoginViaBrowser(options: {
   deps?: Partial<ProviderLoginCompletionDeps>
 }): Promise<boolean> {
   const deps = { ...defaultCompletionDeps, ...options.deps }
+  const { url } = await options.oauth.start(options.providerName)
+  deps.log(`[ZeRo OS] Starting ${options.label} OAuth login...`)
+  deps.log(`  URL: ${url}`)
+
+  deps.openBrowser(url)
+
   try {
-    const { url } = await options.oauth.start(options.providerName)
-    deps.log(`[ZeRo OS] Starting ${options.label} OAuth login...`)
-    deps.log(`  URL: ${url}`)
-
-    deps.openBrowser(url)
-
     const status = await options.oauth.waitForCompletion(
       options.providerName,
       options.timeoutMs ?? 120_000,

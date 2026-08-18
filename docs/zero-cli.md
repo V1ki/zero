@@ -170,6 +170,9 @@ bun zero secret set openai_codex_api_key <value>
 - 多个订阅发现相同 `model_id` 后，会自动组成 `pool/<model_id>`；provider 配置顺序决定初始优先级
 - 自动发现失败不会清空已验证缓存或手工模型；配置页 Models 标签可手动执行 `Refresh models`
 - 如果热重载不可达，配置和 vault 仍会保存；下次启动或重启后生效
+- CLI 只有在成功生成并打印授权 URL 后，才会在浏览器回调超时时提示手工粘贴；OIDC discovery 等初始化失败会直接显示真实错误
+- X Premium 的 OIDC discovery、code exchange 和 token refresh 使用 15 秒超时；同一运行时内针对同一 vault 凭据的并发 refresh 会合并为一次请求
+- 配置页发现已过期的托管 OAuth session 时会在后台尝试 soft refresh；refresh grant 失效时显示错误并保留 `Connect` 入口
 
 示例：
 

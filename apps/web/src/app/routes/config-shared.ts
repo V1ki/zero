@@ -7,6 +7,7 @@ export interface ProviderView {
   configured?: boolean
   authorized?: boolean
   oauthState?: string
+  oauthError?: string
   requiresRestart?: boolean
   models: Record<
     string,
