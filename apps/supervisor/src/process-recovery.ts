@@ -102,6 +102,7 @@ export function isSameHeartbeatOwner(
 const VERIFY_PROGRESS_WINDOW_MS = 120_000
 const VERIFY_MAX_WAIT_MS = 300_000
 const VERIFY_POLL_INTERVAL_MS = 1_000
+const VERIFY_SUSPENSION_TOLERANCE_MS = 10_000
 
 export async function verifySpawnedReplacement(options: {
   checker: HeartbeatChecker
@@ -111,7 +112,9 @@ export async function verifySpawnedReplacement(options: {
   timeoutMs?: number
   maxTimeoutMs?: number
   pollIntervalMs?: number
+  suspensionToleranceMs?: number
   sleep?: (ms: number) => Promise<void>
+  now?: () => number
 }): Promise<boolean> {
   if (options.child.killed) return false
 
@@ -122,19 +125,21 @@ export async function verifySpawnedReplacement(options: {
   const progressWindowMs = options.timeoutMs ?? VERIFY_PROGRESS_WINDOW_MS
   const maxWaitMs = Math.max(progressWindowMs, options.maxTimeoutMs ?? VERIFY_MAX_WAIT_MS)
   const pollIntervalMs = options.pollIntervalMs ?? VERIFY_POLL_INTERVAL_MS
+  const suspensionToleranceMs = options.suspensionToleranceMs ?? VERIFY_SUSPENSION_TOLERANCE_MS
   const sleep =
     options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
+  const now = options.now ?? Date.now
 
   let childExitCode: number | undefined
   void options.child.exited.then((exitCode) => {
     childExitCode = exitCode
   })
 
-  const hardDeadline = Date.now() + maxWaitMs
-  let progressDeadline = Date.now() + progressWindowMs
+  let hardDeadline = now() + maxWaitMs
+  let progressDeadline = now() + progressWindowMs
   let lastProgressMarker: string | undefined
 
-  while (Date.now() < hardDeadline) {
+  while (now() < hardDeadline) {
     if (options.child.killed || childExitCode !== undefined) return false
 
     const result = options.checker.check()
@@ -147,12 +152,22 @@ export async function verifySpawnedReplacement(options: {
       const progressMarker = `${result.sequence ?? ''}:${result.stage ?? ''}`
       if (progressMarker !== lastProgressMarker) {
         lastProgressMarker = progressMarker
-        progressDeadline = Date.now() + progressWindowMs
+        progressDeadline = now() + progressWindowMs
       }
     }
 
-    if (Date.now() >= progressDeadline) return false
-    await sleep(Math.min(pollIntervalMs, Math.max(1, hardDeadline - Date.now())))
+    if (now() >= progressDeadline) return false
+    const plannedSleepMs = Math.min(pollIntervalMs, Math.max(1, hardDeadline - now()))
+    const sleepStartedAt = now()
+    await sleep(plannedSleepMs)
+    const oversleptMs = now() - sleepStartedAt - plannedSleepMs
+    if (oversleptMs > suspensionToleranceMs) {
+      // The host was suspended (e.g. macOS sleep) mid-verify. Only awake time
+      // counts toward the readiness budget, so shift both deadlines forward
+      // instead of failing a boot that never had a chance to run.
+      hardDeadline += oversleptMs
+      progressDeadline += oversleptMs
+    }
   }
 
   return false

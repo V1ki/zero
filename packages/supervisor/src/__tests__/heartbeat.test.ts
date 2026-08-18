@@ -49,6 +49,27 @@ describe('Heartbeat', () => {
     writer.stop()
   })
 
+  test('starting an active writer is idempotent', () => {
+    mkdirSync(testDir, { recursive: true })
+    const file = join(testDir, 'heartbeat-idempotent-start.json')
+    const writer = new HeartbeatWriter(file)
+    let writeCount = 0
+    writer.setOnWrite(() => {
+      writeCount += 1
+      writer.start()
+    })
+
+    try {
+      writer.start()
+      writer.start()
+
+      expect(writeCount).toBe(1)
+      expect(new HeartbeatChecker(file).check().sequence).toBe(1)
+    } finally {
+      writer.stop()
+    }
+  })
+
   test('configured offline channels degrade heartbeat health', () => {
     mkdirSync(testDir, { recursive: true })
     const file = join(testDir, 'heartbeat-channel-health.json')

@@ -154,6 +154,38 @@ describe('RepairEngine', () => {
     expect(engine.shouldFuse()).toBe(true)
   })
 
+  test('fuse releases after the cooldown to allow a probe attempt', async () => {
+    let fakeNow = Date.parse('2026-08-15T00:00:00.000Z')
+    const engine = new RepairEngine(2, undefined, {
+      fuseCooldownMs: 60_000,
+      now: () => fakeNow,
+    })
+    const runCycle = (success: boolean) =>
+      engine.runRepairCycle(
+        async () => 'diag',
+        async () => 'action',
+        async () => success,
+      )
+
+    await runCycle(false)
+    await runCycle(false)
+    expect(engine.shouldFuse()).toBe(true)
+
+    // Cooldown elapsed: one probe attempt is allowed again.
+    fakeNow += 60_001
+    expect(engine.shouldFuse()).toBe(false)
+
+    // A failed probe re-engages the fuse for another cooldown.
+    await runCycle(false)
+    expect(engine.shouldFuse()).toBe(true)
+
+    // A successful probe after the next cooldown clears the streak entirely.
+    fakeNow += 60_001
+    expect(engine.shouldFuse()).toBe(false)
+    await runCycle(true)
+    expect(engine.shouldFuse()).toBe(false)
+  })
+
   test('reset clears attempts and status', async () => {
     const engine = new RepairEngine()
 

@@ -386,6 +386,51 @@ describe('supervisor process recovery', () => {
     expect(elapsed).toBeLessThan(2_000)
   })
 
+  test('extends verify deadlines across host suspension', async () => {
+    const child = {
+      pid: 5252,
+      exited: new Promise<number>(() => {}),
+      killed: false,
+      kill() {},
+    }
+    let fakeNow = 0
+    let checks = 0
+    const checker = createChecker(() => {
+      checks += 1
+      return {
+        alive: true,
+        ready: checks >= 8,
+        pid: 5252,
+        bootId: 'new',
+        sequence: checks,
+        stage: 'booting',
+        lastBeat: new Date(fakeNow),
+      }
+    })
+
+    const result = await verifySpawnedReplacement({
+      checker,
+      child,
+      bootId: 'new',
+      notBefore: 0,
+      timeoutMs: 40,
+      maxTimeoutMs: 60,
+      pollIntervalMs: 5,
+      suspensionToleranceMs: 20,
+      now: () => fakeNow,
+      sleep: async (ms) => {
+        fakeNow += ms
+        if (checks === 2) {
+          fakeNow += 300_000 // host slept 5 minutes mid-boot
+        }
+      },
+    })
+
+    // Without suspension awareness the 60ms hard cap would have failed the
+    // boot immediately after the 5-minute clock jump.
+    expect(result).toBe(true)
+  })
+
   test('waits for the replacement to exit after SIGKILL', async () => {
     const childExit = createDeferred<number>()
     const signals: Array<NodeJS.Signals | number | undefined> = []

@@ -51,7 +51,11 @@ It is not just a chat UI. The repository is organized around a runtime that can:
 4. The Web server in `apps/web/src/server.ts` mounts HTTP APIs, serves the built SPA, and
    exposes a WebSocket bridge for real-time events.
 5. The optional supervisor in `apps/supervisor/src/main.ts` watches `.zero/heartbeat.json`
-   and rebuilds/restarts the main process if the heartbeat goes stale.
+   and restarts the main process if the heartbeat goes stale. It is suspension-aware: after a
+   host sleep/wake clock jump it waits a settle window for a fresh heartbeat instead of killing
+   a healthy-but-slept server, and in-flight replacement verification only counts awake time.
+   After five consecutive failed repairs it fuses, then automatically probes again once per
+   cooldown (30 min) instead of requiring a manual restart.
 
 ### Request Flow
 

@@ -1,10 +1,16 @@
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { installConsoleTimestamping } from '@zero-os/shared'
 import { HeartbeatChecker } from '@zero-os/supervisor'
 import { RepairEngine } from '@zero-os/supervisor'
-import { waitForHeartbeatReady } from '@zero-os/supervisor'
-import { getBunExecutable, getRuntimeEnv, rebuildWebBundle } from '../../server/src/system/runtime'
+import { getBunExecutable, getRuntimeEnv } from '../../server/src/system/runtime'
 import { createSupervisorMonitor } from './monitor'
+import {
+  isSameHeartbeatOwner,
+  stopUnreadyReplacement,
+  terminateStaleHeartbeatOwner,
+  verifySpawnedReplacement,
+} from './process-recovery'
 
 const PROJECT_ROOT = join(import.meta.dirname, '..', '..', '..')
 const ZERO_DIR = join(PROJECT_ROOT, '.zero')
@@ -24,32 +30,86 @@ const monitor = createSupervisorMonitor({
   checker,
   repairEngine,
   logger: console,
+  checkIntervalMs: CHECK_INTERVAL,
   async diagnose(result) {
     return result.alive
-      ? 'Process recovered during diagnosis'
+      ? `Process alive but not ready after ${result.uptime?.toFixed(1) ?? 'unknown'}s`
       : `Process dead. Last heartbeat: ${result.lastBeat?.toISOString() ?? 'never'}, elapsed: ${result.elapsedMs ?? 'unknown'}ms`
   },
-  async repair(diagnosis) {
+  async repair(diagnosis, staleResult) {
     console.log(`[Supervisor] Diagnosis: ${diagnosis}`)
-    console.log('[Supervisor] Rebuilding web UI before restart...')
-    const build = rebuildWebBundle()
-    if (!build.ok) {
-      throw new Error(`web rebuild failed: ${build.error ?? 'unknown error'}`)
+
+    const latest = checker.check()
+    if (latest.alive && latest.ready) {
+      const recoveredPid = latest.pid
+      const recoveredBootId = latest.bootId
+      return {
+        action: `Process recovered before restart (PID: ${recoveredPid ?? 'unknown'})`,
+        async verify() {
+          const current = checker.check()
+          return (
+            current.alive &&
+            current.ready === true &&
+            isSameHeartbeatOwner(
+              { pid: recoveredPid, bootId: recoveredBootId },
+              { pid: current.pid, bootId: current.bootId },
+            )
+          )
+        },
+      }
     }
+
+    const termination = await terminateStaleHeartbeatOwner({
+      checker,
+      staleResult,
+    })
+    if (termination === 'identity_changed') {
+      throw new Error('heartbeat ownership changed during diagnosis; retrying with fresh state')
+    }
+    if (termination === 'recovered') {
+      const recovered = checker.check()
+      return {
+        action: `Process recovered during termination check (PID: ${recovered.pid ?? 'unknown'})`,
+        async verify() {
+          const current = checker.check()
+          return current.alive && current.ready === true && isSameHeartbeatOwner(recovered, current)
+        },
+      }
+    }
+
+    console.log(`[Supervisor] Stale owner handling: ${termination}`)
     console.log('[Supervisor] Attempting restart via Bun...')
+    const bootId = randomUUID()
+    const notBefore = Date.now()
     const proc = Bun.spawn(
       [getBunExecutable(), 'run', join(PROJECT_ROOT, 'apps/server/src/cli.ts'), 'start'],
       {
         cwd: PROJECT_ROOT,
-        env: getRuntimeEnv(),
+        env: {
+          ...getRuntimeEnv(),
+          ZERO_HEARTBEAT_BOOT_ID: bootId,
+        },
         stdout: 'inherit',
         stderr: 'inherit',
       },
     )
-    return `Started new process PID: ${proc.pid}`
-  },
-  async verify() {
-    return waitForHeartbeatReady(checker)
+    proc.unref()
+
+    return {
+      action: `Started new process PID: ${proc.pid}`,
+      async verify() {
+        const ready = await verifySpawnedReplacement({
+          checker,
+          child: proc,
+          bootId,
+          notBefore,
+        })
+        if (!ready) {
+          await stopUnreadyReplacement({ child: proc })
+        }
+        return ready
+      },
+    }
   },
 })
 

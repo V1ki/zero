@@ -1,12 +1,14 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 
 const HEARTBEAT_INTERVAL = 3_000 // 3 seconds
-const STALE_THRESHOLD = 10_000 // 10 seconds
+const STALE_THRESHOLD = 30_000 // 10 missed 3-second heartbeats
 const ERROR_THRESHOLD_UNHEALTHY = 10
 const ERROR_THRESHOLD_DEGRADED = 3
 const READY_WAIT_TIMEOUT_MS = 300_000
 const READY_POLL_INTERVAL_MS = 1_000
+const PROCESS_BOOT_ID = randomUUID()
 
 export type HealthStatus = 'healthy' | 'degraded' | 'unhealthy'
 
@@ -15,6 +17,12 @@ export interface ChannelHealthMetrics {
   type: string
   connected: boolean
   configured: boolean
+  recoveryState?: string
+  recoveryAttempts?: number
+  disconnectedSince?: number | null
+  nextRecoveryAt?: number | null
+  lastRecoveredAt?: number | null
+  lastRecoveryError?: string | null
 }
 
 export interface HealthMetrics {
@@ -25,6 +33,10 @@ export interface HealthMetrics {
 export interface HeartbeatData {
   timestamp: string
   pid: number
+  /** Absent only in heartbeat files written by pre-identity releases. */
+  bootId?: string
+  /** Absent only in heartbeat files written by pre-identity releases. */
+  sequence?: number
   uptime: number
   ready: boolean
   stage: string
@@ -43,11 +55,18 @@ export interface HeartbeatData {
   channels: ChannelHealthMetrics[]
 }
 
+export interface HeartbeatWriterOptions {
+  bootId?: string
+}
+
 /**
  * Heartbeat writer — called by the main process.
  */
 export class HeartbeatWriter {
   private filePath: string
+  private tempFilePath: string
+  private bootId: string
+  private sequence = 0
   private timer: ReturnType<typeof setInterval> | null = null
   private healthMetrics: HealthMetrics = { errorCount: 0, channels: [] }
   private metricsProvider: (() => Partial<HealthMetrics>) | null = null
@@ -56,8 +75,10 @@ export class HeartbeatWriter {
   private ready = false
   private stage = 'booting'
 
-  constructor(filePath: string) {
+  constructor(filePath: string, options: HeartbeatWriterOptions = {}) {
     this.filePath = filePath
+    this.tempFilePath = `${filePath}.${process.pid}.${randomUUID()}.tmp`
+    this.bootId = options.bootId ?? PROCESS_BOOT_ID
     const dir = dirname(filePath)
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true })
@@ -108,8 +129,14 @@ export class HeartbeatWriter {
    * Start writing heartbeats at the configured interval.
    */
   start(): void {
-    this.write()
+    if (this.timer) return
     this.timer = setInterval(() => this.write(), HEARTBEAT_INTERVAL)
+    try {
+      this.write()
+    } catch (error) {
+      this.stop()
+      throw error
+    }
   }
 
   /**
@@ -140,9 +167,12 @@ export class HeartbeatWriter {
       status = 'degraded'
     }
 
+    const sequence = this.sequence + 1
     const data: HeartbeatData = {
       timestamp: new Date().toISOString(),
       pid: process.pid,
+      bootId: this.bootId,
+      sequence,
       uptime: process.uptime(),
       ready: this.ready,
       stage: this.stage,
@@ -161,8 +191,20 @@ export class HeartbeatWriter {
       channels,
     }
 
+    try {
+      writeFileSync(this.tempFilePath, JSON.stringify(data), 'utf-8')
+      renameSync(this.tempFilePath, this.filePath)
+    } catch (error) {
+      if (existsSync(this.tempFilePath)) {
+        try {
+          unlinkSync(this.tempFilePath)
+        } catch {}
+      }
+      throw error
+    }
+
+    this.sequence = sequence
     this.lastHeartbeat = data
-    writeFileSync(this.filePath, JSON.stringify(data), 'utf-8')
     this.onWrite?.(data)
   }
 }
@@ -172,6 +214,9 @@ export interface HeartbeatCheckResult {
   lastBeat?: Date
   elapsedMs?: number
   pid?: number
+  bootId?: string
+  sequence?: number
+  uptime?: number
   ready?: boolean
   stage?: string
   health?: HeartbeatData['health']
@@ -206,6 +251,9 @@ export class HeartbeatChecker {
         lastBeat,
         elapsedMs,
         pid: data.pid,
+        bootId: data.bootId,
+        sequence: data.sequence,
+        uptime: data.uptime,
         ready: data.ready,
         stage: data.stage,
         health: data.health,
@@ -218,20 +266,57 @@ export class HeartbeatChecker {
 
 export async function waitForHeartbeatReady(
   checker: HeartbeatChecker,
-  options: { timeoutMs?: number; pollIntervalMs?: number } = {},
+  options: {
+    timeoutMs?: number
+    pollIntervalMs?: number
+    expectedPid?: number
+    expectedBootId?: string
+    notBefore?: Date | number
+    signal?: AbortSignal
+  } = {},
 ): Promise<boolean> {
   const timeoutMs = options.timeoutMs ?? READY_WAIT_TIMEOUT_MS
   const pollIntervalMs = options.pollIntervalMs ?? READY_POLL_INTERVAL_MS
+  const notBeforeMs =
+    options.notBefore instanceof Date ? options.notBefore.getTime() : options.notBefore
   const deadline = Date.now() + timeoutMs
 
   while (Date.now() <= deadline) {
+    if (options.signal?.aborted) return false
     const result = checker.check()
-    if (result.alive && result.ready) {
+    const matchesPid = options.expectedPid === undefined || result.pid === options.expectedPid
+    const matchesBootId =
+      options.expectedBootId === undefined || result.bootId === options.expectedBootId
+    const isRecentEnough =
+      notBeforeMs === undefined ||
+      (result.lastBeat !== undefined && result.lastBeat.getTime() >= notBeforeMs)
+
+    if (result.alive && result.ready && matchesPid && matchesBootId && isRecentEnough) {
       return true
     }
 
-    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
+    await waitForNextReadyPoll(pollIntervalMs, options.signal)
   }
 
   return false
+}
+
+function waitForNextReadyPoll(pollIntervalMs: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) {
+    return new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
+  }
+  if (signal.aborted) return Promise.resolve()
+
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, pollIntervalMs)
+    const onAbort = () => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
 }

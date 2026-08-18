@@ -10,6 +10,14 @@ export interface RepairAttempt {
   result: string
 }
 
+export interface RepairEngineOptions {
+  /** How long the fuse blocks new repair attempts after a failure streak. */
+  fuseCooldownMs?: number
+  now?: () => number
+}
+
+const DEFAULT_FUSE_COOLDOWN_MS = 30 * 60_000
+
 /**
  * Self-repair engine — diagnose, repair, verify flow.
  */
@@ -18,10 +26,14 @@ export class RepairEngine {
   private attempts: RepairAttempt[] = []
   private status: RepairStatus = 'idle'
   private gitOps?: GitOps
+  private fuseCooldownMs: number
+  private now: () => number
 
-  constructor(maxAttempts = 5, gitOps?: GitOps) {
+  constructor(maxAttempts = 5, gitOps?: GitOps, options: RepairEngineOptions = {}) {
     this.maxAttempts = maxAttempts
     this.gitOps = gitOps
+    this.fuseCooldownMs = options.fuseCooldownMs ?? DEFAULT_FUSE_COOLDOWN_MS
+    this.now = options.now ?? Date.now
   }
 
   getStatus(): RepairStatus {
@@ -46,7 +58,17 @@ export class RepairEngine {
       if (this.attempts[i].status !== 'failed') break
       consecutiveFails++
     }
-    return consecutiveFails >= this.maxAttempts
+    if (consecutiveFails < this.maxAttempts) return false
+
+    // The fuse is a cooldown, not a permanent latch: once it elapses the next
+    // cycle may probe again. A failed probe re-engages the fuse for another
+    // cooldown; a successful probe resets the streak entirely. This keeps a
+    // burst of transient failures (network outage, sleep/wake churn) from
+    // disabling self-healing forever.
+    const lastAttempt = this.attempts[this.attempts.length - 1]
+    const lastAttemptAt = lastAttempt ? Date.parse(lastAttempt.timestamp) : Number.NaN
+    if (Number.isNaN(lastAttemptAt)) return true
+    return this.now() - lastAttemptAt < this.fuseCooldownMs
   }
 
   /**
@@ -82,7 +104,7 @@ export class RepairEngine {
     }
 
     const attempt: RepairAttempt = {
-      timestamp: new Date().toISOString(),
+      timestamp: new Date(this.now()).toISOString(),
       status: success ? 'success' : 'failed',
       diagnosis,
       action,

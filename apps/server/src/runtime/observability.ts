@@ -22,7 +22,9 @@ export function createObservabilityRuntime(zeroDir: string): ObservabilityRuntim
   const sessionDb = new SessionDB(sessionsDbPath)
   metrics.attachSessionsDb(sessionsDbPath)
   const tracer = new Tracer(logsDir)
-  const heartbeat = new HeartbeatWriter(join(zeroDir, 'heartbeat.json'))
+  const heartbeat = new HeartbeatWriter(join(zeroDir, 'heartbeat.json'), {
+    bootId: process.env.ZERO_HEARTBEAT_BOOT_ID || undefined,
+  })
   heartbeat.setReady(false, 'booting')
   heartbeat.start()
   console.log('[ZeRo OS] Logging initialized')
