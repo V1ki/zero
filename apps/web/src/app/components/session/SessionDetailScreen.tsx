@@ -1,13 +1,14 @@
 import { ArrowLeft } from '@phosphor-icons/react'
 import { useNavigate } from '@tanstack/react-router'
-import { type ReactNode, type RefObject, useMemo } from 'react'
+import { type ReactNode, type RefObject, useMemo, useState } from 'react'
 import { useUIStore } from '../../stores/ui'
 import { Skeleton, SkeletonText } from '../shared/Skeleton'
 import { ContextPanel } from './context-panel/ContextPanel'
 import { buildContextTokenSummary } from './context-panel/context-tokens'
 import { MetadataBar } from './detail/MetadataBar'
-import { useSessionDetailData } from './detail/useSessionDetailData'
+import { type SessionRequestEntry, useSessionDetailData } from './detail/useSessionDetailData'
 import { useSessionDetailSelection } from './detail/useSessionDetailSelection'
+import { TimelineView } from './timeline/TimelineView'
 import {
   type DecisionTimelineItem,
   type TaskClosureTimelineItem,
@@ -78,11 +79,22 @@ export function SessionDetailScreen({
   const navigate = useNavigate()
   const {
     timelineRef,
+    selectedToolId,
     selectedDecisionId,
     selectedTaskClosureId,
+    selectedMemoryNudgeId,
+    selectedSubAgentId,
+    highlightedAssistantMessageId,
+    highlightedSubAgentId,
+    handleSelectTool,
+    handleSelectDecision,
+    handleSelectTaskClosure,
+    handleSelectMemoryNudge,
+    handleSelectSubAgent,
     jumpToAssistantMessage,
     handleJumpToSubAgentInTimeline,
   } = useSessionDetailSelection(sessionId)
+  const [stageView, setStageView] = useState<'trajectory' | 'timeline'>('trajectory')
 
   const { session, traces, taskClosureEvents, decisions, llmRequests, loading, traceLoading } =
     useSessionDetailData(sessionId, timelineRef)
@@ -273,11 +285,28 @@ export function SessionDetailScreen({
       >
         <SessionDetailTimelineStage
           messageCount={session.messages.length}
+          stageView={stageView}
+          onStageViewChange={setStageView}
+          sessionId={session.id}
+          timelineItems={timelineItems}
+          llmRequests={llmRequests}
           trajectorySnapshot={trajectorySnapshot}
           loading={loading}
           insights={sessionInsights}
           filesTouchedCount={filesTouched.length}
           timelineRef={timelineRef}
+          selectedToolId={selectedToolId}
+          selectedDecisionId={selectedDecisionId}
+          selectedTaskClosureId={selectedTaskClosureId}
+          selectedMemoryNudgeId={selectedMemoryNudgeId}
+          selectedSubAgentId={selectedSubAgentId}
+          highlightedAssistantMessageId={highlightedAssistantMessageId}
+          highlightedSubAgentId={highlightedSubAgentId}
+          onSelectTool={handleSelectTool}
+          onSelectDecision={handleSelectDecision}
+          onSelectTaskClosure={handleSelectTaskClosure}
+          onSelectMemoryNudge={handleSelectMemoryNudge}
+          onSelectSubAgent={handleSelectSubAgent}
         />
 
         <div className="min-h-[520px] xl:min-h-0">
@@ -606,20 +635,54 @@ function SessionDetailOuter({
 
 interface SessionDetailTimelineStageProps {
   messageCount: number
+  stageView: 'trajectory' | 'timeline'
+  onStageViewChange: (view: 'trajectory' | 'timeline') => void
+  sessionId?: string
+  timelineItems: TimelineItem[]
+  llmRequests: SessionRequestEntry[]
   trajectorySnapshot: import('./trajectory/types').TrajectorySnapshot | null
   loading: boolean
   insights: SessionDetailInsights
   filesTouchedCount: number
   timelineRef: RefObject<HTMLDivElement | null>
+  selectedToolId: string | null
+  selectedDecisionId: string | null
+  selectedTaskClosureId: string | null
+  selectedMemoryNudgeId: string | null
+  selectedSubAgentId: string | null
+  highlightedAssistantMessageId: string | null
+  highlightedSubAgentId: string | null
+  onSelectTool: (id: string | null) => void
+  onSelectDecision: (id: string | null) => void
+  onSelectTaskClosure: (id: string | null) => void
+  onSelectMemoryNudge: (id: string | null) => void
+  onSelectSubAgent: (id: string | null) => void
 }
 
 function SessionDetailTimelineStage({
   messageCount,
+  stageView,
+  onStageViewChange,
+  sessionId,
+  timelineItems,
+  llmRequests,
   trajectorySnapshot,
   loading,
   insights,
   filesTouchedCount,
   timelineRef,
+  selectedToolId,
+  selectedDecisionId,
+  selectedTaskClosureId,
+  selectedMemoryNudgeId,
+  selectedSubAgentId,
+  highlightedAssistantMessageId,
+  highlightedSubAgentId,
+  onSelectTool,
+  onSelectDecision,
+  onSelectTaskClosure,
+  onSelectMemoryNudge,
+  onSelectSubAgent,
 }: SessionDetailTimelineStageProps) {
   return (
     <section
@@ -628,25 +691,71 @@ function SessionDetailTimelineStage({
     >
       <div className="shrink-0 border-b border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01))] px-4 py-3 sm:px-5">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--color-text-disabled)]">
-              Trajectory
-            </p>
-            <h3 className="mt-1 text-[18px] font-semibold text-[var(--color-text-primary)]">
-              Execution Story
-            </h3>
+          <div className="flex items-center gap-4">
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--color-text-disabled)]">
+                Execution
+              </p>
+              <h3 className="mt-1 text-[18px] font-semibold text-[var(--color-text-primary)]">
+                Session Story
+              </h3>
+            </div>
+            <div className="flex rounded-full border border-white/10 bg-white/[0.03] p-0.5">
+              {(['trajectory', 'timeline'] as const).map((view) => (
+                <button
+                  key={view}
+                  type="button"
+                  aria-pressed={stageView === view}
+                  className={`rounded-full px-3 py-1 text-[11px] transition-colors ${
+                    stageView === view
+                      ? 'bg-cyan-400/15 text-cyan-100'
+                      : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'
+                  }`}
+                  onClick={() => {
+                    onStageViewChange(view)
+                  }}
+                >
+                  {view === 'trajectory' ? 'Trajectory' : 'Timeline'}
+                </button>
+              ))}
+            </div>
           </div>
           <TimelineInsightChips insights={insights} filesTouchedCount={filesTouchedCount} />
         </div>
       </div>
 
-      <div ref={timelineRef} className="min-h-0 flex-1 overflow-y-auto">
+      <div
+        ref={timelineRef}
+        className={`min-h-0 flex-1 overflow-y-auto ${
+          stageView === 'timeline'
+            ? 'bg-[linear-gradient(180deg,rgba(10,14,20,0.72),rgba(9,11,16,0.98))] px-4 py-4 sm:px-5 [scrollbar-gutter:stable]'
+            : ''
+        }`}
+      >
         {messageCount === 0 ? (
           <div className="p-8 text-center text-[13px] text-[var(--color-text-muted)]">
             No messages in this session.
           </div>
-        ) : (
+        ) : stageView === 'trajectory' ? (
           <TrajectoryView snapshot={trajectorySnapshot} loading={loading} />
+        ) : (
+          <TimelineView
+            sessionId={sessionId}
+            items={timelineItems}
+            llmRequests={llmRequests}
+            selectedToolId={selectedToolId}
+            selectedDecisionId={selectedDecisionId}
+            selectedTaskClosureId={selectedTaskClosureId}
+            selectedMemoryNudgeId={selectedMemoryNudgeId}
+            selectedSubAgentId={selectedSubAgentId}
+            highlightedAssistantMessageId={highlightedAssistantMessageId}
+            highlightedSubAgentId={highlightedSubAgentId}
+            onSelectTool={onSelectTool}
+            onSelectDecision={onSelectDecision}
+            onSelectTaskClosure={onSelectTaskClosure}
+            onSelectMemoryNudge={onSelectMemoryNudge}
+            onSelectSubAgent={onSelectSubAgent}
+          />
         )}
       </div>
     </section>
