@@ -469,6 +469,8 @@ interface MemoryRetrievalDecisionView {
   response?: unknown
   need?: unknown
   queries?: unknown
+  searches?: unknown
+  usedFallbackSelection?: unknown
   tokens?: unknown
   durationMs?: unknown
   selectedMemories?: unknown
@@ -551,6 +553,139 @@ function memoryRetrievalLine(memory: RetrievedMemoryView): string {
   if (memory.type !== undefined) parts.push(memory.type)
   if (memory.score !== undefined) parts.push(`score ${memory.score.toFixed(2)}`)
   return `- ${parts.join(' · ')}`
+}
+
+/** One memory candidate an executed search returned. */
+interface MemorySearchResultView {
+  title: string
+  type?: string
+  score?: number
+  vector?: number
+  recency?: number
+  keyword?: number
+  preview?: string
+}
+
+/** One executed memory search recorded on a retrieval decision span. */
+interface MemorySearchView {
+  query: string
+  mode?: string
+  topN?: number
+  minScore?: number
+  resultCount: number
+  results: MemorySearchResultView[]
+}
+
+/**
+ * Normalize the memory searches a retrieval decision executed, including the
+ * per-query candidates the search returned before selection.
+ * @param value - Loose searches span field.
+ * @returns Searches with their candidate results in recorded order.
+ */
+function memoryRetrievalSearches(value: unknown): MemorySearchView[] {
+  if (!Array.isArray(value)) return []
+  const out: MemorySearchView[] = []
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const record = entry as {
+      query?: unknown
+      mode?: unknown
+      options?: unknown
+      resultCount?: unknown
+      results?: unknown
+    }
+    if (typeof record.query !== 'string' || record.query === '') continue
+    const options =
+      typeof record.options === 'object' && record.options !== null
+        ? (record.options as { topN?: unknown; minScore?: unknown })
+        : {}
+    const results: MemorySearchResultView[] = Array.isArray(record.results)
+      ? record.results.flatMap((item): MemorySearchResultView[] => {
+          if (typeof item !== 'object' || item === null) return []
+          const hit = item as {
+            title?: unknown
+            type?: unknown
+            score?: unknown
+            contentPreview?: unknown
+            scoreBreakdown?: unknown
+          }
+          if (typeof hit.title !== 'string' || hit.title === '') return []
+          const breakdown =
+            typeof hit.scoreBreakdown === 'object' && hit.scoreBreakdown !== null
+              ? (hit.scoreBreakdown as { keyword?: unknown; recency?: unknown; vector?: unknown })
+              : {}
+          return [
+            {
+              title: hit.title,
+              ...(typeof hit.type === 'string' && hit.type !== '' ? { type: hit.type } : {}),
+              ...(typeof hit.score === 'number' && Number.isFinite(hit.score)
+                ? { score: hit.score }
+                : {}),
+              ...(typeof breakdown.vector === 'number' && Number.isFinite(breakdown.vector)
+                ? { vector: breakdown.vector }
+                : {}),
+              ...(typeof breakdown.recency === 'number' && Number.isFinite(breakdown.recency)
+                ? { recency: breakdown.recency }
+                : {}),
+              ...(typeof breakdown.keyword === 'number' && Number.isFinite(breakdown.keyword)
+                ? { keyword: breakdown.keyword }
+                : {}),
+              ...(typeof hit.contentPreview === 'string' && hit.contentPreview.trim() !== ''
+                ? { preview: hit.contentPreview }
+                : {}),
+            },
+          ]
+        })
+      : []
+    out.push({
+      query: record.query,
+      ...(typeof record.mode === 'string' && record.mode !== '' ? { mode: record.mode } : {}),
+      ...(typeof options.topN === 'number' && Number.isFinite(options.topN)
+        ? { topN: options.topN }
+        : {}),
+      ...(typeof options.minScore === 'number' && Number.isFinite(options.minScore)
+        ? { minScore: options.minScore }
+        : {}),
+      ...(typeof record.resultCount === 'number' && Number.isFinite(record.resultCount)
+        ? { resultCount: record.resultCount }
+        : { resultCount: results.length }),
+      results,
+    })
+  }
+  return out
+}
+
+/**
+ * Render one executed memory search as Result-pane lines: the query headline
+ * with mode, hit count, and threshold options, then nested candidate lines.
+ * @param search - Search view.
+ * @returns Query line plus one indented block per returned candidate.
+ */
+function memorySearchLines(search: MemorySearchView): string {
+  const parts = [search.query]
+  if (search.mode !== undefined) parts.push(search.mode)
+  parts.push(`${search.resultCount} ${search.resultCount === 1 ? 'result' : 'results'}`)
+  const options: string[] = []
+  if (search.topN !== undefined) options.push(`topN ${search.topN}`)
+  if (search.minScore !== undefined) options.push(`minScore ${search.minScore.toFixed(2)}`)
+  if (options.length > 0) parts.push(options.join(' · '))
+  const lines = [`- ${parts.join(' · ')}`]
+  for (const result of search.results) {
+    const hit = [result.title]
+    if (result.type !== undefined) hit.push(result.type)
+    if (result.score !== undefined) hit.push(`score ${result.score.toFixed(2)}`)
+    const breakdown: string[] = []
+    if (result.vector !== undefined) breakdown.push(`vector ${result.vector.toFixed(2)}`)
+    if (result.recency !== undefined) breakdown.push(`recency ${result.recency.toFixed(2)}`)
+    if (result.keyword !== undefined) breakdown.push(`keyword ${result.keyword.toFixed(2)}`)
+    if (breakdown.length > 0) hit.push(breakdown.join(' · '))
+    lines.push(`  - ${hit.join(' · ')}`)
+    if (result.preview !== undefined) {
+      const preview = result.preview.replace(/\s+/g, ' ').trim()
+      lines.push(`    ${preview.length > 100 ? `${preview.slice(0, 100)}…` : preview}`)
+    }
+  }
+  return lines.join('\n')
 }
 
 /**
@@ -1303,6 +1438,7 @@ export function buildTrajectorySnapshot(
     const insertBefore = nodeAfter(start)
     const nodeSeq = claimSeqBefore(insertBefore === undefined ? undefined : insertBefore.seq)
     const queries = spanStringList(decision?.queries)
+    const searches = memoryRetrievalSearches(decision?.searches)
     const selected = memoryRetrievalSelections(decision?.selectedMemories)
     const injected = selected.length > 0
     const durationMs =
@@ -1318,12 +1454,21 @@ export function buildTrajectorySnapshot(
       span.status !== 'success' ? ` · ${span.status}` : ''
     }`
     const answerParts: string[] = []
-    if (queries.length > 0) {
+    // Searches carry the executed queries plus their candidate hits, which
+    // supersedes the plain generated-query list when the runtime recorded them.
+    if (searches.length > 0) {
+      answerParts.push(
+        `Memory searches (${searches.length}):\n${searches.map(memorySearchLines).join('\n')}`,
+      )
+    } else if (queries.length > 0) {
       answerParts.push(`Queries (${queries.length}):\n${queries.map((q) => `- ${q}`).join('\n')}`)
     }
     if (selected.length > 0) {
+      const fallbackSuffix = decision?.usedFallbackSelection === true ? ' · fallback selection' : ''
       answerParts.push(
-        `Selected memories (${selected.length}):\n${selected.map(memoryRetrievalLine).join('\n')}`,
+        `Selected memories (${selected.length})${fallbackSuffix}:\n${selected
+          .map(memoryRetrievalLine)
+          .join('\n')}`,
       )
     }
     if (typeof decision?.response === 'string' && decision.response.trim() !== '') {

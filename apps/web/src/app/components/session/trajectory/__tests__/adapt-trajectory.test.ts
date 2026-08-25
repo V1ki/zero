@@ -1246,6 +1246,73 @@ describe('buildTrajectorySnapshot', () => {
     }
   })
 
+  it('renders executed memory searches with candidates and fallback selection', () => {
+    const retrievalTraces: TraceSpan[] = [
+      span({
+        id: 'span-retrieval-searches',
+        name: 'memory_retrieval_decision',
+        startTime: T1,
+        endTime: T2,
+        durationMs: 3000,
+        status: 'success',
+        metadata: { layer: 'layer1' },
+        data: {
+          memoryRetrievalDecision: {
+            prompt: '看看这个帖子',
+            need: true,
+            queries: ['X 帖子抓取失败怎么办', 'GitHub 401 恢复'],
+            searches: [
+              {
+                query: 'X 帖子抓取失败怎么办',
+                mode: 'scored',
+                options: { topN: 8, confidenceThreshold: 0.5, minScore: 0.7 },
+                resultCount: 1,
+                results: [
+                  {
+                    id: 'mem_1',
+                    type: 'runbook',
+                    title: '从X推文提取视频音频',
+                    contentPreview:
+                      '## 场景\n  用户给一条 x.com 推文链接，要提取视频文案、分析内容或下载视频。',
+                    score: 0.7316,
+                    scoreBreakdown: { keyword: 0, recency: 0.9718, vector: 0.6716 },
+                  },
+                ],
+              },
+              {
+                query: 'GitHub 401 恢复',
+                mode: 'scored',
+                options: { topN: 8, confidenceThreshold: 0.5, minScore: 0.7 },
+                resultCount: 0,
+                results: [],
+              },
+            ],
+            usedFallbackSelection: true,
+            selectedMemories: [
+              { id: 'mem_1', type: 'runbook', title: '从X推文提取视频音频', score: 0.7316 },
+            ],
+          },
+        },
+      }),
+    ]
+    const snapshot = buildTrajectorySnapshot(session, requests, [...traces, ...retrievalTraces])
+    const retrievals = snapshot.eventNodes.filter(
+      (node) => node.kind === 'context' && node.form === 'memory-retrieval',
+    ) as Extract<(typeof snapshot.eventNodes)[number], { kind: 'context' }>[]
+    const answer = retrievals[0]?.gateQa?.answer ?? ''
+    expect(answer).toContain('Memory searches (2):')
+    expect(answer).toContain('- X 帖子抓取失败怎么办 · scored · 1 result · topN 8 · minScore 0.70')
+    expect(answer).toContain(
+      '  - 从X推文提取视频音频 · runbook · score 0.73 · vector 0.67 · recency 0.97 · keyword 0.00',
+    )
+    expect(answer).toContain(
+      '    ## 场景 用户给一条 x.com 推文链接，要提取视频文案、分析内容或下载视频。',
+    )
+    expect(answer).toContain('- GitHub 401 恢复 · scored · 0 results · topN 8 · minScore 0.70')
+    expect(answer).toContain('Selected memories (1) · fallback selection:')
+    expect(answer).not.toContain('Queries (2):')
+  })
+
   it('pairs the retrieval side-loop instruction with the trigger message in the payload', () => {
     const retrievalTraces: TraceSpan[] = [
       span({
