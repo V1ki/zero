@@ -82,8 +82,8 @@ context_compaction_model: deepseek/deepseek-v4-flash
 - timeline compaction 发生时，Agent 会发出一个名为 `timeline_compaction_block` 的 `context_compaction` trace span，并写入 `context_compaction.block` run.log 事件。payload 包含 lifecycle、block id、generation、covered range、压缩前后 message 数、prompt chars/tokens、被压缩/保留的 message ids、episode 数、边界策略、跳过的未完成工具 id、聚合 evidence 统计、topic 数、validation 状态/错误、model/provider、prompt version、attempt count 和 supersede 关联。
 - 模型调用会记录 `context_compaction.model_request`，以及 `context_compaction.model_response` 或 `context_compaction.model_invalid`。请求失败（含超时）会记录 `context_compaction.model_failed`。日志包含 prompt version、phase、model/provider、response size、validation details、可用时的 usage/cost，以及过滤后的 request/response payload。
 - 活跃 turn 的工具输入/输出 evidence 写入仍会记录 `tool_evidence.persisted`。复用 compaction evidence 时，会把聚合信息写入 block trace event，而不是在每次 prompt replay 时为每个 evidence 指针重复发出 `tool_evidence.persisted`。
-- Session detail 工具卡片会在可用时渲染 evidence path、chars 和 hash。
-- Session detail timeline 会在主线中渲染 active compaction block。covered canonical messages 默认从主线隐藏，但仍可以在 block 的可展开 covered-message 列表中查看。
+- Session detail 工具详情（Trajectory 视图）会在可用时渲染 evidence path、chars 和 sha256 前缀。
+- Session detail Trajectory 视图会在 turn 之间渲染 COMPACTED 区块，状态与耗时来自 `context_compaction` trace span，compaction summary 在区块详情面板中查看。covered canonical messages 不再默认隐藏，仍按原始消息流完整显示在 ledger 中。
 
 ## 已知风险与扩展方向
 

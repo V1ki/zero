@@ -37,6 +37,22 @@ export interface Message {
   createdAt: string
 }
 
+/** Structured classifier completion persisted with a task-closure event. */
+export interface TaskClosureClassifierResponseView {
+  id?: string
+  content?: readonly { type?: string; text?: string }[]
+  reasoningContent?: string
+  stopReason?: string
+  model?: string
+  usage?: {
+    input?: number
+    cacheRead?: number
+    cacheWrite?: number
+    output?: number
+    reasoning?: number
+  }
+}
+
 export interface SessionTaskClosureEvent {
   ts: string
   event: 'task_closure_decision' | 'task_closure_failed'
@@ -47,7 +63,10 @@ export interface SessionTaskClosureEvent {
     prompt: string
     maxTokens: number
   }
+  /** Structured completion the decision was parsed from, when persisted. */
+  classifierResponse?: TaskClosureClassifierResponseView
   failureStage?: 'parse_classifier_response' | 'request_classifier'
+  /** Raw completion text, persisted only when parsing it failed. */
   classifierResponseRaw?: string
   assistantMessageId?: string
   assistantMessageCreatedAt?: string

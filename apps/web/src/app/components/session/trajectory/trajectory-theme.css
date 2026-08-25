@@ -1,0 +1,61 @@
+/*
+ * Theme tokens for the ported trajectory view. The DSH design-system aliases
+ * are redefined once for the ZeRo OS session-detail surface (dark palette);
+ * every trajectory CSS module consumes them through var() fallbacks.
+ */
+
+.trajectory-theme {
+  --ds-font-family-code: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --dsw-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+
+  --dsw-font-xs-13: 400 13px / 1.45 var(--dsw-font-family);
+  --dsw-font-xs-strong-13: 600 13px / 1.4 var(--dsw-font-family);
+  --dsw-font-xxs-12: 400 12px / 1.4 var(--dsw-font-family);
+  --dsw-font-xxxs-11: 400 11px / 1.35 var(--dsw-font-family);
+
+  --ds-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+
+  --dsw-alias-label-primary: #e8eaf0;
+  --dsw-alias-label-secondary: #aab1c0;
+  --dsw-alias-label-tertiary: #7d8595;
+  --dsw-alias-label-caption: #8a93a5;
+  --dsw-alias-label-dimmed: #5c6474;
+
+  --dsw-alias-bg-base: #0a0d13;
+  --dsw-alias-bg-layer-1: #0d1118;
+  --dsw-alias-bg-layer-2: #131824;
+  --dsw-alias-bg-layer-3: #1a2130;
+  --dsw-alias-bg-module-platform: #10141c;
+
+  --dsw-alias-border-l1: rgba(255, 255, 255, 0.06);
+  --dsw-alias-border-l2: rgba(255, 255, 255, 0.1);
+  --dsw-alias-border-l3: rgba(255, 255, 255, 0.16);
+
+  --dsw-alias-interactive-bg-hover: rgba(255, 255, 255, 0.05);
+  --dsw-alias-interactive-bg-active: rgba(255, 255, 255, 0.09);
+  --dsw-alias-button-ghost-active-fill: rgba(255, 255, 255, 0.08);
+
+  --dsw-alias-state-business-primary: #22d3ee;
+  --dsw-alias-state-business-tertiary: rgba(34, 211, 238, 0.28);
+  --dsw-alias-brand-primary-new-colorprimary-new-color: #22d3ee;
+  --dsw-alias-state-error-primary: #f87171;
+  --dsw-alias-state-error-secondary: rgba(248, 113, 113, 0.16);
+  --dsw-alias-state-warn-label: #fbbf24;
+  --dsw-alias-state-warn-tertiary: rgba(251, 191, 36, 0.22);
+  --dsw-alias-state-success-primary: #34d399;
+  --dsw-alias-state-success-tertiary: rgba(52, 211, 153, 0.22);
+
+  --dsw-alias-markdown-code-block: #10141c;
+  --dsw-alias-markdown-citation: rgba(34, 211, 238, 0.35);
+
+  --dsw-alias-scrollbar-bg-l2: rgba(255, 255, 255, 0.08);
+  --dsw-alias-scrollbar-hover-l2: rgba(255, 255, 255, 0.18);
+
+  --dsw-specific-sidebar-fill: #0d1118;
+  --dsw-static-blue-500: #3b82f6;
+  --dsw-shadow-lv2: 0 8px 24px rgba(0, 0, 0, 0.45);
+
+  /* No floating composer in the session-detail mount. */
+  --dsh-composer-height: 0px;
+}

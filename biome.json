@@ -39,7 +39,27 @@
       "semicolons": "asNeeded"
     }
   },
+  "overrides": [
+    {
+      "include": ["apps/web/src/app/components/session/trajectory/TrajectoryTimeline.tsx"],
+      "linter": {
+        "rules": {
+          "a11y": {
+            "noNoninteractiveTabindex": "off"
+          }
+        }
+      }
+    }
+  ],
   "files": {
-    "ignore": ["node_modules", "dist", ".zero", "test-results", ".claude", ".artifacts"]
+    "ignore": [
+      "node_modules",
+      "dist",
+      ".zero",
+      "test-results",
+      ".claude",
+      ".artifacts",
+      "apps/web/src/app/components/session/trajectory/**/*.css"
+    ]
   }
 }

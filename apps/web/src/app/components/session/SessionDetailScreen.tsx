@@ -4,7 +4,6 @@ import { type ReactNode, type RefObject, useMemo } from 'react'
 import { useUIStore } from '../../stores/ui'
 import { Skeleton, SkeletonText } from '../shared/Skeleton'
 import { ContextPanel } from './context-panel/ContextPanel'
-import type { LlmRequestEntry } from './context-panel/ContextPanelSummaryTab'
 import { buildContextTokenSummary } from './context-panel/context-tokens'
 import { MetadataBar } from './detail/MetadataBar'
 import { useSessionDetailData } from './detail/useSessionDetailData'
@@ -17,7 +16,8 @@ import {
   buildTimeline,
   extractFilesTouched,
 } from './timeline/timeline'
-import { TimelineView } from './timeline/TimelineView'
+import { TrajectoryView } from './trajectory/TrajectoryView'
+import { useTrajectorySnapshot } from './trajectory/useTrajectorySnapshot'
 
 interface SessionDetailScreenProps {
   sessionId?: string | null
@@ -77,18 +77,8 @@ export function SessionDetailScreen({
   const navigate = useNavigate()
   const {
     timelineRef,
-    selectedToolId,
     selectedDecisionId,
     selectedTaskClosureId,
-    selectedMemoryNudgeId,
-    selectedSubAgentId,
-    highlightedAssistantMessageId,
-    highlightedSubAgentId,
-    handleSelectTool,
-    handleSelectDecision,
-    handleSelectTaskClosure,
-    handleSelectMemoryNudge,
-    handleSelectSubAgent,
     jumpToAssistantMessage,
     handleJumpToSubAgentInTimeline,
   } = useSessionDetailSelection(sessionId)
@@ -119,6 +109,57 @@ export function SessionDetailScreen({
   const toolCalls = useMemo(() => collectSessionDetailToolCalls(timelineItems), [timelineItems])
 
   const filesTouched = useMemo(() => extractFilesTouched(timelineItems), [timelineItems])
+
+  const subAgentEvents = useMemo(
+    () =>
+      timelineItems.flatMap((item) =>
+        item.type === 'sub-agent'
+          ? [
+              {
+                ts: item.createdAt,
+                agentId: item.agentId,
+                label: item.label,
+                ...(item.model === undefined ? {} : { model: item.model }),
+                status: item.status,
+                instruction: item.instruction,
+              },
+            ]
+          : [],
+      ),
+    [timelineItems],
+  )
+
+  const memoryNudgeEvents = useMemo(
+    () =>
+      timelineItems.flatMap((item) =>
+        item.type === 'memory-nudge'
+          ? [
+              {
+                ts: item.createdAt,
+                prompt: item.prompt,
+                source: item.source,
+                ...(item.iteration === undefined ? {} : { iteration: item.iteration }),
+                ...(item.memoryWritten === undefined ? {} : { memoryWritten: item.memoryWritten }),
+                ...(item.durationMs === undefined ? {} : { durationMs: item.durationMs }),
+                status: item.status,
+                ...(item.relatedToolCalls.length === 0
+                  ? {}
+                  : { relatedToolCalls: item.relatedToolCalls }),
+              },
+            ]
+          : [],
+      ),
+    [timelineItems],
+  )
+
+  const { snapshot: trajectorySnapshot } = useTrajectorySnapshot(
+    session,
+    llmRequests,
+    traces,
+    taskClosureEvents,
+    subAgentEvents,
+    memoryNudgeEvents,
+  )
 
   const selectedTaskClosure = useMemo(() => {
     if (!selectedTaskClosureId) return null
@@ -229,25 +270,12 @@ export function SessionDetailScreen({
         className="mt-3 grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-y-auto xl:grid-cols-[minmax(0,1fr)_340px] xl:items-stretch xl:overflow-hidden 2xl:grid-cols-[minmax(0,1fr)_360px]"
       >
         <SessionDetailTimelineStage
-          sessionId={session.id}
           messageCount={session.messages.length}
-          timelineItems={timelineItems}
-          llmRequests={llmRequests}
+          trajectorySnapshot={trajectorySnapshot}
+          loading={loading}
           insights={sessionInsights}
           filesTouchedCount={filesTouched.length}
           timelineRef={timelineRef}
-          selectedToolId={selectedToolId}
-          selectedDecisionId={selectedDecisionId}
-          selectedTaskClosureId={selectedTaskClosureId}
-          selectedMemoryNudgeId={selectedMemoryNudgeId}
-          selectedSubAgentId={selectedSubAgentId}
-          highlightedAssistantMessageId={highlightedAssistantMessageId}
-          highlightedSubAgentId={highlightedSubAgentId}
-          onSelectTool={handleSelectTool}
-          onSelectDecision={handleSelectDecision}
-          onSelectTaskClosure={handleSelectTaskClosure}
-          onSelectMemoryNudge={handleSelectMemoryNudge}
-          onSelectSubAgent={handleSelectSubAgent}
         />
 
         <div className="min-h-[520px] xl:min-h-0">
@@ -575,47 +603,21 @@ function SessionDetailOuter({
 }
 
 interface SessionDetailTimelineStageProps {
-  sessionId: string
   messageCount: number
-  timelineItems: TimelineItem[]
-  llmRequests: LlmRequestEntry[]
+  trajectorySnapshot: import('./trajectory/types').TrajectorySnapshot | null
+  loading: boolean
   insights: SessionDetailInsights
   filesTouchedCount: number
   timelineRef: RefObject<HTMLDivElement | null>
-  selectedToolId: string | null
-  selectedDecisionId: string | null
-  selectedTaskClosureId: string | null
-  selectedMemoryNudgeId: string | null
-  selectedSubAgentId: string | null
-  highlightedAssistantMessageId: string | null
-  highlightedSubAgentId: string | null
-  onSelectTool: (toolId: string | null) => void
-  onSelectDecision: (decisionId: string | null) => void
-  onSelectTaskClosure: (taskClosureId: string | null) => void
-  onSelectMemoryNudge: (memoryNudgeId: string | null) => void
-  onSelectSubAgent: (subAgentId: string | null) => void
 }
 
 function SessionDetailTimelineStage({
-  sessionId,
   messageCount,
-  timelineItems,
-  llmRequests,
+  trajectorySnapshot,
+  loading,
   insights,
   filesTouchedCount,
   timelineRef,
-  selectedToolId,
-  selectedDecisionId,
-  selectedTaskClosureId,
-  selectedMemoryNudgeId,
-  selectedSubAgentId,
-  highlightedAssistantMessageId,
-  highlightedSubAgentId,
-  onSelectTool,
-  onSelectDecision,
-  onSelectTaskClosure,
-  onSelectMemoryNudge,
-  onSelectSubAgent,
 }: SessionDetailTimelineStageProps) {
   return (
     <section
@@ -626,7 +628,7 @@ function SessionDetailTimelineStage({
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--color-text-disabled)]">
-              Timeline
+              Trajectory
             </p>
             <h3 className="mt-1 text-[18px] font-semibold text-[var(--color-text-primary)]">
               Execution Story
@@ -636,32 +638,13 @@ function SessionDetailTimelineStage({
         </div>
       </div>
 
-      <div
-        ref={timelineRef}
-        className="min-h-0 flex-1 overflow-y-auto bg-[linear-gradient(180deg,rgba(10,14,20,0.72),rgba(9,11,16,0.98))] px-4 py-4 sm:px-5 [scrollbar-gutter:stable]"
-      >
+      <div ref={timelineRef} className="min-h-0 flex-1 overflow-y-auto">
         {messageCount === 0 ? (
-          <div className="rounded-[24px] border border-white/8 bg-white/[0.03] p-8 text-center text-[13px] text-[var(--color-text-muted)]">
+          <div className="p-8 text-center text-[13px] text-[var(--color-text-muted)]">
             No messages in this session.
           </div>
         ) : (
-          <TimelineView
-            sessionId={sessionId}
-            items={timelineItems}
-            llmRequests={llmRequests}
-            selectedToolId={selectedToolId}
-            selectedDecisionId={selectedDecisionId}
-            selectedTaskClosureId={selectedTaskClosureId}
-            selectedMemoryNudgeId={selectedMemoryNudgeId}
-            selectedSubAgentId={selectedSubAgentId}
-            highlightedAssistantMessageId={highlightedAssistantMessageId}
-            highlightedSubAgentId={highlightedSubAgentId}
-            onSelectTool={onSelectTool}
-            onSelectDecision={onSelectDecision}
-            onSelectTaskClosure={onSelectTaskClosure}
-            onSelectMemoryNudge={onSelectMemoryNudge}
-            onSelectSubAgent={onSelectSubAgent}
-          />
+          <TrajectoryView snapshot={trajectorySnapshot} loading={loading} />
         )}
       </div>
     </section>
