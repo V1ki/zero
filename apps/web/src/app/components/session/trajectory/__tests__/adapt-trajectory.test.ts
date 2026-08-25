@@ -1072,8 +1072,45 @@ describe('buildTrajectorySnapshot', () => {
       think: 41,
     })
     if (cell !== undefined) {
-      expect(cellBadgeKind(cell)).toBe('context')
+      expect(cellBadgeKind(cell)).toBe('gateway')
     }
+  })
+
+  it('closes the nudged turn instead of opening the next one', () => {
+    // The nudge ran after turn 1's last assistant (T3) and before turn 2's
+    // user message (T4), so it must land at the end of turn 1 — not at the
+    // top of turn 2 ahead of that turn's user message and assistant.
+    const betweenTurns = '2026-08-24T07:00:10.000Z'
+    const snapshot = buildTrajectorySnapshot(session, requests, traces, {
+      memoryNudgeEvents: [
+        {
+          ts: betweenTurns,
+          prompt: 'worth remembering anything?',
+          source: 'trace',
+          memoryWritten: false,
+          status: 'success',
+        },
+      ],
+    })
+
+    const turns = deriveTrajectoryLayout({
+      nodes: snapshot.eventNodes,
+      eventLocations: snapshot.eventLocations,
+      partial: snapshot.partial,
+      runningCalls: snapshot.runningCalls,
+    })
+    expect(turns.map((turn) => turn.turn)).toEqual([1, 2])
+    const turnCells = (turnNumber: number) =>
+      turns.find((turn) => turn.turn === turnNumber)?.groups.flatMap((group) => group.cells) ?? []
+    const turnOneCells = turnCells(1)
+    const nudgeCell = turnOneCells.find(
+      (cell) => cell.kind === 'context' && cell.inputDetail === 'worth remembering anything?',
+    )
+    expect(nudgeCell).toBeDefined()
+    expect(turnOneCells.at(-1)).toBe(nudgeCell)
+    const turnTwoFirst = turnCells(2).find((cell) => cell.kind === 'user')
+    expect(turnTwoFirst?.inputDetail).toBe('again')
+    expect(turnCells(2).at(0)?.kind).toBe('user')
   })
 
   it('falls back to the written-state answer when a nudge recorded no output', () => {

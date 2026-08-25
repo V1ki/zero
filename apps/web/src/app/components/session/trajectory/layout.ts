@@ -208,6 +208,11 @@ export function deriveTrajectoryLayout(
   let index = 0
   let prevAbsTime: number | null = null
   let lastAssistantTurn: number | null = null
+  // Whether a user message was laid since the last assistant node. End-of-turn
+  // context events (memory nudges) arrive after the turn's last assistant and
+  // before the next user message; they close out the turn that ran them rather
+  // than opening the next one.
+  let userSinceLastAssistant = false
 
   const bucket = (turn: number) => {
     let entry = turns.get(turn)
@@ -426,6 +431,7 @@ export function deriveTrajectoryLayout(
       // user/message has no turn on the wire; enclose it in the next assistant
       // (or partial) turn, else open the turn after the last assistant.
       const turn = enclosingUserTurn(followingAssistants[i], partial, lastAssistantTurn)
+      userSinceLastAssistant = true
       pushMessage(turn, {
         absTime: finiteTime(node.time),
         cell: {
@@ -468,10 +474,18 @@ export function deriveTrajectoryLayout(
       if (last !== undefined) index = last.cell.index
       prevAbsTime = finiteTime(node.time) ?? prevAbsTime
       lastAssistantTurn = node.turn
+      userSinceLastAssistant = false
       continue
     }
     if (node.kind === 'context') {
-      const turn = enclosingUserTurn(followingAssistants[i], partial, lastAssistantTurn)
+      // Context events that follow a turn's last assistant without an
+      // intervening user message (memory nudges) close out that assistant's
+      // turn; the rest (retrievals, mid-turn notices) keep opening the turn of
+      // their following assistant.
+      const turn =
+        !userSinceLastAssistant && lastAssistantTurn !== null
+          ? lastAssistantTurn
+          : enclosingUserTurn(followingAssistants[i], partial, lastAssistantTurn)
       pushMessage(turn, {
         absTime: finiteTime(node.time),
         cell: {

@@ -124,15 +124,16 @@ export type TrajectoryBadgeKind = TrajectoryCellKind | 'gateway'
 /**
  * Resolve the badge kind for one projected record.
  * @param cell - Projected trajectory record.
- * @returns `gateway` for task-closure classifier gates and memory retrievals
- *   that injected nothing into the context, else the record kind.
+ * @returns `gateway` for side-loop gates that inject nothing into the context
+ *   (task-closure and memory-nudge gates, memory retrievals that selected no
+ *   memories), else the record kind.
  */
 export function cellBadgeKind(cell: TrajectoryCellProps): TrajectoryBadgeKind {
   if (cell.kind === 'context' && cell.outputDetail !== undefined) {
     const source = cell.messageSource
     if (typeof source === 'object' && source !== null) {
       const record = source as { kind?: unknown; injected?: unknown }
-      if (record.kind === 'task closure') return 'gateway'
+      if (record.kind === 'task closure' || record.kind === 'memory nudge') return 'gateway'
       if (record.kind === 'memory retrieval' && record.injected === false) return 'gateway'
     }
   }
