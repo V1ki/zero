@@ -43,9 +43,9 @@ import {
   CONTINUATION_PROMPT,
   type QueuedInjectionTrace,
   type QueuedMessage,
+  buildLoopUserMessage,
   buildQueuedInjectionText,
   buildQueuedInjectionTrace,
-  buildLoopUserMessage,
   formatAppliedQueuedIntent,
   injectQueuedMessagesWithTrace,
   isTaskComplete,
@@ -107,12 +107,14 @@ class AgentMemoryNudgeController {
   private count = 0
   private memoryWriteSucceededThisTurn = false
   private activeSpanId: string | undefined
+  private activeIteration: number | undefined
+  private responseParts: string[] = []
 
   constructor(
     private readonly deps: {
       sessionId: string
       agentName: string
-      tracer?: Pick<Tracer, 'startSpan' | 'endSpan'>
+      tracer?: Pick<Tracer, 'startSpan' | 'updateSpan' | 'endSpan'>
       baseUsagePurpose: UsagePurpose
       requestPurposeRef: { current: UsagePurpose }
     },
@@ -136,6 +138,8 @@ class AgentMemoryNudgeController {
 
   begin(iteration: number, parentSpanId?: string): void {
     this.count++
+    this.activeIteration = iteration
+    this.responseParts = []
     this.activeSpanId =
       this.deps.tracer?.startSpan(this.deps.sessionId, 'memory_nudge', parentSpanId, {
         kind: 'closure_decision',
@@ -152,6 +156,16 @@ class AgentMemoryNudgeController {
         },
       })?.id ?? this.activeSpanId
     this.syncRequestPurpose()
+  }
+
+  /**
+   * Keep the nudge model's answer on the trace span. Nudge replies never reach
+   * the session transcript (onNewMessage suppresses them while active), so the
+   * span is the only place the answer can be inspected from later.
+   */
+  recordResponseText(text: string): void {
+    if (text.trim() === '') return
+    this.responseParts.push(text)
   }
 
   interrupt(metadata: Record<string, unknown> = { interruptReason: 'pending_queue' }): boolean {
@@ -178,6 +192,16 @@ class AgentMemoryNudgeController {
 
   private endSpan(status: 'success' | 'error', metadata?: Record<string, unknown>): void {
     if (!this.activeSpanId) return
+    if (this.responseParts.length > 0) {
+      this.deps.tracer?.updateSpan(this.activeSpanId, {
+        data: {
+          memoryNudge: {
+            ...(this.activeIteration === undefined ? {} : { iteration: this.activeIteration }),
+            response: this.responseParts.join('\n'),
+          },
+        },
+      })
+    }
     endMemoryNudgeSpan({
       tracer: this.deps.tracer,
       spanId: this.activeSpanId,
@@ -186,6 +210,8 @@ class AgentMemoryNudgeController {
       metadata,
     })
     this.activeSpanId = undefined
+    this.activeIteration = undefined
+    this.responseParts = []
   }
 
   private syncRequestPurpose(): void {
@@ -441,6 +467,11 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): Agen
     onNewMessage: (message) => {
       if (!memoryNudge.isActive) {
         options.onNewMessage?.(message)
+      } else if (message.role === 'assistant') {
+        const text = extractTextFromMessage(message).trim()
+        if (text !== '') {
+          memoryNudge.recordResponseText(obs.secretFilter ? obs.secretFilter.filter(text) : text)
+        }
       }
 
       if (message.role === 'assistant') {
@@ -594,9 +625,7 @@ function createAgentEndTurnHandler({
     }
 
     const shouldEvaluateTaskClosure =
-      !toolContext.spawnedByRequestId &&
-      !memoryNudge.isActive &&
-      hasAssistantText(response.content)
+      !toolContext.spawnedByRequestId && !memoryNudge.isActive && hasAssistantText(response.content)
 
     if (shouldEvaluateTaskClosure) {
       taskClosureEvaluation = await decideTaskClosure({

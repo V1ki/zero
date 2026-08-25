@@ -65,10 +65,11 @@ export async function retrieveMemoriesWithDecision({
   if (userMessage.trim().length < 5) return undefined
 
   const traceSpanId = startMemoryRetrievalTrace(sessionId, trace)
+  const sideLoop: MemoryRetrievalSideLoopCapture = {}
 
   try {
     const result = await runMemoryRetrievalAgentDetailed({
-      runLoop: createLoopRunner(adapter, sessionId, logger, reasoningEffort),
+      runLoop: createLoopRunner(adapter, sessionId, logger, reasoningEffort, sideLoop),
       memoryRetriever: {
         retrieve: (query, options) =>
           memoryRetriever.retrieve(query, {
@@ -97,7 +98,7 @@ export async function retrieveMemoriesWithDecision({
       },
     })
 
-    recordMemoryRetrievalTraceResult({ trace, traceSpanId, userMessage, result })
+    recordMemoryRetrievalTraceResult({ trace, traceSpanId, userMessage, result, sideLoop })
 
     return result.memories
   } catch (error) {
@@ -111,16 +112,23 @@ export async function retrieveMemoriesWithDecision({
   }
 }
 
+/** Bag the caller can read side-loop details from after the run completes. */
+export interface MemoryRetrievalSideLoopCapture {
+  system?: string
+}
+
 export function createLoopRunner(
   adapter: ProviderAdapter,
   sessionId: string,
   logger: ToolLogger,
   reasoningEffort?: ReasoningEffort,
+  capture?: MemoryRetrievalSideLoopCapture,
 ): LoopRunner {
   return async (config) => {
     const startedAt = Date.now()
     const usage = { input: 0, output: 0 }
     const toolCalls: LoopToolCallRecord[] = []
+    if (capture && config.system !== undefined) capture.system = config.system
 
     const toolExecutor: ToolExecutor = {
       has: (name) => config.tools.some((tool) => tool.name === name),
@@ -207,12 +215,17 @@ function recordMemoryRetrievalTraceResult(options: {
   traceSpanId: string | undefined
   userMessage: string
   result: MemoryRetrievalAgentRun
+  sideLoop: MemoryRetrievalSideLoopCapture
 }): void {
   const { result, trace, traceSpanId } = options
   if (!traceSpanId) return
 
   const safeUserMessage = sanitizeText(options.userMessage, trace?.secretFilter)
   const safeFinalText = sanitizeText(result.finalText, trace?.secretFilter)
+  const safeSystem =
+    options.sideLoop.system === undefined
+      ? undefined
+      : sanitizeText(options.sideLoop.system, trace?.secretFilter)
   const selectedMemories = result.selectedMemories.map((memory) => ({
     ...memory,
     title: sanitizeText(memory.title, trace?.secretFilter),
@@ -224,6 +237,7 @@ function recordMemoryRetrievalTraceResult(options: {
         model: trace?.modelLabel ?? 'unknown',
         provider: trace?.providerName ?? 'unknown',
         prompt: safeUserMessage,
+        ...(safeSystem === undefined || safeSystem === '' ? {} : { system: safeSystem }),
         response: safeFinalText,
         need: result.queries.length > 0,
         queries: result.queries,

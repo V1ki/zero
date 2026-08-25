@@ -1185,6 +1185,7 @@ describe('Agent task closure gate', () => {
       memoryNudge: {
         prompt: MEMORY_NUDGE_PROMPT,
         iteration: 2,
+        response: '无需记忆',
       },
     })
     expect(memoryNudgeSpan?.metadata).toMatchObject({
