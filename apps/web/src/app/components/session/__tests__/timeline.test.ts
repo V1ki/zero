@@ -6,6 +6,7 @@ import {
   type TimelineCompactionBlock,
   type TraceSpan,
   buildTimeline,
+  collectSubAgentTimelineItems,
   extractFilesTouched,
   filterDisplayableDecisions,
 } from '../timeline/timeline'
@@ -1575,6 +1576,196 @@ describe('sub-agent timeline items', () => {
       expect(subAgent.status).toBe('running')
       expect(subAgent.output).toBeUndefined()
     }
+  })
+
+  test('collects sub-agent items even when compaction covers the spawn messages', () => {
+    const messages: Message[] = [
+      {
+        id: 'old_user',
+        role: 'user',
+        messageType: 'message',
+        content: [{ type: 'text', text: 'old task' }],
+        createdAt: '2026-03-08T00:00:00.000Z',
+      },
+      {
+        id: 'old_spawn',
+        role: 'assistant',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_spawn',
+            name: 'spawn_agent',
+            input: { label: 'probe', instruction: 'Probe the cluster' },
+          },
+        ],
+        createdAt: '2026-03-08T00:00:01.000Z',
+      },
+      {
+        id: 'old_spawn_result',
+        role: 'user',
+        messageType: 'message',
+        content: [
+          { type: 'tool_result', toolUseId: 'call_spawn', content: '{"agentId":"agent_9"}' },
+        ],
+        createdAt: '2026-03-08T00:00:01.100Z',
+      },
+      {
+        id: 'old_wait',
+        role: 'assistant',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_wait',
+            name: 'wait_agent',
+            input: { agentId: 'agent_9' },
+          },
+        ],
+        createdAt: '2026-03-08T00:00:02.000Z',
+      },
+      {
+        id: 'old_wait_result',
+        role: 'user',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: 'call_wait',
+            content: '{"status":"completed","output":"probe done","durationMs":800}',
+          },
+        ],
+        createdAt: '2026-03-08T00:00:02.100Z',
+      },
+    ]
+    const blocks: TimelineCompactionBlock[] = [
+      {
+        id: 'timeline_compaction_1',
+        sessionId: 'sess_timeline',
+        status: 'active',
+        strategy: 'deterministic_contiguous_older_turns_v1',
+        strategyVersion: 'timeline_compaction_block_v1',
+        boundaryReason: 'test boundary',
+        summary: '<timeline_compaction_block>summary</timeline_compaction_block>',
+        workingStateSummary: '<working_state_compaction>state</working_state_compaction>',
+        coveredMessageIds: messages.map((message) => message.id),
+        coveredRange: {
+          startMessageId: 'old_user',
+          endMessageId: 'old_wait_result',
+          startCreatedAt: '2026-03-08T00:00:00.000Z',
+          endCreatedAt: '2026-03-08T00:00:02.100Z',
+        },
+        coveredMessageCount: messages.length,
+        toolUseIds: ['call_spawn', 'call_wait'],
+        evidence: [],
+        evidenceCount: 0,
+        evidenceChars: 0,
+        evidenceBytes: 0,
+        rawCharsMovedToEvidence: 0,
+        skippedUnfinishedToolUseIds: [],
+        episodeFullRetainTurns: 0,
+        createdAt: '2026-03-08T00:00:00.000Z',
+        updatedAt: '2026-03-08T00:00:03.000Z',
+        generation: 1,
+      },
+    ]
+
+    const timelineItems = buildTimeline(messages, [], [], [], [], blocks)
+    expect(timelineItems.find((item) => item.type === 'sub-agent')).toBeUndefined()
+
+    const collected = collectSubAgentTimelineItems(messages)
+    expect(collected).toHaveLength(1)
+    expect(collected[0]).toMatchObject({
+      agentId: 'agent_9',
+      label: 'probe',
+      status: 'completed',
+      instruction: 'Probe the cluster',
+      output: 'probe done',
+      durationMs: 800,
+    })
+  })
+
+  test('prefers the sub-agent span output over a background wait notice', () => {
+    const messages: Message[] = [
+      {
+        id: 'msg_spawn',
+        role: 'assistant',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_spawn',
+            name: 'spawn_agent',
+            input: { label: 'probe', instruction: 'Probe the cluster' },
+          },
+        ],
+        createdAt: '2026-03-08T00:00:00.000Z',
+      },
+      {
+        id: 'msg_spawn_result',
+        role: 'user',
+        messageType: 'message',
+        content: [
+          { type: 'tool_result', toolUseId: 'call_spawn', content: '{"agentId":"agent_9"}' },
+        ],
+        createdAt: '2026-03-08T00:00:00.100Z',
+      },
+      {
+        id: 'msg_wait',
+        role: 'assistant',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_wait',
+            name: 'wait_agent',
+            input: { agentId: 'agent_9' },
+          },
+        ],
+        createdAt: '2026-03-08T00:00:01.000Z',
+      },
+      {
+        id: 'msg_wait_result',
+        role: 'user',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: 'call_wait',
+            content:
+              '<system_event type="background_tool.started"><background_task tool_name="wait_agent" status="running">',
+          },
+        ],
+        createdAt: '2026-03-08T00:00:01.100Z',
+      },
+    ]
+    const traces: TraceSpan[] = [
+      {
+        id: 'span_spawn',
+        sessionId: 'sess_timeline',
+        name: 'tool:spawn_agent',
+        startTime: '2026-03-08T00:00:00.000Z',
+        status: 'success',
+        metadata: { toolUseId: 'call_spawn' },
+        children: [
+          {
+            id: 'span_agent',
+            sessionId: 'sess_timeline',
+            name: 'sub_agent:probe',
+            startTime: '2026-03-08T00:00:00.100Z',
+            status: 'success',
+            durationMs: 1200,
+            data: { output: 'span final report', durationMs: 1200 },
+            children: [],
+          },
+        ],
+      },
+    ]
+
+    const collected = collectSubAgentTimelineItems(messages, traces)
+    expect(collected).toHaveLength(1)
+    expect(collected[0]?.output).toBe('span final report')
+    expect(collected[0]?.durationMs).toBe(1200)
   })
 
   test('sub-agent resolves waiting status from wait_agent ids results', () => {

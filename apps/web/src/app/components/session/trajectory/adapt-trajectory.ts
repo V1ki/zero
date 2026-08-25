@@ -350,6 +350,9 @@ export interface MemoryNudgeToolCallLike {
   durationMs?: number
 }
 
+/** Client view of one child tool call a sub-agent performed (subset of SubAgentChildToolCall). */
+export type SubAgentChildCallLike = MemoryNudgeToolCallLike
+
 /** Client view of a sub-agent spawn (subset of SubAgentTimelineItem). */
 export interface SubAgentEventLike {
   ts: string
@@ -358,6 +361,10 @@ export interface SubAgentEventLike {
   model?: string
   status: string
   instruction: string
+  role?: string
+  output?: string
+  durationMs?: number
+  childToolCalls?: readonly SubAgentChildCallLike[]
 }
 
 /** Friendly source labels for control gate kinds, shown on CONTEXT records. */
@@ -781,6 +788,55 @@ function memoryToolCallLine(call: MemoryNudgeToolCallLike): string {
       ? ''
       : `\n  ${call.summary.replace(/\s+/g, ' ').trim().slice(0, 240)}`
   return `- ${call.name}${label === '' ? '' : `: ${label}`} · ${status}${duration}${summary}`
+}
+
+/** Input fields that usually identify what an arbitrary tool call targeted. */
+const SUB_AGENT_CALL_LABEL_KEYS = [
+  'command',
+  'query',
+  'path',
+  'pattern',
+  'instruction',
+  'url',
+  'title',
+  'action',
+  'id',
+] as const
+
+/**
+ * Human label for one sub-agent child tool call, from its most identifying
+ * input field, falling back to a compact JSON slice of the whole input.
+ * @param call - Child tool call performed by a sub-agent.
+ * @returns Label text, or '' when the input carries nothing identifiable.
+ */
+function subAgentChildCallLabel(call: SubAgentChildCallLike): string {
+  for (const key of SUB_AGENT_CALL_LABEL_KEYS) {
+    const value = call.input[key]
+    if (typeof value === 'string' && value.trim() !== '') {
+      return value.replace(/\s+/g, ' ').trim().slice(0, 120)
+    }
+  }
+  const json = JSON.stringify(call.input)
+  return json === undefined || json === '{}' ? '' : json.slice(0, 120)
+}
+
+/**
+ * Render one sub-agent child tool call as a detail-pane line with label,
+ * outcome, and duration, plus the recorded summary or result preview.
+ * @param call - Child tool call performed by a sub-agent.
+ * @returns Single detail line (detail continues on an indented line).
+ */
+function subAgentChildCallLine(call: SubAgentChildCallLike): string {
+  const label = subAgentChildCallLabel(call)
+  const status = call.isError === true ? 'error' : 'ok'
+  const duration =
+    call.durationMs === undefined ? '' : ` · ${formatDurationMillis(call.durationMs)}`
+  const detail = call.summary ?? call.result
+  const detailLine =
+    detail === undefined || detail.trim() === ''
+      ? ''
+      : `\n  ${detail.replace(/\s+/g, ' ').trim().slice(0, 240)}`
+  return `- ${call.name}${label === '' ? '' : `: ${label}`} · ${status}${duration}${detailLine}`
 }
 
 /**
@@ -1278,14 +1334,40 @@ export function buildTrajectorySnapshot(
 
   // Sub-agent spawns land as CONTEXT records at their spawn point with the
   // resolved lifecycle status, so the ledger tells the whole delegation story.
+  // The instruction becomes the record's Payload and the child tool-call trail
+  // plus the agent's final output its Result; the agents toolbar panel links
+  // here through the agentId on the record's messageSource.
   for (const event of options.subAgentEvents ?? []) {
     const time = toEpochMillis(event.ts)
     if (time === null) continue
     const insertBefore = nodeAfter(time)
     const nodeSeq = claimSeqBefore(insertBefore === undefined ? undefined : insertBefore.seq)
+    const childCalls = event.childToolCalls ?? []
+    const tools =
+      childCalls.length === 0
+        ? ''
+        : ` · ${childCalls.length} tool${childCalls.length === 1 ? '' : 's'}`
+    const duration =
+      event.durationMs === undefined ? '' : ` · ${formatDurationMillis(event.durationMs)}`
     const heading = `sub-agent ${event.label}${
       event.model === undefined || event.model === '' ? '' : ` (${event.model})`
-    }: ${event.status}`
+    }: ${event.status}${tools}${duration}`
+    const answerParts: string[] = []
+    if (childCalls.length > 0) {
+      answerParts.push(
+        `Child tool calls (${childCalls.length}):\n${childCalls.map(subAgentChildCallLine).join('\n')}`,
+      )
+    }
+    if (event.output !== undefined && event.output.trim() !== '') {
+      answerParts.push(`Output:\n${event.output}`)
+    }
+    if (answerParts.length === 0) {
+      answerParts.push(
+        event.status === 'running' || event.status === 'waiting'
+          ? 'Still running — no child calls or output yet.'
+          : 'No recorded output.',
+      )
+    }
     nodes.push({
       kind: 'context',
       seq: nodeSeq,
@@ -1297,7 +1379,21 @@ export function buildTrajectorySnapshot(
             event.instruction === '' ? heading : `${heading}\n${event.instruction.slice(0, 240)}`,
         },
       ],
-      source: { kind: 'sub-agent', status: event.status },
+      gateQa: {
+        question: event.instruction,
+        answer: answerParts.join('\n\n'),
+        ...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }),
+      },
+      source: {
+        kind: 'sub-agent',
+        agentId: event.agentId,
+        label: event.label,
+        status: event.status,
+        ...(event.model === undefined ? {} : { model: event.model }),
+        ...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }),
+        childToolCalls: childCalls,
+        ...(event.output === undefined ? {} : { output: event.output }),
+      },
       provenance: { role: 'system', name: `sub-agent ${event.agentId}` },
       form: 'sub-agent',
     })

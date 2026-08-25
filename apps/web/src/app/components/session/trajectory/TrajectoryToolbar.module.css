@@ -159,9 +159,25 @@
   outline-offset: 1px;
 }
 
+.action[aria-pressed="true"] {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
 .actionIcon {
   color: var(--dsw-alias-label-tertiary);
   font: 14px / 14px var(--ds-font-family-code);
+}
+
+.agentCount {
+  min-width: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  color: var(--dsw-alias-label-caption);
+  background: var(--dsw-alias-interactive-bg-hover);
+  text-align: center;
+  font: var(--dsw-font-xxs-12);
+  line-height: 14px;
 }
 
 .search {

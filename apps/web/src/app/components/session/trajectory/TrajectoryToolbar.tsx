@@ -25,6 +25,12 @@ export interface TrajectoryToolbarProps {
   searchQuery: string
   /** Update the live ledger search query. */
   onSearchQueryChange: (query: string) => void
+  /** Number of sub-agent delegation records in the ledger. */
+  subAgentCount: number
+  /** Whether the sub-agent list panel is open. */
+  agentsOpen: boolean
+  /** Open or close the sub-agent list panel. */
+  onToggleAgents: () => void
   /** Translate a toolbar dictionary key. */
   t: TrajectoryT
 }
@@ -32,7 +38,7 @@ export interface TrajectoryToolbarProps {
 /**
  * Render the sticky trajectory toolbar.
  * @param props - rendered counts and whole-list fold state.
- * @returns the toolbar element.
+ * @returns The toolbar element.
  */
 export function TrajectoryToolbar({
   actualDuration,
@@ -45,6 +51,9 @@ export function TrajectoryToolbar({
   onToggleAllAssistants,
   searchQuery,
   onSearchQueryChange,
+  subAgentCount,
+  agentsOpen,
+  onToggleAgents,
   t,
 }: TrajectoryToolbarProps) {
   return (
@@ -110,6 +119,22 @@ export function TrajectoryToolbar({
             </span>
             {t('toolbar.calls')}
           </button>
+          {subAgentCount > 0 ? (
+            <button
+              type="button"
+              className={css.action}
+              aria-label={t('toolbar.toggleAgents')}
+              aria-pressed={agentsOpen}
+              title={t('toolbar.toggleAgents')}
+              onClick={onToggleAgents}
+            >
+              <span className={css.actionIcon} aria-hidden="true">
+                {agentsOpen ? '×' : '◆'}
+              </span>
+              {t('toolbar.agents')}
+              <span className={css.agentCount}>{subAgentCount}</span>
+            </button>
+          ) : null}
         </div>
         <div className={css.search}>
           <IconSearchOutline16 size={11} className={css.searchIcon} />

@@ -918,13 +918,60 @@ function buildSubAgentTimelineItem(params: {
       traceStatus: traceInfo?.status,
       result,
     }),
-    output: waitInfo?.output ?? traceInfo?.output,
+    // The span's recorded output is the agent's own final report; the wait
+    // result may carry an unrelated background-tool notice when wait_agent
+    // itself went background, so the span wins whenever it recorded output.
+    output:
+      traceInfo?.output !== undefined && traceInfo.output !== ''
+        ? traceInfo.output
+        : waitInfo?.output,
     durationMs: traceInfo?.durationMs ?? waitInfo?.durationMs,
     spawnToolCallId: toolId,
     childToolCalls,
     traceSpan,
     createdAt,
   }
+}
+
+/**
+ * Collect sub-agent lifecycle items across the whole message history,
+ * including messages inside active compaction ranges. Delegation records are
+ * cross-cutting session structure, so consumers like the trajectory ledger
+ * keep them even when the covered conversation is summarized away, while the
+ * chat timeline keeps skipping covered messages.
+ * @param messages - Full session message history, compaction included.
+ * @param traces - Sanitized trace spans for the session.
+ * @returns One sub-agent item per spawn_agent call, in message order.
+ */
+export function collectSubAgentTimelineItems(
+  messages: Message[],
+  traces: TraceSpan[] = [],
+): SubAgentTimelineItem[] {
+  const toolResults = buildToolResultMap(messages, traces, [])
+  const handledSubAgentIds = new Set<string>()
+  const spawnToolCallIds = new Set<string>()
+  const items: SubAgentTimelineItem[] = []
+  for (const msg of messages) {
+    if (msg.role !== 'assistant') continue
+    for (const block of msg.content) {
+      if (block.type !== 'tool_use' || block.name !== 'spawn_agent') continue
+      const toolId = block.id as string
+      items.push(
+        buildSubAgentTimelineItem({
+          messages,
+          traces,
+          toolId,
+          toolInput: (block.input as Record<string, unknown>) ?? {},
+          result: toolResults.get(toolId),
+          toolResults,
+          handledSubAgentIds,
+          spawnToolCallIds,
+          createdAt: msg.createdAt,
+        }),
+      )
+    }
+  }
+  return items
 }
 
 function isHandledSubAgentTool(

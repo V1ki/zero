@@ -712,7 +712,12 @@ describe('buildTrajectorySnapshot', () => {
       (node) => node.kind === 'context' && node.form === 'sub-agent',
     ) as Extract<(typeof snapshot.eventNodes)[number], { kind: 'context' }>[]
     expect(spawns).toHaveLength(2)
-    expect(spawns[0]?.source).toEqual({ kind: 'sub-agent', status: 'completed' })
+    expect(spawns[0]?.source).toMatchObject({
+      kind: 'sub-agent',
+      agentId: 'agent-1',
+      label: 'news-collector',
+      status: 'completed',
+    })
     const firstText = spawns[0]?.content[0]
     if (firstText?.type === 'text') {
       expect(firstText.text).toContain('sub-agent news-collector (glm-4.7): completed')
@@ -728,6 +733,72 @@ describe('buildTrajectorySnapshot', () => {
     expect(new Set(seqs).size).toBe(seqs.length)
     for (const node of spawns) {
       expect(snapshot.eventLocations.get(node.seq)).toBeDefined()
+    }
+  })
+
+  it('projects the sub-agent child tool-call trail as payload/result detail', () => {
+    const snapshot = buildTrajectorySnapshot(session, requests, traces, {
+      subAgentEvents: [
+        {
+          ts: T3,
+          agentId: 'agent-1',
+          label: 'researcher',
+          model: 'glm-4.7',
+          status: 'completed',
+          instruction: 'Research the harness effect.',
+          durationMs: 133_000,
+          output: 'Harness design dominates token economics.',
+          childToolCalls: [
+            {
+              name: 'bash',
+              input: { command: 'rg -n harness packages' },
+              result: '12 matches',
+              durationMs: 2_400,
+            },
+            {
+              name: 'read',
+              input: { path: '/a.md' },
+              summary: 'paper notes',
+              isError: true,
+              durationMs: 300,
+            },
+          ],
+        },
+      ],
+    })
+
+    const spawn = snapshot.eventNodes.find(
+      (node) => node.kind === 'context' && node.form === 'sub-agent',
+    ) as Extract<(typeof snapshot.eventNodes)[number], { kind: 'context' }> | undefined
+    expect(spawn).toBeDefined()
+    const spawnText = spawn?.content[0]
+    if (spawnText?.type === 'text') {
+      expect(spawnText.text).toContain('sub-agent researcher (glm-4.7): completed')
+      expect(spawnText.text).toContain('· 2 tools · 133,000 ms')
+    }
+
+    const turns = deriveTrajectoryLayout({
+      nodes: snapshot.eventNodes,
+      eventLocations: snapshot.eventLocations,
+      partial: snapshot.partial,
+      runningCalls: snapshot.runningCalls,
+    })
+    const cell = turns
+      .flatMap((turn) => turn.groups.flatMap((group) => group.cells))
+      .find((candidate) => candidate.kind === 'context' && candidate.inputDetail !== undefined)
+    expect(cell).toMatchObject({
+      kind: 'context',
+      inputDetail: 'Research the harness effect.',
+      timeSeconds: 133,
+    })
+    expect(cell?.outputDetail).toContain('Child tool calls (2)')
+    expect(cell?.outputDetail).toContain('- bash: rg -n harness packages · ok · 2,400 ms')
+    expect(cell?.outputDetail).toContain('12 matches')
+    expect(cell?.outputDetail).toContain('- read: /a.md · error · 300 ms')
+    expect(cell?.outputDetail).toContain('paper notes')
+    expect(cell?.outputDetail).toContain('Output:\nHarness design dominates token economics.')
+    if (cell !== undefined) {
+      expect(cellBadgeKind(cell)).toBe('gateway')
     }
   })
 

@@ -23,6 +23,9 @@ export type TrajectoryKey =
   | 'toolbar.collapseCalls'
   | 'toolbar.search'
   | 'toolbar.searchPlaceholder'
+  | 'toolbar.agents'
+  | 'toolbar.toggleAgents'
+  | 'agents.aria'
 
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh: Record<TrajectoryKey, string> = {
@@ -40,6 +43,9 @@ export const zh: Record<TrajectoryKey, string> = {
   'toolbar.collapseCalls': 'Collapse calls',
   'toolbar.search': '搜索轨迹',
   'toolbar.searchPlaceholder': '搜索',
+  'toolbar.agents': 'Agents',
+  'toolbar.toggleAgents': 'Toggle the sub-agent list',
+  'agents.aria': '子代理列表',
 }
 
 /** English dictionary. */
@@ -58,6 +64,9 @@ export const en: Record<TrajectoryKey, string> = {
   'toolbar.collapseCalls': 'Collapse calls',
   'toolbar.search': 'Search trajectory',
   'toolbar.searchPlaceholder': 'Search',
+  'toolbar.agents': 'Agents',
+  'toolbar.toggleAgents': 'Toggle the sub-agent list',
+  'agents.aria': 'Sub-agent list',
 }
 
 /** Translate function bound to one dictionary. */

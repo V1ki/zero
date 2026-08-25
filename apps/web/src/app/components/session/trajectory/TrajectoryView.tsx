@@ -8,6 +8,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type TrajectoryAgentEntry, TrajectoryAgents } from './TrajectoryAgents'
 import { type TrajectoryRequestNumber, TrajectoryTable } from './TrajectoryTable'
 import { TrajectoryTimeline } from './TrajectoryTimeline'
 import { TrajectoryToolbar } from './TrajectoryToolbar'
@@ -95,6 +96,7 @@ export function TrajectoryView({ snapshot, loading = false }: TrajectoryViewProp
   }, [])
   const [actualTime, setActualTime] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  const [agentsOpen, setAgentsOpen] = useState(false)
   const [searchIndex] = useState(() => new TrajectorySearchIndex())
   const [searchIndexRevision, setSearchIndexRevision] = useState(0)
   const searchIndexTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -153,6 +155,64 @@ export function TrajectoryView({ snapshot, loading = false }: TrajectoryViewProp
   const timelineTurns = useMemo(
     () => appendTrajectoryPartialLayout(finalized.turns, timelinePartial, finalized.lastIndex),
     [finalized, timelinePartial],
+  )
+  // Sub-agent delegation strip: metadata comes from the projected sub-agent
+  // nodes, selection resolves the laid cell so the detail pane opens on it.
+  const subAgentEntries = useMemo<readonly TrajectoryAgentEntry[]>(() => {
+    const entries: TrajectoryAgentEntry[] = []
+    for (const node of nodes) {
+      if (node.kind !== 'context' || node.form !== 'sub-agent') continue
+      const source = node.source as {
+        agentId?: unknown
+        label?: unknown
+        model?: unknown
+        status?: unknown
+        durationMs?: unknown
+        childToolCalls?: unknown
+      } | null
+      if (source === null || typeof source !== 'object') continue
+      if (typeof source.agentId !== 'string') continue
+      entries.push({
+        agentId: source.agentId,
+        label:
+          typeof source.label === 'string' && source.label !== '' ? source.label : source.agentId,
+        ...(typeof source.model === 'string' && source.model !== '' ? { model: source.model } : {}),
+        status: typeof source.status === 'string' ? source.status : 'unknown',
+        ...(typeof source.durationMs === 'number' && Number.isFinite(source.durationMs)
+          ? { durationMs: source.durationMs }
+          : {}),
+        toolCount: Array.isArray(source.childToolCalls) ? source.childToolCalls.length : 0,
+      })
+    }
+    return entries
+  }, [nodes])
+  const subAgentCellIndexes = useMemo(() => {
+    const indexByAgentId = new Map<string, number>()
+    const agentIdByIndex = new Map<number, string>()
+    for (const turn of timelineTurns) {
+      for (const group of turn.groups) {
+        for (const cell of group.cells) {
+          const source = cell.messageSource
+          if (typeof source !== 'object' || source === null) continue
+          const record = source as { kind?: unknown; agentId?: unknown }
+          if (record.kind === 'sub-agent' && typeof record.agentId === 'string') {
+            indexByAgentId.set(record.agentId, cell.index)
+            agentIdByIndex.set(cell.index, record.agentId)
+          }
+        }
+      }
+    }
+    return { indexByAgentId, agentIdByIndex }
+  }, [timelineTurns])
+  const handleSubAgentSelect = useCallback(
+    (agentId: string) => {
+      const index = subAgentCellIndexes.indexByAgentId.get(agentId)
+      if (index === undefined) return
+      setTimelineSelection(null)
+      setTimelineRecordSelection({ index })
+      setSelectedTimelineIndex(index)
+    },
+    [subAgentCellIndexes],
   )
   const timelineMode: TrajectoryTimelineMode = actualDuration
     ? actualTime
@@ -344,8 +404,25 @@ export function TrajectoryView({ snapshot, loading = false }: TrajectoryViewProp
         onToggleAllAssistants={toggleAllAssistants}
         searchQuery={searchQuery}
         onSearchQueryChange={setSearchQuery}
+        subAgentCount={subAgentEntries.length}
+        agentsOpen={agentsOpen}
+        onToggleAgents={() => {
+          setAgentsOpen((open) => !open)
+        }}
         t={t}
       />
+      {agentsOpen && subAgentEntries.length > 0 ? (
+        <TrajectoryAgents
+          agents={subAgentEntries}
+          selectedAgentId={
+            timelineRecordSelection === null
+              ? null
+              : (subAgentCellIndexes.agentIdByIndex.get(timelineRecordSelection.index) ?? null)
+          }
+          onSelect={handleSubAgentSelect}
+          ariaLabel={t('agents.aria')}
+        />
+      ) : null}
       <TrajectoryTimeline
         turns={timelineTurns}
         mode={timelineMode}

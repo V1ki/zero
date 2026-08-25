@@ -14,6 +14,7 @@ import {
   type TimelineItem,
   type TraceSpan,
   buildTimeline,
+  collectSubAgentTimelineItems,
   extractFilesTouched,
 } from './timeline/timeline'
 import { TrajectoryView } from './trajectory/TrajectoryView'
@@ -110,23 +111,24 @@ export function SessionDetailScreen({
 
   const filesTouched = useMemo(() => extractFilesTouched(timelineItems), [timelineItems])
 
+  // Sub-agent events come from a compaction-independent collector so the
+  // trajectory keeps the delegation story even when the spawning messages were
+  // summarized away by an active timeline compaction block.
   const subAgentEvents = useMemo(
     () =>
-      timelineItems.flatMap((item) =>
-        item.type === 'sub-agent'
-          ? [
-              {
-                ts: item.createdAt,
-                agentId: item.agentId,
-                label: item.label,
-                ...(item.model === undefined ? {} : { model: item.model }),
-                status: item.status,
-                instruction: item.instruction,
-              },
-            ]
-          : [],
-      ),
-    [timelineItems],
+      collectSubAgentTimelineItems(session?.messages ?? [], traces).map((item) => ({
+        ts: item.createdAt,
+        agentId: item.agentId,
+        label: item.label,
+        ...(item.model === undefined ? {} : { model: item.model }),
+        status: item.status,
+        instruction: item.instruction,
+        ...(item.role === undefined ? {} : { role: item.role }),
+        ...(item.output === undefined ? {} : { output: item.output }),
+        ...(item.durationMs === undefined ? {} : { durationMs: item.durationMs }),
+        ...(item.childToolCalls.length === 0 ? {} : { childToolCalls: item.childToolCalls }),
+      })),
+    [session, traces],
   )
 
   const memoryNudgeEvents = useMemo(
