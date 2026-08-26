@@ -689,26 +689,22 @@ function SessionDetailTimelineStage({
       data-testid="session-timeline-stage"
       className="card flex min-h-[520px] flex-col overflow-hidden p-0 xl:min-h-0"
     >
-      <div className="shrink-0 border-b border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01))] px-4 py-3 sm:px-5">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex items-center gap-4">
-            <div>
-              <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--color-text-disabled)]">
-                Execution
-              </p>
-              <h3 className="mt-1 text-[18px] font-semibold text-[var(--color-text-primary)]">
-                Session Story
-              </h3>
-            </div>
-            <div className="flex rounded-full border border-white/10 bg-white/[0.03] p-0.5">
-              {(['trajectory', 'timeline'] as const).map((view) => (
+      <div className="shrink-0 border-b border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01))] px-4 pt-3 sm:px-5">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
+          <div role="tablist" aria-label="Session view" className="flex items-end gap-1">
+            {(['timeline', 'trajectory'] as const).map((view) => {
+              const active = stageView === view
+              return (
                 <button
                   key={view}
+                  id={`session-stage-${view}`}
                   type="button"
-                  aria-pressed={stageView === view}
-                  className={`rounded-full px-3 py-1 text-[11px] transition-colors ${
-                    stageView === view
-                      ? 'bg-cyan-400/15 text-cyan-100'
+                  role="tab"
+                  aria-selected={active}
+                  aria-controls="session-stage-panel"
+                  className={`relative px-3 pb-3 pt-1 text-[13px] font-medium transition-colors ${
+                    active
+                      ? 'text-[var(--color-text-primary)]'
                       : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'
                   }`}
                   onClick={() => {
@@ -716,16 +712,24 @@ function SessionDetailTimelineStage({
                   }}
                 >
                   {view === 'trajectory' ? 'Trajectory' : 'Timeline'}
+                  {active ? (
+                    <span className="absolute inset-x-2 bottom-0 h-0.5 rounded-t-full bg-cyan-300" />
+                  ) : null}
                 </button>
-              ))}
-            </div>
+              )
+            })}
           </div>
-          <TimelineInsightChips insights={insights} filesTouchedCount={filesTouchedCount} />
+          <div className="pb-3">
+            <TimelineInsightChips insights={insights} filesTouchedCount={filesTouchedCount} />
+          </div>
         </div>
       </div>
 
       <div
         ref={timelineRef}
+        role="tabpanel"
+        aria-labelledby={`session-stage-${stageView}`}
+        id="session-stage-panel"
         className={`min-h-0 flex-1 overflow-y-auto ${
           stageView === 'timeline'
             ? 'bg-[linear-gradient(180deg,rgba(10,14,20,0.72),rgba(9,11,16,0.98))] px-4 py-4 sm:px-5 [scrollbar-gutter:stable]'
