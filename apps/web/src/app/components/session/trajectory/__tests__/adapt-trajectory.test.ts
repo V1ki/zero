@@ -212,6 +212,87 @@ describe('buildTrajectorySnapshot', () => {
     }
   })
 
+  it('re-attaches request reasoning when assistant content has no thinking block', () => {
+    const reasoned = baseSession([
+      message({ id: 'u1', role: 'user', createdAt: T0, content: [{ type: 'text', text: 'go' }] }),
+      message({
+        id: 'a1',
+        role: 'assistant',
+        createdAt: T3,
+        content: [{ type: 'text', text: 'done' }],
+      }),
+    ])
+    const snapshot = buildTrajectorySnapshot(
+      reasoned,
+      [request({ id: 'req1', ts: T3, turnIndex: 1, reasoningContent: '**plan** first' })],
+      [],
+    )
+
+    const assistant = snapshot.eventNodes.find((node) => node.kind === 'assistant')
+    if (assistant?.kind !== 'assistant') throw new Error('assistant node missing')
+    expect(assistant.blocks).toEqual([
+      { kind: 'reasoning', text: '**plan** first' },
+      { kind: 'text', text: 'done' },
+    ])
+
+    const turns = deriveTrajectoryLayout({
+      nodes: snapshot.eventNodes,
+      eventLocations: snapshot.eventLocations,
+      partial: snapshot.partial,
+      runningCalls: snapshot.runningCalls,
+    })
+    const cell = turns
+      .flatMap((turn) => turn.groups.flatMap((group) => group.cells))
+      .find((candidate) => candidate.kind === 'message')
+    expect(cell).toMatchObject({ thinkingDetail: '**plan** first' })
+  })
+
+  it('keeps sub-agent request reasoning off main assistant nodes', () => {
+    const reasoned = baseSession([
+      message({ id: 'u1', role: 'user', createdAt: T0, content: [{ type: 'text', text: 'go' }] }),
+      message({
+        id: 'a1',
+        role: 'assistant',
+        createdAt: T3,
+        content: [{ type: 'text', text: 'done' }],
+      }),
+    ])
+    const snapshot = buildTrajectorySnapshot(
+      reasoned,
+      [
+        request({
+          id: 'req1',
+          ts: T3,
+          turnIndex: 1,
+          parentId: 'req0',
+          reasoningContent: 'sub-agent thinking',
+        }),
+      ],
+      [],
+    )
+
+    const assistant = snapshot.eventNodes.find((node) => node.kind === 'assistant')
+    if (assistant?.kind !== 'assistant') throw new Error('assistant node missing')
+    expect(assistant.blocks).toEqual([{ kind: 'text', text: 'done' }])
+  })
+
+  it('does not duplicate reasoning when the assistant already has a thinking block', () => {
+    const snapshot = buildTrajectorySnapshot(
+      session,
+      [request({ ...requests[0], reasoningContent: 'trace thinking' })],
+      traces,
+    )
+
+    const firstAssistant = snapshot.eventNodes.find(
+      (node) => node.kind === 'assistant' && node.step === 0 && node.turn === 1,
+    )
+    if (firstAssistant?.kind !== 'assistant') throw new Error('assistant node missing')
+    expect(firstAssistant.blocks).toEqual([
+      { kind: 'reasoning', text: 'plan' },
+      { kind: 'tool-call', callId: 'call_read', name: 'read', argsRaw: '{"path":"/a"}' },
+    ])
+  })
+
   it('degrades to message flow when requests and traces are empty', () => {
     const snapshot = buildTrajectorySnapshot(session, [], [])
 

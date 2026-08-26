@@ -71,10 +71,12 @@ export interface SessionRequestEntry {
   id: string
   turnIndex?: number
   parentId?: string
+  spawnedByRequestId?: string
   model: string
   provider: string
   userPrompt: string
   response: string
+  reasoningContent?: string
   stopReason: string
   toolUseCount: number
   toolCalls?: ToolCallEntry[]

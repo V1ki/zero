@@ -151,6 +151,20 @@ function toAssistantBlocks(content: readonly LooseContentBlock[]): AssistantBloc
   return blocks
 }
 
+/**
+ * Reasoning captured on the paired main-agent request. ZeRo persists thinking
+ * on the trace request rather than in assistant message content, so the
+ * trajectory re-attaches it to the owning assistant node; sub-agent requests
+ * are skipped because their reasoning belongs to the child session.
+ */
+function reasoningBlockForRequest(request: SessionRequestEntry | undefined): AssistantBlock | null {
+  if (request === undefined) return null
+  if (request.parentId !== undefined || request.spawnedByRequestId !== undefined) return null
+  const text = request.reasoningContent
+  if (typeof text !== 'string' || text.trim() === '') return null
+  return { kind: 'reasoning', text }
+}
+
 /** Build call-head info (name + serialized args) keyed by tool-use block id. */
 function indexToolCalls(requests: readonly SessionRequestEntry[]): Map<string, ToolCallInfo> {
   const calls = new Map<string, ToolCallInfo>()
@@ -1089,7 +1103,11 @@ export function buildTrajectorySnapshot(
       stepInTurn = Math.max(stepInTurn, step + 1)
       const nodeSeq = seq
       seq += 2
-      const blocks = toAssistantBlocks(content)
+      let blocks = toAssistantBlocks(content)
+      const reasoning = reasoningBlockForRequest(request)
+      if (reasoning !== null && !blocks.some((block) => block.kind === 'reasoning')) {
+        blocks = [reasoning, ...blocks]
+      }
       const timing =
         request === undefined
           ? undefined
