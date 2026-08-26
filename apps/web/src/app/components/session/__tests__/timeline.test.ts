@@ -1291,7 +1291,7 @@ test('does not infer tool duration without toolUseId metadata', () => {
   }
 })
 
-test('projects timeline compaction blocks while hiding covered messages from the main lane', () => {
+test('projects compaction blocks as appended markers while covered messages keep rendering', () => {
   const messages: Message[] = [
     {
       id: 'old_user',
@@ -1370,8 +1370,16 @@ test('projects timeline compaction blocks while hiding covered messages from the
 
   const items = buildTimeline(messages, [], [], [], [], blocks)
 
-  expect(items.map((item) => item.type)).toEqual(['compaction-block', 'user-message'])
-  const block = items[0]
+  // Covered messages stay in the main lane; the block marker is appended
+  // right after the last covered message.
+  expect(items.map((item) => item.type)).toEqual([
+    'user-message',
+    'tool-call',
+    'agent-text',
+    'compaction-block',
+    'user-message',
+  ])
+  const block = items[3]
   expect(block.type).toBe('compaction-block')
   if (block.type === 'compaction-block') {
     expect(block.coveredMessageCount).toBe(4)
@@ -1381,6 +1389,7 @@ test('projects timeline compaction blocks while hiding covered messages from the
       'old_result',
       'old_assistant_text',
     ])
+    expect(block.createdAt).toBe('2026-03-08T00:00:03.000Z')
     expect(block.summary).toContain('summary')
   }
 })
@@ -1671,7 +1680,9 @@ describe('sub-agent timeline items', () => {
     ]
 
     const timelineItems = buildTimeline(messages, [], [], [], [], blocks)
-    expect(timelineItems.find((item) => item.type === 'sub-agent')).toBeUndefined()
+    // Covered messages render in the main lane now, so the sub-agent item
+    // shows up in buildTimeline output as well as in the standalone collector.
+    expect(timelineItems.filter((item) => item.type === 'sub-agent')).toHaveLength(1)
 
     const collected = collectSubAgentTimelineItems(messages)
     expect(collected).toHaveLength(1)

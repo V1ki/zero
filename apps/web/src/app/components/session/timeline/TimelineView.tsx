@@ -1,12 +1,12 @@
 import { ArrowsClockwise, Robot, User, Warning } from '@phosphor-icons/react'
 import { formatTime } from '../../../lib/format'
 import { TokenUsagePill } from '../TokenUsagePill'
+import { ToolCallBlock } from '../ToolCallBlock'
 import type { TokenUsageSummary } from '../context-panel/context-tokens'
 import { MemoryNudgeBlock } from '../memory/MemoryNudgeBlock'
 import { MemoryRetrievalBlock } from '../memory/MemoryRetrievalBlock'
 import type { MemoryRetrievalRequestLike } from '../memory/memory-retrieval'
 import { SubAgentBlock } from './SubAgentBlock'
-import { ToolCallBlock } from '../ToolCallBlock'
 import type { DecisionTimelineItem, TimelineItem } from './timeline'
 
 interface Props {
@@ -210,17 +210,17 @@ function TimelineCompactionBlock({
   item: Extract<TimelineItem, { type: 'compaction-block' }>
 }) {
   return (
-    <div
+    <details
       data-testid="timeline-compaction-block"
-      className="rounded-[18px] border border-sky-300/20 bg-sky-300/[0.06] px-4 py-3"
+      className="rounded-[14px] border border-sky-300/20 bg-sky-300/[0.05] px-3 py-2"
     >
-      <div className="flex flex-wrap items-center gap-2">
+      <summary className="flex cursor-pointer flex-wrap items-center gap-2">
         <ArrowsClockwise size={14} weight="bold" className="text-sky-300" />
         <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-sky-300">
-          Compaction Block
+          context_compaction
         </span>
         <span className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] font-mono text-[var(--color-text-disabled)]">
-          {item.coveredMessageCount} messages
+          messages {item.coveredMessageCount}
         </span>
         <span className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] font-mono text-[var(--color-text-disabled)]">
           gen {item.generation}
@@ -230,32 +230,44 @@ function TimelineCompactionBlock({
             {item.topics?.length ?? 0} topics
           </span>
         )}
-        {item.validation && (
-          <span className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] font-mono text-[var(--color-text-disabled)]">
-            {item.validation.status}
-          </span>
-        )}
+        <span className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] font-mono text-[var(--color-text-disabled)]">
+          {item.strategyVersion}
+        </span>
         <span className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] font-mono text-[var(--color-text-disabled)]">
           {formatTime(item.updatedAt)}
         </span>
-      </div>
-      <div className="mt-2 grid gap-2 text-[11px] font-mono text-[var(--color-text-disabled)] md:grid-cols-2">
+      </summary>
+      <div className="mt-2 space-y-2 text-[11px] font-mono text-[var(--color-text-disabled)]">
         <div>
           range {item.coveredRange.startMessageId}..{item.coveredRange.endMessageId}
         </div>
-        <div>strategy {item.strategyVersion}</div>
-        <div>trace context_compaction block_id={item.id}</div>
         <div>
           evidence {item.evidenceCount} refs / {item.evidenceChars.toLocaleString()} chars
         </div>
         {item.model?.usedModel && <div>model {item.model.usedModel}</div>}
       </div>
+      <div className="mt-2 rounded-lg border border-white/10 bg-black/15 p-3">
+        <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--color-text-disabled)]">
+          Summary
+        </div>
+        <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-[var(--color-text-secondary)]">
+          {item.summary}
+        </pre>
+      </div>
+      <div className="mt-2 rounded-lg border border-white/10 bg-black/15 p-3">
+        <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--color-text-disabled)]">
+          Working State
+        </div>
+        <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-[var(--color-text-secondary)]">
+          {item.workingStateSummary}
+        </pre>
+      </div>
       {(item.topics?.length ?? 0) > 0 && (
-        <details className="mt-3 rounded-lg border border-white/10 bg-black/10 p-3" open>
+        <details className="mt-2 rounded-lg border border-white/10 bg-black/10 p-3">
           <summary className="cursor-pointer text-[11px] font-semibold text-[var(--color-text-secondary)]">
             Topics ({item.topics?.length ?? 0})
           </summary>
-          <div className="mt-3 space-y-2">
+          <div className="mt-2 space-y-2">
             {(item.topics ?? []).map((topic) => (
               <div key={topic.id} className="rounded-lg border border-white/10 bg-white/[0.03] p-2">
                 <div className="flex flex-wrap items-center gap-2 text-[10px] font-mono text-[var(--color-text-disabled)]">
@@ -277,73 +289,8 @@ function TimelineCompactionBlock({
           </div>
         </details>
       )}
-      <div className="mt-3 rounded-lg border border-white/10 bg-black/15 p-3">
-        <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--color-text-disabled)]">
-          Summary
-        </div>
-        <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-[var(--color-text-secondary)]">
-          {item.summary}
-        </pre>
-      </div>
-      <div className="mt-3 rounded-lg border border-white/10 bg-black/15 p-3">
-        <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--color-text-disabled)]">
-          Working State
-        </div>
-        <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-[var(--color-text-secondary)]">
-          {item.workingStateSummary}
-        </pre>
-      </div>
-      <details className="mt-3 rounded-lg border border-white/10 bg-black/10 p-3">
-        <summary className="cursor-pointer text-[11px] font-semibold text-[var(--color-text-secondary)]">
-          Covered Messages ({item.coveredMessages.length})
-        </summary>
-        <div className="mt-3 space-y-2">
-          {item.coveredMessages.map((message) => (
-            <CoveredMessage key={message.id} message={message} />
-          ))}
-        </div>
-      </details>
-    </div>
+    </details>
   )
-}
-
-function CoveredMessage({
-  message,
-}: {
-  message: Extract<TimelineItem, { type: 'compaction-block' }>['coveredMessages'][number]
-}) {
-  return (
-    <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2">
-      <div className="flex flex-wrap items-center gap-2 text-[10px] font-mono text-[var(--color-text-disabled)]">
-        <span>{message.role}</span>
-        <span>{message.messageType}</span>
-        <span>{formatTime(message.createdAt)}</span>
-        <span>{message.id}</span>
-      </div>
-      <div className="mt-2 space-y-1 text-[11px] leading-5 text-[var(--color-text-secondary)]">
-        {message.content.map((block, index) => (
-          <div key={`${message.id}-${index}`}>{formatCoveredBlock(block)}</div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function formatCoveredBlock(block: Record<string, unknown>): string {
-  if (block.type === 'text') return String(block.text ?? '')
-  if (block.type === 'tool_use') {
-    return `tool_use ${String(block.name ?? 'tool')} id=${String(block.id ?? 'unknown')}`
-  }
-  if (block.type === 'tool_result') {
-    const evidence = block.evidence as { path?: unknown } | undefined
-    const summary = String(block.outputSummary ?? block.content ?? '').slice(0, 240)
-    return `tool_result id=${String(block.toolUseId ?? 'unknown')} ${summary}${
-      evidence?.path ? ` evidence=${String(evidence.path)}` : ''
-    }`
-  }
-  if (block.type === 'image') return `image ${String(block.mediaType ?? 'unknown')}`
-  if (block.type === 'thinking') return 'thinking block'
-  return String(block.type ?? 'content')
 }
 
 interface AgentMessageBlockProps {

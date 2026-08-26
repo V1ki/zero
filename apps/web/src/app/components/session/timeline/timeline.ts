@@ -372,16 +372,20 @@ export function buildTimeline(
   const memoryNudgeSpans = collectMemoryNudgeSpans(traces)
   const usedMemoryNudgeSpanIds = new Set<string>()
   const nestedMemoryNudgeToolUseIds = buildMemoryNudgeToolUseIdSet(memoryNudgeSpans, traces)
-  const compactionProjection = buildTimelineCompactionProjection(messages, timelineCompactionBlocks)
+  const compactionBlocksAfterMessage = buildTimelineCompactionProjection(
+    messages,
+    timelineCompactionBlocks,
+  )
+  let previousMessageId: string | null = null
 
   for (const msg of messages) {
-    const compactionBlock = compactionProjection.blocksByFirstMessageId.get(msg.id)
-    if (compactionBlock) {
-      items.push(compactionBlock)
+    if (previousMessageId !== null) {
+      const compactionBlock = compactionBlocksAfterMessage.get(previousMessageId)
+      if (compactionBlock) {
+        items.push(compactionBlock)
+      }
     }
-    if (compactionProjection.coveredMessageIds.has(msg.id)) {
-      continue
-    }
+    previousMessageId = msg.id
 
     if (msg.messageType === 'control') {
       if (msg.controlKind === 'memory_nudge') {
@@ -540,24 +544,29 @@ export function buildTimeline(
       toolDurations,
     ),
   )
+  if (previousMessageId !== null) {
+    const compactionBlock = compactionBlocksAfterMessage.get(previousMessageId)
+    if (compactionBlock) {
+      items.push(compactionBlock)
+    }
+  }
   return items.sort((left, right) => left.createdAt.localeCompare(right.createdAt))
 }
 
+/**
+ * Projects active timeline compaction blocks as slim appended markers placed
+ * right after the last covered message. Covered messages keep rendering in
+ * the main lane; the block only marks where the context was compressed.
+ */
 function buildTimelineCompactionProjection(
   messages: Message[],
   blocks: TimelineCompactionBlock[],
-): {
-  blocksByFirstMessageId: Map<string, CompactionBlockTimelineItem>
-  coveredMessageIds: Set<string>
-} {
+): Map<string, CompactionBlockTimelineItem> {
   const messageById = new Map(messages.map((message) => [message.id, message]))
-  const blocksByFirstMessageId = new Map<string, CompactionBlockTimelineItem>()
-  const coveredMessageIds = new Set<string>()
+  const blocksByLastCoveredMessageId = new Map<string, CompactionBlockTimelineItem>()
 
   for (const block of blocks) {
     if (block.status !== 'active') continue
-    const firstMessageId = block.coveredMessageIds[0]
-    if (!firstMessageId) continue
 
     const coveredMessages = block.coveredMessageIds.flatMap((messageId) => {
       const message = messageById.get(messageId)
@@ -565,11 +574,7 @@ function buildTimelineCompactionProjection(
     })
     if (coveredMessages.length === 0) continue
 
-    for (const messageId of block.coveredMessageIds) {
-      coveredMessageIds.add(messageId)
-    }
-
-    blocksByFirstMessageId.set(firstMessageId, {
+    blocksByLastCoveredMessageId.set(coveredMessages[coveredMessages.length - 1].id, {
       type: 'compaction-block',
       id: block.id,
       summary: block.summary,
@@ -586,7 +591,7 @@ function buildTimelineCompactionProjection(
       evidenceBytes: block.evidenceBytes,
       skippedUnfinishedToolUseIds: block.skippedUnfinishedToolUseIds,
       coveredMessages,
-      createdAt: block.coveredRange.startCreatedAt,
+      createdAt: block.coveredRange.endCreatedAt,
       updatedAt: block.updatedAt,
       topics: block.topics ?? [],
       validation: block.validation,
@@ -596,7 +601,7 @@ function buildTimelineCompactionProjection(
     })
   }
 
-  return { blocksByFirstMessageId, coveredMessageIds }
+  return blocksByLastCoveredMessageId
 }
 
 function buildDecisionEvents(decisions: SessionDecisionEvent[]): DecisionTimelineItem[] {

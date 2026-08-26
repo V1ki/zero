@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
-import type { TimelineItem } from '../timeline/timeline'
 import { TimelineView } from '../timeline/TimelineView'
+import type { TimelineItem } from '../timeline/timeline'
 
 describe('TimelineView', () => {
   test('renders the provided timeline items without recomputing a thinner tool result', () => {
@@ -103,7 +103,7 @@ describe('TimelineView', () => {
     expect(html).toContain('Result')
   })
 
-  test('renders compaction blocks with summary and expandable covered messages', () => {
+  test('renders compaction blocks as slim appended markers with expandable detail', () => {
     const items: TimelineItem[] = [
       {
         type: 'compaction-block',
@@ -172,12 +172,14 @@ describe('TimelineView', () => {
       />,
     )
 
-    expect(html).toContain('Compaction Block')
-    expect(html).toContain('3 messages')
+    expect(html).toContain('context_compaction')
+    expect(html).toContain('messages 3')
+    expect(html).toContain('timeline_compaction_block_v1')
     expect(html).toContain('old summary')
     expect(html).toContain('continue here')
-    expect(html).toContain('Covered Messages (3)')
-    expect(html).toContain('tool_result id=tool_1')
+    // Covered messages render in the main lane, not nested inside the block.
+    expect(html).not.toContain('Covered Messages')
+    expect(html).not.toContain('tool_result id=tool_1')
   })
 
   test('renders expandable memory nudge cards with nested memory tool details', () => {
