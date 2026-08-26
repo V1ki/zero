@@ -43,6 +43,52 @@ describe('TimelineView', () => {
     expect(html).not.toContain('did not persist stdout/stderr')
   })
 
+  test('renders folded decisions as a collapsible thinking section on the assistant block', () => {
+    const items: TimelineItem[] = [
+      {
+        type: 'agent-text',
+        messageId: 'msg_assistant_thinking',
+        text: 'done',
+        createdAt: '2026-04-19T10:32:01.000Z',
+        thinking: [
+          {
+            type: 'decision',
+            id: 'dec_tools',
+            decisionType: 'tool_selection',
+            outcome: 'read',
+            detail: { selectedTools: ['read'] },
+            sourceKind: 'llm_request',
+            createdAt: '2026-04-19T10:32:00.900Z',
+          },
+        ],
+      },
+    ]
+
+    const html = renderToStaticMarkup(
+      <TimelineView
+        items={items}
+        selectedToolId={null}
+        selectedDecisionId={null}
+        selectedTaskClosureId={null}
+        selectedMemoryNudgeId={null}
+        selectedSubAgentId={null}
+        highlightedAssistantMessageId={null}
+        highlightedSubAgentId={null}
+        onSelectTool={() => {}}
+        onSelectDecision={() => {}}
+        onSelectTaskClosure={() => {}}
+        onSelectMemoryNudge={() => {}}
+        onSelectSubAgent={() => {}}
+      />,
+    )
+
+    expect(html).toContain('data-testid="assistant-thinking"')
+    expect(html).toContain('Thinking')
+    expect(html).toContain('tool_selection')
+    expect(html).toContain('data-decision-id="dec_tools"')
+    expect(html).toContain('done')
+  })
+
   test('renders token usage chips on user, assistant, and tool items', () => {
     const items: TimelineItem[] = [
       {

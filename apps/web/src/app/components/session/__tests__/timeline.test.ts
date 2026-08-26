@@ -1008,6 +1008,238 @@ describe('buildTimeline', () => {
     })
   })
 
+  test('folds main-agent decisions into their assistant message as thinking', () => {
+    const messages: Message[] = [
+      {
+        id: 'msg_user',
+        role: 'user',
+        messageType: 'message',
+        content: [{ type: 'text', text: 'go' }],
+        createdAt: '2026-03-08T00:00:01.000Z',
+      },
+      {
+        id: 'msg_assistant',
+        role: 'assistant',
+        messageType: 'message',
+        content: [
+          { type: 'text', text: 'done' },
+          { type: 'tool_use', id: 'call_1', name: 'read', input: { path: '/tmp/demo' } },
+        ],
+        createdAt: '2026-03-08T00:00:05.000Z',
+      },
+    ]
+    const traces: TraceSpan[] = [
+      {
+        id: 'span_root',
+        sessionId: 'sess_1',
+        name: 'agent.run:test',
+        startTime: '2026-03-08T00:00:00.000Z',
+        endTime: '2026-03-08T00:00:06.000Z',
+        durationMs: 6000,
+        status: 'success',
+        children: [
+          {
+            id: 'span_llm_main',
+            parentId: 'span_root',
+            sessionId: 'sess_1',
+            name: 'llm_request',
+            startTime: '2026-03-08T00:00:04.000Z',
+            endTime: '2026-03-08T00:00:04.900Z',
+            durationMs: 900,
+            status: 'success',
+            data: {
+              request: {
+                toolCalls: [{ id: 'call_1', name: 'read', input: { path: '/tmp/demo' } }],
+              },
+            },
+            children: [],
+          },
+        ],
+      },
+    ]
+    const decisions: SessionDecisionEvent[] = [
+      {
+        id: 'span_llm_main',
+        sessionId: 'sess_1',
+        ts: '2026-03-08T00:00:04.900Z',
+        decisionType: 'tool_selection',
+        outcome: 'read',
+        detail: { selectedTools: ['read'] },
+        sourceKind: 'llm_request',
+      },
+    ]
+
+    const items = buildTimeline(messages, traces, [], decisions)
+
+    expect(items.filter((item) => item.type === 'decision')).toHaveLength(0)
+    expect(items.find((item) => item.type === 'agent-text')).toMatchObject({
+      messageId: 'msg_assistant',
+      thinking: [{ id: 'span_llm_main', decisionType: 'tool_selection', outcome: 'read' }],
+    })
+  })
+
+  test('renders a thinking-only assistant row for decisions on text-less steps', () => {
+    const messages: Message[] = [
+      {
+        id: 'msg_user',
+        role: 'user',
+        messageType: 'message',
+        content: [{ type: 'text', text: 'go' }],
+        createdAt: '2026-03-08T00:00:01.000Z',
+      },
+      {
+        id: 'msg_assistant',
+        role: 'assistant',
+        messageType: 'message',
+        content: [{ type: 'tool_use', id: 'call_1', name: 'read', input: { path: '/tmp/demo' } }],
+        createdAt: '2026-03-08T00:00:05.000Z',
+      },
+    ]
+    const traces: TraceSpan[] = [
+      {
+        id: 'span_root',
+        sessionId: 'sess_1',
+        name: 'agent.run:test',
+        startTime: '2026-03-08T00:00:00.000Z',
+        endTime: '2026-03-08T00:00:06.000Z',
+        durationMs: 6000,
+        status: 'success',
+        children: [
+          {
+            id: 'span_llm_text_only',
+            parentId: 'span_root',
+            sessionId: 'sess_1',
+            name: 'llm_request',
+            startTime: '2026-03-08T00:00:04.000Z',
+            endTime: '2026-03-08T00:00:04.900Z',
+            durationMs: 900,
+            status: 'success',
+            data: { request: { stopReason: 'tool_use', toolNames: ['read'] } },
+            children: [],
+          },
+        ],
+      },
+    ]
+    const decisions: SessionDecisionEvent[] = [
+      {
+        id: 'span_llm_text_only',
+        sessionId: 'sess_1',
+        ts: '2026-03-08T00:00:04.900Z',
+        decisionType: 'memory_retrieval',
+        outcome: 'retrieve',
+        sourceKind: 'llm_request',
+      },
+    ]
+
+    const items = buildTimeline(messages, traces, [], decisions)
+
+    expect(items.filter((item) => item.type === 'decision')).toHaveLength(0)
+    const carrierIndex = items.findIndex((item) => item.type === 'agent-text')
+    expect(carrierIndex).toBe(1)
+    expect(items[carrierIndex]).toMatchObject({
+      type: 'agent-text',
+      messageId: 'msg_assistant',
+      text: '',
+      thinking: [{ id: 'span_llm_text_only', decisionType: 'memory_retrieval' }],
+    })
+    expect(items.findIndex((item) => item.type === 'tool-call')).toBe(2)
+  })
+
+  test('attaches sub-agent decisions to the sub-agent block instead of the main lane', () => {
+    const messages: Message[] = [
+      {
+        id: 'msg_assistant',
+        role: 'assistant',
+        messageType: 'message',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'spawn_1',
+            name: 'spawn_agent',
+            input: { agent_id: 'survey_agent', instruction: 'survey the landscape' },
+          },
+        ],
+        createdAt: '2026-03-08T00:00:05.000Z',
+      },
+    ]
+    const traces: TraceSpan[] = [
+      {
+        id: 'span_root',
+        sessionId: 'sess_1',
+        name: 'agent.run:test',
+        startTime: '2026-03-08T00:00:00.000Z',
+        endTime: '2026-03-08T00:00:30.000Z',
+        durationMs: 30000,
+        status: 'success',
+        children: [
+          {
+            id: 'span_spawn_tool',
+            parentId: 'span_root',
+            sessionId: 'sess_1',
+            kind: 'tool_call',
+            name: 'tool:spawn_agent',
+            startTime: '2026-03-08T00:00:05.000Z',
+            endTime: '2026-03-08T00:00:25.000Z',
+            durationMs: 20000,
+            status: 'success',
+            metadata: { toolUseId: 'spawn_1' },
+            children: [
+              {
+                id: 'span_sub_agent',
+                parentId: 'span_spawn_tool',
+                sessionId: 'sess_1',
+                name: 'sub_agent:survey',
+                startTime: '2026-03-08T00:00:05.100Z',
+                endTime: '2026-03-08T00:00:24.000Z',
+                durationMs: 18900,
+                status: 'success',
+                metadata: { agentId: 'survey_agent' },
+                children: [
+                  {
+                    id: 'span_llm_sub',
+                    parentId: 'span_sub_agent',
+                    sessionId: 'sess_1',
+                    name: 'llm_request',
+                    startTime: '2026-03-08T00:00:06.000Z',
+                    endTime: '2026-03-08T00:00:07.000Z',
+                    durationMs: 1000,
+                    status: 'success',
+                    data: {
+                      request: {
+                        toolCalls: [{ id: 'child_call', name: 'fetch', input: {} }],
+                      },
+                    },
+                    children: [],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ]
+    const decisions: SessionDecisionEvent[] = [
+      {
+        id: 'span_llm_sub',
+        sessionId: 'sess_1',
+        ts: '2026-03-08T00:00:07.000Z',
+        decisionType: 'tool_selection',
+        outcome: 'fetch',
+        detail: { selectedTools: ['fetch'] },
+        sourceKind: 'llm_request',
+      },
+    ]
+
+    const items = buildTimeline(messages, traces, [], decisions)
+
+    expect(items.filter((item) => item.type === 'decision')).toHaveLength(0)
+    expect(items.find((item) => item.type === 'agent-text')?.type).toBeUndefined()
+    expect(items.find((item) => item.type === 'sub-agent')).toMatchObject({
+      agentId: 'survey_agent',
+      decisions: [{ id: 'span_llm_sub', decisionType: 'tool_selection', outcome: 'fetch' }],
+    })
+  })
+
   test('reuses the shared display filter for non-task-closure decisions', () => {
     const decisions: SessionDecisionEvent[] = [
       {

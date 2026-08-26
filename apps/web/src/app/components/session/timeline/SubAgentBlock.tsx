@@ -10,10 +10,11 @@ import {
 } from '@phosphor-icons/react'
 import * as React from 'react'
 import { formatTime } from '../../../lib/format'
-import type { TraceSpan } from './timeline'
 import { ToolCallDetail } from '../ToolCallDetail'
 import { summarizeToolInput } from '../ToolCallDetail'
 import type { ToolResultContentItem } from '../ToolCallDetail'
+import { DecisionThinkingList } from './ThinkingDecisionList'
+import type { DecisionTimelineItem, TraceSpan } from './timeline'
 
 export interface SubAgentChildToolCall {
   id: string
@@ -38,11 +39,15 @@ export interface SubAgentBlockProps {
   createdAt?: string
   childToolCalls?: SubAgentChildToolCall[]
   traceSpan?: TraceSpan | null
+  /** Decisions recorded inside the sub-agent, rendered as its thinking. */
+  decisions?: DecisionTimelineItem[]
   selected?: boolean
   highlighted?: boolean
   selectedChildToolId?: string | null
+  selectedDecisionId?: string | null
   onSelect?: (id: string) => void
   onSelectChildTool?: (toolId: string) => void
+  onSelectDecision?: (id: string | null) => void
 }
 
 type SubAgentInternalTimelineEvent =
@@ -238,11 +243,14 @@ export function SubAgentBlock({
   createdAt,
   childToolCalls = [],
   traceSpan,
+  decisions,
   selected,
   highlighted,
   onSelect,
   selectedChildToolId,
+  selectedDecisionId,
   onSelectChildTool,
+  onSelectDecision,
 }: SubAgentBlockProps) {
   const activity = React.useMemo(() => summarizeChildToolActivity(childToolCalls), [childToolCalls])
   const preview = getSubAgentPreview({ instruction, output, status, childToolCalls })
@@ -338,6 +346,16 @@ export function SubAgentBlock({
           <InlineSection label="Mission">
             <ExpandableInlineText value={instruction} />
           </InlineSection>
+
+          {decisions !== undefined && decisions.length > 0 ? (
+            <InlineSection label={`Thinking (${decisions.length})`}>
+              <DecisionThinkingList
+                decisions={decisions}
+                selectedDecisionId={selectedDecisionId}
+                onSelectDecision={onSelectDecision}
+              />
+            </InlineSection>
+          ) : null}
 
           <InlineSection label="Activity">
             {activity.length > 0 ? (

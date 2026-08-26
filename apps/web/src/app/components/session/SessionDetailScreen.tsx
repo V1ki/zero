@@ -10,7 +10,6 @@ import { type SessionRequestEntry, useSessionDetailData } from './detail/useSess
 import { useSessionDetailSelection } from './detail/useSessionDetailSelection'
 import { TimelineView } from './timeline/TimelineView'
 import {
-  type DecisionTimelineItem,
   type TaskClosureTimelineItem,
   type TimelineItem,
   type TraceSpan,
@@ -187,12 +186,18 @@ export function SessionDetailScreen({
 
   const selectedDecision = useMemo(() => {
     if (!selectedDecisionId) return null
-    return (
-      timelineItems.find(
-        (item): item is DecisionTimelineItem =>
-          item.type === 'decision' && item.id === selectedDecisionId,
-      ) ?? null
-    )
+    for (const item of timelineItems) {
+      if (item.type === 'decision' && item.id === selectedDecisionId) return item
+      if (item.type === 'agent-text') {
+        const found = item.thinking?.find((decision) => decision.id === selectedDecisionId)
+        if (found) return found
+      }
+      if (item.type === 'sub-agent') {
+        const found = item.decisions?.find((decision) => decision.id === selectedDecisionId)
+        if (found) return found
+      }
+    }
+    return null
   }, [selectedDecisionId, timelineItems])
 
   const sessionInsights = useMemo(
@@ -442,6 +447,14 @@ export function buildSessionDetailInsights(
         break
       case 'agent-text':
         assistantCount += 1
+        for (const decision of item.thinking ?? []) {
+          decisionCount += 1
+          lastDecision = {
+            decisionType: decision.decisionType,
+            outcome: decision.outcome,
+            createdAt: decision.createdAt,
+          }
+        }
         break
       case 'tool-call':
         toolCallCount += 1
@@ -486,6 +499,14 @@ export function buildSessionDetailInsights(
         break
       case 'sub-agent':
         subAgentCount += 1
+        for (const decision of item.decisions ?? []) {
+          decisionCount += 1
+          lastDecision = {
+            decisionType: decision.decisionType,
+            outcome: decision.outcome,
+            createdAt: decision.createdAt,
+          }
+        }
         break
     }
   }

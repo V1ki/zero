@@ -1,4 +1,4 @@
-import { ArrowsClockwise, Robot, User, Warning } from '@phosphor-icons/react'
+import { ArrowsClockwise, Brain, Robot, User, Warning } from '@phosphor-icons/react'
 import { formatTime } from '../../../lib/format'
 import { TokenUsagePill } from '../TokenUsagePill'
 import { ToolCallBlock } from '../ToolCallBlock'
@@ -7,6 +7,11 @@ import { MemoryNudgeBlock } from '../memory/MemoryNudgeBlock'
 import { MemoryRetrievalBlock } from '../memory/MemoryRetrievalBlock'
 import type { MemoryRetrievalRequestLike } from '../memory/memory-retrieval'
 import { SubAgentBlock } from './SubAgentBlock'
+import {
+  DecisionThinkingList,
+  decisionThinkingChips,
+  getDecisionPreviewText,
+} from './ThinkingDecisionList'
 import type { DecisionTimelineItem, TimelineItem } from './timeline'
 
 interface Props {
@@ -69,6 +74,9 @@ export function TimelineView({
                 createdAt={item.createdAt}
                 highlighted={highlightedAssistantMessageId === item.messageId}
                 tokenUsage={item.tokenUsage}
+                thinking={item.thinking}
+                selectedDecisionId={selectedDecisionId}
+                onSelectDecision={onSelectDecision}
               />
             )
           case 'tool-call':
@@ -174,6 +182,9 @@ export function TimelineView({
                 createdAt={item.createdAt}
                 childToolCalls={item.childToolCalls}
                 traceSpan={item.traceSpan}
+                decisions={item.decisions}
+                selectedDecisionId={selectedDecisionId}
+                onSelectDecision={onSelectDecision}
                 selected={selectedSubAgentId === item.agentId}
                 highlighted={highlightedSubAgentId === item.agentId}
                 selectedChildToolId={selectedToolId}
@@ -300,6 +311,9 @@ interface AgentMessageBlockProps {
   createdAt?: string
   highlighted?: boolean
   tokenUsage?: TokenUsageSummary
+  thinking?: DecisionTimelineItem[]
+  selectedDecisionId?: string | null
+  onSelectDecision?: (id: string | null) => void
 }
 
 function AgentMessageBlock({
@@ -309,6 +323,9 @@ function AgentMessageBlock({
   createdAt,
   highlighted = false,
   tokenUsage,
+  thinking,
+  selectedDecisionId = null,
+  onSelectDecision,
 }: AgentMessageBlockProps) {
   return (
     <div
@@ -340,7 +357,37 @@ function AgentMessageBlock({
             )}
             <TokenUsagePill usage={tokenUsage} tone="accent" />
           </div>
-          <p className="text-[13px] leading-6 text-slate-100 whitespace-pre-wrap">{text}</p>
+          {thinking !== undefined && thinking.length > 0 ? (
+            <details
+              data-testid="assistant-thinking"
+              className="mb-2 rounded-[14px] border border-violet-400/15 bg-violet-400/[0.04]"
+            >
+              <summary className="flex cursor-pointer flex-wrap items-center gap-2 px-3 py-1.5">
+                <Brain size={13} weight="bold" className="text-violet-300" />
+                <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-violet-300">
+                  Thinking
+                </span>
+                {decisionThinkingChips(thinking).map((chip) => (
+                  <span
+                    key={chip}
+                    className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] font-mono text-[var(--color-text-disabled)]"
+                  >
+                    {chip}
+                  </span>
+                ))}
+              </summary>
+              <div className="border-t border-white/[0.06] px-2 py-2">
+                <DecisionThinkingList
+                  decisions={thinking}
+                  selectedDecisionId={selectedDecisionId}
+                  onSelectDecision={onSelectDecision}
+                />
+              </div>
+            </details>
+          ) : null}
+          {text.trim().length > 0 ? (
+            <p className="text-[13px] leading-6 text-slate-100 whitespace-pre-wrap">{text}</p>
+          ) : null}
         </div>
       </div>
     </div>
@@ -480,50 +527,6 @@ function DecisionBlock({
       </p>
     </button>
   )
-}
-
-function getDecisionPreviewText(
-  decisionType: DecisionTimelineItem['decisionType'],
-  outcome: string,
-  detail?: Record<string, unknown>,
-): string {
-  if (decisionType === 'context_compression') {
-    const before = typeof detail?.messagesBefore === 'number' ? detail.messagesBefore : undefined
-    const after = typeof detail?.messagesAfter === 'number' ? detail.messagesAfter : undefined
-    const model = typeof detail?.model === 'string' ? detail.model : undefined
-    const cost = typeof detail?.cost === 'number' ? `$${detail.cost.toFixed(4)}` : undefined
-
-    const parts: string[] = []
-    if (before !== undefined && after !== undefined) {
-      parts.push(`messages ${before} -> ${after}`)
-    }
-    if (model) parts.push(model)
-    if (cost) parts.push(cost)
-
-    if (parts.length > 0) return parts.join(' | ')
-  }
-
-  if (decisionType === 'memory_retrieval') {
-    const queries = Array.isArray(detail?.queries)
-      ? detail.queries.filter((query): query is string => typeof query === 'string')
-      : []
-
-    if (queries.length > 0) {
-      return queries.join(' | ')
-    }
-  }
-
-  if (decisionType === 'tool_selection') {
-    const selectedTools = Array.isArray(detail?.selectedTools)
-      ? detail.selectedTools.filter((tool): tool is string => typeof tool === 'string')
-      : []
-
-    if (selectedTools.length > 0) {
-      return selectedTools.join(' | ')
-    }
-  }
-
-  return outcome
 }
 
 interface TaskClosureBlockProps {

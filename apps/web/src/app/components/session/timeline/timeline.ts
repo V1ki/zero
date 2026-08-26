@@ -309,6 +309,8 @@ export interface SubAgentTimelineItem {
   durationMs?: number
   spawnToolCallId: string
   childToolCalls: SubAgentChildToolCall[]
+  /** Decisions recorded inside the sub-agent, rendered as its thinking. */
+  decisions?: DecisionTimelineItem[]
   traceSpan?: TraceSpan | null
   createdAt: string
 }
@@ -329,6 +331,8 @@ export type TimelineItem =
       model?: string
       createdAt: string
       tokenUsage?: TokenUsageSummary
+      /** Trace decisions folded into this assistant step, rendered as thinking. */
+      thinking?: DecisionTimelineItem[]
     }
   | {
       type: 'tool-call'
@@ -376,6 +380,7 @@ export function buildTimeline(
     messages,
     timelineCompactionBlocks,
   )
+  const decisionOwnership = assignDecisionOwners(buildDecisionEvents(decisions), traces, messages)
   let previousMessageId: string | null = null
 
   for (const msg of messages) {
@@ -464,6 +469,21 @@ export function buildTimeline(
     }
 
     if (msg.role === 'assistant') {
+      const messageDecisions = decisionOwnership.byMessageId.get(msg.id)
+      let pendingThinking = messageDecisions
+      if (messageDecisions !== undefined && !msg.content.some((block) => block.type === 'text')) {
+        // Tool-only assistant steps still carry their thinking as a text-less
+        // agent row so the decisions stay grouped with the step.
+        items.push({
+          type: 'agent-text',
+          messageId: msg.id,
+          text: '',
+          model: msg.model,
+          createdAt: msg.createdAt,
+          thinking: messageDecisions,
+        })
+        pendingThinking = undefined
+      }
       for (const block of msg.content) {
         if (block.type === 'text') {
           items.push({
@@ -473,7 +493,9 @@ export function buildTimeline(
             model: msg.model,
             createdAt: msg.createdAt,
             tokenUsage: requestMatcher.claimAssistantText(block.text as string),
+            ...(pendingThinking !== undefined ? { thinking: pendingThinking } : {}),
           })
+          pendingThinking = undefined
         } else if (block.type === 'tool_use') {
           const toolName = block.name as string
           const toolId = block.id as string
@@ -496,6 +518,7 @@ export function buildTimeline(
                 toolResults,
                 handledSubAgentIds,
                 spawnToolCallIds,
+                decisionsBySpawnToolId: decisionOwnership.bySpawnToolId,
                 createdAt: msg.createdAt,
               }),
             )
@@ -533,7 +556,7 @@ export function buildTimeline(
     }
   }
 
-  items.push(...buildDecisionEvents(decisions))
+  items.push(...decisionOwnership.standalone)
   items.push(...buildTaskClosureEvents(traces, taskClosureEvents))
   items.push(
     ...buildTraceMemoryNudgeItems(
@@ -623,6 +646,105 @@ export function filterDisplayableDecisions(
   decisions: SessionDecisionEvent[],
 ): SessionDecisionEvent[] {
   return decisions.filter((decision) => decision.decisionType !== 'task_closure')
+}
+
+export interface DecisionOwnership {
+  /** Decisions folded into the assistant message that produced them. */
+  byMessageId: Map<string, DecisionTimelineItem[]>
+  /** Sub-agent decisions keyed by the spawn_agent tool-use id they ran under. */
+  bySpawnToolId: Map<string, DecisionTimelineItem[]>
+  /** Decisions whose trace span is missing; they stay as standalone rows. */
+  standalone: DecisionTimelineItem[]
+}
+
+/**
+ * Assign each decision to the timeline entry that owns it so decisions render
+ * as assistant (or sub-agent) thinking instead of standalone rows.
+ *
+ * Decisions are projected from llm_request spans: sub-agent requests sit under
+ * their spawn tool span and belong to the sub-agent block; main-agent requests
+ * pair with the assistant message carrying their tool calls, falling back to
+ * the nearest assistant at or after the decision time for text-only requests.
+ */
+function assignDecisionOwners(
+  decisionItems: DecisionTimelineItem[],
+  traces: TraceSpan[],
+  messages: Message[],
+): DecisionOwnership {
+  const ownership: DecisionOwnership = {
+    byMessageId: new Map(),
+    bySpawnToolId: new Map(),
+    standalone: [],
+  }
+  if (decisionItems.length === 0) return ownership
+
+  const spanById = new Map(flattenTraceSpans(traces).map((span) => [span.id, span]))
+  const assistants = messages.filter((message) => message.role === 'assistant')
+  const messageByToolUseId = new Map<string, Message>()
+  for (const message of assistants) {
+    for (const block of message.content) {
+      if (block.type === 'tool_use' && typeof block.id === 'string') {
+        messageByToolUseId.set(block.id, message)
+      }
+    }
+  }
+
+  const addTo = (
+    map: Map<string, DecisionTimelineItem[]>,
+    key: string,
+    item: DecisionTimelineItem,
+  ) => {
+    const existing = map.get(key)
+    if (existing) existing.push(item)
+    else map.set(key, [item])
+  }
+
+  for (const decision of decisionItems) {
+    const span = spanById.get(decision.id)
+    if (span === undefined) {
+      ownership.standalone.push(decision)
+      continue
+    }
+
+    let ancestor = span.parentId === undefined ? undefined : spanById.get(span.parentId)
+    let depth = 0
+    let handled = false
+    while (ancestor !== undefined && depth++ < 16) {
+      if (ancestor.kind === 'tool_call' || ancestor.name.startsWith('tool:')) {
+        const spawnToolUseId = asString(ancestor.metadata?.toolUseId)
+        if (spawnToolUseId !== undefined) {
+          addTo(ownership.bySpawnToolId, spawnToolUseId, decision)
+        } else {
+          ownership.standalone.push(decision)
+        }
+        handled = true
+        break
+      }
+      ancestor = ancestor.parentId === undefined ? undefined : spanById.get(ancestor.parentId)
+    }
+    if (handled) continue
+
+    // Main-agent request: pair through its tool calls when available.
+    const request = asRecord(span.data?.request)
+    const toolCalls = Array.isArray(request?.toolCalls) ? request.toolCalls : []
+    const owner = toolCalls
+      .map((call) => messageByToolUseId.get(asString(asRecord(call)?.id) ?? ''))
+      .find((message) => message !== undefined)
+    if (owner !== undefined) {
+      addTo(ownership.byMessageId, owner.id, decision)
+      continue
+    }
+    // Text-only requests leave no tool link; use the assistant that follows.
+    const byTime =
+      assistants.find((message) => message.createdAt.localeCompare(decision.createdAt) >= 0) ??
+      assistants[assistants.length - 1]
+    if (byTime !== undefined) {
+      addTo(ownership.byMessageId, byTime.id, decision)
+    } else {
+      ownership.standalone.push(decision)
+    }
+  }
+  return ownership
 }
 
 function buildTaskClosureEvents(
@@ -861,6 +983,7 @@ function buildSubAgentTimelineItem(params: {
   toolResults: Map<string, TimelineToolResultData>
   handledSubAgentIds: Set<string>
   spawnToolCallIds: Set<string>
+  decisionsBySpawnToolId?: Map<string, DecisionTimelineItem[]>
   createdAt: string
 }): SubAgentTimelineItem {
   const {
@@ -872,6 +995,7 @@ function buildSubAgentTimelineItem(params: {
     toolResults,
     handledSubAgentIds,
     spawnToolCallIds,
+    decisionsBySpawnToolId,
     createdAt,
   } = params
 
@@ -933,6 +1057,9 @@ function buildSubAgentTimelineItem(params: {
     durationMs: traceInfo?.durationMs ?? waitInfo?.durationMs,
     spawnToolCallId: toolId,
     childToolCalls,
+    ...(decisionsBySpawnToolId?.has(toolId)
+      ? { decisions: decisionsBySpawnToolId.get(toolId) }
+      : {}),
     traceSpan,
     createdAt,
   }
