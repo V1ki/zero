@@ -224,6 +224,14 @@ function asToolCalls(value: unknown): RequestToolCallEntry[] {
   )
 }
 
+function asToolCallNames(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item) => {
+    const name = asString(asRecord(item)?.name)
+    return name ? [name] : []
+  })
+}
+
 function asToolResults(value: unknown): RequestToolResultEntry[] {
   if (!Array.isArray(value)) return []
   return value.filter((item): item is RequestToolResultEntry =>
@@ -624,8 +632,16 @@ export function projectSessionDecisionsFromTraceEntries(entries: TraceEntry[]): 
       const reasoningContent = asString(request?.reasoningContent)
 
       if (stopReason === 'tool_use' && reasoningContent) {
-        const selectedTools = asStringArray(request?.toolNames) ?? []
-        const toolCount = asNumber(request?.toolUseCount) ?? selectedTools.length
+        // request.toolNames is the full catalog exposed to the model; the
+        // selection is the set of tools actually invoked in this response.
+        const calledTools = asToolCallNames(request?.toolCalls)
+        const selectedTools =
+          calledTools.length > 0
+            ? [...new Set(calledTools)]
+            : (asStringArray(request?.toolNames) ?? [])
+        const toolCount =
+          asNumber(request?.toolUseCount) ??
+          (calledTools.length > 0 ? calledTools.length : selectedTools.length)
         const { rationale, truncated } = truncateDecisionRationale(reasoningContent)
 
         results.push({

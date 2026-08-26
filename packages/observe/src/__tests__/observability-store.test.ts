@@ -475,10 +475,14 @@ describe('ObservabilityStore', () => {
             userPrompt: 'inspect and fix',
             response: 'using tools',
             stopReason: 'tool_use',
-            toolUseCount: 2,
-            toolNames: ['read', 'bash'],
+            toolUseCount: 3,
+            toolNames: ['read', 'write', 'bash', 'edit'],
             reasoningContent: 'Need to inspect the file before running the command.',
-            toolCalls: [],
+            toolCalls: [
+              { id: 'call_a', name: 'read', input: { path: '/tmp/a' } },
+              { id: 'call_b', name: 'bash', input: { command: 'ls' } },
+              { id: 'call_c', name: 'read', input: { path: '/tmp/b' } },
+            ],
             toolResults: [],
             tokens: { input: 10, output: 20 },
             cost: 0.12,
@@ -558,7 +562,7 @@ describe('ObservabilityStore', () => {
       outcome: 'read, bash',
       detail: {
         selectedTools: ['read', 'bash'],
-        toolCount: 2,
+        toolCount: 3,
       },
     })
     expect(entries[2]?.rationale).toBe('Need to inspect the file before running the command.')
@@ -1023,6 +1027,7 @@ describe('ObservabilityStore', () => {
             response: 'using tools',
             stopReason: 'tool_use',
             toolUseCount: 2,
+            // Legacy span without toolCalls falls back to the tool catalog.
             toolNames: ['read', 'bash'],
             reasoningContent: longReasoning,
             toolCalls: [],
