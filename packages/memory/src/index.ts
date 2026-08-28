@@ -31,6 +31,10 @@ export type {
   MemoryNeighborResult,
   MemoryRelationRemoveSpec,
 } from './governance'
+export { MemoryUsageTracker } from './usage-stats'
+export type { MemoryUsageTrackerOptions } from './usage-stats'
+export { detectMemoryEcho } from './echo'
+export type { EchoMemoryInput, detectMemoryEchoOptions } from './echo'
 
 export const SESSION_MEMORY_PROMPT = `<system_notice>
 当前会话即将结束。请回顾整场对话，判断是否需要创建 session 类型的记忆。

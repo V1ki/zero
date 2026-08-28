@@ -164,6 +164,23 @@ describe('Memory recall tools', () => {
     expect(result.output).toContain('line4')
   })
 
+  test('memory_read records usage feedback for the read memory id', async () => {
+    const recorded: Array<{ id: string; kind: string; sessionId: string | undefined }> = []
+    const tool = new MemoryReadTool()
+    const result = await tool.run(
+      {
+        ...makeCtx(),
+        memoryUsage: {
+          record: (id, kind, sessionId) => recorded.push({ id, kind, sessionId }),
+        },
+      },
+      { path: '.zero/memory/notes/manual.md' },
+    )
+
+    expect(result.success).toBe(true)
+    expect(recorded).toEqual([{ id: 'manual', kind: 'read', sessionId: 'test_session' }])
+  })
+
   test('memory_read supports line windows', async () => {
     const tool = new MemoryReadTool()
     const result = await tool.run(makeCtx(), {

@@ -228,6 +228,7 @@ function createSessionToolContext(options: {
     secretResolver: options.deps.secretResolver,
     memoryRetriever: options.deps.memoryRetriever,
     memoryStore: options.deps.memoryStore,
+    memoryUsage: options.deps.memoryUsage,
     channelBinding: createToolChannelBinding(options.data),
     schedulerHandle: options.deps.schedulerHandle,
     scheduleStore: options.deps.scheduleStore,

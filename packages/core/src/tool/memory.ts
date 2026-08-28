@@ -402,6 +402,12 @@ export class MemoryReadTool extends BaseTool {
         ? `\nRange: from=${Math.max(1, Math.floor(from ?? 1))}${lines !== undefined ? ` lines=${Math.max(0, Math.floor(lines))}` : ''}`
         : ''
 
+    // S2 使用反馈:主动 memory_read 是最强的"被使用"行为证据,记 read。
+    // 非记忆文件(如 preferences/agents/*.md)的 stem 会留下惰性条目,score 查不到即无影响。
+    const fileName = result.path.split('/').pop() ?? ''
+    const memoryId = fileName.endsWith('.md') ? fileName.slice(0, -3) : ''
+    if (memoryId) ctx.memoryUsage?.record(memoryId, 'read', ctx.sessionId)
+
     return {
       success: true,
       output: `Path: ${result.path}${range}\n\n${result.text}`,
@@ -426,6 +432,7 @@ function formatScoreBreakdown(breakdown: {
   keyword: number
   recency: number
   vector?: number
+  usage?: number
 }): string {
   const parts = []
   if (breakdown.vector !== undefined) {
@@ -433,6 +440,9 @@ function formatScoreBreakdown(breakdown: {
   }
   parts.push(`keyword: ${formatScore(breakdown.keyword)}`)
   parts.push(`recency: ${formatScore(breakdown.recency)}`)
+  if (breakdown.usage !== undefined) {
+    parts.push(`usage: ${formatScore(breakdown.usage)}`)
+  }
   return parts.join(', ')
 }
 

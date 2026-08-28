@@ -1,3 +1,4 @@
+import { type RetrievedMemoryMatch, detectMemoryEcho } from '@zero-os/memory'
 import type { ModelRouter, ResolvedModel } from '@zero-os/model'
 import type { RequestMemoryInjectionEntry } from '@zero-os/observe'
 import type {
@@ -83,7 +84,7 @@ export async function processSessionMessageTurn({
     ? undefined
     : saveImagesForDelegation(options?.images, workspacePath)
 
-  const [newSkills, retrievedMemories] = await Promise.all([
+  const [newSkills, memoryInjection] = await Promise.all([
     Promise.resolve().then(() => staticContext.loadNewSkills(projectRoot, workspacePath)),
     retrieveSessionMemories({
       activeModel,
@@ -101,14 +102,14 @@ export async function processSessionMessageTurn({
 
   const dynamicContext = buildDynamicContext({
     newSkills: newSkills.length > 0 ? newSkills : undefined,
-    retrievedMemories,
+    retrievedMemories: memoryInjection.block,
   })
-  const requestMemoryInjections: RequestMemoryInjectionEntry[] | undefined = retrievedMemories
+  const requestMemoryInjections: RequestMemoryInjectionEntry[] | undefined = memoryInjection.block
     ? [
         {
           layer: 'layer1',
           source: 'retrieved_memories',
-          formattedText: wrapMemoryInjection('layer1', retrievedMemories),
+          formattedText: wrapMemoryInjection('layer1', memoryInjection.block),
         },
       ]
     : undefined
@@ -154,7 +155,7 @@ export async function processSessionMessageTurn({
 
   const messageCountBefore = messages.length
   try {
-    return await agent.run(
+    const turnMessages = await agent.run(
       context,
       content,
       imageDelegationFiles?.length ? undefined : options?.images,
@@ -165,6 +166,14 @@ export async function processSessionMessageTurn({
       { turnIndex: turnRuntime.allocateTurnIndex(), userMessageEntry },
       () => turnRuntime.shouldAbort(),
     )
+    recordMemoryEchoUsage({
+      recorder: deps.memoryUsage,
+      sessionId: sessionData.id,
+      userMessage: content,
+      injectedMemories: memoryInjection.memories,
+      turnMessages,
+    })
+    return turnMessages
   } catch (error) {
     const rolledBack = applyFailedTurnRollback({
       messages,
@@ -192,6 +201,11 @@ export async function processSessionMessageTurn({
   }
 }
 
+interface SessionMemoryInjection {
+  block?: string
+  memories: RetrievedMemoryMatch[]
+}
+
 async function retrieveSessionMemories(options: {
   activeModel?: ResolvedModel
   agentConfig: AgentConfig | null
@@ -205,14 +219,16 @@ async function retrieveSessionMemories(options: {
   logger: ToolLogger
   modelRouter: ModelRouter
   userMessage: string
-}): Promise<string | undefined> {
-  if ((options.agentConfig?.promptMode ?? 'full') !== 'full') return undefined
+}): Promise<SessionMemoryInjection> {
+  if ((options.agentConfig?.promptMode ?? 'full') !== 'full') {
+    return { block: undefined, memories: [] }
+  }
 
   const resolved =
     options.activeModel ??
     options.modelRouter.getDefaultModel() ??
     options.modelRouter.getCurrentModel()
-  if (!resolved) return undefined
+  if (!resolved) return { block: undefined, memories: [] }
 
   const memories = await retrieveMemoriesWithDecision({
     adapter: resolved.adapter,
@@ -237,11 +253,51 @@ async function retrieveSessionMemories(options: {
       },
     },
   })
-  if (!memories || memories.length === 0) return undefined
+  if (!memories || memories.length === 0) return { block: undefined, memories: [] }
 
   for (const memory of memories) {
     options.injectedMemoryIds.set(memory.id, memory.title)
+    // S1 使用反馈:记"被注入"观测账(injected 不进评分,只作后续归因的基数)
+    options.deps.memoryUsage?.record(memory.id, 'injected', options.data.id)
   }
 
-  return buildRetrievedMemoriesBlock(memories)
+  return { block: buildRetrievedMemoriesBlock(memories), memories }
+}
+
+// S3 使用反馈:turn 成功结束后做回声检测——注入记忆的特征词出现在本 turn
+// 助手输出(文本+工具调用入参)里即记 used。纯计算且 best-effort,绝不影响主流程。
+function recordMemoryEchoUsage(options: {
+  recorder: SessionDeps['memoryUsage']
+  sessionId: string
+  userMessage: string
+  injectedMemories: RetrievedMemoryMatch[]
+  turnMessages: Message[]
+}): void {
+  const { recorder } = options
+  if (!recorder || options.injectedMemories.length === 0) return
+
+  try {
+    const outputText = options.turnMessages
+      .filter((message) => message.role === 'assistant')
+      .flatMap((message) => message.content)
+      .map((block) => {
+        if (block.type === 'text') return block.text
+        if (block.type === 'tool_use') return `${block.name} ${JSON.stringify(block.input)}`
+        return ''
+      })
+      .join('\n')
+
+    const usedIds = detectMemoryEcho(
+      options.injectedMemories.map((memory) => ({
+        id: memory.id,
+        text: `${memory.title}\n${memory.content}`,
+      })),
+      { userMessage: options.userMessage, outputText },
+    )
+    for (const id of usedIds) {
+      recorder.record(id, 'used', options.sessionId)
+    }
+  } catch {
+    // best-effort:回声检测失败静默跳过
+  }
 }

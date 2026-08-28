@@ -247,6 +247,7 @@ function createRuntimeSessionManager({
       secretResolver: secrets.secretResolver,
       memoryRetriever: memoryRuntime.memoryRetriever,
       memoryStore: memoryRuntime.memoryStore,
+      memoryUsage: memoryRuntime.memoryUsage,
       identityReader: memoryRuntime.identityReader,
       bus,
       sessionDb: observability.sessionDb,

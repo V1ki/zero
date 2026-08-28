@@ -49,6 +49,8 @@ export interface SessionDeps {
   secretResolver?: (ref: string) => string | undefined
   memoryRetriever?: MemoryRetriever
   memoryStore?: ToolContext['memoryStore']
+  /** 使用反馈统计(MemoryUsageTracker);缺省时检索 usage 项为 0、埋点静默跳过 */
+  memoryUsage?: ToolContext['memoryUsage']
   identityMemory?: string
   globalIdentity?: string
   agentIdentity?: string

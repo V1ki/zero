@@ -107,8 +107,11 @@ export const CONTEXT_PARAMS = {
     topN: 8,
     confidenceThreshold: 0.5,
     perMemoryMaxTokens: 400,
-    vectorWeight: 0.8,
+    // 2026-08-28 引入使用反馈回路:向量 0.8→0.7 腾出 0.1 给 usage(read/used 衰减计数)。
+    // usage 线性饱和且封顶 0.1,低相关记忆穿不透 minScore=0.7,只做同等相关间的排序偏置。
+    vectorWeight: 0.7,
     recencyWeight: 0.2,
+    usageWeight: 0.1,
     recencyHalfLifeDays: 30,
     minScore: 0.7,
     agentMaxIterations: 3,

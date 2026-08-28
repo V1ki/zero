@@ -19,6 +19,7 @@ interface ShutdownRuntimeOptions {
   sessionDb: SessionDB
   metrics: MetricsDB
   skipProcessExit?: boolean
+  flushMemoryUsage?: () => Promise<void>
 }
 
 export interface ShutdownRuntime {
@@ -40,6 +41,7 @@ export interface ShutdownSequenceOptions {
   heartbeat: HeartbeatWriter
   sessionDb: SessionDB
   metrics: MetricsDB
+  flushMemoryUsage?: () => Promise<void>
 }
 
 interface CloseShutdownResourcesOptions {
@@ -66,6 +68,7 @@ export function createShutdownRuntime({
   sessionDb,
   metrics,
   skipProcessExit,
+  flushMemoryUsage,
 }: ShutdownRuntimeOptions): ShutdownRuntime {
   let shuttingDown = false
   const activeStreamingSessionSets: Set<FeishuStreamingSession>[] = []
@@ -91,6 +94,7 @@ export function createShutdownRuntime({
         heartbeat,
         sessionDb,
         metrics,
+        flushMemoryUsage,
       })
       if (!skipProcessExit) process.exit(0)
     },
@@ -110,12 +114,20 @@ export async function runShutdownSequence({
   heartbeat,
   sessionDb,
   metrics,
+  flushMemoryUsage,
 }: ShutdownSequenceOptions): Promise<void> {
   console.log('\n[ZeRo OS] Shutting down...')
   publishShuttingDownHeartbeat(heartbeat)
   stopChannelRecovery?.()
   scheduler.stop()
   console.log('[ZeRo OS] Scheduler stopped')
+
+  // 使用反馈统计落盘:纯文件写,尽早做且 best-effort——失败只丢本轮统计提示。
+  try {
+    await flushMemoryUsage?.()
+  } catch (error) {
+    console.warn('[ZeRo OS] Memory usage stats flush failed:', error)
+  }
 
   await recordRestartSentinel({
     zeroDir,

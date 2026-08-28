@@ -71,6 +71,19 @@ export interface MemoryScoreBreakdown {
   keyword: number
   recency: number
   vector?: number
+  /** 使用反馈回路:该记忆的近期使用度(0..1),封顶权重远小于相关性权重。 */
+  usage?: number
+}
+
+/**
+ * 使用反馈信号的类别。injected 仅记观测账;read/used 计正向;harmful/unused
+ * 留给治理回路消费(超阈值路由治理队列),不直接进检索评分。
+ */
+export type MemoryUsageKind = 'injected' | 'read' | 'used' | 'harmful' | 'unused'
+
+/** 结构化最小接口,MemoryUsageTracker 结构满足之;埋点方只依赖此形状。 */
+export interface MemoryUsageRecorder {
+  record(id: string, kind: MemoryUsageKind, sessionId?: string): void
 }
 
 export interface ScoredMemoryMatch {

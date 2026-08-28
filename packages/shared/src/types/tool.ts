@@ -1,5 +1,11 @@
 import type { ScheduleConfig, SecretFilter } from './config'
-import type { Memory, MemorySearchOptions, MemoryType, ScoredMemoryMatch } from './memory'
+import type {
+  Memory,
+  MemorySearchOptions,
+  MemoryType,
+  MemoryUsageRecorder,
+  ScoredMemoryMatch,
+} from './memory'
 import type { ToolResultContentItem } from './message'
 
 /**
@@ -275,6 +281,7 @@ export interface ToolContext {
       opts?: { topK?: number; candidateIds?: string[]; minScore?: number },
     ): Promise<{ id: string; type: MemoryType; score: number } | undefined>
   }
+  memoryUsage?: MemoryUsageRecorder
   channelBinding?: {
     source: string
     channelName: string

@@ -261,6 +261,68 @@ describe('MemoryRetriever', () => {
     expect(results[0]?.memory.id).toBe(deployId)
   })
 
+  test('usage score biases ordering between similarly relevant memories', async () => {
+    const retrieverWithUsage = new MemoryRetriever(
+      store,
+      createEmbeddingClient({ 'mixed results': 6 }),
+      createVectorIndex({
+        metadataById,
+        resultsByVector: {
+          6: [
+            { memoryId: deployId, score: 0.92 },
+            { memoryId: redisId, score: 0.91 },
+            { memoryId: databaseId, score: 0.9 },
+          ],
+        },
+      }),
+      {
+        vectorWeight: 0.7,
+        recencyWeight: 0.2,
+        usageWeight: 0.1,
+        usageScore: (id) => (id === redisId ? 1 : 0),
+      },
+    )
+
+    const results = await retrieverWithUsage.retrieveScored('mixed results', {
+      confidenceThreshold: 0.1,
+    })
+
+    // 无 usage 时 deploy(向量 0.92)排第一;redis 满 usage 后 0.7*0.91+0.2+0.1 反超
+    expect(results[0]?.memory.id).toBe(redisId)
+    expect(results[0]?.scoreBreakdown.usage).toBe(1)
+    expect(results.find((entry) => entry.memory.id === deployId)?.scoreBreakdown.usage).toBe(0)
+  })
+
+  test('full usage cannot push a low-relevance memory past minScore', async () => {
+    const retrieverWithUsage = new MemoryRetriever(
+      store,
+      createEmbeddingClient({ lowrel: 1 }),
+      createVectorIndex({
+        metadataById,
+        resultsByVector: {
+          1: [
+            { memoryId: deployId, score: 0.95 },
+            { memoryId: databaseId, score: 0.3 },
+          ],
+        },
+      }),
+      {
+        vectorWeight: 0.7,
+        recencyWeight: 0.2,
+        usageWeight: 0.1,
+        usageScore: (id) => (id === databaseId ? 1 : 0),
+      },
+    )
+
+    const results = await retrieverWithUsage.retrieveScored('lowrel', {
+      minScore: 0.7,
+      confidenceThreshold: 0.1,
+    })
+
+    // database: 0.7*0.3+0.2+0.1=0.51 < 0.7 —— usage 封顶 0.1,低相关穿不透门槛
+    expect(results.map((entry) => entry.memory.id)).toEqual([deployId])
+  })
+
   test('vector failure returns empty results', async () => {
     const failingRetriever = new MemoryRetriever(
       store,

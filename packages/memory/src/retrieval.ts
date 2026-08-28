@@ -15,7 +15,10 @@ const DEFAULT_TYPES: MemoryType[] = ['preference', 'decision', 'note', 'runbook'
 export interface MemoryRetrieverConfig {
   vectorWeight?: number
   recencyWeight?: number
+  usageWeight?: number
   recencyHalfLifeDays?: number
+  /** 使用反馈:返回某记忆的近期使用度(0..1);缺省时 usage 项恒为 0。 */
+  usageScore?: (memoryId: string) => number
 }
 
 /**
@@ -141,12 +144,17 @@ export class MemoryRetriever {
 
     const scored = filtered.map(({ memory, vector, resolvedFrom }) => {
       const recency = computeRecencyScore(memory, this.recencyHalfLifeDays)
+      const usage = this.config.usageScore?.(memory.id) ?? 0
       const scoreBreakdown = {
         keyword: 0,
         recency,
         vector,
+        usage,
       }
-      const score = this.vectorWeight * vector + this.recencyWeight * recency
+      // usage 权重(默认 0.1)远小于相关性权重且线性饱和,低相关记忆即使满 usage
+      // 也到不了 minScore 门槛——usage 只做同等相关间的排序偏置,不替代相关性。
+      const score =
+        this.vectorWeight * vector + this.recencyWeight * recency + this.usageWeight * usage
 
       return {
         memory,
@@ -196,11 +204,15 @@ export class MemoryRetriever {
   }
 
   private get vectorWeight(): number {
-    return this.config.vectorWeight ?? 0.8
+    return this.config.vectorWeight ?? 0.7
   }
 
   private get recencyWeight(): number {
     return this.config.recencyWeight ?? 0.2
+  }
+
+  private get usageWeight(): number {
+    return this.config.usageWeight ?? 0.1
   }
 
   private get recencyHalfLifeDays(): number {

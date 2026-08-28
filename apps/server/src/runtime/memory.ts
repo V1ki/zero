@@ -6,6 +6,7 @@ import {
   type MemoryRepository,
   MemoryRetriever,
   MemoryStore,
+  MemoryUsageTracker,
   type VectorIndex,
 } from '@zero-os/memory'
 import type { MetricsDB } from '@zero-os/observe'
@@ -20,6 +21,8 @@ export interface MemoryRuntime {
   memoryLifecycle: MemoryLifecycle
   vectorIndex?: VectorIndex
   memoManager: MemoManager
+  /** 使用反馈统计:检索评分消费 score(),session 埋点消费 record(),shutdown 消费 flush() */
+  memoryUsage: MemoryUsageTracker
   identityReader(agentName: string): { global: string; agent: string }
 }
 
@@ -41,6 +44,12 @@ export async function createMemoryRuntime({
   const memoryDir = join(zeroDir, 'memory')
   const baseMemoryStore = new MemoryStore(memoryDir)
   const memoManager = new MemoManager(join(memoryDir, 'memo.md'))
+  // 使用反馈统计:sidecar 存储,与记忆正文/向量索引完全解耦;加载失败从空开始。
+  const memoryUsage = new MemoryUsageTracker({
+    statsPath: join(memoryDir, 'usage-stats.json'),
+    halfLifeDays: CONTEXT_PARAMS.retrieval.recencyHalfLifeDays,
+  })
+  memoryUsage.load()
   const { memoryStore, embeddingClient, vectorIndex } = await createMemoryIndexRuntime({
     memoryDir,
     baseMemoryStore,
@@ -53,7 +62,9 @@ export async function createMemoryRuntime({
   const memoryRetriever = new MemoryRetriever(memoryStore, embeddingClient, vectorIndex, {
     vectorWeight: CONTEXT_PARAMS.retrieval.vectorWeight,
     recencyWeight: CONTEXT_PARAMS.retrieval.recencyWeight,
+    usageWeight: CONTEXT_PARAMS.retrieval.usageWeight,
     recencyHalfLifeDays: CONTEXT_PARAMS.retrieval.recencyHalfLifeDays,
+    usageScore: (memoryId) => memoryUsage.score(memoryId),
   })
   const memoryLifecycle = new MemoryLifecycle(memoryStore)
 
@@ -71,6 +82,7 @@ export async function createMemoryRuntime({
     memoryLifecycle,
     vectorIndex,
     memoManager,
+    memoryUsage,
     identityReader,
   }
 }
