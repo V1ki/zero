@@ -119,11 +119,14 @@ const KIND_ICON: Record<TrajectoryCellKind, ReactNode> = {
 /**
  * Badge label for one ledger row.
  * @param record - Projected table record.
- * @returns `GATEWAY` for task-closure classifier gates, else the kind label.
+ * @returns `GATEWAY` for side-loop gates, `POST-TURN` for memory-nudge gates,
+ *   else the kind label.
  */
 function recordBadgeLabel(record: TableRecord): string {
   const badge = cellBadgeKind(record.cell)
-  return badge === 'gateway' ? 'GATEWAY' : KIND_LABEL[badge]
+  if (badge === 'gateway') return 'GATEWAY'
+  if (badge === 'post-turn') return 'POST-TURN'
+  return KIND_LABEL[badge]
 }
 
 interface TableRecord {
@@ -2625,19 +2628,21 @@ export function TrajectoryTable({
                                 className={`${css.kindTag} ${
                                   cellBadgeKind(record.cell) === 'gateway'
                                     ? css.gatewayIndigo
-                                    : record.cell.kind === 'system'
-                                      ? css.systemNeutral
-                                      : record.cell.kind === 'context'
-                                        ? css.contextGreen
-                                        : record.cell.kind === 'compacted'
-                                          ? css.compacted
-                                          : record.cell.kind === 'tool'
-                                            ? css.toolAmber
-                                            : record.cell.kind === 'message'
-                                              ? css.assistantVioletBright
-                                              : record.cell.kind === 'subtool'
-                                                ? css.subtoolAmber
-                                                : css[record.cell.kind]
+                                    : cellBadgeKind(record.cell) === 'post-turn'
+                                      ? css.postTurnRose
+                                      : record.cell.kind === 'system'
+                                        ? css.systemNeutral
+                                        : record.cell.kind === 'context'
+                                          ? css.contextGreen
+                                          : record.cell.kind === 'compacted'
+                                            ? css.compacted
+                                            : record.cell.kind === 'tool'
+                                              ? css.toolAmber
+                                              : record.cell.kind === 'message'
+                                                ? css.assistantVioletBright
+                                                : record.cell.kind === 'subtool'
+                                                  ? css.subtoolAmber
+                                                  : css[record.cell.kind]
                                 }`}
                                 data-role-kind={cellBadgeKind(record.cell)}
                               >
@@ -2837,17 +2842,19 @@ export function TrajectoryTable({
                       className={`${css.kindTag} ${
                         cellBadgeKind(selected.cell) === 'gateway'
                           ? css.gatewayIndigo
-                          : selected.cell.kind === 'context'
-                            ? css.contextGreen
-                            : selected.cell.kind === 'compacted'
-                              ? css.compacted
-                              : selected.cell.kind === 'tool'
-                                ? css.toolAmber
-                                : selected.cell.kind === 'message'
-                                  ? css.assistantVioletBright
-                                  : selected.cell.kind === 'subtool'
-                                    ? css.subtoolAmber
-                                    : css[selected.cell.kind]
+                          : cellBadgeKind(selected.cell) === 'post-turn'
+                            ? css.postTurnRose
+                            : selected.cell.kind === 'context'
+                              ? css.contextGreen
+                              : selected.cell.kind === 'compacted'
+                                ? css.compacted
+                                : selected.cell.kind === 'tool'
+                                  ? css.toolAmber
+                                  : selected.cell.kind === 'message'
+                                    ? css.assistantVioletBright
+                                    : selected.cell.kind === 'subtool'
+                                      ? css.subtoolAmber
+                                      : css[selected.cell.kind]
                       }`}
                     >
                       {recordBadgeLabel(selected)}

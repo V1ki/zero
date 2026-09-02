@@ -665,6 +665,8 @@ export interface DecisionOwnership {
  * their spawn tool span and belong to the sub-agent block; main-agent requests
  * pair with the assistant message carrying their tool calls, falling back to
  * the nearest assistant at or after the decision time for text-only requests.
+ * Memory-retrieval decisions are the exception: they describe a gateway side
+ * agent that runs before the turn, so they always stay standalone rows.
  */
 function assignDecisionOwners(
   decisionItems: DecisionTimelineItem[],
@@ -700,6 +702,15 @@ function assignDecisionOwners(
   }
 
   for (const decision of decisionItems) {
+    // Memory retrieval is a separate gateway side agent that runs before the
+    // turn, not reasoning the assistant produced; it renders as its own
+    // MemoryRetrievalBlock row instead of being folded into an assistant's
+    // thinking.
+    if (decision.decisionType === 'memory_retrieval') {
+      ownership.standalone.push(decision)
+      continue
+    }
+
     const span = spanById.get(decision.id)
     if (span === undefined) {
       ownership.standalone.push(decision)

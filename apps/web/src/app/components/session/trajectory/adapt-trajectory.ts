@@ -545,6 +545,7 @@ interface MemoryRetrievalDecisionView {
   need?: unknown
   queries?: unknown
   searches?: unknown
+  toolCalls?: unknown
   usedFallbackSelection?: unknown
   tokens?: unknown
   durationMs?: unknown
@@ -630,6 +631,63 @@ function memoryRetrievalLine(memory: RetrievedMemoryView): string {
   if (memory.type !== undefined) parts.push(memory.type)
   if (memory.score !== undefined) parts.push(`score ${memory.score.toFixed(2)}`)
   return `- ${parts.join(' · ')}`
+}
+
+/** One tool call the retrieval side loop executed against its toolset. */
+interface MemoryLoopCallView {
+  name: string
+  input: Record<string, unknown>
+  output: string
+}
+
+/**
+ * Normalize the tool calls the retrieval side loop recorded, in loop order.
+ * @param value - Loose toolCalls span field.
+ * @returns Calls with name, input, and recorded output.
+ */
+function memoryRetrievalToolCalls(value: unknown): MemoryLoopCallView[] {
+  if (!Array.isArray(value)) return []
+  const out: MemoryLoopCallView[] = []
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const record = entry as { name?: unknown; input?: unknown; output?: unknown }
+    if (typeof record.name !== 'string' || record.name === '') continue
+    const input =
+      typeof record.input === 'object' && record.input !== null && !Array.isArray(record.input)
+        ? (record.input as Record<string, unknown>)
+        : {}
+    out.push({
+      name: record.name,
+      input,
+      output: typeof record.output === 'string' ? record.output : '',
+    })
+  }
+  return out
+}
+
+/**
+ * Render one side-loop tool call as a Result-pane line, mirroring the sub-agent
+ * child-call format: label from the most identifying input field, then either a
+ * pointer to the search detail expanded below (memory_search calls duplicate
+ * the searches section) or a raw output preview for unmatched calls.
+ * @param call - Side-loop tool call view.
+ * @param searches - Searches the decision recorded.
+ * @returns Single detail line (detail continues on an indented line).
+ */
+function memoryLoopCallLine(
+  call: MemoryLoopCallView,
+  searches: readonly MemorySearchView[],
+): string {
+  const label = subAgentChildCallLabel({ name: call.name, input: call.input })
+  const query = call.input.query
+  const matched =
+    typeof query === 'string' ? searches.find((search) => search.query === query) : undefined
+  const detail =
+    matched !== undefined
+      ? `→ ${matched.resultCount} ${matched.resultCount === 1 ? 'result' : 'results'} (details below)`
+      : call.output.replace(/\s+/g, ' ').trim().slice(0, 240)
+  const detailLine = detail === '' ? '' : `\n  ${detail}`
+  return `- ${call.name}${label === '' ? '' : `: ${label}`}${detailLine}`
 }
 
 /**
@@ -1619,7 +1677,7 @@ export function buildTrajectorySnapshot(
       event.durationMs === undefined ? '' : ` · ${formatDurationMillis(event.durationMs)}`
     const failure = event.status !== 'success' ? ` · ${event.status}` : ''
     const heading = `memory nudge${
-      event.iteration === undefined ? '' : ` #${event.iteration}`
+      event.iteration === undefined ? '' : ` · loop ${event.iteration}`
     }${state}${duration}${failure}`
     const span =
       nudgeSpans.find((candidate) => toEpochMillis(candidate.endTime) === time) ??
@@ -1833,6 +1891,7 @@ export function buildTrajectorySnapshot(
     const end = toEpochMillis(span.endTime)
     const queries = spanStringList(decision?.queries)
     const searches = memoryRetrievalSearches(decision?.searches)
+    const toolCalls = memoryRetrievalToolCalls(decision?.toolCalls)
     const selected = memoryRetrievalSelections(decision?.selectedMemories)
     const isHint = span.metadata?.layer === 'layer2'
     // Only a span that selected memories produced an injection to anchor to;
@@ -1903,9 +1962,21 @@ export function buildTrajectorySnapshot(
     const heading = `${isHint ? 'memory hint retrieval' : 'memory retrieval'} · ${
       injected ? `${selected.length} ${noun} injected` : 'no memories injected'
     }${durationMs === undefined ? '' : ` · ${formatDurationMillis(durationMs)}`}${
-      span.status !== 'success' ? ` · ${span.status}` : ''
-    }`
+      toolCalls.length === 0
+        ? ''
+        : ` · ${toolCalls.length} tool${toolCalls.length === 1 ? '' : 's'}`
+    }${span.status !== 'success' ? ` · ${span.status}` : ''}`
     const answerParts: string[] = []
+    // The retrieval decision is a real agent loop: show the calls it made in
+    // order first, so the Result pane reads tool call → search detail →
+    // selection → final response like a sub-agent's child-call trail.
+    if (toolCalls.length > 0) {
+      answerParts.push(
+        `Agent loop tool calls (${toolCalls.length}):\n${toolCalls
+          .map((call) => memoryLoopCallLine(call, searches))
+          .join('\n')}`,
+      )
+    }
     // Searches carry the executed queries plus their candidate hits, which
     // supersedes the plain generated-query list when the runtime recorded them.
     if (searches.length > 0) {
@@ -1956,6 +2027,7 @@ export function buildTrajectorySnapshot(
         injected,
         count: selected.length,
         ...(model === undefined ? {} : { model }),
+        ...(toolCalls.length === 0 ? {} : { toolCalls }),
       },
       provenance: { role: 'system', name: 'memory retrieval' },
       form: 'memory-retrieval',

@@ -102,6 +102,8 @@ function timelineKindLabel(kind: TrajectoryBadgeKind): string {
       return 'CONTEXT'
     case 'gateway':
       return 'GATEWAY'
+    case 'post-turn':
+      return 'POST-TURN'
     case 'compacted':
       return 'COMPACTED'
     case 'message':

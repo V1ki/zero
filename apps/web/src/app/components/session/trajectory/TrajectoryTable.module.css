@@ -606,6 +606,13 @@
   background: rgba(129, 140, 248, 0.22);
 }
 
+/* Post-turn memory-write checks (memory nudge); rose separates the write path
+   from the pre-turn indigo read gates. */
+.postTurnRose {
+  color: #fb7185;
+  background: rgba(251, 113, 133, 0.2);
+}
+
 .contextGreen {
   color: color-mix(
     in srgb,

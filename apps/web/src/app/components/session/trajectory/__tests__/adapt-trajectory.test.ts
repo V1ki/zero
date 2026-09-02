@@ -919,7 +919,7 @@ describe('buildTrajectorySnapshot', () => {
     expect(nudges[0]?.source).toEqual({ kind: 'memory nudge', memoryWritten: true })
     const text = nudges[0]?.content[0]
     if (text?.type === 'text') {
-      expect(text.text).toContain('memory nudge #3 · memory written')
+      expect(text.text).toContain('memory nudge · loop 3 · memory written')
       expect(text.text).toContain('当前阶段已完成')
     }
     const seqs = snapshot.eventNodes.map((node) => node.seq)
@@ -1602,7 +1602,7 @@ describe('buildTrajectorySnapshot', () => {
     const headline = nudges[0]?.content[0]
     expect(headline?.type).toBe('text')
     if (headline?.type === 'text') {
-      expect(headline.text).toContain('memory nudge #8 · memory written · 14,000 ms')
+      expect(headline.text).toContain('memory nudge · loop 8 · memory written · 14,000 ms')
       expect(headline.text).toContain('Recorded note: Weekly digest')
     }
     expect(nudges[0]?.content).toHaveLength(1)
@@ -1687,7 +1687,7 @@ describe('buildTrajectorySnapshot', () => {
       think: 41,
     })
     if (cell !== undefined) {
-      expect(cellBadgeKind(cell)).toBe('gateway')
+      expect(cellBadgeKind(cell)).toBe('post-turn')
     }
   })
 
@@ -1923,6 +1923,92 @@ describe('buildTrajectorySnapshot', () => {
     if (injectionCells[0] !== undefined) {
       expect(cellBadgeKind(injectionCells[0])).toBe('context')
     }
+  })
+
+  it('projects the retrieval side loop tool calls like a sub-agent trail', () => {
+    const retrievalTraces: TraceSpan[] = [
+      span({
+        id: 'span-retrieval-loop',
+        name: 'memory_retrieval_decision',
+        startTime: T1,
+        endTime: T2,
+        durationMs: 3000,
+        status: 'success',
+        metadata: { layer: 'layer1' },
+        data: {
+          memoryRetrievalDecision: {
+            prompt: '看看这个帖子',
+            response: '{"result":[{"id":"mem_1","reason":"runbook"}]}',
+            need: true,
+            queries: ['X 帖子抓取失败怎么办'],
+            tokens: { input: 322, output: 46 },
+            durationMs: 3000,
+            searches: [
+              {
+                query: 'X 帖子抓取失败怎么办',
+                mode: 'scored',
+                options: { topN: 8, minScore: 0.3 },
+                resultCount: 1,
+                results: [
+                  {
+                    id: 'mem_1',
+                    type: 'runbook',
+                    title: '从X推文提取视频音频',
+                    score: 0.7316,
+                    scoreBreakdown: { keyword: 0, recency: 0.4, vector: 0.8 },
+                  },
+                ],
+              },
+            ],
+            toolCalls: [
+              {
+                name: 'memory_search',
+                input: { query: 'X 帖子抓取失败怎么办' },
+                output:
+                  '{"query":"X 帖子抓取失败怎么办","result":[{"id":"mem_1","title":"从X推文提取视频音频"}]}',
+              },
+              {
+                name: 'memory_search',
+                input: { query: '' },
+                output: 'query is required',
+              },
+            ],
+            selectedMemories: [
+              { id: 'mem_1', type: 'runbook', title: '从X推文提取视频音频', score: 0.7316 },
+            ],
+          },
+        },
+      }),
+    ]
+    const snapshot = buildTrajectorySnapshot(session, requests, [...traces, ...retrievalTraces])
+    const gate = snapshot.eventNodes.find(
+      (node) => node.kind === 'context' && node.form === 'memory-retrieval',
+    ) as Extract<(typeof snapshot.eventNodes)[number], { kind: 'context' }> | undefined
+    expect(gate).toBeDefined()
+
+    const heading = (gate?.content ?? [])
+      .map((block) => (block.type === 'text' ? block.text : ''))
+      .join('\n')
+    expect(heading).toContain('memory retrieval · 1 memory injected')
+    expect(heading).toContain('· 2 tools')
+
+    const answer = gate?.gateQa?.answer
+    expect(answer).toContain('Agent loop tool calls (2):')
+    // A matched memory_search points at the search detail instead of dumping
+    // the duplicate JSON output.
+    expect(answer).toContain('- memory_search: X 帖子抓取失败怎么办\n  → 1 result (details below)')
+    // An unmatched call falls back to its raw recorded output preview.
+    expect(answer).toContain('- memory_search: {"query":""}\n  query is required')
+    expect(answer).toContain('Memory searches (1):')
+    expect(answer).toContain('Selected memories (1):')
+    expect(answer).toContain('Response:')
+    expect(gate?.source).toMatchObject({
+      kind: 'memory retrieval',
+      toolCalls: [
+        { name: 'memory_search', input: { query: 'X 帖子抓取失败怎么办' } },
+        { name: 'memory_search', input: { query: '' } },
+      ],
+    })
   })
 
   it('renders executed memory searches with candidates and fallback selection', () => {

@@ -1125,8 +1125,8 @@ describe('buildTimeline', () => {
         id: 'span_llm_text_only',
         sessionId: 'sess_1',
         ts: '2026-03-08T00:00:04.900Z',
-        decisionType: 'memory_retrieval',
-        outcome: 'retrieve',
+        decisionType: 'tool_selection',
+        outcome: 'read',
         sourceKind: 'llm_request',
       },
     ]
@@ -1140,9 +1140,72 @@ describe('buildTimeline', () => {
       type: 'agent-text',
       messageId: 'msg_assistant',
       text: '',
-      thinking: [{ id: 'span_llm_text_only', decisionType: 'memory_retrieval' }],
+      thinking: [{ id: 'span_llm_text_only', decisionType: 'tool_selection', outcome: 'read' }],
     })
     expect(items.findIndex((item) => item.type === 'tool-call')).toBe(2)
+  })
+
+  test('keeps memory retrieval decisions standalone instead of folding them into assistant thinking', () => {
+    const messages: Message[] = [
+      {
+        id: 'msg_user',
+        role: 'user',
+        messageType: 'message',
+        content: [{ type: 'text', text: 'go' }],
+        createdAt: '2026-03-08T00:00:01.000Z',
+      },
+      {
+        id: 'msg_assistant',
+        role: 'assistant',
+        messageType: 'message',
+        content: [{ type: 'tool_use', id: 'call_1', name: 'read', input: { path: '/tmp/demo' } }],
+        createdAt: '2026-03-08T00:00:05.000Z',
+      },
+    ]
+    const traces: TraceSpan[] = [
+      {
+        id: 'span_root',
+        sessionId: 'sess_1',
+        name: 'agent.run:test',
+        startTime: '2026-03-08T00:00:00.000Z',
+        endTime: '2026-03-08T00:00:06.000Z',
+        durationMs: 6000,
+        status: 'success',
+        children: [
+          {
+            id: 'span_llm_text_only',
+            parentId: 'span_root',
+            sessionId: 'sess_1',
+            name: 'llm_request',
+            startTime: '2026-03-08T00:00:04.000Z',
+            endTime: '2026-03-08T00:00:04.900Z',
+            durationMs: 900,
+            status: 'success',
+            data: { request: { stopReason: 'tool_use', toolNames: ['read'] } },
+            children: [],
+          },
+        ],
+      },
+    ]
+    const decisions: SessionDecisionEvent[] = [
+      {
+        id: 'span_llm_text_only',
+        sessionId: 'sess_1',
+        ts: '2026-03-08T00:00:04.900Z',
+        decisionType: 'memory_retrieval',
+        outcome: 'retrieve',
+        sourceKind: 'llm_request',
+      },
+    ]
+
+    const items = buildTimeline(messages, traces, [], decisions)
+
+    expect(items.map((item) => item.type)).toEqual(['user-message', 'decision', 'tool-call'])
+    expect(items[1]).toMatchObject({
+      id: 'span_llm_text_only',
+      decisionType: 'memory_retrieval',
+    })
+    expect(items.find((item) => item.type === 'agent-text')).toBeUndefined()
   })
 
   test('attaches sub-agent decisions to the sub-agent block instead of the main lane', () => {
