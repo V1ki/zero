@@ -5,6 +5,7 @@ import type {
   MemoryLifecycle,
   MemoryRepository,
   MemoryRetriever,
+  MemoryUsageTracker,
   VectorIndex,
 } from '@zero-os/memory'
 import type { ModelRouter, ProviderHealthRegistry } from '@zero-os/model'
@@ -40,6 +41,7 @@ export interface ZeroOS {
   memoryStore: MemoryRepository
   memoryRetriever: MemoryRetriever
   memoryLifecycle: MemoryLifecycle
+  memoryUsage: MemoryUsageTracker
   vectorIndex?: VectorIndex
   memoManager: MemoManager
   tracer: Tracer

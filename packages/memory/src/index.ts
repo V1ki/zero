@@ -29,10 +29,21 @@ export type {
   MemoryGovernanceResult,
   MemoryNeighbor,
   MemoryNeighborResult,
+  MemoryRelatedResult,
   MemoryRelationRemoveSpec,
 } from './governance'
+export { buildMemoryLineage, computeRelatedMemories } from './related'
+export type {
+  LineageEntry,
+  LineageRelation,
+  RelatedMemoryHit,
+  RelatedReason,
+} from './related'
 export { MemoryUsageTracker } from './usage-stats'
-export type { MemoryUsageTrackerOptions } from './usage-stats'
+export type {
+  MemoryUsageSnapshotEntry,
+  MemoryUsageTrackerOptions,
+} from './usage-stats'
 export { detectMemoryEcho } from './echo'
 export type { EchoMemoryInput, detectMemoryEchoOptions } from './echo'
 

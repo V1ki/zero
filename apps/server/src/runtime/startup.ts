@@ -725,6 +725,7 @@ function createZeroOSHandle({
     memoryStore: core.memoryStore,
     memoryRetriever: core.memoryRetriever,
     memoryLifecycle: core.memoryLifecycle,
+    memoryUsage: core.memoryUsage,
     vectorIndex: core.vectorIndex,
     memoManager: core.memoManager,
     tracer: core.tracer,

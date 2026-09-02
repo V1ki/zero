@@ -3,6 +3,7 @@ import type {
   MemoryRelationRemoveSpec,
   MemoryRepository,
   MemoryRetriever,
+  MemoryUsageTracker,
 } from '@zero-os/memory'
 import { ALL_MEMORY_TYPES, type MemoryType } from '@zero-os/shared'
 import { Hono } from 'hono'
@@ -11,9 +12,16 @@ interface MemoryRoutesDeps {
   memoryStore: MemoryRepository
   memoryRetriever: MemoryRetriever
   governance: MemoryGovernanceService
+  /** 可选:测试 stub 与降级模式(无统计文件)下缺席,端点返回空数组而非报错。 */
+  usageTracker?: MemoryUsageTracker
 }
 
-export function createMemoryRoutes({ memoryStore, memoryRetriever, governance }: MemoryRoutesDeps) {
+export function createMemoryRoutes({
+  memoryStore,
+  memoryRetriever,
+  governance,
+  usageTracker,
+}: MemoryRoutesDeps) {
   return new Hono()
     .get('/', (c) => {
       const type = c.req.query('type') as MemoryType | undefined
@@ -24,6 +32,10 @@ export function createMemoryRoutes({ memoryStore, memoryRetriever, governance }:
       const memories = ALL_MEMORY_TYPES.flatMap((memoryType) => memoryStore.list(memoryType))
       memories.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       return c.json({ memories, type: 'all' })
+    })
+
+    .get('/usage', (c) => {
+      return c.json({ usage: usageTracker?.snapshot() ?? [] })
     })
 
     .get('/search', async (c) => {
@@ -150,6 +162,14 @@ export function createMemoryRoutes({ memoryStore, memoryRetriever, governance }:
       const id = c.req.param('id')
       const topK = Math.min(20, Math.max(1, Number(c.req.query('topK') ?? 8)))
       return c.json(await governance.getNeighbors(type, id, topK))
+    })
+
+    .get('/:type/:id/related', async (c) => {
+      const type = c.req.param('type') as MemoryType
+      const id = c.req.param('id')
+      const result = await governance.getRelated(type, id)
+      if (!result) return c.json({ error: 'Memory not found' }, 404)
+      return c.json(result)
     })
 
     .get('/clusters', async (c) => {

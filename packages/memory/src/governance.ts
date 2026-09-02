@@ -11,6 +11,12 @@ import {
 } from '@zero-os/shared'
 import { type ClusterResult, getMemoryClusters, invalidateClusterCache } from './clustering'
 import type { MemoryLifecycle } from './lifecycle'
+import {
+  type LineageEntry,
+  type RelatedMemoryHit,
+  buildMemoryLineage,
+  computeRelatedMemories,
+} from './related'
 import type { MemoryRepository } from './store'
 import type { VectorIndexLike } from './vector-index'
 
@@ -35,6 +41,11 @@ export interface MemoryNeighbor {
 export interface MemoryNeighborResult {
   neighbors: MemoryNeighbor[]
   reason?: string
+}
+
+export interface MemoryRelatedResult {
+  related: RelatedMemoryHit[]
+  lineage: LineageEntry[]
 }
 
 interface MemoryGovernanceDeps {
@@ -297,6 +308,27 @@ export class MemoryGovernanceService {
 
   getClusters(input: { threshold?: number; force?: boolean }): Promise<ClusterResult> {
     return getMemoryClusters(this.deps.vectorIndex, this.deps.store, input)
+  }
+
+  /**
+   * 组合式关系视图:显式边 + 语义近邻 + 共享标签 + 同源会话合并排序,
+   * 附带完整谱系链(向后到权威条、向前含所有前驱)。全库 list 在百级记忆下开销可忽略。
+   */
+  async getRelated(type: MemoryType, id: string): Promise<MemoryRelatedResult | undefined> {
+    const anchor = this.deps.store.get(type, id)
+    if (!anchor) return undefined
+
+    const memories = ALL_MEMORY_TYPES.flatMap((memoryType) => this.deps.store.list(memoryType))
+    const neighborResult = await this.getNeighbors(type, id, 8)
+    const neighbors = neighborResult.neighbors.map((neighbor) => ({
+      id: neighbor.memoryId,
+      similarity: neighbor.score,
+    }))
+
+    return {
+      related: computeRelatedMemories({ anchor, memories, neighbors }),
+      lineage: buildMemoryLineage(anchor, memories),
+    }
   }
 
   async deleteMemory(type: MemoryType, id: string): Promise<boolean> {

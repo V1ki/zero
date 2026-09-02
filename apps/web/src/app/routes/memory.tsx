@@ -11,6 +11,7 @@ import {
 } from '@phosphor-icons/react'
 import { useNavigate } from '@tanstack/react-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { MemoryGraphPanel } from '../components/memory/MemoryGraphPanel'
 import { ConfirmDialog } from '../components/shared/ConfirmDialog'
 import { Skeleton } from '../components/shared/Skeleton'
 import { apiFetch, apiPatch, apiPost, apiPut } from '../lib/api'
@@ -34,7 +35,7 @@ const EDGE_KIND_OPTIONS: { kind: string; label: string }[] = [
   { kind: 'derived-from', label: '派生自' },
 ]
 
-interface MemoryItem {
+export interface MemoryItem {
   id: string
   type: string
   sessionId?: string
@@ -49,6 +50,47 @@ interface MemoryItem {
   supersededBy?: string
   mergedInto?: string
   edges?: { toId: string; kind: string }[]
+}
+
+interface UsageEntry {
+  id: string
+  injected: number
+  read: number
+  used: number
+  harmful: number
+  unused: number
+  total: number
+  lastAccessedAt: string
+  score: number
+}
+
+interface RelatedHit {
+  id: string
+  type: string
+  title: string
+  status: string
+  reasons: string[]
+  edgeKinds: string[]
+  similarity?: number
+}
+
+interface RelatedResponse {
+  related: RelatedHit[]
+  lineage: Array<{ id: string; type: string; title: string; status: string; relation: string }>
+}
+
+const RELATED_REASON_LABELS: Record<string, string> = {
+  edge: '显式关联',
+  neighbor: '语义近邻',
+  'shared-tags': '共享标签',
+  'same-session': '同源会话',
+}
+
+const LINEAGE_RELATION_LABELS: Record<string, string> = {
+  'superseded-by': '已被取代',
+  'merged-into': '已并入',
+  supersedes: '取代了',
+  'merged-from': '并入了',
 }
 
 function ConfidenceDots({ value }: { value: number }) {
@@ -210,7 +252,13 @@ function ClusterCard({
 
 const STATUS_ORDER = ['verified', 'draft', 'conflict', 'archived'] as const
 
-function MemoryOverview({ memories }: { memories: MemoryItem[] }) {
+function MemoryOverview({
+  memories,
+  usageById,
+}: {
+  memories: MemoryItem[]
+  usageById: Record<string, UsageEntry>
+}) {
   const typeStats: Record<string, { total: number; verified: number; archived: number }> = {}
   const statusCounts: Record<string, number> = {}
   for (const memory of memories) {
@@ -236,6 +284,18 @@ function MemoryOverview({ memories }: { memories: MemoryItem[] }) {
     memories.length > 0
       ? memories.reduce((a, b) => (new Date(b.updatedAt) > new Date(a.updatedAt) ? b : a))
       : null
+
+  // 使用反馈的冷热分布:30 天内使用过 = 热;有历史但超 30 天 = 冷;从无记录 = 未使用。
+  const usageCutoff = Date.now() - 30 * 86_400_000
+  let hotCount = 0
+  let coldCount = 0
+  let neverUsedCount = 0
+  for (const memory of memories) {
+    const usage = usageById[memory.id]
+    if (!usage || usage.total === 0) neverUsedCount++
+    else if (new Date(usage.lastAccessedAt).getTime() >= usageCutoff) hotCount++
+    else coldCount++
+  }
 
   return (
     <div className="space-y-4">
@@ -305,6 +365,38 @@ function MemoryOverview({ memories }: { memories: MemoryItem[] }) {
           </p>
         </div>
       )}
+
+      <div className="mt-3 pt-3 border-t border-[var(--color-border)]">
+        <p className="text-[11px] text-[var(--color-text-disabled)] tracking-wide font-semibold mb-2">
+          USAGE(30天)
+        </p>
+        <div className="space-y-1 text-[12px] font-mono">
+          <div className="flex items-center justify-between py-0.5">
+            <span className="text-cyan-400">热(30天内使用)</span>
+            <span className="text-[var(--color-text-primary)]">{hotCount}</span>
+          </div>
+          <div className="flex items-center justify-between py-0.5">
+            <span className="text-amber-400/80">冷(超30天未用)</span>
+            <span className="text-[var(--color-text-primary)]">{coldCount}</span>
+          </div>
+          <div className="flex items-center justify-between py-0.5">
+            <span className="text-[var(--color-text-disabled)]">从未使用</span>
+            <span className="text-[var(--color-text-primary)]">{neverUsedCount}</span>
+          </div>
+        </div>
+        {memories.length > 0 && (
+          <div className="mt-2 flex h-1 rounded-full overflow-hidden bg-white/[0.06]">
+            <div
+              className="bg-cyan-400/70"
+              style={{ width: `${Math.round((hotCount / memories.length) * 100)}%` }}
+            />
+            <div
+              className="bg-amber-400/50"
+              style={{ width: `${Math.round((coldCount / memories.length) * 100)}%` }}
+            />
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -315,13 +407,14 @@ export function MemoryPage() {
   const [sortBy, setSortBy] = useState<SortKey>('newest')
   const [search, setSearch] = useState('')
   const [memories, setMemories] = useState<MemoryItem[]>([])
+  const [usageById, setUsageById] = useState<Record<string, UsageEntry>>({})
   const [selected, setSelected] = useState<MemoryItem | null>(null)
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState(false)
   const [editContent, setEditContent] = useState('')
   const [editSaving, setEditSaving] = useState(false)
   const [showArchiveConfirm, setShowArchiveConfirm] = useState(false)
-  const [view, setView] = useState<'browse' | 'clusters'>('browse')
+  const [view, setView] = useState<'browse' | 'graph' | 'clusters'>('browse')
   const [fold, setFold] = useState(false)
   const [expandedClusters, setExpandedClusters] = useState<Set<string>>(new Set())
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -353,6 +446,17 @@ export function MemoryPage() {
   useEffect(() => {
     if (!search) fetchMemories(selectedType)
   }, [selectedType, search, fetchMemories])
+
+  // 使用统计与记忆列表独立拉取:tracker 缺席或统计端点失败时静默降级为"从未使用"。
+  useEffect(() => {
+    apiFetch<{ usage: UsageEntry[] }>('/api/memory/usage')
+      .then((res) => {
+        const next: Record<string, UsageEntry> = {}
+        for (const entry of res.usage) next[entry.id] = entry
+        setUsageById(next)
+      })
+      .catch(() => {})
+  }, [])
 
   function handleSearch(value: string) {
     setSearch(value)
@@ -496,6 +600,17 @@ export function MemoryPage() {
           </button>
           <button
             type="button"
+            onClick={() => setView('graph')}
+            className={`rounded-md px-3 py-1 text-[12px] transition-colors ${
+              view === 'graph'
+                ? 'bg-[var(--color-accent-glow)] text-[var(--color-accent)]'
+                : 'text-[var(--color-text-muted)]'
+            }`}
+          >
+            关系图
+          </button>
+          <button
+            type="button"
             onClick={() => setView('clusters')}
             className={`rounded-md px-3 py-1 text-[12px] transition-colors ${
               view === 'clusters'
@@ -509,6 +624,36 @@ export function MemoryPage() {
       </div>
 
       {view === 'clusters' && <GovernanceView />}
+
+      {view === 'graph' && (
+        <div className="flex flex-col gap-4">
+          <MemoryGraphPanel
+            memories={memories}
+            usageById={usageById}
+            selectedId={selected?.id ?? null}
+            onSelectMemory={selectMemory}
+          />
+          {selected && (
+            <MemoryDetailPanel
+              selected={selected}
+              memories={memories}
+              usageById={usageById}
+              editing={editing}
+              editContent={editContent}
+              editSaving={editSaving}
+              onStartEdit={startEdit}
+              onSaveEdit={saveEdit}
+              onCancelEdit={cancelEdit}
+              onEditContentChange={setEditContent}
+              onVerifyMemory={verifyMemory}
+              onArchiveRequest={() => setShowArchiveConfirm(true)}
+              onSelectMemory={selectMemory}
+              onCreateEdge={createEdge}
+              onSupersede={supersedeBy}
+            />
+          )}
+        </div>
+      )}
 
       {view === 'browse' && (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[2fr_3fr]">
@@ -535,6 +680,7 @@ export function MemoryPage() {
           <MemoryDetailPanel
             selected={selected}
             memories={memories}
+            usageById={usageById}
             editing={editing}
             editContent={editContent}
             editSaving={editSaving}
@@ -1228,9 +1374,196 @@ function MemoryBrowsePanel({
   )
 }
 
+function UsageBlock({ usage }: { usage?: UsageEntry }) {
+  return (
+    <div className="mb-3 space-y-1.5 border-t border-[var(--color-border)] pt-3">
+      <p className="text-[11px] font-semibold tracking-wide text-[var(--color-text-disabled)]">
+        使用反馈
+      </p>
+      {usage && usage.total > 0 ? (
+        <div className="space-y-1 text-[11px] font-mono text-[var(--color-text-muted)]">
+          <div className="flex items-center justify-between">
+            <span>近期读取 / 命中</span>
+            <span className="text-[var(--color-text-secondary)]">
+              {usage.read.toFixed(1)} / {usage.used.toFixed(1)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span>累计事件(注入/读取/命中)</span>
+            <span className="text-[var(--color-text-secondary)]">{usage.total}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span>最后使用</span>
+            <span className="text-[var(--color-text-secondary)]">
+              {formatTimeAgo(usage.lastAccessedAt)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span>usage 得分(检索加分)</span>
+            <span className="text-[var(--color-text-secondary)]">
+              {(usage.score * 100).toFixed(0)}%
+            </span>
+          </div>
+          <div className="h-1 rounded-full bg-white/[0.06]">
+            <div
+              className="h-1 rounded-full bg-cyan-400/70 transition-all"
+              style={{ width: `${Math.round(usage.score * 100)}%` }}
+            />
+          </div>
+        </div>
+      ) : (
+        <p className="text-[11px] text-[var(--color-text-disabled)]">
+          暂无使用记录 —— 这条记忆近期未被注入或读取过
+        </p>
+      )}
+    </div>
+  )
+}
+
+function RelatedPanel({
+  memory,
+  memories,
+  onSelectMemory,
+}: {
+  memory: MemoryItem
+  memories: MemoryItem[]
+  onSelectMemory: (memory: MemoryItem) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [data, setData] = useState<RelatedResponse | null>(null)
+  const [note, setNote] = useState<string | null>(null)
+
+  async function load() {
+    setOpen(true)
+    setLoading(true)
+    setNote(null)
+    try {
+      const res = await apiFetch<RelatedResponse>(`/api/memory/${memory.type}/${memory.id}/related`)
+      setData(res)
+      if (res.related.length === 0 && res.lineage.length === 0) setNote('无相关记忆与谱系')
+    } catch {
+      setNote('关系视图获取失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={load}
+        className="inline-flex items-center gap-1 text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-accent)] transition-colors"
+      >
+        <MagnifyingGlass size={12} />
+        相关记忆 / 谱系链
+      </button>
+    )
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-semibold tracking-wide text-[var(--color-text-disabled)]">
+          相关记忆与谱系
+        </span>
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          className="text-[10px] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
+        >
+          收起
+        </button>
+      </div>
+      {loading ? (
+        <p className="text-[11px] text-[var(--color-text-muted)]">加载中…</p>
+      ) : note ? (
+        <p className="text-[11px] text-[var(--color-text-disabled)]">{note}</p>
+      ) : (
+        <div className="space-y-2">
+          {data && data.lineage.length > 0 && (
+            <div className="space-y-1">
+              <p className="text-[10px] text-[var(--color-text-disabled)]">谱系(点击跳转)</p>
+              {data.lineage.map((entry) => (
+                <RelationRow
+                  key={`${entry.relation}:${entry.id}`}
+                  label={LINEAGE_RELATION_LABELS[entry.relation] ?? entry.relation}
+                  targetId={entry.id}
+                  target={memories.find((m) => m.id === entry.id)}
+                  onJump={() => {
+                    const target = memories.find((m) => m.id === entry.id)
+                    if (target) onSelectMemory(target)
+                  }}
+                />
+              ))}
+            </div>
+          )}
+          {data && data.related.length > 0 && (
+            <div className="space-y-1">
+              <p className="text-[10px] text-[var(--color-text-disabled)]">相关记忆(按关联强度)</p>
+              {data.related.map((hit) => {
+                const target = memories.find((m) => m.id === hit.id)
+                return (
+                  <div key={hit.id} className="card p-2">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`text-[10px] px-1.5 py-0.5 rounded ${typeBgColors[hit.type] ?? ''} ${typeColors[hit.type] ?? 'text-slate-400'}`}
+                      >
+                        {hit.type}
+                      </span>
+                      {target ? (
+                        <button
+                          type="button"
+                          onClick={() => onSelectMemory(target)}
+                          className="text-[11px] text-[var(--color-text-secondary)] hover:text-[var(--color-accent)] truncate flex-1 text-left transition-colors"
+                        >
+                          {hit.title}
+                        </button>
+                      ) : (
+                        <span className="text-[11px] text-[var(--color-text-secondary)] truncate flex-1">
+                          {hit.title}
+                        </span>
+                      )}
+                      {hit.similarity !== undefined && (
+                        <span className="text-[10px] font-mono text-[var(--color-text-disabled)] shrink-0">
+                          {hit.similarity.toFixed(2)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {hit.reasons.map((reason) => (
+                        <span
+                          key={reason}
+                          className="rounded bg-white/[0.05] px-1.5 py-0.5 text-[9px] text-[var(--color-text-muted)]"
+                        >
+                          {RELATED_REASON_LABELS[reason] ?? reason}
+                        </span>
+                      ))}
+                      {hit.edgeKinds.map((kind) => (
+                        <span
+                          key={kind}
+                          className="rounded bg-cyan-400/10 px-1.5 py-0.5 text-[9px] text-cyan-300"
+                        >
+                          {EDGE_KIND_LABELS[kind] ?? kind}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function MemoryDetailPanel({
   selected,
   memories,
+  usageById,
   editing,
   editContent,
   editSaving,
@@ -1246,6 +1579,7 @@ function MemoryDetailPanel({
 }: {
   selected: MemoryItem | null
   memories: MemoryItem[]
+  usageById: Record<string, UsageEntry>
   editing: boolean
   editContent: string
   editSaving: boolean
@@ -1261,6 +1595,7 @@ function MemoryDetailPanel({
 }) {
   const navigate = useNavigate()
   const sessionDetailId = selected?.type === 'session' ? selected.sessionId : undefined
+  const usage = selected ? usageById[selected.id] : undefined
 
   return (
     <div className="card p-6">
@@ -1361,6 +1696,8 @@ function MemoryDetailPanel({
             </div>
           )}
 
+          {!editing && <UsageBlock usage={usage} />}
+
           {!editing && (selected.edges?.length || selected.supersededBy || selected.mergedInto) ? (
             <div className="mb-3 space-y-1.5 border-t border-[var(--color-border)] pt-3">
               <p className="text-[11px] font-semibold tracking-wide text-[var(--color-text-disabled)]">
@@ -1404,11 +1741,18 @@ function MemoryDetailPanel({
           ) : null}
 
           {!editing && (
-            <div className="mb-3">
+            <div className="mb-3 space-y-2">
               <NeighborPicker
                 memory={selected}
                 onCreateEdge={onCreateEdge}
                 onSupersede={onSupersede}
+              />
+              {/* key 随选中项变化 → 切换记忆时面板重挂载,自动回到收起态避免陈旧关系 */}
+              <RelatedPanel
+                key={selected.id}
+                memory={selected}
+                memories={memories}
+                onSelectMemory={onSelectMemory}
               />
             </div>
           )}
@@ -1426,7 +1770,7 @@ function MemoryDetailPanel({
           )}
         </div>
       ) : (
-        <MemoryOverview memories={memories} />
+        <MemoryOverview memories={memories} usageById={usageById} />
       )}
     </div>
   )

@@ -31,6 +31,35 @@ describe('MemoryUsageTracker', () => {
     expect(tracker.decayedView('mem_unknown')).toBeUndefined()
   })
 
+  test('snapshot enumerates all records with decayed counts and score', () => {
+    const tracker = createTracker({ saturation: 5 })
+    tracker.record('mem_s1', 'read')
+    tracker.record('mem_s1', 'read')
+    tracker.record('mem_s1', 'used')
+    tracker.record('mem_s2', 'injected')
+
+    const snapshot = tracker.snapshot()
+    expect(snapshot).toHaveLength(2)
+
+    const s1 = snapshot.find((entry) => entry.id === 'mem_s1')
+    expect(s1).toBeDefined()
+    expect(s1?.read).toBeCloseTo(2, 5)
+    expect(s1?.used).toBeCloseTo(1, 5)
+    expect(s1?.total).toBe(3)
+    // (2*2 + 1) / 5 = 1 → 封顶
+    expect(s1?.score).toBe(1)
+    expect(Date.parse(s1?.lastAccessedAt ?? '')).not.toBeNaN()
+
+    const s2 = snapshot.find((entry) => entry.id === 'mem_s2')
+    expect(s2?.score).toBe(0)
+    expect(s2?.total).toBe(1)
+  })
+
+  test('snapshot of empty tracker is an empty array', () => {
+    const tracker = createTracker()
+    expect(tracker.snapshot()).toEqual([])
+  })
+
   test('read counts double and saturates linearly', () => {
     const tracker = createTracker({ saturation: 5 })
     tracker.record('mem_a', 'read')

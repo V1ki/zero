@@ -19,6 +19,19 @@ interface UsageStatsFile {
   records: Record<string, UsageRecord>
 }
 
+/** 全量快照的单条记录:衰减视图 + 原始热度 + 时间戳 + 得分,给 UI/治理消费。 */
+export interface MemoryUsageSnapshotEntry {
+  id: string
+  injected: number
+  read: number
+  used: number
+  harmful: number
+  unused: number
+  total: number
+  lastAccessedAt: string
+  score: number
+}
+
 export interface MemoryUsageTrackerOptions {
   /** 统计文件路径,建议 .zero/memory/usage-stats.json */
   statsPath: string
@@ -31,6 +44,11 @@ export interface MemoryUsageTrackerOptions {
 }
 
 const USAGE_KINDS: MemoryUsageKind[] = ['injected', 'read', 'used', 'harmful', 'unused']
+
+function positiveScore(view: Pick<UsageRecord, 'read' | 'used'>, saturation: number): number {
+  const positive = 2 * view.read + view.used
+  return Math.min(1, positive / saturation)
+}
 
 function emptyRecord(): UsageRecord {
   return {
@@ -155,8 +173,7 @@ export class MemoryUsageTracker implements MemoryUsageRecorder {
   score(id: string): number {
     const view = this.decayedView(id)
     if (!view) return 0
-    const positive = 2 * view.read + view.used
-    return Math.min(1, positive / this.saturation)
+    return positiveScore(view, this.saturation)
   }
 
   /** 当前衰减视图(不修改已存状态);给测试与后续治理队列用。 */
@@ -176,6 +193,27 @@ export class MemoryUsageTracker implements MemoryUsageRecorder {
 
   get size(): number {
     return this.records.size
+  }
+
+  /** 全库衰减快照(不修改已存状态);给 /api/memory/usage 与治理视图消费。 */
+  snapshot(): MemoryUsageSnapshotEntry[] {
+    const nowMs = Date.now()
+    const entries: MemoryUsageSnapshotEntry[] = []
+    for (const [id, record] of this.records) {
+      const view = decayedRecord(record, nowMs, this.halfLifeMs)
+      entries.push({
+        id,
+        injected: view.injected,
+        read: view.read,
+        used: view.used,
+        harmful: view.harmful,
+        unused: view.unused,
+        total: view.total,
+        lastAccessedAt: record.lastAccessedAt,
+        score: positiveScore(view, this.saturation),
+      })
+    }
+    return entries
   }
 
   private scheduleFlush(): void {

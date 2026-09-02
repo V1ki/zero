@@ -53,6 +53,7 @@ export function createRoutes(zero: ZeroOS) {
         memoryStore: zero.memoryStore,
         memoryRetriever: zero.memoryRetriever,
         governance: memoryGovernance,
+        usageTracker: zero.memoryUsage,
       }),
     )
 

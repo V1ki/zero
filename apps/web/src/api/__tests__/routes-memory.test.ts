@@ -5,13 +5,20 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { MemoryLifecycle, MemoryStore, VectorIndex, invalidateClusterCache } from '@zero-os/memory'
+import {
+  MemoryLifecycle,
+  MemoryStore,
+  MemoryUsageTracker,
+  VectorIndex,
+  invalidateClusterCache,
+} from '@zero-os/memory'
 import type { ZeroOS } from '../../../../server/src/main'
 import { createRoutes } from '../routes'
 
 let dir: string
 let store: MemoryStore
 let vectorIndex: VectorIndex
+let usageTracker: MemoryUsageTracker
 let app: ReturnType<typeof createRoutes>
 const ids: Record<string, string> = {}
 
@@ -21,6 +28,10 @@ beforeAll(async () => {
   store = new MemoryStore(dir)
   vectorIndex = new VectorIndex(join(dir, 'vectors'))
   await vectorIndex.ensureIndex()
+  usageTracker = new MemoryUsageTracker({ statsPath: join(dir, 'usage-stats.json') })
+  usageTracker.load()
+  usageTracker.record('mem_usage_probe', 'read')
+  usageTracker.record('mem_usage_probe', 'used')
 
   const a = await store.create('runbook', 'Deploy ComfyUI v1', 'steps a', { status: 'verified' })
   const b = await store.create('runbook', 'Deploy ComfyUI v2', 'steps b', { status: 'draft' })
@@ -44,6 +55,7 @@ beforeAll(async () => {
     memoryStore: store,
     vectorIndex,
     memoryLifecycle: new MemoryLifecycle(store),
+    memoryUsage: usageTracker,
   } as unknown as ZeroOS
   app = createRoutes(zero)
 })
@@ -353,6 +365,70 @@ describe('Adversarial regression locks R5', () => {
     expect(aNeighbor).toBeDefined()
     expect(aNeighbor?.status).toBe('archived') // 死节点状态可见
     expect(aNeighbor?.supersededBy).toBe(ids.b) // 携带谱系信号
+  })
+})
+
+describe('Usage & related views', () => {
+  test('GET /api/memory/usage returns tracker snapshot', async () => {
+    const res = await app.request('/api/memory/usage')
+    expect(res.status).toBe(200)
+    const data = (await res.json()) as {
+      usage: Array<{ id: string; read: number; used: number; score: number }>
+    }
+    const probe = data.usage.find((entry) => entry.id === 'mem_usage_probe')
+    expect(probe).toBeDefined()
+    expect(probe?.read).toBeCloseTo(1, 5)
+    expect(probe?.used).toBeCloseTo(1, 5)
+    // (2*1 + 1)/5 = 0.6
+    expect(probe?.score).toBeCloseTo(0.6, 5)
+  })
+
+  test('GET related returns lineage and multi-signal related hits', async () => {
+    const p = await store.create('runbook', 'Rel P', 'p', {
+      status: 'verified',
+      tags: ['alpha', 'beta'],
+    })
+    const q = await store.create('note', 'Rel Q', 'q', {
+      status: 'verified',
+      tags: ['alpha', 'beta'],
+    })
+    const r = await store.create('note', 'Rel R', 'r', { status: 'verified' })
+    await vectorIndex.upsert(p.id, [1, 0, 0], {
+      memoryId: p.id,
+      type: 'runbook',
+      title: p.title,
+      updatedAt: p.updatedAt,
+    })
+    await vectorIndex.upsert(r.id, [0.99, 0.141, 0], {
+      memoryId: r.id,
+      type: 'note',
+      title: r.title,
+      updatedAt: r.updatedAt,
+    })
+    // p 被 q 取代 → 谱系向后一跳
+    const superseded = await post(`/api/memory/runbook/${p.id}/supersede`, { bySupersededId: q.id })
+    expect(superseded.status).toBe(200)
+
+    const res = await app.request(`/api/memory/runbook/${p.id}/related`)
+    expect(res.status).toBe(200)
+    const data = (await res.json()) as {
+      related: Array<{ id: string; reasons: string[] }>
+      lineage: Array<{ id: string; relation: string }>
+    }
+
+    expect(data.lineage).toEqual([
+      expect.objectContaining({ id: q.id, relation: 'superseded-by', status: 'verified' }),
+    ])
+
+    const qHit = data.related.find((hit) => hit.id === q.id)
+    expect(qHit?.reasons).toContain('shared-tags')
+    const rHit = data.related.find((hit) => hit.id === r.id)
+    expect(rHit?.reasons).toContain('neighbor')
+  })
+
+  test('GET related 404 for missing memory', async () => {
+    const res = await app.request('/api/memory/note/mem_ghost_related/related')
+    expect(res.status).toBe(404)
   })
 })
 
