@@ -245,6 +245,7 @@ function recordMemoryRetrievalTraceResult(options: {
         cost: computeCost(result.usage, trace?.pricing),
         durationMs: result.durationMs,
         searches: sanitizeSearches(result.searches, trace?.secretFilter),
+        toolCalls: sanitizeToolCalls(result.toolCalls, trace?.secretFilter),
         selectedMemoryIds: result.selectedMemoryIds,
         selectedMemories,
         usedFallbackSelection: result.usedFallbackSelection,
@@ -296,6 +297,25 @@ function sanitizeSearches(
       title: sanitizeText(entry.title, secretFilter),
       contentPreview: sanitizeText(entry.contentPreview, secretFilter),
     })),
+  }))
+}
+
+/** 检索 side-loop 的工具输出与 searches 内容同源,截断只为防 trace 膨胀,不追求完整。 */
+const TOOL_OUTPUT_MAX_CHARS = 4_000
+
+function sanitizeToolCalls(
+  toolCalls: MemoryRetrievalAgentRun['toolCalls'],
+  secretFilter?: SecretFilter,
+): MemoryRetrievalAgentRun['toolCalls'] {
+  return toolCalls.map((call) => ({
+    name: call.name,
+    input: Object.fromEntries(
+      Object.entries(call.input).map(([key, value]) => [
+        key,
+        typeof value === 'string' ? sanitizeText(value, secretFilter) : value,
+      ]),
+    ),
+    output: sanitizeText(call.output, secretFilter).slice(0, TOOL_OUTPUT_MAX_CHARS),
   }))
 }
 

@@ -6,7 +6,7 @@ import type {
   StreamEvent,
   ToolLogger,
 } from '@zero-os/shared'
-import { createLoopRunner } from '../memory-retrieval'
+import { createLoopRunner, retrieveMemoriesWithDecision } from '../memory-retrieval'
 
 class LoopRunnerAdapter implements ProviderAdapter {
   readonly apiType = 'fake-loop-runner'
@@ -122,5 +122,73 @@ describe('createLoopRunner', () => {
     expect(adapter.seenToolResultSummary).toContain('"query":"x.com browser"')
     expect(result.usage).toEqual({ input: 7, output: 3 })
     expect(result.durationMs).toBeGreaterThanOrEqual(0)
+  })
+})
+
+describe('retrieveMemoriesWithDecision', () => {
+  test('records side-loop tool calls on the trace span data', async () => {
+    const adapter = new LoopRunnerAdapter()
+    const updated: Array<Record<string, unknown> | undefined> = []
+    const tracer = {
+      startSpan: () => ({
+        id: 'span-trace-1',
+        sessionId: 'sess-memory-trace',
+        kind: 'llm_request' as const,
+        name: 'memory_retrieval_decision',
+        startTime: new Date().toISOString(),
+        status: 'running' as const,
+        children: [],
+      }),
+      updateSpan: (_id: string, patch: Record<string, unknown>) => {
+        updated.push(patch)
+      },
+      endSpan: () => {},
+      getSpan: () => undefined,
+    }
+
+    const memories = await retrieveMemoriesWithDecision({
+      adapter,
+      sessionId: 'sess-memory-trace',
+      memoryRetriever: {
+        retrieve: async () => [],
+        retrieveScored: async () => [
+          {
+            memory: {
+              id: 'mem_x',
+              type: 'note',
+              title: 'Twitter requires browser',
+              content: 'x'.repeat(400),
+              createdAt: '2026-09-02T00:00:00.000Z',
+              updatedAt: '2026-09-02T00:00:00.000Z',
+              status: 'verified',
+              confidence: 0.8,
+              tags: [],
+              related: [],
+            },
+            score: 0.9,
+            scoreBreakdown: { keyword: 0, recency: 0, vector: 0.9 },
+          },
+        ],
+      },
+      userMessage: 'analyze x.com site',
+      logger,
+      failureEvent: 'memory_retrieval_failed',
+      trace: {
+        tracer,
+        spanName: 'memory_retrieval_decision',
+        metadata: { layer: 'layer1' },
+      },
+    })
+
+    expect(memories?.map((memory) => memory.id)).toEqual(['mem_x'])
+    const decision = (updated[0]?.data as { memoryRetrievalDecision?: Record<string, unknown> })
+      ?.memoryRetrievalDecision
+    expect(decision?.toolCalls).toEqual([
+      {
+        name: 'memory_search',
+        input: { query: 'x.com browser' },
+        output: expect.stringContaining('Twitter requires browser'),
+      },
+    ])
   })
 })
