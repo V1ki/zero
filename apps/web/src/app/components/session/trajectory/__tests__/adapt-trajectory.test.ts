@@ -690,7 +690,14 @@ describe('buildTrajectorySnapshot', () => {
     >[]
     expect(control.source).toEqual({ kind: 'background tool' })
     expect(control.form).toBe('control')
-    expect(notice.source).toEqual({ kind: 'memory' })
+    // Memory injections render as headed injection records, not raw notices.
+    expect(notice.source).toEqual({ kind: 'memory injection', count: 0 })
+    expect(notice.form).toBe('memory-injection')
+    const noticeText = (notice?.content ?? [])
+      .map((block) => (block.type === 'text' ? block.text : ''))
+      .join('\n')
+    expect(noticeText.startsWith('memory hint · 0 memories injected')).toBe(true)
+    expect(noticeText).toContain('<memory_inject layer="layer2"> hint')
 
     const steering = snapshot.eventNodes.find((node) => node.kind === 'steering')
     expect(steering).toBeDefined()
@@ -1284,6 +1291,96 @@ describe('buildTrajectorySnapshot', () => {
     expect(turnFour?.groups[1]?.title).toBe('Step 0')
   })
 
+  it('pairs a layer-2 hint gate with its injected message record', () => {
+    const gated: Message[] = [
+      message({
+        id: 'u1',
+        role: 'user',
+        createdAt: T1,
+        content: [{ type: 'text', text: '跑一下' }],
+      }),
+      message({
+        id: 'a1',
+        role: 'assistant',
+        createdAt: T2,
+        content: [{ type: 'text', text: '工具失败了' }],
+      }),
+      {
+        ...message({
+          id: 'n1',
+          role: 'user',
+          createdAt: T3,
+          messageType: 'notification',
+          content: [
+            {
+              type: 'text',
+              text: '<memory_inject layer="layer2">\n<memory_hint>\n工具执行失败。以下是相关的历史信息：\n  <memory id="mem_h" type="runbook">\n    <title>bash 失败恢复</title>\n  </memory>\n</memory_hint>\n</memory_inject>',
+            },
+          ],
+        }),
+      },
+    ]
+    const traces: TraceSpan[] = [
+      span({
+        id: 'span-hint-retrieval',
+        name: 'memory_retrieval_decision',
+        // The side loop opens right after the failing tool, before the hint
+        // message lands in the ledger.
+        startTime: T2,
+        endTime: T3,
+        durationMs: 1500,
+        status: 'success',
+        metadata: { layer: 'layer2', source: 'memory_hint' },
+        data: {
+          memoryRetrievalDecision: {
+            prompt: 'bash 失败了',
+            queries: ['bash 失败 恢复'],
+            selectedMemories: [
+              { id: 'mem_h', type: 'runbook', title: 'bash 失败恢复', score: 0.66 },
+            ],
+            tokens: { input: 90, output: 8 },
+            durationMs: 1500,
+          },
+        },
+      }),
+    ]
+    const snapshot = buildTrajectorySnapshot(baseSession(gated), [], traces)
+    const gates = snapshot.eventNodes.filter(
+      (node) => node.kind === 'context' && node.form === 'memory-retrieval',
+    ) as Extract<(typeof snapshot.eventNodes)[number], { kind: 'context' }>[]
+    expect(gates).toHaveLength(1)
+    const gateText = (gates[0]?.content ?? [])
+      .map((block) => (block.type === 'text' ? block.text : ''))
+      .join('\n')
+    expect(gateText.startsWith('memory hint retrieval · 1 memory injected')).toBe(true)
+    const injection = snapshot.eventNodes.find(
+      (node): node is ContextMessageNode =>
+        node.kind === 'context' && node.form === 'memory-injection',
+    )
+    expect(injection).toBeDefined()
+    expect(gates[0]?.seq).toBeLessThan(injection?.seq ?? Number.NaN)
+    expect(injection?.source).toEqual({ kind: 'memory injection', count: 1 })
+
+    const turns = deriveTrajectoryLayout({
+      nodes: snapshot.eventNodes,
+      eventLocations: snapshot.eventLocations,
+      partial: snapshot.partial,
+      runningCalls: snapshot.runningCalls,
+    })
+    const cells = turns.flatMap((turn) => turn.groups.flatMap((group) => group.cells))
+    const gateIndex = cells.findIndex(
+      (cell) => cellBadgeKind(cell) === 'gateway' && cell.inputDetail === 'bash 失败了',
+    )
+    const injectionIndex = cells.findIndex((cell) =>
+      (cell.inputDetail ?? '').startsWith('memory hint · 1 memory injected'),
+    )
+    expect(gateIndex).toBeGreaterThanOrEqual(0)
+    expect(injectionIndex).toBe(gateIndex + 1)
+    if (cells[injectionIndex] !== undefined) {
+      expect(cellBadgeKind(cells[injectionIndex])).toBe('context')
+    }
+  })
+
   it('captures the task-closure question/answer pair for tool-style detail', () => {
     const snapshot = buildTrajectorySnapshot(session, requests, traces, {
       taskClosureEvents: [
@@ -1751,7 +1848,7 @@ describe('buildTrajectorySnapshot', () => {
     const retrievals = snapshot.eventNodes.filter(
       (node) => node.kind === 'context' && node.form === 'memory-retrieval',
     ) as Extract<(typeof snapshot.eventNodes)[number], { kind: 'context' }>[]
-    expect(retrievals).toHaveLength(2)
+    expect(retrievals).toHaveLength(3)
 
     // Snapshot the answer first: bun's toMatchObject with asymmetric matchers
     // overwrites received properties with the matcher objects.
@@ -1779,6 +1876,13 @@ describe('buildTrajectorySnapshot', () => {
       injected: false,
       count: 0,
     })
+    // Layer-2 hint decisions project as their own gateway records.
+    const hintGate = retrievals[2]
+    const hintText = (hintGate?.content ?? [])
+      .map((block) => (block.type === 'text' ? block.text : ''))
+      .join('\n')
+    expect(hintText.startsWith('memory hint retrieval · no memories injected')).toBe(true)
+    expect(hintGate?.source).toEqual({ kind: 'memory retrieval', injected: false, count: 0 })
 
     const turns = deriveTrajectoryLayout({
       nodes: snapshot.eventNodes,

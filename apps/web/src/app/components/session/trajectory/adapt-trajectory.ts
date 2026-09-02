@@ -440,6 +440,39 @@ function injectionGateKind(content: readonly ContentBlock[]): string {
 }
 
 /**
+ * Project a memory-injection notification (layer-1 retrieved memories or a
+ * layer-2 tool-failure hint) as its own CONTEXT record: a headed row with the
+ * injected payload kept verbatim, mirroring the records the retrieval pass
+ * synthesizes when the injected message was compacted out of the ledger.
+ * @param nodeSeq - Sort slot claimed by the message walk.
+ * @param time - Message timestamp.
+ * @param content - Converted text blocks of the notification message.
+ * @returns The memory-injection context node.
+ */
+function memoryInjectionNode(
+  nodeSeq: number,
+  time: number,
+  content: readonly ContentBlock[],
+): ContextMessageNode {
+  const text = content.map((block) => (block.type === 'text' ? block.text : '')).join('\n')
+  const count = [...text.matchAll(/<memory id="/g)].length
+  const label =
+    text.includes('<memory_hint') || text.includes('layer="layer2"')
+      ? 'memory hint'
+      : 'memory context'
+  const noun = count === 1 ? 'memory' : 'memories'
+  return {
+    kind: 'context',
+    seq: nodeSeq,
+    time,
+    content: [{ type: 'text', text: `${label} · ${count} ${noun} injected` }, ...content],
+    source: { kind: 'memory injection', count },
+    provenance: { role: 'system', name: 'memory injection' },
+    form: 'memory-injection',
+  }
+}
+
+/**
  * Read the closure metadata a task-closure trace span records.
  * @param span - Sanitized trace span.
  * @returns The span's data.closure record, or null when absent.
@@ -614,31 +647,49 @@ function memoryInjectionText(
   requests: readonly SessionRequestEntry[],
   start: number,
   selected: readonly RetrievedMemoryView[],
+  layer: 'layer1' | 'layer2',
 ): string | undefined {
   const ids = selected.map((memory) => memory.id).filter((id): id is string => id !== undefined)
   const candidates = requests
     .filter((request) =>
-      (request.memoryInjections ?? []).some(
-        (injection) => injection.layer === 'layer1' && injection.source === 'retrieved_memories',
-      ),
+      (request.memoryInjections ?? []).some((injection) => injection.layer === layer),
     )
     .filter((request) => requestTiming(request).startedAt >= start)
     .sort((left, right) => requestTiming(left).startedAt - requestTiming(right).startedAt)
   for (const request of candidates) {
     for (const injection of request.memoryInjections ?? []) {
-      if (
-        injection.layer !== 'layer1' ||
-        injection.source !== 'retrieved_memories' ||
-        injection.formattedText.trim() === ''
-      ) {
-        continue
-      }
+      if (injection.layer !== layer || injection.formattedText.trim() === '') continue
       if (ids.length === 0 || ids.some((id) => injection.formattedText.includes(id))) {
         return injection.formattedText
       }
     }
   }
   return undefined
+}
+
+/**
+ * Find the ledger node carrying a layer-2 hint injection for one retrieval
+ * span: matched by the selected memories' ids, or by time when the span
+ * recorded none.
+ * @param nodes - Nodes projected so far, including the message walk's.
+ * @param selected - Memories the decision selected.
+ * @param start - Decision span start.
+ * @returns The injected hint's context node, or undefined when it was
+ *   compacted out of the ledger or never recorded.
+ */
+function findHintInjectionNode(
+  nodes: readonly TrajectorySnapshot['eventNodes'][number][],
+  selected: readonly RetrievedMemoryView[],
+  start: number,
+): ContextMessageNode | undefined {
+  const ids = selected.map((memory) => memory.id).filter((id): id is string => id !== undefined)
+  return nodes.find((node): node is ContextMessageNode => {
+    if (node.kind !== 'context' || node.form !== 'memory-injection') return false
+    const text = node.content.map((block) => (block.type === 'text' ? block.text : '')).join('\n')
+    if (!(text.includes('<memory_hint') || text.includes('layer="layer2"'))) return false
+    if (ids.length > 0) return ids.some((id) => text.includes(id))
+    return node.time >= start
+  })
 }
 
 /** One memory candidate an executed search returned. */
@@ -1078,15 +1129,18 @@ export function buildTrajectorySnapshot(
           message.messageType === 'control'
             ? controlGateKind(readControlKind(message))
             : injectionGateKind(converted)
-        const node: ContextMessageNode = {
-          kind: 'context',
-          seq: nodeSeq,
-          time,
-          content: converted,
-          source: { kind },
-          provenance: { role: 'system', name: kind },
-          form: message.messageType,
-        }
+        const node: ContextMessageNode =
+          message.messageType === 'notification' && kind === 'memory'
+            ? memoryInjectionNode(nodeSeq, time, converted)
+            : {
+                kind: 'context',
+                seq: nodeSeq,
+                time,
+                content: converted,
+                source: { kind },
+                provenance: { role: 'system', name: kind },
+                form: message.messageType,
+              }
         nodes.push(node)
         noteLocation(nodeSeq, turn, stepInTurn)
       }
@@ -1672,6 +1726,7 @@ export function buildTrajectorySnapshot(
     turnOpeners.set(eraTurn(request, startedAt), request)
   }
   const eraRootSeqs = new Map<number, number>()
+  const eraRequestSeqsByStart: { startedAt: number; seq: number; turn: number }[] = []
   let eraSeqMin = Number.POSITIVE_INFINITY
   let eraSeqMax = Number.NEGATIVE_INFINITY
   const nextUsedSeqAbove = (seq: number): number => {
@@ -1680,6 +1735,15 @@ export function buildTrajectorySnapshot(
       if (used > seq && used < next) next = used
     }
     return next
+  }
+  // Largest claimed seq strictly below `seq`; -Infinity when none exists, so
+  // callers fall back to a descending claim instead of halving into it.
+  const prevUsedSeqBelow = (seq: number): number => {
+    let prev = Number.NEGATIVE_INFINITY
+    for (const used of usedSeqs) {
+      if (used < seq && used > prev) prev = used
+    }
+    return prev
   }
   for (const { request, startedAt } of eraRequests) {
     const insertBefore = nodeAfter(startedAt)
@@ -1700,6 +1764,9 @@ export function buildTrajectorySnapshot(
     // turn's memory-retrieval gate renders between them.
     const requestSeq =
       turnPrompt === undefined ? nodeSeq : claimSeqBetween(nodeSeq, nextUsedSeqAbove(nodeSeq))
+    // Hint-retrieval gates anchor to the era request that follows the failed
+    // tool, so keep every request's claimed slot addressable by start time.
+    eraRequestSeqsByStart.push({ startedAt, seq: requestSeq, turn: eraTurn(request, startedAt) })
     requestViews.push({
       purpose: 'assistant',
       turn: eraTurn(request, startedAt),
@@ -1737,39 +1804,73 @@ export function buildTrajectorySnapshot(
     })
   }
 
-  // Layer-1 memory retrieval runs beside the loop after every user message;
-  // its span carries the full decision record (trigger prompt, generated
-  // queries, selected memories, side-loop usage). The side-loop call itself
-  // is always a GATEWAY record; when it selected memories, a second record
-  // right above it carries the CONTEXT message actually injected into the
-  // next request. The pass runs after era emission on purpose: the side loop
-  // opens seconds before the turn's first model request, so an era span
-  // anchors to the turn that owns the next request and claims the gap right
-  // above that turn's root row — it renders between the USER row and the
-  // steps instead of below the whole turn (and never on the previous turn
-  // its timestamp suggests).
+  // Memory retrieval runs beside the loop in two layers: layer-1 opens after
+  // every user message, layer-2 (a memory hint) after tool failures. Each
+  // span carries the full decision record (trigger prompt, generated queries,
+  // selected memories, side-loop usage), and the side-loop call itself is
+  // always a GATEWAY record; when it selected memories, the message injected
+  // into the request context is its own CONTEXT record right after the gate.
+  // The pass runs after era emission on purpose: a layer-1 span opens seconds
+  // before the turn's first model request, so it anchors to the turn that
+  // owns the next request and claims the gap right above that turn's root
+  // row — it renders between the USER row and the steps instead of below the
+  // whole turn (and never on the previous turn its timestamp suggests). A
+  // layer-2 span instead anchors to the ledger's injected hint message, so
+  // the gate renders immediately before the payload it produced.
   const eraEntriesAsc = eraRequests
     .map(({ request, startedAt }) => ({ startedAt, turn: eraTurn(request, startedAt) }))
     .sort((left, right) => left.startedAt - right.startedAt)
+  eraRequestSeqsByStart.sort((left, right) => left.startedAt - right.startedAt)
   const retrievalSpans = flatSpans.filter(
-    (span) => span.name === 'memory_retrieval_decision' && span.metadata?.layer === 'layer1',
+    (span) =>
+      span.name === 'memory_retrieval_decision' &&
+      (span.metadata?.layer === 'layer1' || span.metadata?.layer === 'layer2'),
   )
   for (const span of retrievalSpans) {
     const start = toEpochMillis(span.startTime)
     if (start === null) continue
     const decision = memoryRetrievalSpanData(span)
     const end = toEpochMillis(span.endTime)
+    const queries = spanStringList(decision?.queries)
+    const searches = memoryRetrievalSearches(decision?.searches)
+    const selected = memoryRetrievalSelections(decision?.selectedMemories)
+    const isHint = span.metadata?.layer === 'layer2'
+    // Only a span that selected memories produced an injection to anchor to;
+    // a no-selection hint never injected, so time-matching it against the
+    // ledger would drag every such span onto the same later message.
+    const hintInjection =
+      isHint && selected.length > 0 ? findHintInjectionNode(nodes, selected, start) : undefined
+    const hintEraNext = isHint
+      ? eraRequestSeqsByStart.find((entry) => entry.startedAt >= start)
+      : undefined
     let eraAnchor: { turn: number; rootSeq: number } | undefined
-    for (const entry of eraEntriesAsc) {
-      if (entry.startedAt >= start) {
-        const rootSeq = eraRootSeqs.get(entry.turn)
-        eraAnchor = rootSeq === undefined ? undefined : { turn: entry.turn, rootSeq }
-        break
+    if (!isHint) {
+      for (const entry of eraEntriesAsc) {
+        if (entry.startedAt >= start) {
+          const rootSeq = eraRootSeqs.get(entry.turn)
+          eraAnchor = rootSeq === undefined ? undefined : { turn: entry.turn, rootSeq }
+          break
+        }
       }
     }
     let nodeSeq: number
     let location: ConversationLocation
-    if (eraAnchor !== undefined) {
+    if (hintInjection !== undefined) {
+      const below = prevUsedSeqBelow(hintInjection.seq)
+      nodeSeq = Number.isFinite(below)
+        ? claimSeqBetween(below, hintInjection.seq)
+        : claimSeqBefore(hintInjection.seq)
+      location = eventLocations.get(hintInjection.seq) ?? gateLocationAtOrBefore(start)
+    } else if (hintEraNext !== undefined) {
+      // An era hint anchors right below the era request that followed the
+      // failed tool — mid-turn — instead of stranding at the window's edge
+      // where a time-based claim would drop it.
+      const below = prevUsedSeqBelow(hintEraNext.seq)
+      nodeSeq = Number.isFinite(below)
+        ? claimSeqBetween(below, hintEraNext.seq)
+        : claimSeqBefore(hintEraNext.seq)
+      location = { kind: 'turn', turn: { turn: hintEraNext.turn } }
+    } else if (eraAnchor !== undefined) {
       const upper = nextUsedSeqAbove(eraAnchor.rootSeq)
       nodeSeq = Number.isFinite(upper)
         ? claimSeqBetween(eraAnchor.rootSeq, upper)
@@ -1791,9 +1892,6 @@ export function buildTrajectorySnapshot(
       }
       location = gateLocationAtOrBefore(start)
     }
-    const queries = spanStringList(decision?.queries)
-    const searches = memoryRetrievalSearches(decision?.searches)
-    const selected = memoryRetrievalSelections(decision?.selectedMemories)
     const injected = selected.length > 0
     const durationMs =
       typeof decision?.durationMs === 'number' && Number.isFinite(decision.durationMs)
@@ -1802,7 +1900,7 @@ export function buildTrajectorySnapshot(
           ? undefined
           : Math.max(0, end - start)
     const noun = selected.length === 1 ? 'memory' : 'memories'
-    const heading = `memory retrieval · ${
+    const heading = `${isHint ? 'memory hint retrieval' : 'memory retrieval'} · ${
       injected ? `${selected.length} ${noun} injected` : 'no memories injected'
     }${durationMs === undefined ? '' : ` · ${formatDurationMillis(durationMs)}`}${
       span.status !== 'success' ? ` · ${span.status}` : ''
@@ -1865,13 +1963,20 @@ export function buildTrajectorySnapshot(
     eventLocations.set(nodeSeq, location)
     // An injected selection is its own record: the side loop above is the
     // GATEWAY call, and the memories inserted into the request context are
-    // the CONTEXT message the next model request actually saw.
-    if (selected.length > 0) {
+    // the CONTEXT message the next model request actually saw. A hint whose
+    // injected message survives in the ledger already renders there, so only
+    // synthesize when that message is gone.
+    if (selected.length > 0 && hintInjection === undefined) {
       const injectionSeq = claimSeqBetween(nodeSeq, nextUsedSeqAbove(nodeSeq))
       // Prefer the exact message the runtime injected (from the receiving
       // request's log); fall back to the selected-memory list when the log
       // carries no injection entry.
-      const injectedText = memoryInjectionText(requests, start, selected)
+      const injectedText = memoryInjectionText(
+        requests,
+        start,
+        selected,
+        isHint ? 'layer2' : 'layer1',
+      )
       const body = injectedText?.trim() ?? selected.map(memoryRetrievalLine).join('\n')
       nodes.push({
         kind: 'context',
@@ -1880,7 +1985,9 @@ export function buildTrajectorySnapshot(
         content: [
           {
             type: 'text',
-            text: `memory context · ${selected.length} ${noun} injected\n${body}`,
+            text: `${isHint ? 'memory hint' : 'memory context'} · ${
+              selected.length
+            } ${noun} injected\n${body}`,
           },
         ],
         source: { kind: 'memory injection', count: selected.length },
