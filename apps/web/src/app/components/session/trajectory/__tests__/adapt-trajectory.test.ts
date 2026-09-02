@@ -3,7 +3,9 @@ import type { Message, SessionDetail, SessionRequestEntry } from '../../detail/u
 import type { TraceSpan } from '../../timeline/timeline'
 import { buildTrajectorySnapshot } from '../adapt-trajectory'
 import { deriveTrajectoryLayout } from '../layout'
+import { deriveTrajectoryRequestNumbers } from '../request-numbering'
 import { cellBadgeKind } from '../trajectory-record'
+import type { AssistantRequestView, ContextMessageNode } from '../types'
 
 const T0 = '2026-08-24T07:00:00.000Z'
 const T1 = '2026-08-24T07:00:02.000Z'
@@ -918,6 +920,370 @@ describe('buildTrajectorySnapshot', () => {
     expect(new Set(seqs).size).toBe(seqs.length)
   })
 
+  it('anchors memory nudges by time when the message flow is out of order', () => {
+    // A misplaced head message (persisted first but timestamped mid-history)
+    // must not collapse gate records into a single early turn.
+    const shuffled = baseSession([
+      message({
+        id: 'head',
+        role: 'user',
+        createdAt: T4,
+        content: [{ type: 'text', text: 'late head' }],
+      }),
+      message({
+        id: 'u1',
+        role: 'user',
+        createdAt: T0,
+        content: [{ type: 'text', text: 'read it' }],
+      }),
+      message({
+        id: 'a1',
+        role: 'assistant',
+        createdAt: T1,
+        content: [{ type: 'text', text: 'step one' }],
+      }),
+      message({
+        id: 'u2',
+        role: 'user',
+        createdAt: T2,
+        content: [{ type: 'text', text: 'again' }],
+      }),
+      message({
+        id: 'a2',
+        role: 'assistant',
+        createdAt: T3,
+        content: [{ type: 'text', text: 'ok' }],
+      }),
+    ])
+    const snapshot = buildTrajectorySnapshot(shuffled, requests, traces, {
+      memoryNudgeEvents: [
+        { ts: T2, prompt: 'evaluate memory retention', source: 'trace', status: 'success' },
+        { ts: T5, prompt: 'evaluate once more', source: 'trace', status: 'success' },
+      ],
+    })
+
+    const locationOf = (messageId: string) => {
+      const node = snapshot.eventNodes.find(
+        (candidate) => candidate.kind === 'assistant' && candidate.messageId === messageId,
+      )
+      return node === undefined ? undefined : snapshot.eventLocations.get(node.seq)
+    }
+    const nudgeLocation = (prompt: string) => {
+      const nudge = snapshot.eventNodes.find(
+        (candidate) =>
+          candidate.kind === 'context' &&
+          candidate.form === 'memory-nudge' &&
+          candidate.content.some((block) => block.type === 'text' && block.text.includes(prompt)),
+      )
+      return nudge === undefined ? undefined : snapshot.eventLocations.get(nudge.seq)
+    }
+
+    // The pre-head nudge is the regression: array order would break the scan at
+    // the misplaced head message, so it used to fall back to a bare turn.
+    expect(nudgeLocation('evaluate memory retention')).toEqual(locationOf('a1'))
+    expect(nudgeLocation('evaluate once more')).toEqual(locationOf('a2'))
+  })
+
+  it('anchors gate events that predate the message window to request turns', () => {
+    // Compaction can remove the early turns from the persisted messages while
+    // the request log still spans them; era gate events then anchor to the
+    // turn of the last request at or before their time.
+    const compacted = baseSession([
+      message({ id: 'u1', role: 'user', createdAt: T3, content: [{ type: 'text', text: 'go' }] }),
+      message({
+        id: 'a1',
+        role: 'assistant',
+        createdAt: T3,
+        content: [{ type: 'text', text: 'ok' }],
+      }),
+    ])
+    const spreadRequests: SessionRequestEntry[] = [
+      request({ id: 'early-1', ts: T0, turnIndex: 3 }),
+      request({ id: 'early-2', ts: T1, turnIndex: 4 }),
+      request({ id: 'req1', ts: T3, turnIndex: 9 }),
+    ]
+    const snapshot = buildTrajectorySnapshot(compacted, spreadRequests, traces, {
+      memoryNudgeEvents: [
+        { ts: T1, prompt: 'era nudge', source: 'trace', status: 'success' },
+        { ts: T4, prompt: 'window nudge', source: 'trace', status: 'success' },
+      ],
+    })
+
+    const nudgeLocation = (prompt: string) => {
+      const nudge = snapshot.eventNodes.find(
+        (candidate) =>
+          candidate.kind === 'context' &&
+          candidate.form === 'memory-nudge' &&
+          candidate.content.some((block) => block.type === 'text' && block.text.includes(prompt)),
+      )
+      return nudge === undefined ? undefined : snapshot.eventLocations.get(nudge.seq)
+    }
+    expect(nudgeLocation('era nudge')).toEqual({ kind: 'turn', turn: { turn: 4 } })
+    // Events inside the surviving window keep their assistant step anchor.
+    const a1 = snapshot.eventNodes.find(
+      (node) => node.kind === 'assistant' && node.messageId === 'a1',
+    )
+    expect(nudgeLocation('window nudge')).toEqual(
+      a1 === undefined ? undefined : snapshot.eventLocations.get(a1.seq),
+    )
+  })
+
+  it('keeps post-compaction assistants paired with their own requests', () => {
+    // Era requests (their turns were compacted away) must not consume the
+    // first surviving assistants, which would drag recent messages into
+    // ancient turns.
+    const compacted = baseSession([
+      message({ id: 'u1', role: 'user', createdAt: T4, content: [{ type: 'text', text: 'go' }] }),
+      message({
+        id: 'a1',
+        role: 'assistant',
+        createdAt: T5,
+        content: [{ type: 'text', text: 'ok' }],
+      }),
+    ])
+    const era = '2026-08-24T06:00:00.000Z'
+    const eraLate = '2026-08-24T06:30:00.000Z'
+    const spreadRequests: SessionRequestEntry[] = [
+      request({ id: 'era-1', ts: era, turnIndex: 2 }),
+      request({ id: 'era-2', ts: eraLate, turnIndex: 3 }),
+      request({ id: 'req1', ts: T5, turnIndex: 20 }),
+    ]
+    const snapshot = buildTrajectorySnapshot(compacted, spreadRequests, traces, {})
+
+    const a1 = snapshot.eventNodes.find(
+      (node) => node.kind === 'assistant' && node.messageId === 'a1',
+    )
+    expect(a1).toMatchObject({ turn: 20, step: 0 })
+  })
+
+  it('emits request-only activity rows for compacted-era requests', () => {
+    const compacted = baseSession([
+      message({ id: 'u1', role: 'user', createdAt: T4, content: [{ type: 'text', text: 'go' }] }),
+      message({
+        id: 'a1',
+        role: 'assistant',
+        createdAt: T5,
+        content: [{ type: 'text', text: 'ok' }],
+      }),
+    ])
+    const eraRequests: SessionRequestEntry[] = [
+      request({
+        id: 'era-1',
+        ts: '2026-08-24T06:00:00.000Z',
+        durationMs: 5000,
+        turnIndex: 4,
+        userPrompt: '去下载这个漫画\n剩下的也一起',
+        response: '第一行\n第二行',
+        toolCalls: [{ id: 'call_x', name: 'fetch', input: { url: 'https://a' } }],
+        toolResults: [{ type: 'tool_result', toolUseId: 'call_x', content: 'html body' }],
+        tokens: { input: 7, output: 3 },
+      }),
+      request({
+        id: 'era-2',
+        ts: '2026-08-24T06:30:00.000Z',
+        durationMs: 1000,
+        turnIndex: 5,
+        userPrompt: '接着整理',
+      }),
+      request({
+        id: 'era-2b',
+        parentId: 'era-2',
+        ts: '2026-08-24T06:31:00.000Z',
+        durationMs: 1000,
+        turnIndex: 5,
+        userPrompt: '接着整理',
+      }),
+    ]
+    const eraTraces: TraceSpan[] = [
+      span({
+        id: 'span-era-tool',
+        name: 'tool:fetch',
+        kind: 'tool_call',
+        startTime: '2026-08-24T06:00:01.000Z',
+        endTime: '2026-08-24T06:00:02.000Z',
+        durationMs: 1000,
+        status: 'success',
+        data: { tool: 'fetch', requestId: 'era-1', toolUseId: 'call_x' },
+      }),
+    ]
+    const snapshot = buildTrajectorySnapshot(compacted, eraRequests, eraTraces)
+
+    const eraViews = snapshot.requests.filter(
+      (view): view is AssistantRequestView =>
+        view.purpose === 'assistant' && view.activity !== undefined,
+    )
+    expect(eraViews.map((view) => [view.turn, view.step])).toEqual([
+      [4, 0],
+      [5, 0],
+      [5, 1],
+    ])
+    expect(eraViews[0]?.activity?.response).toBe('第一行\n第二行')
+    expect(eraViews[0]?.activity?.toolCalls[0]).toMatchObject({
+      id: 'call_x',
+      name: 'fetch',
+      result: 'html body',
+      resultPreviewMarkdown: 'html body',
+      startedAt: Date.parse('2026-08-24T06:00:01.000Z'),
+      completedAt: Date.parse('2026-08-24T06:00:02.000Z'),
+    })
+    expect(eraViews[0]?.usage).toMatchObject({ inputTokens: 7, outputTokens: 3 })
+    // Only the chain root of each era turn carries the turn's user input.
+    expect(eraViews.map((view) => view.activity?.turnPrompt)).toEqual([
+      '去下载这个漫画\n剩下的也一起',
+      '接着整理',
+      undefined,
+    ])
+
+    const turns = deriveTrajectoryLayout({
+      nodes: snapshot.eventNodes,
+      eventLocations: snapshot.eventLocations,
+      partial: snapshot.partial,
+      runningCalls: snapshot.runningCalls,
+      requests: snapshot.requests,
+    })
+    const turnFour = turns.find((candidate) => candidate.turn === 4)
+    const messageCells = turnFour?.groups.find((group) => group.title === 'Message')?.cells
+    expect(messageCells?.at(-1)).toMatchObject({
+      kind: 'user',
+      text: '去下载这个漫画',
+      opensTurn: true,
+    })
+    const cells = turnFour?.groups.find((group) => group.title === 'Step 0')?.cells
+    expect(cells?.map((cell) => [cell.kind, cell.requestOnly === true])).toEqual([
+      ['tool', false],
+      ['message', true],
+    ])
+    expect(cells?.at(-1)?.text).toBe('第一行')
+    const numbered = deriveTrajectoryRequestNumbers(snapshot.eventNodes, snapshot.requests)
+    expect(numbered.slice(0, 3).map((entry) => [entry.number, entry.turn])).toEqual([
+      [1, 4],
+      [2, 5],
+      [3, 5],
+    ])
+  })
+
+  it('renders the era memory-retrieval gate between the user row and the steps', () => {
+    const compacted = baseSession([
+      message({ id: 'u1', role: 'user', createdAt: T4, content: [{ type: 'text', text: 'go' }] }),
+      message({
+        id: 'a1',
+        role: 'assistant',
+        createdAt: T5,
+        content: [{ type: 'text', text: 'ok' }],
+      }),
+    ])
+    const eraRequests: SessionRequestEntry[] = [
+      request({
+        id: 'era-1',
+        ts: '2026-08-24T06:00:00.000Z',
+        durationMs: 5000,
+        turnIndex: 4,
+        userPrompt: '去下载漫画',
+        response: '开跑',
+        toolCalls: [{ id: 'call_x', name: 'bash', input: { cmd: 'ls' } }],
+        toolResults: [{ type: 'tool_result', toolUseId: 'call_x', content: 'done' }],
+        memoryInjections: [
+          {
+            layer: 'layer1',
+            source: 'retrieved_memories',
+            formattedText:
+              '<memory_inject layer="layer1">\n<memory id="mem_1" type="runbook">\n18mh 抓取方法正文\n</memory>\n</memory_inject>',
+          },
+        ],
+      }),
+      request({
+        id: 'era-1b',
+        parentId: 'era-1',
+        ts: '2026-08-24T06:00:30.000Z',
+        durationMs: 1000,
+        turnIndex: 4,
+        response: '完成',
+      }),
+    ]
+    const traces: TraceSpan[] = [
+      span({
+        id: 'span-era-retrieval',
+        name: 'memory_retrieval_decision',
+        // The side loop opens before the turn's first model request.
+        startTime: '2026-08-24T05:59:50.000Z',
+        endTime: '2026-08-24T05:59:53.000Z',
+        durationMs: 3000,
+        status: 'success',
+        metadata: { layer: 'layer1' },
+        data: {
+          memoryRetrievalDecision: {
+            prompt: '去下载漫画',
+            queries: ['漫画 站点 抓取'],
+            selectedMemories: [
+              { id: 'mem_1', type: 'runbook', title: '18mh 抓取方法', score: 0.82 },
+            ],
+            tokens: { input: 120, output: 18 },
+            durationMs: 3000,
+          },
+        },
+      }),
+    ]
+    const snapshot = buildTrajectorySnapshot(compacted, eraRequests, traces)
+    const root = snapshot.requests.find(
+      (view): view is AssistantRequestView =>
+        view.purpose === 'assistant' && view.activity?.turnPrompt !== undefined,
+    )
+    expect(root).toBeDefined()
+    const gate = snapshot.eventNodes.find(
+      (node): node is ContextMessageNode =>
+        node.kind === 'context' && node.form === 'memory-retrieval',
+    )
+    expect(gate).toBeDefined()
+    expect(gate?.seq).toBeGreaterThan(root?.activity?.turnPromptSeq ?? Number.NaN)
+    expect(gate?.seq).toBeLessThan(root?.startSeq ?? Number.NaN)
+    expect(snapshot.eventLocations.get(gate?.seq ?? 0)).toEqual({ kind: 'turn', turn: { turn: 4 } })
+    expect(gate?.source).toMatchObject({ kind: 'memory retrieval', injected: true, count: 1 })
+
+    // The injected memories are their own CONTEXT record right after the gate.
+    const injection = snapshot.eventNodes.find(
+      (node): node is ContextMessageNode =>
+        node.kind === 'context' && node.form === 'memory-injection',
+    )
+    expect(injection).toBeDefined()
+    expect(injection?.seq).toBeGreaterThan(gate?.seq ?? Number.NaN)
+    expect(injection?.seq).toBeLessThan(root?.startSeq ?? Number.NaN)
+    expect(injection?.source).toEqual({ kind: 'memory injection', count: 1 })
+    expect(snapshot.eventLocations.get(injection?.seq ?? 0)).toEqual({
+      kind: 'turn',
+      turn: { turn: 4 },
+    })
+
+    const turns = deriveTrajectoryLayout({
+      nodes: snapshot.eventNodes,
+      eventLocations: snapshot.eventLocations,
+      partial: snapshot.partial,
+      runningCalls: snapshot.runningCalls,
+      requests: snapshot.requests,
+    })
+    const turnFour = turns.find((candidate) => candidate.turn === 4)
+    expect(turnFour?.groups[0]?.title).toBe('Message')
+    expect(turnFour?.groups[0]?.cells.map((cell) => cell.kind)).toEqual([
+      'user',
+      'context',
+      'context',
+    ])
+    const gateCell = turnFour?.groups[0]?.cells[1]
+    expect(gateCell?.inputDetail).toBe('去下载漫画')
+    if (gateCell !== undefined) {
+      expect(cellBadgeKind(gateCell)).toBe('gateway')
+    }
+    const injectionCell = turnFour?.groups[0]?.cells[2]
+    // The record body is the exact message the runtime injected, not a
+    // reconstructed summary of the selected memories.
+    expect(injectionCell?.inputDetail).toBe(
+      'memory context · 1 memory injected\n<memory_inject layer="layer1">\n<memory id="mem_1" type="runbook">\n18mh 抓取方法正文\n</memory>\n</memory_inject>',
+    )
+    if (injectionCell !== undefined) {
+      expect(cellBadgeKind(injectionCell)).toBe('context')
+    }
+    expect(turnFour?.groups[1]?.title).toBe('Step 0')
+  })
+
   it('captures the task-closure question/answer pair for tool-style detail', () => {
     const snapshot = buildTrajectorySnapshot(session, requests, traces, {
       taskClosureEvents: [
@@ -1425,13 +1791,33 @@ describe('buildTrajectorySnapshot', () => {
       .filter((cell) => cell.kind === 'context' && cell.inputDetail === '看看这个帖子')
     expect(cells).toHaveLength(1)
     if (cells[0] !== undefined) {
-      expect(cellBadgeKind(cells[0])).toBe('context')
+      // The side loop is a gateway call even when it injected memories.
+      expect(cellBadgeKind(cells[0])).toBe('gateway')
     }
     const missCells = turns
       .flatMap((turn) => turn.groups.flatMap((group) => group.cells))
       .filter((cell) => cell.kind === 'context' && cell.inputDetail === '继续')
     if (missCells[0] !== undefined) {
       expect(cellBadgeKind(missCells[0])).toBe('gateway')
+    }
+
+    // The injected selection becomes its own CONTEXT record after the gate;
+    // with no logged injection text it falls back to the memory list.
+    const injections = snapshot.eventNodes.filter(
+      (node) => node.kind === 'context' && node.form === 'memory-injection',
+    ) as Extract<(typeof snapshot.eventNodes)[number], { kind: 'context' }>[]
+    expect(injections).toHaveLength(1)
+    expect(injections[0]?.seq).toBeGreaterThan(retrievals[0]?.seq ?? Number.NaN)
+    expect(injections[0]?.source).toEqual({ kind: 'memory injection', count: 1 })
+    const injectionCells = turns
+      .flatMap((turn) => turn.groups.flatMap((group) => group.cells))
+      .filter((cell) => cell.kind === 'context' && cell.inputDetail?.startsWith('memory context'))
+    expect(injectionCells).toHaveLength(1)
+    expect(injectionCells[0]?.inputDetail).toBe(
+      'memory context · 1 memory injected\n- 从X推文提取视频音频 · runbook · score 0.73',
+    )
+    if (injectionCells[0] !== undefined) {
+      expect(cellBadgeKind(injectionCells[0])).toBe('context')
     }
   })
 

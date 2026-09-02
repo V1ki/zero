@@ -98,6 +98,11 @@ type OrderedLayoutEntry =
       seq: number
       request: AssistantRequestView
     }
+  | {
+      kind: 'requestUser'
+      seq: number
+      request: AssistantRequestView
+    }
 
 function layoutEntryOrder(entry: OrderedLayoutEntry): number {
   return entry.kind === 'system' && entry.change.kind === 'initial'
@@ -323,29 +328,119 @@ export function deriveTrajectoryLayout(
         seq: request.startSeq,
         request,
       })),
+    // Compacted-era openers carry their USER row at its own sort slot so the
+    // turn's memory-retrieval gate renders between it and the step rows.
+    ...requests.flatMap((request) =>
+      request.purpose === 'assistant' && request.activity?.turnPromptSeq !== undefined
+        ? [
+            {
+              kind: 'requestUser' as const,
+              seq: request.activity.turnPromptSeq,
+              request,
+            },
+          ]
+        : [],
+    ),
   ].sort((left, right) => layoutEntryOrder(left) - layoutEntryOrder(right))
 
   for (const entry of entries) {
+    if (entry.kind === 'requestUser') {
+      const { request } = entry
+      const prompt = request.activity?.turnPrompt ?? ''
+      // The opener's USER row sorts at its own slot — ahead of the turn's
+      // memory-retrieval gate and step rows — so compacted-era turns keep
+      // the user → gateway → steps shape.
+      pushMessage(request.turn, {
+        absTime: finiteTime(request.startedAt),
+        cell: {
+          index: ++index,
+          kind: 'user',
+          text: firstLine(prompt),
+          sourceSeq: request.startSeq,
+          opensTurn: true,
+          inputDetail: prompt,
+          timeSeconds: 0,
+          startedAt: finiteTime(request.startedAt),
+        },
+      })
+      prevAbsTime = finiteTime(request.startedAt) ?? prevAbsTime
+      continue
+    }
     if (entry.kind === 'request') {
       const { request } = entry
-      pushStep(request.turn, request.step, [
-        {
+      const activity = request.activity
+      // Views without their own user-row slot push inline; split openers
+      // already rendered theirs via the requestUser entry.
+      if (activity?.turnPrompt !== undefined && activity.turnPromptSeq === undefined) {
+        pushMessage(request.turn, {
           absTime: finiteTime(request.startedAt),
           cell: {
             index: ++index,
-            kind: 'message',
-            text: '',
+            kind: 'user',
+            text: firstLine(activity.turnPrompt),
             sourceSeq: request.startSeq,
-            requestOnly: true,
-            timeSeconds:
-              request.completedAt === null
-                ? null
-                : durationSeconds(request.completedAt, request.startedAt),
+            opensTurn: true,
+            inputDetail: activity.turnPrompt,
+            timeSeconds: 0,
             startedAt: finiteTime(request.startedAt),
-            ...(request.status === 'error' ? { isError: true } : {}),
           },
-        },
-      ])
+        })
+      }
+      // Request-only rows carry the generation's own evidence when the
+      // assistant message was compacted away: its tool calls first (the same
+      // call→result order as window steps), then the response row that owns
+      // the request chip.
+      const laid: LaidCell[] = []
+      for (const call of activity?.toolCalls ?? []) {
+        const settled =
+          call.startedAt !== undefined && call.completedAt !== undefined
+            ? durationSeconds(call.completedAt, call.startedAt)
+            : null
+        laid.push({
+          absTime: call.startedAt === undefined ? finiteTime(request.startedAt) : call.startedAt,
+          toolName: call.name,
+          callId: call.id,
+          cell: {
+            index: ++index,
+            kind: 'tool',
+            sourceSeq: request.startSeq,
+            ...summarizeCall(call.name, call.argsRaw),
+            inputDetail: call.argsRaw,
+            outputDetail: call.result,
+            ...(call.resultPreviewMarkdown === undefined
+              ? { result: call.result }
+              : { result: '', resultPreviewMarkdown: call.resultPreviewMarkdown }),
+            ...(call.isError === true ? { isError: true } : {}),
+            callId: call.id,
+            timeSeconds: settled,
+            startedAt:
+              call.startedAt === undefined ? finiteTime(request.startedAt) : call.startedAt,
+          },
+        })
+      }
+      const toolCount = activity?.toolCalls.length ?? 0
+      const responseText = activity === undefined ? '' : firstLine(activity.response)
+      const cell: TrajectoryCellProps = {
+        index: ++index,
+        kind: 'message',
+        text:
+          responseText !== ''
+            ? responseText
+            : toolCount > 0
+              ? `${toolCount} tool call${toolCount === 1 ? '' : 's'}`
+              : '',
+        sourceSeq: request.startSeq,
+        requestOnly: true,
+        timeSeconds:
+          request.completedAt === null
+            ? null
+            : durationSeconds(request.completedAt, request.startedAt),
+        startedAt: finiteTime(request.startedAt),
+        ...(request.status === 'error' ? { isError: true } : {}),
+      }
+      attachUsage(cell, request.usage as UsageLike | undefined)
+      laid.push({ absTime: finiteTime(request.startedAt), cell })
+      pushStep(request.turn, request.step, laid)
       prevAbsTime = finiteTime(request.completedAt) ?? finiteTime(request.startedAt) ?? prevAbsTime
       continue
     }
@@ -353,7 +448,7 @@ export function deriveTrajectoryLayout(
       const { change, request } = entry
       const turn =
         change.kind === 'initial'
-          ? firstVisibleTurn(nodes, partial)
+          ? firstRenderedTurn(nodes, partial, requests)
           : enclosingPromptTurn(nodes, change.seq, partial)
       pushMessage(turn, {
         absTime: finiteTime(change.time),
@@ -481,11 +576,19 @@ export function deriveTrajectoryLayout(
       // Context events that follow a turn's last assistant without an
       // intervening user message (memory nudges) close out that assistant's
       // turn; the rest (retrievals, mid-turn notices) keep opening the turn of
-      // their following assistant.
-      const turn =
-        !userSinceLastAssistant && lastAssistantTurn !== null
-          ? lastAssistantTurn
-          : enclosingUserTurn(followingAssistants[i], partial, lastAssistantTurn)
+      // their following assistant. An explicit turn location means the event
+      // predates the surviving message window (compaction removed its turns):
+      // the adapter anchored it to the request timeline, which wins over both
+      // array-order heuristics.
+      const location = eventLocations?.get(node.seq)
+      let turn: number
+      if (location?.kind === 'turn') {
+        turn = location.turn.turn
+      } else if (!userSinceLastAssistant && lastAssistantTurn !== null) {
+        turn = lastAssistantTurn
+      } else {
+        turn = enclosingUserTurn(followingAssistants[i], partial, lastAssistantTurn)
+      }
       pushMessage(turn, {
         absTime: finiteTime(node.time),
         cell: {
@@ -608,10 +711,51 @@ export function deriveTrajectoryLayout(
     }
   }
 
-  return [
-    ...[...turns.entries()].map(([turn, entry]) => toTurnModel(turn, entry)),
-    ...standaloneCompactions.map((entry) => toTurnModel(null, entry)),
-  ].sort((left, right) => firstCellIndex(left) - firstCellIndex(right))
+  // Numbered turns list in turn order. Insertion order cannot carry that
+  // guarantee anymore: gate records that predate the surviving message window
+  // (compaction removed their turns) claim head seqs in family order, so their
+  // cell indexes no longer climb with time. Floating compaction markers slot
+  // back in after the last turn whose latest cell precedes the marker; turn
+  // ends are not monotonic (a turn can absorb late surviving messages), so the
+  // insertion point scans the whole list instead of walking from the front.
+  const numbered = [...turns.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map(([turn, entry]) => toTurnModel(turn, entry))
+  const merged: TrajectoryTurnModel[] = [...numbered]
+  const floating = standaloneCompactions
+    .map((entry) => toTurnModel(null, entry))
+    .sort((left, right) => turnEnd(left) - turnEnd(right))
+  for (const marker of floating) {
+    const at = turnEnd(marker)
+    let insertAt = 0
+    for (let i = merged.length - 1; i >= 0; i--) {
+      if (merged[i].turn !== null && turnEnd(merged[i]) <= at) {
+        insertAt = i + 1
+        break
+      }
+    }
+    // Markers sharing an insertion point keep their own time order.
+    while (insertAt < merged.length && merged[insertAt].turn === null) insertAt += 1
+    merged.splice(insertAt, 0, marker)
+  }
+  return merged
+}
+
+/** Latest cell start time of a turn, for chronological section placement. */
+function turnEnd(turn: TrajectoryTurnModel): number {
+  return Math.max(
+    ...turn.groups.flatMap((group) =>
+      group.cells.map((cell) => cell.startedAt ?? Number.NEGATIVE_INFINITY),
+    ),
+    Number.NEGATIVE_INFINITY,
+  )
+}
+
+/** Leading line of logged response text, used by request-only rows. */
+function firstLine(text: string): string {
+  const trimmed = text.trim()
+  const newline = trimmed.indexOf('\n')
+  return newline === -1 ? trimmed : trimmed.slice(0, newline)
 }
 
 /**
@@ -695,14 +839,6 @@ function toTurnModel(turn: number | null, entry: TurnBucket): TrajectoryTurnMode
     }
   })
   return { turn, groups }
-}
-
-/** Chronological section position from the fold's monotonically assigned cell indexes. */
-function firstCellIndex(turn: TrajectoryTurnModel): number {
-  return Math.min(
-    ...turn.groups.flatMap((group) => group.cells.map((cell) => cell.index)),
-    Number.POSITIVE_INFINITY,
-  )
 }
 
 /** Wall-span duration + tool histogram, e.g. `1.5 s bash×6`. */
@@ -1024,6 +1160,23 @@ function firstVisibleTurn(
   )
   if (partial !== null && partial.turn > 0) turns.push(partial.turn)
   return turns.length === 0 ? 1 : Math.min(...turns)
+}
+
+/**
+ * Earliest turn that actually renders. The initial SYSTEM record must open
+ * the first compacted-era turn too when request-only rows carry it, not just
+ * the first turn with a surviving assistant node.
+ */
+function firstRenderedTurn(
+  nodes: ConversationSnapshot['nodes'],
+  partial: ConversationSnapshot['partial'],
+  requests: readonly RequestView[],
+): number {
+  let first = firstVisibleTurn(nodes, partial)
+  for (const request of requests) {
+    if (request.purpose === 'assistant' && request.turn < first) first = request.turn
+  }
+  return first
 }
 
 /** Copy provider usage onto a Message cell when present. */

@@ -469,7 +469,6 @@ function flattenRecords(turns: readonly TrajectoryTurnModel[]): TableRecord[] {
       return group.cells.map((cell, index) => {
         const turnStart =
           firstInSection &&
-          cell.requestOnly !== true &&
           cell.kind !== 'system' &&
           (cell.kind !== 'compacted' || turn.turn === null)
         if (turnStart) firstInSection = false
@@ -2471,7 +2470,7 @@ export function TrajectoryTable({
                         isCollapsedSummary
                           ? `Collapsed ${record.collapsedSummaryKind} summary, ${record.collapsedSummary}`
                           : isRequestOnly
-                            ? `Request ${request ?? ''}, unpaired request`
+                            ? `Request ${request ?? ''}, ${listDisplayText || 'compacted generation'}`
                             : `${request === undefined ? '' : `Request ${request}, `}${recordBadgeLabel(record)}, ${listDisplayText || 'no content'}`
                       }
                       aria-selected={
@@ -2596,7 +2595,7 @@ export function TrajectoryTable({
                         {!isCollapsedSummary && selectedIndex === record.cell.index && (
                           <span className={css.selectionRail} aria-hidden="true" />
                         )}
-                        {!isCollapsedSummary && !isRequestOnly && record.turnStart && (
+                        {!isCollapsedSummary && record.turnStart && (
                           <span
                             className={
                               sectionActive
@@ -2620,7 +2619,7 @@ export function TrajectoryTable({
                           </span>
                         )}
                         <div className={css.eventInner}>
-                          {!isCollapsedSummary && !isRequestOnly && (
+                          {!isCollapsedSummary && (
                             <span className={css.kindSlot}>
                               <span
                                 className={`${css.kindTag} ${
@@ -2656,7 +2655,7 @@ export function TrajectoryTable({
                         </div>
                       </td>
                       <td className={css.content}>
-                        {isRequestOnly ? null : record.collapsedSummary !== undefined ? (
+                        {record.collapsedSummary !== undefined ? (
                           <span
                             className={css.collapsedTurnContent}
                             title={record.collapsedSummary}

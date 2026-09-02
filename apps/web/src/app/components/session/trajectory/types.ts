@@ -306,6 +306,35 @@ interface RequestViewBase {
   resultSeq?: number
 }
 
+/** One tool call of a request-only row, paired with its logged result. */
+export interface RequestToolCallView {
+  id: string
+  name: string
+  argsRaw: string
+  result: string
+  resultPreviewMarkdown?: string
+  isError?: boolean
+  startedAt?: number
+  completedAt?: number
+}
+
+/**
+ * Generation evidence kept alive for requests whose assistant message was
+ * compacted out of the window: the logged response text plus the tool calls
+ * the request issued, rendered as request-only step rows.
+ */
+export interface RequestActivityView {
+  response: string
+  toolCalls: readonly RequestToolCallView[]
+  /** User-role input that opened the turn; present on the chain-root request only. */
+  turnPrompt?: string
+  /**
+   * Sort slot of the USER row rendered from `turnPrompt` — below the request
+   * rows so the turn's memory-retrieval gate can render between them.
+   */
+  turnPromptSeq?: number
+}
+
 /** One ordinary assistant generation. */
 export interface AssistantRequestView extends RequestViewBase {
   purpose: 'assistant'
@@ -316,6 +345,7 @@ export interface AssistantRequestView extends RequestViewBase {
   retry?: number
   maxRetries?: number
   retryDelayMs?: number
+  activity?: RequestActivityView
 }
 
 /** One compaction provider request, turn-owned or standalone between turns. */

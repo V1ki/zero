@@ -299,12 +299,33 @@ function pairRequestsWithAssistants(
       if (candidate.createdAt.localeCompare(ts) <= 0) owner = candidate
       else break
     }
-    if (owner === undefined) owner = unpairedAssistants[0]
-    if (owner === undefined) break
+    // Requests predating every remaining assistant usually belong to turns
+    // that compaction removed from the message window; pairing them with the
+    // next assistant would drag post-compaction messages into ancient turns.
+    // Fall back to the next assistant only for close timestamps, where the
+    // gap is log-write jitter rather than a compacted-away era.
+    if (
+      owner === undefined &&
+      unpairedAssistants[0] !== undefined &&
+      withinPairingJitter(unpairedAssistants[0].createdAt, ts)
+    ) {
+      owner = unpairedAssistants[0]
+    }
+    if (owner === undefined) continue
     requestByAssistantId.set(owner.id, request)
     unpairedAssistants.splice(unpairedAssistants.indexOf(owner), 1)
   }
   return requestByAssistantId
+}
+
+/** Slack allowed when a request logs slightly before its own assistant lands. */
+const PAIRING_JITTER_MS = 5 * 60 * 1000
+
+function withinPairingJitter(left: string, right: string): boolean {
+  const a = Date.parse(left)
+  const b = Date.parse(right)
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return true
+  return Math.abs(a - b) <= PAIRING_JITTER_MS
 }
 
 export interface BuildTrajectoryOptions {
@@ -536,6 +557,7 @@ function spanStringList(value: unknown): string[] {
 
 /** One memory a retrieval decision selected for context injection. */
 interface RetrievedMemoryView {
+  id?: string
   title: string
   type?: string
   score?: number
@@ -551,9 +573,10 @@ function memoryRetrievalSelections(value: unknown): RetrievedMemoryView[] {
   const out: RetrievedMemoryView[] = []
   for (const entry of value) {
     if (typeof entry !== 'object' || entry === null) continue
-    const record = entry as { title?: unknown; type?: unknown; score?: unknown }
+    const record = entry as { id?: unknown; title?: unknown; type?: unknown; score?: unknown }
     if (typeof record.title !== 'string' || record.title === '') continue
     out.push({
+      ...(typeof record.id === 'string' && record.id !== '' ? { id: record.id } : {}),
       title: record.title,
       ...(typeof record.type === 'string' && record.type !== '' ? { type: record.type } : {}),
       ...(typeof record.score === 'number' && Number.isFinite(record.score)
@@ -574,6 +597,48 @@ function memoryRetrievalLine(memory: RetrievedMemoryView): string {
   if (memory.type !== undefined) parts.push(memory.type)
   if (memory.score !== undefined) parts.push(`score ${memory.score.toFixed(2)}`)
   return `- ${parts.join(' · ')}`
+}
+
+/**
+ * Find the exact text one retrieval decision injected: the runtime records
+ * the formatted context message on the request that received it, and that
+ * message embeds each selected memory's id.
+ * @param requests - Logged requests carrying `memoryInjections`.
+ * @param start - Decision span start; only requests opened at or after it
+ *   qualify, since the injection follows the decision.
+ * @param selected - Memories the decision selected.
+ * @returns The injected layer-1 message text, or undefined when the request
+ *   log carries no matching injection.
+ */
+function memoryInjectionText(
+  requests: readonly SessionRequestEntry[],
+  start: number,
+  selected: readonly RetrievedMemoryView[],
+): string | undefined {
+  const ids = selected.map((memory) => memory.id).filter((id): id is string => id !== undefined)
+  const candidates = requests
+    .filter((request) =>
+      (request.memoryInjections ?? []).some(
+        (injection) => injection.layer === 'layer1' && injection.source === 'retrieved_memories',
+      ),
+    )
+    .filter((request) => requestTiming(request).startedAt >= start)
+    .sort((left, right) => requestTiming(left).startedAt - requestTiming(right).startedAt)
+  for (const request of candidates) {
+    for (const injection of request.memoryInjections ?? []) {
+      if (
+        injection.layer !== 'layer1' ||
+        injection.source !== 'retrieved_memories' ||
+        injection.formattedText.trim() === ''
+      ) {
+        continue
+      }
+      if (ids.length === 0 || ids.some((id) => injection.formattedText.includes(id))) {
+        return injection.formattedText
+      }
+    }
+  }
+  return undefined
 }
 
 /** One memory candidate an executed search returned. */
@@ -1214,7 +1279,70 @@ export function buildTrajectorySnapshot(
     if (candidate > maxUsedSeq) maxUsedSeq = candidate
     return candidate
   }
-  const nodeAfter = (time: number) => nodes.find((node) => node.time > time)
+  // Era request rows claim dense integer seqs, so an event that must sit
+  // between two claimed rows halves the surrounding gap instead of walking
+  // below its neighbor.
+  const claimSeqBetween = (after: number, before: number): number => {
+    let candidate = (after + before) / 2
+    while (usedSeqs.has(candidate)) candidate = (candidate + before) / 2
+    usedSeqs.add(candidate)
+    if (candidate > maxUsedSeq) maxUsedSeq = candidate
+    return candidate
+  }
+  // Message flow is not guaranteed to be time-ordered (resumed sessions can
+  // persist a misplaced head message), so insertion points resolve by time
+  // across the whole node list instead of trusting array order.
+  const nodeAfter = (time: number) => {
+    let after: TrajectorySnapshot['eventNodes'][number] | undefined
+    for (const node of nodes) {
+      if (node.time <= time) continue
+      if (
+        after === undefined ||
+        node.time < after.time ||
+        (node.time === after.time && node.seq < after.seq)
+      ) {
+        after = node
+      }
+    }
+    return after
+  }
+
+  // Latest assistant step at or before `time`: gate records attach to the step
+  // they interrupted. Also time-based (not array-order based) for the same
+  // reason as nodeAfter.
+  const anchorAtOrBefore = (time: number): ConversationLocation | undefined => {
+    let anchor: ConversationLocation | undefined
+    let anchorTime = Number.NEGATIVE_INFINITY
+    let anchorSeq = Number.NEGATIVE_INFINITY
+    for (const node of nodes) {
+      if (node.kind !== 'assistant' || node.time > time) continue
+      if (node.time > anchorTime || (node.time === anchorTime && node.seq > anchorSeq)) {
+        anchorTime = node.time
+        anchorSeq = node.seq
+        anchor = { kind: 'step', turn: { turn: node.turn }, step: { step: node.step } }
+      }
+    }
+    return anchor
+  }
+
+  // Gate events that predate every surviving message have no assistant to
+  // anchor to (compaction removed their turns from the message window). The
+  // request log still spans that era, so they anchor to the turn of the last
+  // request at or before their time and spread across their real turns
+  // instead of collapsing onto the first visible one.
+  const requestTurnAtOrBefore = (time: number): number | undefined => {
+    let turnIndex: number | undefined
+    for (const request of requestsByStart) {
+      if (requestTiming(request).startedAt > time) break
+      turnIndex = request.turnIndex
+    }
+    return turnIndex
+  }
+  const gateLocationAtOrBefore = (time: number): ConversationLocation => {
+    const anchor = anchorAtOrBefore(time)
+    if (anchor !== undefined) return anchor
+    return { kind: 'turn', turn: { turn: requestTurnAtOrBefore(time) ?? turn } }
+  }
 
   const compactionSpans = flatSpans.filter((span) => span.kind === 'context_compaction')
   for (const block of options.compactionBlocks ?? []) {
@@ -1340,14 +1468,7 @@ export function buildTrajectorySnapshot(
       provenance: { role: 'system', name: label },
       form: 'task-closure',
     })
-    let anchor: ConversationLocation | undefined
-    for (const node of nodes) {
-      if (node.time > time) break
-      if (node.kind === 'assistant') {
-        anchor = { kind: 'step', turn: { turn: node.turn }, step: { step: node.step } }
-      }
-    }
-    eventLocations.set(nodeSeq, anchor ?? { kind: 'turn', turn: { turn } })
+    eventLocations.set(nodeSeq, gateLocationAtOrBefore(time))
   }
 
   // Sub-agent spawns land as CONTEXT records at their spawn point with the
@@ -1415,14 +1536,7 @@ export function buildTrajectorySnapshot(
       provenance: { role: 'system', name: `sub-agent ${event.agentId}` },
       form: 'sub-agent',
     })
-    let anchor: ConversationLocation | undefined
-    for (const node of nodes) {
-      if (node.time > time) break
-      if (node.kind === 'assistant') {
-        anchor = { kind: 'step', turn: { turn: node.turn }, step: { step: node.step } }
-      }
-    }
-    eventLocations.set(nodeSeq, anchor ?? { kind: 'turn', turn: { turn } })
+    eventLocations.set(nodeSeq, gateLocationAtOrBefore(time))
   }
 
   // Span-derived memory nudges land as CONTEXT records; nudges that already
@@ -1526,21 +1640,117 @@ export function buildTrajectorySnapshot(
       provenance: { role: 'system', name: 'memory nudge' },
       form: 'memory-nudge',
     })
-    let anchor: ConversationLocation | undefined
-    for (const node of nodes) {
-      if (node.time > time) break
-      if (node.kind === 'assistant') {
-        anchor = { kind: 'step', turn: { turn: node.turn }, step: { step: node.step } }
-      }
+    eventLocations.set(nodeSeq, gateLocationAtOrBefore(time))
+  }
+
+  // Requests whose turns were compacted out of the message window still carry
+  // the model, timing, tokens, response, and tool calls of the generations
+  // that ran them. Emit anchor-less assistant views so those turns render
+  // request-only activity rows instead of only gate records. The pass claims
+  // seqs after the gate families (era rows sort below them); iterating
+  // newest-first keeps seq order aligned with time inside that block.
+  const pairedRequestIds = new Set([...requestByAssistantId.values()].map((request) => request.id))
+  let earliestAssistantTime = Number.POSITIVE_INFINITY
+  for (const node of nodes) {
+    if (node.kind === 'assistant' && node.time < earliestAssistantTime) {
+      earliestAssistantTime = node.time
     }
-    eventLocations.set(nodeSeq, anchor ?? { kind: 'turn', turn: { turn } })
+  }
+  const eraRequests = requests
+    .filter((request) => !pairedRequestIds.has(request.id))
+    .map((request) => ({ request, startedAt: requestTiming(request).startedAt }))
+    .filter((entry) => entry.startedAt < earliestAssistantTime)
+    .sort((left, right) => right.startedAt - left.startedAt)
+  // The chain root of each era turn carries the user-role input that opened
+  // the turn; it renders as the turn's USER row. Descending iteration means
+  // the last root written per turn is the chronologically first one.
+  const eraTurn = (request: SessionRequestEntry, startedAt: number): number =>
+    request.turnIndex ?? requestTurnAtOrBefore(startedAt) ?? turn
+  const turnOpeners = new Map<number, SessionRequestEntry>()
+  for (const { request, startedAt } of eraRequests) {
+    if ((requestSteps.get(request.id) ?? 0) !== 0) continue
+    turnOpeners.set(eraTurn(request, startedAt), request)
+  }
+  const eraRootSeqs = new Map<number, number>()
+  let eraSeqMin = Number.POSITIVE_INFINITY
+  let eraSeqMax = Number.NEGATIVE_INFINITY
+  const nextUsedSeqAbove = (seq: number): number => {
+    let next = Number.POSITIVE_INFINITY
+    for (const used of usedSeqs) {
+      if (used > seq && used < next) next = used
+    }
+    return next
+  }
+  for (const { request, startedAt } of eraRequests) {
+    const insertBefore = nodeAfter(startedAt)
+    const nodeSeq = claimSeqBefore(insertBefore === undefined ? undefined : insertBefore.seq)
+    if (nodeSeq < eraSeqMin) eraSeqMin = nodeSeq
+    if (nodeSeq > eraSeqMax) eraSeqMax = nodeSeq
+    const isTurnOpener = turnOpeners.get(eraTurn(request, startedAt)) === request
+    if (isTurnOpener) {
+      eraRootSeqs.set(eraTurn(request, startedAt), nodeSeq)
+    }
+    const resultsByToolUseId = new Map(
+      (request.toolResults ?? []).map((result) => [result.toolUseId, result]),
+    )
+    const turnPrompt =
+      isTurnOpener && request.userPrompt.trim() !== '' ? request.userPrompt : undefined
+    // The opener splits its sort slot: the USER row renders at the claimed
+    // integer and the request rows just above it, leaving a gap where the
+    // turn's memory-retrieval gate renders between them.
+    const requestSeq =
+      turnPrompt === undefined ? nodeSeq : claimSeqBetween(nodeSeq, nextUsedSeqAbove(nodeSeq))
+    requestViews.push({
+      purpose: 'assistant',
+      turn: eraTurn(request, startedAt),
+      step: requestSteps.get(request.id) ?? 0,
+      startSeq: requestSeq,
+      startedAt,
+      completedAt: requestTiming(request).completedAt,
+      status: 'complete',
+      provenance: { provider: request.provider, model: request.model },
+      requestConfig: { provider: request.provider, model: request.model },
+      usage: usageOf(request),
+      resultSeq: requestSeq,
+      activity: {
+        response: request.response,
+        ...(turnPrompt === undefined ? {} : { turnPrompt, turnPromptSeq: nodeSeq }),
+        toolCalls: (request.toolCalls ?? []).map((call) => {
+          const result = resultsByToolUseId.get(call.id)
+          const span = toolSpans.byToolUseId.get(call.id)
+          const spanStart = span === undefined ? null : toEpochMillis(span.startTime)
+          const spanEnd = span === undefined ? null : toEpochMillis(span.endTime)
+          const isError = result?.isError === true || span?.status === 'error'
+          const resultText = result?.content ?? ''
+          return {
+            id: call.id,
+            name: call.name,
+            argsRaw: JSON.stringify(call.input),
+            result: isError ? 'error' : resultText === '' ? 'No output' : resultText,
+            ...(resultText === '' ? {} : { resultPreviewMarkdown: resultText }),
+            ...(isError ? { isError: true } : {}),
+            ...(spanStart === null ? {} : { startedAt: spanStart }),
+            ...(spanEnd === null ? {} : { completedAt: spanEnd }),
+          }
+        }),
+      },
+    })
   }
 
   // Layer-1 memory retrieval runs beside the loop after every user message;
   // its span carries the full decision record (trigger prompt, generated
-  // queries, selected memories, side-loop usage). Selected memories were
-  // injected into the request context, so those records badge as CONTEXT,
-  // while decisions that selected nothing stay GATEWAY side calls.
+  // queries, selected memories, side-loop usage). The side-loop call itself
+  // is always a GATEWAY record; when it selected memories, a second record
+  // right above it carries the CONTEXT message actually injected into the
+  // next request. The pass runs after era emission on purpose: the side loop
+  // opens seconds before the turn's first model request, so an era span
+  // anchors to the turn that owns the next request and claims the gap right
+  // above that turn's root row — it renders between the USER row and the
+  // steps instead of below the whole turn (and never on the previous turn
+  // its timestamp suggests).
+  const eraEntriesAsc = eraRequests
+    .map(({ request, startedAt }) => ({ startedAt, turn: eraTurn(request, startedAt) }))
+    .sort((left, right) => left.startedAt - right.startedAt)
   const retrievalSpans = flatSpans.filter(
     (span) => span.name === 'memory_retrieval_decision' && span.metadata?.layer === 'layer1',
   )
@@ -1549,8 +1759,38 @@ export function buildTrajectorySnapshot(
     if (start === null) continue
     const decision = memoryRetrievalSpanData(span)
     const end = toEpochMillis(span.endTime)
-    const insertBefore = nodeAfter(start)
-    const nodeSeq = claimSeqBefore(insertBefore === undefined ? undefined : insertBefore.seq)
+    let eraAnchor: { turn: number; rootSeq: number } | undefined
+    for (const entry of eraEntriesAsc) {
+      if (entry.startedAt >= start) {
+        const rootSeq = eraRootSeqs.get(entry.turn)
+        eraAnchor = rootSeq === undefined ? undefined : { turn: entry.turn, rootSeq }
+        break
+      }
+    }
+    let nodeSeq: number
+    let location: ConversationLocation
+    if (eraAnchor !== undefined) {
+      const upper = nextUsedSeqAbove(eraAnchor.rootSeq)
+      nodeSeq = Number.isFinite(upper)
+        ? claimSeqBetween(eraAnchor.rootSeq, upper)
+        : claimSeqBefore(undefined)
+      location = { kind: 'turn', turn: { turn: eraAnchor.turn } }
+    } else {
+      const insertBefore = nodeAfter(start)
+      nodeSeq = claimSeqBefore(insertBefore === undefined ? undefined : insertBefore.seq)
+      // Era seqs are registered now, so a claim whose bound sits above the
+      // block would otherwise walk below it entirely; halve the gap between
+      // the block top and the bound instead so the record stays in order.
+      if (
+        eraRequests.length > 0 &&
+        insertBefore !== undefined &&
+        nodeSeq < eraSeqMin &&
+        insertBefore.seq > eraSeqMax
+      ) {
+        nodeSeq = claimSeqBetween(eraSeqMax, insertBefore.seq)
+      }
+      location = gateLocationAtOrBefore(start)
+    }
     const queries = spanStringList(decision?.queries)
     const searches = memoryRetrievalSearches(decision?.searches)
     const selected = memoryRetrievalSelections(decision?.selectedMemories)
@@ -1622,14 +1862,33 @@ export function buildTrajectorySnapshot(
       provenance: { role: 'system', name: 'memory retrieval' },
       form: 'memory-retrieval',
     })
-    let retrievalAnchor: ConversationLocation | undefined
-    for (const node of nodes) {
-      if (node.time > start) break
-      if (node.kind === 'assistant') {
-        retrievalAnchor = { kind: 'step', turn: { turn: node.turn }, step: { step: node.step } }
-      }
+    eventLocations.set(nodeSeq, location)
+    // An injected selection is its own record: the side loop above is the
+    // GATEWAY call, and the memories inserted into the request context are
+    // the CONTEXT message the next model request actually saw.
+    if (selected.length > 0) {
+      const injectionSeq = claimSeqBetween(nodeSeq, nextUsedSeqAbove(nodeSeq))
+      // Prefer the exact message the runtime injected (from the receiving
+      // request's log); fall back to the selected-memory list when the log
+      // carries no injection entry.
+      const injectedText = memoryInjectionText(requests, start, selected)
+      const body = injectedText?.trim() ?? selected.map(memoryRetrievalLine).join('\n')
+      nodes.push({
+        kind: 'context',
+        seq: injectionSeq,
+        time: end ?? start,
+        content: [
+          {
+            type: 'text',
+            text: `memory context · ${selected.length} ${noun} injected\n${body}`,
+          },
+        ],
+        source: { kind: 'memory injection', count: selected.length },
+        provenance: { role: 'system', name: 'memory injection' },
+        form: 'memory-injection',
+      })
+      eventLocations.set(injectionSeq, location)
     }
-    eventLocations.set(nodeSeq, retrievalAnchor ?? { kind: 'turn', turn: { turn } })
   }
 
   // Context snapshots drive the SYSTEM records: the initial prompt (system

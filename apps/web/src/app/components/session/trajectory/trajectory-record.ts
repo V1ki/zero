@@ -114,33 +114,33 @@ export function trajectoryRecordId(cell: TrajectoryCellProps): string {
 /**
  * Kind shown on record badges; `gateway` marks out-of-band gate exchanges.
  * ZeRo adapter extension: the task-closure classifier runs beside the agent
- * loop, so its question/answer never entered the model context — and a
- * memory-retrieval decision that selected nothing injected nothing either.
- * Records whose payload reached the model (including closure continuation
- * notices and injected memories) keep their CONTEXT badge.
+ * loop, so its question/answer never entered the model context. The
+ * memory-retrieval side loop is a gateway call regardless of its outcome —
+ * when it selected memories, the injection that follows is its own record
+ * and keeps the CONTEXT badge, because that payload did reach the model.
  */
 export type TrajectoryBadgeKind = TrajectoryCellKind | 'gateway'
 
 /**
  * Resolve the badge kind for one projected record.
  * @param cell - Projected trajectory record.
- * @returns `gateway` for side-loop events that inject nothing into the context
- *   (task-closure and memory-nudge gates, sub-agent delegation records, memory
- *   retrievals that selected no memories), else the record kind.
+ * @returns `gateway` for side-loop calls (task-closure and memory-nudge gates,
+ *   sub-agent delegation records, memory-retrieval side loops), else the
+ *   record kind.
  */
 export function cellBadgeKind(cell: TrajectoryCellProps): TrajectoryBadgeKind {
   if (cell.kind === 'context' && cell.outputDetail !== undefined) {
     const source = cell.messageSource
     if (typeof source === 'object' && source !== null) {
-      const record = source as { kind?: unknown; injected?: unknown }
+      const record = source as { kind?: unknown }
       if (
         record.kind === 'task closure' ||
         record.kind === 'memory nudge' ||
-        record.kind === 'sub-agent'
+        record.kind === 'sub-agent' ||
+        record.kind === 'memory retrieval'
       ) {
         return 'gateway'
       }
-      if (record.kind === 'memory retrieval' && record.injected === false) return 'gateway'
     }
   }
   return cell.kind
