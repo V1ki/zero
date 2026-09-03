@@ -74,11 +74,17 @@ export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
     const foreground: Promise<ToolSettledResult> = execution
       .then<ToolSettledResult>((result) => ({ type: 'result', result }))
       .catch((error) => ({ type: 'error', error }))
+    let thresholdTimer: ReturnType<typeof setTimeout> | undefined
     const background = new Promise<ToolSettledResult>((resolve) => {
-      setTimeout(() => resolve({ type: 'background' }), this.thresholdMs)
+      thresholdTimer = setTimeout(() => resolve({ type: 'background' }), this.thresholdMs)
     })
 
     const first = await Promise.race([foreground, background])
+    // 前台先完成时清掉阈值定时器：否则每次快速工具调用都会留下一个最长
+    // thresholdMs 的悬挂 timer（持有事件循环引用，延迟一次性进程退出）。
+    if (first.type !== 'background' && thresholdTimer) {
+      clearTimeout(thresholdTimer)
+    }
     if (first.type === 'result') return first.result
     if (first.type === 'error') throw first.error
 
@@ -270,7 +276,8 @@ function taskResultFromRecord(task: BackgroundToolTaskRecord): ToolResult {
   }
 }
 
-function buildBackgroundStartedOutput(task: BackgroundToolTaskRecord): string {  return `<system_event type="background_tool.started">
+function buildBackgroundStartedOutput(task: BackgroundToolTaskRecord): string {
+  return `<system_event type="background_tool.started">
 <background_task id="${escapeXmlAttribute(task.id)}" tool_name="${escapeXmlAttribute(
     task.toolName,
   )}" tool_use_id="${escapeXmlAttribute(task.toolUseId)}" status="running">

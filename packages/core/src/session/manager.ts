@@ -1141,10 +1141,15 @@ async function drainInterruptedSessions(options: {
 
   console.log(`[SessionManager] Draining ${active.length} current turn(s)...`)
 
+  let drainTimer: ReturnType<typeof setTimeout> | undefined
   const result = await Promise.race([
     Promise.all(active.map((session) => session.waitForTurnComplete())).then(() => 'done' as const),
-    new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), options.timeoutMs)),
+    new Promise<'timeout'>((resolve) => {
+      drainTimer = setTimeout(() => resolve('timeout'), options.timeoutMs)
+    }),
   ])
+  // 全部排空时清掉超时定时器：drain 处于 shutdown 路径，悬挂 timer 会延迟进程退出。
+  if (result === 'done' && drainTimer) clearTimeout(drainTimer)
 
   if (result === 'done') {
     console.log('[SessionManager] All turns drained.')

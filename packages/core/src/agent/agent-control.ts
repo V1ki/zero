@@ -771,12 +771,15 @@ async function waitForAgents(
 
   let timedOut = false
   if (typeof options.timeoutMs === 'number' && options.timeoutMs >= 0) {
+    let waitTimer: ReturnType<typeof setTimeout> | undefined
     const outcome = await Promise.race([
       waitPromise,
       new Promise<'timeout'>((resolve) => {
-        setTimeout(() => resolve('timeout'), options.timeoutMs)
+        waitTimer = setTimeout(() => resolve('timeout'), options.timeoutMs)
       }),
     ])
+    // 等待先完成时清掉超时定时器，避免悬挂 timer 持有事件循环引用。
+    if (outcome !== 'timeout' && waitTimer) clearTimeout(waitTimer)
     timedOut = outcome === 'timeout'
   } else {
     await waitPromise
