@@ -1,8 +1,9 @@
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { runQrLogin, type WeixinChannel } from '@zero-os/channel'
+import { type WeixinChannel, runQrLogin } from '@zero-os/channel'
 import { Vault, getMasterKey } from '@zero-os/secrets'
 import { readYaml, writeYaml } from '@zero-os/shared'
+import { Effect, Fiber } from 'effect'
 import type { ChannelAdapter, StreamAdapter, TypingHandle } from './adapter'
 
 const require = createRequire(import.meta.url)
@@ -28,15 +29,28 @@ export class WeixinAdapter implements ChannelAdapter {
 
   async showTyping(chatId: string): Promise<TypingHandle | null> {
     await this.channel.sendTypingIndicator(chatId).catch(() => {})
-    const timer = setInterval(() => {
+    const keepaliveMs = this.typingKeepaliveMs
+    const sendKeepalive = () => {
       this.channel.sendTypingIndicator(chatId).catch(() => {})
-    }, this.typingKeepaliveMs)
+    }
+    let keepaliveFiber: Fiber.RuntimeFiber<void> | null = Effect.runFork(
+      Effect.gen(function* () {
+        while (true) {
+          yield* Effect.sleep(keepaliveMs)
+          yield* Effect.sync(sendKeepalive)
+        }
+      }),
+    )
     let cleared = false
     return {
       clear: async () => {
         if (cleared) return
         cleared = true
-        clearInterval(timer)
+        const fiber = keepaliveFiber
+        keepaliveFiber = null
+        if (fiber) {
+          await Effect.runPromise(Fiber.interrupt(fiber)).catch(() => {})
+        }
         await this.channel.clearTypingIndicator(chatId).catch(() => {})
       },
     }

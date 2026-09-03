@@ -7,7 +7,8 @@
   },
   "dependencies": {
     "@zero-os/shared": "workspace:*",
-    "@zero-os/supervisor": "workspace:*"
+    "@zero-os/supervisor": "workspace:*",
+    "effect": "^3.22.1"
   },
   "devDependencies": {
     "bun-types": "latest"

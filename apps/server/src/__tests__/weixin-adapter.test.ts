@@ -40,6 +40,24 @@ describe('WeixinAdapter', () => {
     expect(calls).toEqual(['start:peer', 'stop:peer'])
   })
 
+  test('showTyping keepalive re-fires on interval until cleared', async () => {
+    const calls: string[] = []
+    const fake = {
+      sendTypingIndicator: async (chatId: string) => {
+        calls.push(chatId)
+      },
+      clearTypingIndicator: async () => {},
+    } as unknown as import('@zero-os/channel').WeixinChannel
+    const adapter = new WeixinAdapter(fake, 10)
+    const handle = await adapter.showTyping('peer')
+    await Bun.sleep(45)
+    await handle?.clear()
+    const countAfterClear = calls.length
+    expect(countAfterClear).toBeGreaterThanOrEqual(3) // initial send + at least 2 keepalives
+    await Bun.sleep(40)
+    expect(calls.length).toBe(countAfterClear)
+  })
+
   test('sendImage delegates to channel.sendAttachment', async () => {
     const calls: Array<[string, Buffer, string, string | undefined]> = []
     const fake = {

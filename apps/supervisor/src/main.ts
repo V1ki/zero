@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { installConsoleTimestamping } from '@zero-os/shared'
 import { HeartbeatChecker } from '@zero-os/supervisor'
 import { RepairEngine } from '@zero-os/supervisor'
+import { Effect } from 'effect'
 import { getBunExecutable, getRuntimeEnv } from '../../server/src/system/runtime'
 import { createSupervisorMonitor } from './monitor'
 import {
@@ -113,6 +114,17 @@ const monitor = createSupervisorMonitor({
   },
 })
 
-setInterval(() => {
+const tickMonitor = () => {
   void monitor.tick()
-}, CHECK_INTERVAL)
+}
+
+// Process-lifetime daemon loop; the supervisor exits via signals, so the
+// fiber is intentionally never interrupted (same lifecycle as the old interval).
+Effect.runFork(
+  Effect.gen(function* () {
+    while (true) {
+      yield* Effect.sleep(CHECK_INTERVAL)
+      yield* Effect.sync(tickMonitor)
+    }
+  }),
+)
