@@ -79,7 +79,15 @@ KeychainLive (Layer) ── 每个方法先查 env 旁路，再走 Bun.spawn('se
 - 动手前用探针验证过两个关键行为：`Effect.runFork` 会同步注册 sleep 的 `setTimeout`（远期封顶的 setTimeout 桩测试原样通过）；`Fiber.interrupt` 清除挂起 timer（`stop()` 后进程可正常退出，与旧 `clearTimeout` 语义等价）。
 - 验证：17/17 既有测试零改动通过（含 4 个 cast 调私有方法的 overlap 用例）；`apps/server` 套件与基线失败完全一致（仅 toolRegistry 计数漂移的既有失败）；`bun run check` 通过。
 
+### 第三步：createSecretsRuntime 消费 Keychain service（已完成，2026-09-03）
+
+`apps/server/src/runtime/core.ts` 的 `createSecretsRuntime` 从直接调 `getMasterKey()`/`setMasterKey()` 改为消费 `Keychain` service：
+
+- 取 key / 首 run 写 key 两条路径都是 `Effect.flatMap(Keychain, ...)` 程序，组合根用 `Effect.provide(program, keychainLayer)` 装配；`KeychainLive` 作为参数默认值，现有调用方（`createCoreInfrastructureRuntime`）零改动。
+- 行为逐字保持：失败分支的判定与原来一样是"任何失败都走恢复路径"（`Exit.isSuccess` 检查，与旧 catch-all 等价）；有 vault 无 key 的致命错误消息、first-run 日志、写 key 失败抛原始错误（`Cause.squash`）全部不变。
+- 新增 `apps/server/src/__tests__/secrets-runtime.test.ts`：用 stub Layer 注入验证 DI 缝——正常取 key 建 vault（用注入 key 重开 vault 验证）、first-run 生成 32 字节 key 并经 Layer 写入、有 vault 无 key 时启动致命错误。测试只装配 stub Layer，不触碰真实 Keychain。
+- `apps/server` 显式声明 `effect` 依赖。
+
 ### 待做
 
-1. `apps/server` 的 `createSecretsRuntime` 改为消费 `Keychain` service，startup 组合根用 Layer 装配。
-2. 视前两步结论决定是否推进 core 的工具子进程执行切片。
+1. 视前三步结论决定是否推进 core 的工具子进程执行切片。

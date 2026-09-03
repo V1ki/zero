@@ -16,6 +16,7 @@
     "@zero-os/secrets": "workspace:*",
     "@zero-os/shared": "workspace:*",
     "@zero-os/supervisor": "workspace:*",
+    "effect": "^3.22.1",
     "qrcode-terminal": "^0.12.0"
   },
   "devDependencies": {

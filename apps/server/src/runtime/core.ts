@@ -2,14 +2,15 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { SessionManager, type ToolRegistry, loadConfig } from '@zero-os/core'
 import {
+  Keychain,
+  KeychainLive,
   OutputSecretFilter,
   Vault,
   generateMasterKey,
-  getMasterKey,
-  setMasterKey,
 } from '@zero-os/secrets'
 import type { SystemConfig } from '@zero-os/shared'
 import { RepairEngine } from '@zero-os/supervisor'
+import { Cause, Effect, Exit, type Layer } from 'effect'
 import type { EventBus } from './bus'
 import { type MemoryRuntime, createMemoryRuntime } from './memory'
 import { type ModelRouterRuntime, createModelRouterRuntime } from './model-providers/router'
@@ -110,13 +111,25 @@ function ensureRuntimeDirectories(zeroDir: string): void {
   }
 }
 
-async function createSecretsRuntime(zeroDir: string): Promise<SecretsRuntime> {
+/**
+ * Build the secrets runtime. The master-key acquisition consumes the
+ * `Keychain` service; production assembles `KeychainLive` here at the
+ * composition root, while tests can inject a stub layer instead.
+ */
+export async function createSecretsRuntime(
+  zeroDir: string,
+  keychainLayer: Layer.Layer<Keychain> = KeychainLive,
+): Promise<SecretsRuntime> {
   const secretsPath = join(zeroDir, 'secrets.enc')
+
+  const loadMasterKey = Effect.flatMap(Keychain, (keychain) => keychain.get())
+  const loadedExit = await Effect.runPromiseExit(Effect.provide(loadMasterKey, keychainLayer))
+
   let masterKey: Buffer
-  try {
-    masterKey = await getMasterKey()
+  if (Exit.isSuccess(loadedExit)) {
+    masterKey = loadedExit.value
     console.log('[ZeRo OS] Master key loaded from Keychain')
-  } catch {
+  } else {
     if (existsSync(secretsPath)) {
       throw new Error(
         '[ZeRo OS] Master key missing in Keychain for existing .zero/secrets.enc. Restore the original Keychain item or recover the vault before starting.',
@@ -124,7 +137,11 @@ async function createSecretsRuntime(zeroDir: string): Promise<SecretsRuntime> {
     }
     console.log('[ZeRo OS] First run — generating master key...')
     masterKey = generateMasterKey()
-    await setMasterKey(masterKey)
+    const storeMasterKey = Effect.flatMap(Keychain, (keychain) => keychain.set(masterKey))
+    const storedExit = await Effect.runPromiseExit(Effect.provide(storeMasterKey, keychainLayer))
+    if (Exit.isFailure(storedExit)) {
+      throw Cause.squash(storedExit.cause)
+    }
     console.log('[ZeRo OS] Master key stored in Keychain')
   }
 
