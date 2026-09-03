@@ -32,13 +32,22 @@ ZeRo OS monorepo built with Bun + TypeScript.
 - `e2e`: end-to-end tests
 - `.zero`: local runtime state (logs, memory, secrets, workspace) — treat as operational data, not product source
 
+## Vendored Reference Sources
+- `repos/` holds vendored upstream source repos kept as **read-only reference material**, not application code.
+- Current: `repos/effect` = the Effect-TS monorepo at tag `effect@3.22.1`, pinned to match the installed `effect` dependency.
+- When writing Effect code, read the real source and tests under `repos/effect/packages/effect/` instead of guessing APIs or searching the web; verify every API against the source before using it.
+- Never edit files under `repos/` unless explicitly asked.
+- Never import from `repos/` — application code imports from normal package dependencies (e.g. `import { Effect } from 'effect'`).
+- To update the reference: `git subtree pull --prefix=repos/effect https://github.com/Effect-TS/effect.git effect@<installed-version> --squash`, keeping the tag in sync with the installed version.
+
 ## Critical Safety Rules
 1. Never print, paste, or commit secret values.
 2. Never modify `.zero/secrets.enc` by direct file editing.
 3. Do not commit `.zero/*`, `dist`, `node_modules`, or `test-results`.
 4. Avoid destructive actions unless explicitly requested.
-5. Never revert or overwrite user changes you did not make.
-6. Keep changes scoped to the requested task only.
+5. Keychain tests must never target the production master-key entry (service `com.zero-os.vault`, account `master-key`): pass an isolated `KeychainTarget` or a stub `Keychain` layer. `KeychainLive` refuses production-target set/delete while `NODE_ENV=test` (bun:test sets it), and the keychain suites verify the real entry via a digest-only canary before/after each run.
+6. Never revert or overwrite user changes you did not make.
+7. Keep changes scoped to the requested task only.
 
 ## Tool and Search Preferences
 - Prefer dedicated tools over raw shell when available.

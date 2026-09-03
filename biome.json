@@ -59,6 +59,7 @@
       "test-results",
       ".claude",
       ".artifacts",
+      "repos",
       "apps/web/src/app/components/session/trajectory/**/*.css"
     ]
   }

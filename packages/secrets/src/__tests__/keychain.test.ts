@@ -1,5 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { deleteMasterKey, generateMasterKey, getMasterKey, setMasterKey } from '../keychain'
+import {
+  expectProductionMasterKeyUnchanged,
+  snapshotProductionMasterKey,
+} from './helpers/keychain-canary'
 
 describe('macOS Keychain integration', () => {
   const testTarget = {
@@ -8,8 +12,10 @@ describe('macOS Keychain integration', () => {
   }
   const testKey = generateMasterKey()
   let previousMasterKeyEnv: string | undefined
+  let productionKeyDigest: string | null
 
   beforeAll(async () => {
+    productionKeyDigest = await snapshotProductionMasterKey()
     previousMasterKeyEnv = process.env.ZERO_MASTER_KEY_BASE64
     delete process.env.ZERO_MASTER_KEY_BASE64
     await deleteMasterKey(testTarget)
@@ -22,6 +28,7 @@ describe('macOS Keychain integration', () => {
     } else {
       process.env.ZERO_MASTER_KEY_BASE64 = previousMasterKeyEnv
     }
+    await expectProductionMasterKeyUnchanged(productionKeyDigest)
   })
 
   test('set and get master key round-trip', async () => {
