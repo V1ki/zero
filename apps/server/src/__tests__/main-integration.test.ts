@@ -154,25 +154,32 @@ describe('startZeroOS Integration', () => {
     }
   })
 
-  test('toolRegistry has 15 registered tools', () => {
+  test('toolRegistry has all runtime tools registered', () => {
     const tools = zero.toolRegistry.list()
-    expect(tools.length).toBe(15)
-    const names = tools.map((t) => t.name)
-    expect(names).toContain('read')
-    expect(names).toContain('read_image')
-    expect(names).toContain('write')
-    expect(names).toContain('edit')
-    expect(names).toContain('bash')
-    expect(names).toContain('fetch')
-    expect(names).toContain('memory_search')
-    expect(names).toContain('memory_read')
-    expect(names).toContain('memory')
-    expect(names).toContain('schedule')
-    expect(names).toContain('codex')
-    expect(names).toContain('spawn_agent')
-    expect(names).toContain('wait_agent')
-    expect(names).toContain('close_agent')
-    expect(names).toContain('send_input')
+    // x_search registers only when x_premium is configured; this fixture has
+    // no x_premium, so the unconditional set is asserted in full to make any
+    // future tool addition or removal an explicit test update.
+    expect(tools.map((t) => t.name).sort()).toEqual(
+      [
+        'read',
+        'read_image',
+        'write',
+        'edit',
+        'grep',
+        'glob',
+        'bash',
+        'fetch',
+        'memory_search',
+        'memory_read',
+        'memory',
+        'schedule',
+        'codex',
+        'spawn_agent',
+        'wait_agent',
+        'close_agent',
+        'send_input',
+      ].sort(),
+    )
   })
 
   test('channels map contains web, feishu, telegram', () => {
