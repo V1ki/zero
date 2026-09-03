@@ -68,8 +68,18 @@ KeychainLive (Layer) ── 每个方法先查 env 旁路，再走 Bun.spawn('se
 - 错误保真验证：缺失条目时拒绝值 `instanceof MasterKeyMissingError` 且 `.message` 与旧实现逐字一致。
 - 生产路径实战：`bun zero init` 走新代码生成并存储 key 成功。
 
-## 后续推广路径（未实施）
+## 推广路径
 
-1. `packages/scheduler`：Effect Schedule + fiber 中断替代手写 setTimeout 重排（注意现有测试依赖私有方法，需重写）。
-2. `apps/server` 的 `createSecretsRuntime` 改为消费 `Keychain` service，在 startup 组合根用 Layer 装配。
-3. 视前两步结论决定是否推进 core 的工具子进程执行切片。
+### 第二步：packages/scheduler 定时器 fiber 化（已完成，2026-09-03）
+
+范围刻意收窄：没有引入 `Effect.Schedule` 重排整个状态机，公共 API（`add`/`addAndStart`/`remove`/`start`/`stop`/`getEntry`/`getStatus`/静态 `getNextRuns`）与 `fire`/`launchFire` 的 misfire/overlap/oneShot 机制全部不动，仅把 `timers: Map + setTimeout/clearTimeout` 替换为 `fibers: Map + Effect.runFork(Effect.sleep) + Fiber.interrupt`：
+
+- `scheduleNext` 布防 fiber；`remove`/`stop` 通过 `Fiber.interrupt` 取消——Effect Clock 的中断 finalizer 负责 clearTimeout，删掉了散布在 3 处的手工清理。
+- **长延时封顶保留在自己代码里**：vendored 源码（`internal/clock.ts` 的 `unsafeSchedule`）证实 Effect 对超过 `2^31-1` ms 的 sleep 视为无限期、永不触发，与裸 `setTimeout` 的溢出行为不同。`waitAndFire` 按 `MAX_TIMEOUT_MS` 分片并在每片后重算剩余时间，与旧实现的分段重排等价。
+- 动手前用探针验证过两个关键行为：`Effect.runFork` 会同步注册 sleep 的 `setTimeout`（远期封顶的 setTimeout 桩测试原样通过）；`Fiber.interrupt` 清除挂起 timer（`stop()` 后进程可正常退出，与旧 `clearTimeout` 语义等价）。
+- 验证：17/17 既有测试零改动通过（含 4 个 cast 调私有方法的 overlap 用例）；`apps/server` 套件与基线失败完全一致（仅 toolRegistry 计数漂移的既有失败）；`bun run check` 通过。
+
+### 待做
+
+1. `apps/server` 的 `createSecretsRuntime` 改为消费 `Keychain` service，startup 组合根用 Layer 装配。
+2. 视前两步结论决定是否推进 core 的工具子进程执行切片。

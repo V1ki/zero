@@ -1,5 +1,6 @@
 import type { ScheduleConfig } from '@zero-os/shared'
 import parser from 'cron-parser'
+import { Effect, Fiber } from 'effect'
 
 export interface ScheduleEntry {
   config: ScheduleConfig
@@ -15,7 +16,7 @@ const MAX_TIMEOUT_MS = 2_147_483_647
  */
 export class CronScheduler {
   private entries: Map<string, ScheduleEntry> = new Map()
-  private timers: Map<string, ReturnType<typeof setTimeout>> = new Map()
+  private fibers: Map<string, Fiber.RuntimeFiber<void>> = new Map()
   private onTrigger: ((config: ScheduleConfig) => Promise<void>) | null = null
   private onRemoved: ((name: string) => void) | null = null
   private queued: Map<string, ScheduleConfig[]> = new Map()
@@ -65,9 +66,7 @@ export class CronScheduler {
    * Remove a schedule by name. Returns true if it existed.
    */
   remove(name: string): boolean {
-    const timer = this.timers.get(name)
-    if (timer) clearTimeout(timer)
-    this.timers.delete(name)
+    this.cancelFiber(name)
     this.queued.delete(name)
     this.pendingReplace.delete(name)
     return this.entries.delete(name)
@@ -93,10 +92,9 @@ export class CronScheduler {
    * Stop all schedules.
    */
   stop(): void {
-    for (const timer of this.timers.values()) {
-      clearTimeout(timer)
+    for (const name of Array.from(this.fibers.keys())) {
+      this.cancelFiber(name)
     }
-    this.timers.clear()
   }
 
   /**
@@ -124,10 +122,7 @@ export class CronScheduler {
   }
 
   private scheduleNext(name: string, entry: ScheduleEntry): void {
-    const existingTimer = this.timers.get(name)
-    if (existingTimer) {
-      clearTimeout(existingTimer)
-    }
+    this.cancelFiber(name)
 
     const delay = entry.nextRun.getTime() - Date.now()
     if (delay < 0) {
@@ -143,19 +138,37 @@ export class CronScheduler {
       return
     }
 
-    if (delay > MAX_TIMEOUT_MS) {
-      const timer = setTimeout(() => {
-        this.scheduleNext(name, entry)
-      }, MAX_TIMEOUT_MS)
-      this.timers.set(name, timer)
-      return
-    }
+    this.fibers.set(name, Effect.runFork(this.waitAndFire(name, entry, delay)))
+  }
 
-    const timer = setTimeout(() => {
-      this.launchFire(name, entry)
-    }, delay)
+  /**
+   * Sleep until the entry's nextRun is due, then fire it.
+   *
+   * Each sleep is capped at the JS timer maximum: Effect's Clock treats
+   * longer durations as infinite (they never fire), so far-future waits
+   * re-check the remaining delay after every slice — the same chaining the
+   * previous bare-setTimeout implementation performed.
+   */
+  private waitAndFire(name: string, entry: ScheduleEntry, delay: number): Effect.Effect<void> {
+    const launch = () => this.launchFire(name, entry)
+    return Effect.gen(function* () {
+      let remaining = delay
+      while (remaining > MAX_TIMEOUT_MS) {
+        yield* Effect.sleep(MAX_TIMEOUT_MS)
+        remaining = entry.nextRun.getTime() - Date.now()
+      }
+      yield* Effect.sleep(Math.max(remaining, 0))
+      yield* Effect.sync(launch)
+    })
+  }
 
-    this.timers.set(name, timer)
+  private cancelFiber(name: string): void {
+    const fiber = this.fibers.get(name)
+    if (!fiber) return
+    this.fibers.delete(name)
+    // Interruption cancels only pending sleeps (Effect's Clock finalizer
+    // clears the timer) and does not reject in practice.
+    void Effect.runPromise(Fiber.interrupt(fiber)).catch(() => {})
   }
 
   private launchFire(name: string, entry: ScheduleEntry): void {

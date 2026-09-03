@@ -9,7 +9,8 @@
     "@zero-os/shared": "workspace:*",
     "@zero-os/core": "workspace:*",
     "@zero-os/observe": "workspace:*",
-    "cron-parser": "^4.9.0"
+    "cron-parser": "^4.9.0",
+    "effect": "^3.22.1"
   },
   "devDependencies": {
     "bun-types": "latest"
