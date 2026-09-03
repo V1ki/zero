@@ -8,6 +8,7 @@
   "dependencies": {
     "@zero-os/shared": "workspace:*",
     "@zero-os/observe": "workspace:*",
+    "effect": "^3.22.1",
     "simple-git": "^3.27.0"
   },
   "devDependencies": {

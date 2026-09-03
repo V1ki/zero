@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { Cause, Effect, Exit, Fiber } from 'effect'
 
 const HEARTBEAT_INTERVAL = 3_000 // 3 seconds
 const STALE_THRESHOLD = 30_000 // 10 missed 3-second heartbeats
@@ -67,7 +68,7 @@ export class HeartbeatWriter {
   private tempFilePath: string
   private bootId: string
   private sequence = 0
-  private timer: ReturnType<typeof setInterval> | null = null
+  private heartbeatFiber: Fiber.RuntimeFiber<void> | null = null
   private healthMetrics: HealthMetrics = { errorCount: 0, channels: [] }
   private metricsProvider: (() => Partial<HealthMetrics>) | null = null
   private onWrite: ((data: HeartbeatData) => void) | null = null
@@ -129,8 +130,16 @@ export class HeartbeatWriter {
    * Start writing heartbeats at the configured interval.
    */
   start(): void {
-    if (this.timer) return
-    this.timer = setInterval(() => this.write(), HEARTBEAT_INTERVAL)
+    if (this.heartbeatFiber) return
+    this.heartbeatFiber = Effect.runFork(this.heartbeatLoop())
+    this.heartbeatFiber.addObserver((exit) => {
+      // Fail fast exactly like the previous setInterval callback: a failed
+      // heartbeat write is a defect the process must surface. Interruption is
+      // the normal stop() path and stays silent.
+      if (Exit.isFailure(exit) && !Cause.isInterrupted(exit.cause)) {
+        throw Cause.squash(exit.cause)
+      }
+    })
     try {
       this.write()
     } catch (error) {
@@ -143,9 +152,12 @@ export class HeartbeatWriter {
    * Stop writing heartbeats.
    */
   stop(): void {
-    if (this.timer) {
-      clearInterval(this.timer)
-      this.timer = null
+    if (this.heartbeatFiber) {
+      const fiber = this.heartbeatFiber
+      this.heartbeatFiber = null
+      // Interruption cancels only the pending interval sleep; it does not
+      // reject in practice.
+      void Effect.runPromise(Fiber.interrupt(fiber)).catch(() => {})
     }
   }
 
@@ -206,6 +218,16 @@ export class HeartbeatWriter {
     this.sequence = sequence
     this.lastHeartbeat = data
     this.onWrite?.(data)
+  }
+
+  private heartbeatLoop(): Effect.Effect<void> {
+    const writeOnce = () => this.write()
+    return Effect.gen(function* () {
+      while (true) {
+        yield* Effect.sleep(HEARTBEAT_INTERVAL)
+        yield* Effect.sync(writeOnce)
+      }
+    })
   }
 }
 
