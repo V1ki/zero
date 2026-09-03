@@ -15,7 +15,8 @@
     "linkedom": "^0.18.9",
     "proper-lockfile": "^4.1.2",
     "simple-git": "^3.27.0",
-    "gray-matter": "^4.0.3"
+    "gray-matter": "^4.0.3",
+    "effect": "^3.22.1"
   },
   "devDependencies": {
     "bun-types": "latest",
