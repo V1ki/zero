@@ -27,7 +27,7 @@
 | packages/supervisor | 526 | 低 | ✅ 本次 | HeartbeatWriter 间隔 fiber 化 + fail-fast 保留；waitForReady 的 AbortSignal 轮询与 RepairEngine/GitOps 业务逻辑 N/A |
 | packages/observe | 4341 | **零** | N/A-by-design | 纯同步 sqlite 持久层；除非引入异步 I/O 否则不迁移 |
 | packages/memory | 3069 | 高 | ✅ 本次 | usage 防抖落盘 fiber 化（stop() 接入 shutdown）；embedding 错误 `Data.TaggedError` 类型化；`withIdLock` promise 链互斥保持不变（反向判据：调用方是 Promise、无中断传播，换 semaphore 只有仪式还会引入锁表泄漏） |
-| packages/model | 6957 | 高 | ⬜ | OAuth token 刷新定时器 fiber 化；provider 适配器失败类型化 |
+| packages/model | 6957 | 高 | ✅ 本次 | pricing 24h 刷新与 catalog 60s 自动刷新 tick fiber 化（dispose 链已有：disposePricing / router.dispose→catalog.dispose）；OAuth 为按需刷新无定时器；adapter 的 idle-timeout/backoff/结构性错误契约（retryable/error_type 字段）按反向判据保持 |
 | packages/channel | 7725 | 高 | ⬜ | qr-login 轮询状态机、channel 重连循环 fiber 化 |
 | packages/core | 19450 | 最高 | ⬜ 压轴 | 工具执行 fiber 化 runner（见 effect-pilot.md 重启条件）+ 会话循环 |
 | apps/server 其余组合根 | 11292 | 高 | ⬜ | root Scope/Runtime 装配，归属各模块 fiber |
@@ -38,3 +38,4 @@
 
 - 2026-09-03：计划建立；supervisor 完成（HeartbeatWriter interval→fiber，`Cause.isInterrupted` 区分 stop 与故障，fiber 失败经 observer 抛出保持 fail-fast——探针验证过两种路径）。
 - 2026-09-03：memory 完成。`MemoryUsageTracker` 防抖落盘定时器→fiber（单发 sleep + observer 内 fire-and-forget flush，与旧 setTimeout 回调"先清 timer 再 void flush"逐字等价）；新增 `stop()` 并接入 startup shutdown（旧 timer unref 不阻止退出，fiber 的 sleep 持有普通定时器引用，优雅退出必须经 shutdown 中断）。`EmbeddingClient` 三类失败改 `Data.TaggedError`（消息逐字保持，现有 rejects 断言零改动）。附带修复 usage-stats 测试两处时序脆弱断言（`score === 1` 依赖 record→snapshot 间 0ms，首次 runFork ~0.8ms 即可击穿——探针证实）。`withIdLock` 保持 promise 链。验证：memory 141/141（x3 稳定）、apps/server 217/217、core 套件与基线一致（3 个既有失败，stash 对照确认）。
+- 2026-09-03：model 完成。`LiteLLMPricing.startRefresh`（24h）与 `ModelCatalogCoordinator.startAutoRefresh`（60s ttl tick）interval→fiber；catalog 循环带 fail-fast observer（等价旧回调的 unhandledRejection 语义，`Cause.isInterrupted` 区分 dispose），pricing 循环无 observer（fetchAndCache 内部吞错与旧 `.catch(() => {})` 一致）。OAuth（chatgpt/claude/x-premium）为按需刷新，无定时器。openai-resp 的请求级 idle-timeout/backoff 与 adapter 结构性错误契约（`retryable`/`error_type` 字段族）保持——归入 fiber 化工具运行时的重启条件。验证：model 套件 243 pass/15 skip/5 fail，5 个失败全为 Real API 环境依赖且 stash 基线一致；pricing+catalog 定向 28/28；`bun run check` 干净。

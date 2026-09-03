@@ -9,6 +9,7 @@
     "@zero-os/shared": "workspace:*",
     "@zero-os/secrets": "workspace:*",
     "@zero-os/observe": "workspace:*",
+    "effect": "^3.22.1",
     "openai": "^4.82.0",
     "@anthropic-ai/sdk": "^0.81.0"
   },

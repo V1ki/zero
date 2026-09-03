@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { ModelConfig, ProviderConfig, SystemConfig } from '@zero-os/shared'
+import { Cause, Effect, Exit, Fiber } from 'effect'
 import { matchesModelFilters } from './filter'
 import type { ModelCatalogStore } from './store'
 import type {
@@ -60,7 +61,7 @@ export class ModelCatalogCoordinator {
   private listeners = new Set<CatalogListener>()
   private providerRefreshes = new Map<string, Promise<ProviderRefreshResult>>()
   private updateChain: Promise<void> = Promise.resolve()
-  private refreshTimer: ReturnType<typeof setInterval> | undefined
+  private refreshFiber: Fiber.RuntimeFiber<void> | undefined
   private configRevision = 0
 
   constructor(options: ModelCatalogCoordinatorOptions) {
@@ -171,19 +172,36 @@ export class ModelCatalogCoordinator {
   }
 
   startAutoRefresh(): void {
-    if (this.refreshTimer) return
-    this.refreshTimer = setInterval(() => {
-      void this.refresh({ reason: 'ttl' })
-    }, AUTO_REFRESH_TICK_MS)
-    if (typeof this.refreshTimer === 'object' && 'unref' in this.refreshTimer) {
-      this.refreshTimer.unref()
-    }
+    if (this.refreshFiber) return
+    this.refreshFiber = Effect.runFork(this.autoRefreshLoop())
+    this.refreshFiber.addObserver((exit) => {
+      // Fail fast exactly like the previous setInterval callback: refresh()
+      // swallows per-provider failures internally, so a rejection here is a
+      // defect. dispose() interruption is the normal shutdown path and stays
+      // silent.
+      if (Exit.isFailure(exit) && !Cause.isInterrupted(exit.cause)) {
+        throw Cause.squash(exit.cause)
+      }
+    })
   }
 
   dispose(): void {
-    if (this.refreshTimer) clearInterval(this.refreshTimer)
-    this.refreshTimer = undefined
+    if (this.refreshFiber) {
+      const fiber = this.refreshFiber
+      this.refreshFiber = undefined
+      void Effect.runPromise(Fiber.interrupt(fiber)).catch(() => {})
+    }
     this.listeners.clear()
+  }
+
+  private autoRefreshLoop(): Effect.Effect<void> {
+    const refreshTtl = () => this.refresh({ reason: 'ttl' })
+    return Effect.gen(function* () {
+      while (true) {
+        yield* Effect.sleep(AUTO_REFRESH_TICK_MS)
+        yield* Effect.promise(refreshTtl)
+      }
+    })
   }
 
   private refreshProvider(

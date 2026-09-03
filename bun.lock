@@ -147,6 +147,7 @@
         "@zero-os/observe": "workspace:*",
         "@zero-os/secrets": "workspace:*",
         "@zero-os/shared": "workspace:*",
+        "effect": "^3.22.1",
         "openai": "^4.82.0",
       },
       "devDependencies": {

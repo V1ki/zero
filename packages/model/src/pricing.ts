@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ModelPricing } from '@zero-os/shared'
+import { Effect, Fiber } from 'effect'
 
 export interface LiteLLMEntry {
   input_cost_per_token?: number
@@ -36,7 +37,7 @@ export class LiteLLMPricing {
 
   private cacheDir: string
   private data: Record<string, LiteLLMEntry> | null = null
-  private refreshTimer: ReturnType<typeof setInterval> | null = null
+  private refreshFiber: Fiber.RuntimeFiber<void> | null = null
 
   private constructor(cacheDir: string) {
     this.cacheDir = cacheDir
@@ -87,33 +88,36 @@ export class LiteLLMPricing {
     return convertPricing(entry)
   }
 
-  /** Start a 24h background refresh timer. */
+  /** Start a 24h background refresh fiber. */
   startRefresh(): void {
-    if (this.refreshTimer) return
-    this.refreshTimer = setInterval(() => {
-      this.fetchAndCache().catch(() => {})
-    }, REFRESH_INTERVAL_MS)
-
-    // Don't block process exit
-    if (
-      this.refreshTimer &&
-      typeof this.refreshTimer === 'object' &&
-      'unref' in this.refreshTimer
-    ) {
-      this.refreshTimer.unref()
-    }
+    if (this.refreshFiber) return
+    this.refreshFiber = Effect.runFork(this.refreshLoop())
   }
 
-  /** Stop refresh timer and clear singleton. */
+  /** Stop refresh fiber and clear singleton. */
   dispose(): void {
-    if (this.refreshTimer) {
-      clearInterval(this.refreshTimer)
-      this.refreshTimer = null
+    if (this.refreshFiber) {
+      const fiber = this.refreshFiber
+      this.refreshFiber = null
+      void Effect.runPromise(Fiber.interrupt(fiber)).catch(() => {})
     }
     LiteLLMPricing.instance = null
   }
 
   // ---- internal ----
+
+  private refreshLoop(): Effect.Effect<void> {
+    // fetchAndCache 内部吞掉一切失败（保留旧 setInterval 回调的 .catch(() => {}) 语义），
+    // 因此循环体不会失败，无需 fail-fast observer。fiber 的 sleep 持有普通定时器引用，
+    // 优雅退出由 startup 的 disposePricing 中断兜底。
+    const refresh = () => this.fetchAndCache().catch(() => {})
+    return Effect.gen(function* () {
+      while (true) {
+        yield* Effect.sleep(REFRESH_INTERVAL_MS)
+        yield* Effect.promise(refresh)
+      }
+    })
+  }
 
   private cachePath(): string {
     return join(this.cacheDir, CACHE_FILE)
