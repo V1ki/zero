@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { ToolContext } from '@zero-os/shared'
+import { SessionRunningToolRegistry } from '../../session/running-tool-registry'
 import { BashTool } from '../bash'
 
 const makeCtx = () =>
@@ -40,4 +41,52 @@ describe('BashTool output capture', () => {
     expect(result.output).toContain('[stderr]')
     expect(result.output).toContain('oops')
   })
+
+  test('command timeout kills the process and reports the failure result', async () => {
+    const registry = new SessionRunningToolRegistry()
+    const handle = registry.register({
+      toolUseId: 'toolu_timeout_1',
+      toolName: 'bash',
+      abortable: true,
+    })
+    const ctx = {
+      ...makeCtx(),
+      currentToolUseId: 'toolu_timeout_1',
+      runningToolRegistry: registry,
+    } as unknown as ToolContext
+
+    const result = await tool.run(ctx, { command: 'sleep 2', timeout: 150 })
+    // The ToolResult reports the killed exit code; the timeout cause and its
+    // summary are recorded on the running-tool handle.
+    expect(result.success).toBe(false)
+    expect(result.outputSummary).toContain('Command failed')
+    expect(result.output).not.toContain('[abort]')
+    expect(handle.getTerminalMetadata()?.cause).toBe('timeout')
+    expect(handle.getTerminalMetadata()?.outputSummary).toContain('Command timed out')
+  }, 5000)
+
+  test('abort request kills the command and returns the abort result', async () => {
+    const registry = new SessionRunningToolRegistry()
+    const handle = registry.register({
+      toolUseId: 'toolu_abort_1',
+      toolName: 'bash',
+      abortable: true,
+    })
+    const ctx = {
+      ...makeCtx(),
+      currentToolUseId: 'toolu_abort_1',
+      runningToolRegistry: registry,
+    } as unknown as ToolContext
+
+    const pending = tool.run(ctx, { command: 'sleep 2' })
+    await Bun.sleep(150)
+    expect(handle.requestAbort('stopped from Session Detail')).toBe('accepted')
+    const result = await pending
+
+    expect(result.success).toBe(false)
+    expect(result.outputSummary).toContain('Command aborted')
+    expect(result.output).toContain('[abort]')
+    expect(result.output).toContain('stopped from Session Detail')
+    expect(handle.getTerminalMetadata()?.cause).toBe('abort')
+  }, 5000)
 })

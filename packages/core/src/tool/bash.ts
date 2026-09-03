@@ -1,10 +1,12 @@
 import type {
   FuseRule,
+  RunningToolHandle,
   RunningToolTerminationCause,
   ToolContext,
   ToolResult,
 } from '@zero-os/shared'
 import { now } from '@zero-os/shared'
+import { Effect, Fiber } from 'effect'
 import { FuseListChecker } from '../config/fuse-list'
 import { BaseTool } from './base'
 import { buildToolProcessEnv } from './process-env'
@@ -370,60 +372,45 @@ export class BashTool extends BaseTool {
       }
     }
 
-    const toolUseId = ctx.currentToolUseId
     const runningHandle =
-      toolUseId && ctx.runningToolRegistry ? ctx.runningToolRegistry.get(toolUseId) : undefined
+      ctx.currentToolUseId && ctx.runningToolRegistry
+        ? ctx.runningToolRegistry.get(ctx.currentToolUseId)
+        : undefined
 
-    let proc: ReturnType<typeof Bun.spawn>
-    try {
-      proc = Bun.spawn(['bash', '-c', command], {
-        cwd: ctx.workDir,
-        stdin: resolvedSecrets.stdin === undefined ? 'ignore' : 'pipe',
-        stdout: 'pipe',
-        stderr: 'pipe',
-        env: { ...buildToolProcessEnv(ctx), ...resolvedSecrets.env },
-      })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      runningHandle?.markFinished({
-        finishedAt: now(),
-        cause: 'spawn_error',
-        success: false,
-        outputSummary: `Spawn failed: ${message.slice(0, 80)}`,
-      })
-      return {
-        success: false,
-        output: message,
-        outputSummary: `Spawn failed: ${message.slice(0, 80)}`,
-      }
-    }
+    return await Effect.runPromise(
+      this.runCommand({
+        ctx,
+        command,
+        timeout,
+        env: resolvedSecrets.env,
+        stdin: resolvedSecrets.stdin,
+        summaryCommand,
+        runningHandle,
+      }),
+    )
+  }
 
-    const stdoutCapture = createStreamCapture(proc.stdout)
-    const stderrCapture = createStreamCapture(proc.stderr)
-    let stdinWriteError: string | undefined
-    const stdinWrite =
-      resolvedSecrets.stdin === undefined
-        ? undefined
-        : writeProcessStdin(proc, resolvedSecrets.stdin).catch((error) => {
-            stdinWriteError = error instanceof Error ? error.message : String(error)
-            tryKillProcess(proc, 'SIGTERM')
-          })
+  /**
+   * Native Effect execution path. The subprocess is owned by acquireRelease
+   * (any exit path leaves no live process behind), and the timeout / abort
+   * kill sequences run as racing fibers: the losing fiber's pending sleeps
+   * are cleared by interruption, which is what the old manual clearTimeout
+   * bookkeeping did.
+   */
+  private runCommand(options: {
+    ctx: ToolContext
+    command: string
+    timeout: number
+    env: Record<string, string>
+    stdin?: string
+    summaryCommand: string
+    runningHandle?: RunningToolHandle
+  }): Effect.Effect<ToolResult> {
+    const { ctx, command, timeout, env, stdin, summaryCommand, runningHandle } = options
+
     let terminationCause: RunningToolTerminationCause | undefined
     let abortMessage: string | undefined
-    let forceKillTimer: ReturnType<typeof setTimeout> | undefined
-
-    const markFinished = (
-      cause: RunningToolTerminationCause,
-      success: boolean,
-      outputSummary?: string,
-    ) => {
-      runningHandle?.markFinished({
-        finishedAt: now(),
-        cause,
-        success,
-        outputSummary,
-      })
-    }
+    let abortKillFiber: Fiber.RuntimeFiber<void> | undefined
 
     const latchTerminationCause = (cause: RunningToolTerminationCause) => {
       if (terminationCause) return false
@@ -431,81 +418,150 @@ export class BashTool extends BaseTool {
       return true
     }
 
-    const scheduleForceKill = () => {
-      forceKillTimer = setTimeout(() => {
-        tryKillProcess(proc, 'SIGKILL')
-      }, FORCE_KILL_GRACE_MS)
+    const markFinished = (
+      cause: RunningToolTerminationCause,
+      success: boolean,
+      outputSummary?: string,
+    ) => {
+      runningHandle?.markFinished({ finishedAt: now(), cause, success, outputSummary })
     }
 
-    runningHandle?.setAbortHandler((reason) => {
-      abortMessage = reason?.trim() || DEFAULT_ABORT_MESSAGE
-      if (!latchTerminationCause('abort')) return
-      tryKillProcess(proc, 'SIGTERM')
-      scheduleForceKill()
-    })
+    return Effect.gen(function* () {
+      const proc = yield* Effect.acquireRelease(
+        Effect.try({
+          try: () =>
+            Bun.spawn(['bash', '-c', command], {
+              cwd: ctx.workDir,
+              stdin: stdin === undefined ? 'ignore' : 'pipe',
+              stdout: 'pipe',
+              stderr: 'pipe',
+              env: { ...buildToolProcessEnv(ctx), ...env },
+            }),
+          catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+        }),
+        // Last-resort cleanup on any exit path; tryKillProcess no-ops once the
+        // process has exited, so normal completion is unaffected.
+        (proc) => Effect.sync(() => tryKillProcess(proc, 'SIGKILL')),
+      )
 
-    const timeoutId = setTimeout(() => {
-      if (!latchTerminationCause('timeout')) return
-      markFinished('timeout', false, `Command timed out: ${summaryCommand}`)
-      tryKillProcess(proc, 'SIGTERM')
-      scheduleForceKill()
-    }, timeout)
+      const stdoutCapture = createStreamCapture(proc.stdout)
+      const stderrCapture = createStreamCapture(proc.stderr)
+      let stdinWriteError: string | undefined
+      const stdinWrite =
+        stdin === undefined
+          ? undefined
+          : writeProcessStdin(proc, stdin).catch((error) => {
+              stdinWriteError = error instanceof Error ? error.message : String(error)
+              tryKillProcess(proc, 'SIGTERM')
+            })
 
-    const exitCode = await proc.exited
-    if (stdinWrite) await stdinWrite
-    clearTimeout(timeoutId)
-    if (forceKillTimer) clearTimeout(forceKillTimer)
+      runningHandle?.setAbortHandler((reason) => {
+        abortMessage = reason?.trim() || DEFAULT_ABORT_MESSAGE
+        if (!latchTerminationCause('abort')) return
+        abortKillFiber = Effect.runFork(
+          Effect.gen(function* () {
+            tryKillProcess(proc, 'SIGTERM')
+            yield* Effect.sleep(FORCE_KILL_GRACE_MS)
+            tryKillProcess(proc, 'SIGKILL')
+          }),
+        )
+      })
 
-    const finalCause = terminationCause ?? 'completed'
-    if (finalCause === 'abort') {
-      markFinished('abort', false, `Command aborted: ${summaryCommand}`)
-    } else if (finalCause === 'completed') {
-      markFinished('completed', exitCode === 0, undefined)
-    }
+      const exitCode = yield* Effect.raceFirst(
+        Effect.promise(() => proc.exited),
+        Effect.gen(function* () {
+          yield* Effect.sleep(timeout)
+          if (!latchTerminationCause('timeout')) return yield* Effect.never
+          markFinished('timeout', false, `Command timed out: ${summaryCommand}`)
+          tryKillProcess(proc, 'SIGTERM')
+          yield* Effect.sleep(FORCE_KILL_GRACE_MS)
+          tryKillProcess(proc, 'SIGKILL')
+          // The SIGKILL makes proc.exited resolve; that side wins the race.
+          return yield* Effect.never
+        }),
+      )
+      if (abortKillFiber) yield* Fiber.interrupt(abortKillFiber)
 
-    const streamDrain = Promise.allSettled([stdoutCapture.done, stderrCapture.done])
-    const drainResult = await Promise.race([
-      streamDrain.then(() => 'drained' as const),
-      Bun.sleep(PIPE_GRACE_MS).then(() => 'timeout' as const),
-    ])
-    if (drainResult === 'timeout') {
-      await Promise.allSettled([stdoutCapture.cancel(), stderrCapture.cancel()])
-    }
+      if (stdinWrite) yield* Effect.promise(() => stdinWrite)
 
-    const output = buildBashOutput(
-      stdoutCapture.getText(),
-      stderrCapture.getText(),
-      finalCause === 'abort' ? (abortMessage ?? DEFAULT_ABORT_MESSAGE) : undefined,
-    )
+      const finalCause = terminationCause ?? 'completed'
+      if (finalCause === 'abort') {
+        markFinished('abort', false, `Command aborted: ${summaryCommand}`)
+      } else if (finalCause === 'completed') {
+        markFinished('completed', exitCode === 0, undefined)
+      }
 
-    if (finalCause === 'abort') {
+      const streamDrain = Promise.allSettled([stdoutCapture.done, stderrCapture.done])
+      const drainResult = yield* Effect.raceFirst(
+        Effect.promise(async () => {
+          await streamDrain
+          return 'drained' as const
+        }),
+        Effect.sleep(PIPE_GRACE_MS).pipe(Effect.as('timeout' as const)),
+      )
+      if (drainResult === 'timeout') {
+        yield* Effect.promise(() =>
+          Promise.allSettled([stdoutCapture.cancel(), stderrCapture.cancel()]),
+        )
+      }
+
+      const output = buildBashOutput(
+        stdoutCapture.getText(),
+        stderrCapture.getText(),
+        finalCause === 'abort' ? (abortMessage ?? DEFAULT_ABORT_MESSAGE) : undefined,
+      )
+
+      if (finalCause === 'abort') {
+        return {
+          success: false,
+          output,
+          outputSummary: `Command aborted: ${summaryCommand}`,
+        }
+      }
+
+      if (stdinWriteError) {
+        return {
+          success: false,
+          output: `Failed to write stdin secret: ${stdinWriteError}\n\n${output}`,
+          outputSummary: 'Failed to write stdin secret',
+        }
+      }
+
+      if (exitCode !== 0 || finalCause === 'timeout') {
+        return {
+          success: false,
+          output: output || formatExitCode(exitCode),
+          outputSummary: `Command failed (exit ${exitCode}): ${summaryCommand}`,
+        }
+      }
+
       return {
-        success: false,
+        success: true,
         output,
-        outputSummary: `Command aborted: ${summaryCommand}`,
+        outputSummary: `Executed: ${summaryCommand}`,
       }
-    }
-
-    if (stdinWriteError) {
-      return {
-        success: false,
-        output: `Failed to write stdin secret: ${stdinWriteError}\n\n${output}`,
-        outputSummary: 'Failed to write stdin secret',
-      }
-    }
-
-    if (exitCode !== 0 || finalCause === 'timeout') {
-      return {
-        success: false,
-        output: output || formatExitCode(exitCode),
-        outputSummary: `Command failed (exit ${exitCode}): ${summaryCommand}`,
-      }
-    }
-
-    return {
-      success: true,
-      output,
-      outputSummary: `Executed: ${summaryCommand}`,
-    }
+    }).pipe(
+      // Only the spawn can fail with a typed error; everything downstream is
+      // success-shaped (parity with the old spawn try/catch).
+      Effect.catchAll((error) =>
+        Effect.sync(() => {
+          const message = error.message
+          runningHandle?.markFinished({
+            finishedAt: now(),
+            cause: 'spawn_error',
+            success: false,
+            outputSummary: `Spawn failed: ${message.slice(0, 80)}`,
+          })
+          return {
+            success: false,
+            output: message,
+            outputSummary: `Spawn failed: ${message.slice(0, 80)}`,
+          }
+        }),
+      ),
+      // Provides the Scope acquireRelease runs its release in; closes (kills
+      // any leftover process) on completion of the workflow.
+      Effect.scoped,
+    )
   }
 }

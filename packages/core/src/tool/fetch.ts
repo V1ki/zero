@@ -1,6 +1,7 @@
 import { Readability } from '@mozilla/readability'
 import type { ToolContext, ToolResult } from '@zero-os/shared'
 import { toErrorMessage } from '@zero-os/shared'
+import { Effect, Option } from 'effect'
 import { parseHTML } from 'linkedom'
 import TurndownService from 'turndown'
 import { BaseTool } from './base'
@@ -103,82 +104,99 @@ export class FetchTool extends BaseTool {
       reqHeaders['User-Agent'] = 'ZeRo-OS/1.0'
     }
 
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), timeout)
-
-    try {
-      const response = await fetch(url, {
-        method: method.toUpperCase(),
-        headers: reqHeaders,
-        body:
-          body && method.toUpperCase() !== 'GET' && method.toUpperCase() !== 'HEAD'
-            ? body
-            : undefined,
-        signal: controller.signal,
-        redirect: 'follow',
-      })
-
-      clearTimeout(timer)
-
-      const status = response.status
-      const contentType = response.headers.get('content-type') ?? ''
-
-      // Determine effective format
-      const effectiveFormat = resolveFormat(format, contentType)
-
-      let outputBody: string
-      let truncated = false
-
-      if (effectiveFormat === 'json') {
-        const text = await response.text()
-        try {
-          const parsed = JSON.parse(text)
-          outputBody = JSON.stringify(parsed, null, 2)
-        } catch {
-          outputBody = text
+    const upperMethod = method.toUpperCase()
+    return await Effect.runPromise(
+      Effect.gen(function* () {
+        // tryPromise wires fiber interruption into the AbortSignal, so the
+        // timeout below cancels the in-flight request for real instead of
+        // merely abandoning the promise (the old timer + controller.abort).
+        const response = yield* Effect.timeoutOption(
+          Effect.tryPromise({
+            try: (signal) =>
+              fetch(url, {
+                method: upperMethod,
+                headers: reqHeaders,
+                body: body && upperMethod !== 'GET' && upperMethod !== 'HEAD' ? body : undefined,
+                signal,
+                redirect: 'follow',
+              }),
+            catch: (error) => new Error(toErrorMessage(error)),
+          }),
+          timeout,
+        )
+        if (Option.isNone(response)) {
+          return {
+            success: false,
+            output: `Request timed out after ${timeout}ms: ${url}`,
+            outputSummary: 'Timeout',
+          }
         }
-      } else if (effectiveFormat === 'html') {
-        const html = await response.text()
-        try {
-          outputBody = htmlToMarkdown(html, url)
-        } catch {
-          outputBody = html
-        }
-      } else {
-        outputBody = await response.text()
-      }
+        return yield* Effect.promise(() => shapeResponse(response.value, format))
+      }).pipe(
+        Effect.catchAll((error) =>
+          Effect.succeed({
+            success: false,
+            output: `Fetch failed: ${error.message}`,
+            outputSummary: `Fetch error: ${error.message.slice(0, 80)}`,
+          }),
+        ),
+      ),
+    )
+  }
+}
 
-      // Truncate if too long
-      if (outputBody.length > MAX_BODY_LENGTH) {
-        truncated = true
-        outputBody = `${outputBody.slice(0, MAX_BODY_LENGTH)}\n\n[Content truncated at 100,000 characters]`
-      }
+async function shapeResponse(response: Response, format: FetchFormat): Promise<ToolResult> {
+  try {
+    const status = response.status
+    const contentType = response.headers.get('content-type') ?? ''
 
-      const statusPrefix = `HTTP ${status}`
-      const summary = truncated
-        ? `${statusPrefix} — ${outputBody.length} chars (truncated)`
-        : `${statusPrefix} — ${outputBody.length} chars`
+    // Determine effective format
+    const effectiveFormat = resolveFormat(format, contentType)
 
-      return {
-        success: status >= 200 && status < 400,
-        output: `${statusPrefix}\n\n${outputBody}`,
-        outputSummary: summary,
+    let outputBody: string
+    let truncated = false
+
+    if (effectiveFormat === 'json') {
+      const text = await response.text()
+      try {
+        const parsed = JSON.parse(text)
+        outputBody = JSON.stringify(parsed, null, 2)
+      } catch {
+        outputBody = text
       }
-    } catch (error) {
-      clearTimeout(timer)
-      const msg = toErrorMessage(error)
-      if (msg.includes('abort')) {
-        return {
-          success: false,
-          output: `Request timed out after ${timeout}ms: ${url}`,
-          outputSummary: 'Timeout',
-        }
+    } else if (effectiveFormat === 'html') {
+      const html = await response.text()
+      try {
+        outputBody = htmlToMarkdown(html, response.url)
+      } catch {
+        outputBody = html
       }
-      return {
-        success: false,
-        output: `Fetch failed: ${msg}`,
-        outputSummary: `Fetch error: ${msg.slice(0, 80)}`,
-      }
+    } else {
+      outputBody = await response.text()
+    }
+
+    // Truncate if too long
+    if (outputBody.length > MAX_BODY_LENGTH) {
+      truncated = true
+      outputBody = `${outputBody.slice(0, MAX_BODY_LENGTH)}\n\n[Content truncated at 100,000 characters]`
+    }
+
+    const statusPrefix = `HTTP ${status}`
+    const summary = truncated
+      ? `${statusPrefix} — ${outputBody.length} chars (truncated)`
+      : `${statusPrefix} — ${outputBody.length} chars`
+
+    return {
+      success: status >= 200 && status < 400,
+      output: `${statusPrefix}\n\n${outputBody}`,
+      outputSummary: summary,
+    }
+  } catch (error) {
+    const msg = toErrorMessage(error)
+    return {
+      success: false,
+      output: `Fetch failed: ${msg}`,
+      outputSummary: `Fetch error: ${msg.slice(0, 80)}`,
     }
   }
 }

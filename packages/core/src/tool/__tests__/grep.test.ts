@@ -80,9 +80,19 @@ describe('GrepTool', () => {
   })
 
   test('glob filter narrows the searched files', async () => {
-    const result = await tool.run(makeCtx(), { pattern: 'alpha', glob: '*.md' })
+    const result = await tool.run(makeCtx(), { pattern: 'alpha', glob: '*.ts' })
     expect(result.success).toBe(true)
-    expect(result.output).toContain('notes.md')
-    expect(result.output).not.toContain('alpha.ts')
+    expect(result.output).toContain('alpha.ts')
+    expect(result.output).not.toContain('notes.md')
   })
+
+  test('timeout kills rg and reports the partial-results timeout result', async () => {
+    // 1ms budget: rg cannot even finish starting, so the kill always lands
+    // mid-flight and the read ends with whatever (nothing) arrived.
+    const slowTool = new GrepTool(1)
+    const result = await slowTool.run(makeCtx(), { pattern: 'alpha' })
+    expect(result.success).toBe(false)
+    expect(result.outputSummary).toBe('Search timed out (0 partial results)')
+    expect(result.output).toContain('search timed out')
+  }, 10_000)
 })

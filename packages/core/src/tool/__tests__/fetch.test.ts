@@ -158,4 +158,40 @@ describe('FetchTool', () => {
     },
     FETCH_TIMEOUT,
   )
+
+  test('timeout returns the timeout result and truly cancels the request', async () => {
+    const originalFetch = globalThis.fetch
+    let observedSignal: AbortSignal | undefined
+    globalThis.fetch = ((_url: string | URL | Request, init?: RequestInit) => {
+      observedSignal = init?.signal ?? undefined
+      return new Promise<Response>(() => {})
+    }) as typeof fetch
+    try {
+      const result = await tool.run(ctx, { url: 'https://example.com/never', timeout: 60 })
+      expect(result.success).toBe(false)
+      expect(result.output).toBe('Request timed out after 60ms: https://example.com/never')
+      expect(result.outputSummary).toBe('Timeout')
+      // tryPromise wires fiber interruption into the AbortSignal: the timeout
+      // must abort the in-flight request, not merely stop awaiting it.
+      await Bun.sleep(30)
+      expect(observedSignal?.aborted).toBe(true)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }, 5000)
+
+  test('network errors map to the Fetch failed result', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      throw new TypeError('fetch failed')
+    }) as unknown as typeof fetch
+    try {
+      const result = await tool.run(ctx, { url: 'https://example.com' })
+      expect(result.success).toBe(false)
+      expect(result.output).toBe('Fetch failed: fetch failed')
+      expect(result.outputSummary).toBe('Fetch error: fetch failed')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
 })

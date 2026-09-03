@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import type { ToolContext, ToolResult } from '@zero-os/shared'
+import { Effect, Fiber } from 'effect'
 import { BaseTool } from './base'
 
 const DEFAULT_MAX_RESULTS = 50
@@ -55,6 +56,13 @@ export class GrepTool extends BaseTool {
       },
     },
     required: ['pattern'],
+  }
+
+  private readonly grepTimeoutMs: number
+
+  constructor(grepTimeoutMs: number = GREP_TIMEOUT_MS) {
+    super()
+    this.grepTimeoutMs = grepTimeoutMs
   }
 
   protected async execute(ctx: ToolContext, input: unknown): Promise<ToolResult> {
@@ -120,64 +128,107 @@ export class GrepTool extends BaseTool {
     }
     args.push(searchPath)
 
-    const proc = Bun.spawn([rgPath, ...args], {
-      cwd: ctx.workDir,
-      stdin: 'ignore',
-      stdout: 'pipe',
-      stderr: 'pipe',
-    })
+    return await Effect.runPromise(
+      this.searchEffect({ rgPath, args, ctx, maxResults, mode, timeoutMs: this.grepTimeoutMs }),
+    )
+  }
 
-    let timedOut = false
-    const timer = setTimeout(() => {
-      timedOut = true
-      try {
-        proc.kill('SIGTERM')
-      } catch {}
-    }, GREP_TIMEOUT_MS)
+  /**
+   * Native Effect execution path. rg is owned by acquireRelease (no exit path
+   * leaves it alive) and the timeout is a delayed-kill fiber, not a race: rg
+   * is SIGTERMed on timeout and the reads below finish with whatever arrived
+   * before the kill, which is what preserves partial-results semantics.
+   */
+  private searchEffect(options: {
+    rgPath: string
+    args: string[]
+    ctx: ToolContext
+    maxResults: number
+    mode: GrepMode
+    timeoutMs: number
+  }): Effect.Effect<ToolResult> {
+    const { rgPath, args, ctx, maxResults, mode, timeoutMs } = options
 
-    const stderrPromise = drainStreamCapped(proc.stderr, STDERR_CAPTURE_CHARS)
-    const { lines, cappedByLimit } = await readLinesWithCap(proc.stdout, maxResults)
-    if (cappedByLimit) {
-      try {
-        proc.kill('SIGTERM')
-      } catch {}
-    }
-    const exitCode = await proc.exited
-    clearTimeout(timer)
-    const stderrText = (await stderrPromise).trim()
+    return Effect.gen(function* () {
+      const proc = yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          Bun.spawn([rgPath, ...args], {
+            cwd: ctx.workDir,
+            stdin: 'ignore',
+            stdout: 'pipe',
+            stderr: 'pipe',
+          }),
+        ),
+        // Last-resort cleanup; no-op once rg has exited on its own.
+        (proc) =>
+          Effect.sync(() => {
+            try {
+              proc.kill('SIGKILL')
+            } catch {}
+          }),
+      )
 
-    if (timedOut) {
-      const partial = lines.length > 0 ? `${lines.join('\n')}\n\n` : ''
-      return {
-        success: false,
-        output: `${partial}[search timed out after ${GREP_TIMEOUT_MS / 1000}s; results may be incomplete — narrow the path, glob or pattern]`,
-        outputSummary: `Search timed out (${lines.length} partial results)`,
+      let timedOut = false
+      const timeoutFiber = yield* Effect.fork(
+        Effect.gen(function* () {
+          yield* Effect.sleep(timeoutMs)
+          timedOut = true
+          try {
+            proc.kill('SIGTERM')
+          } catch {}
+        }),
+      )
+
+      const stderrPromise = drainStreamCapped(proc.stderr, STDERR_CAPTURE_CHARS)
+      const { lines, cappedByLimit } = yield* Effect.promise(() =>
+        readLinesWithCap(proc.stdout, maxResults),
+      )
+      if (cappedByLimit) {
+        try {
+          proc.kill('SIGTERM')
+        } catch {}
       }
-    }
+      const exitCode = yield* Effect.promise(() => proc.exited)
+      yield* Fiber.interrupt(timeoutFiber)
+      const stderrText = (yield* Effect.promise(() => stderrPromise)).trim()
 
-    // rg exit codes: 0 = matches found, 1 = no matches, 2+ = error.
-    if (exitCode >= 2 && !cappedByLimit) {
-      return {
-        success: false,
-        output: stderrText || `ripgrep failed with exit code ${exitCode}`,
-        outputSummary: `Search failed (exit ${exitCode})`,
+      if (timedOut) {
+        const partial = lines.length > 0 ? `${lines.join('\n')}\n\n` : ''
+        return {
+          success: false,
+          output: `${partial}[search timed out after ${timeoutMs / 1000}s; results may be incomplete — narrow the path, glob or pattern]`,
+          outputSummary: `Search timed out (${lines.length} partial results)`,
+        }
       }
-    }
 
-    if (lines.length === 0) {
-      return { success: true, output: 'No matches found.', outputSummary: 'No matches' }
-    }
+      // rg exit codes: 0 = matches found, 1 = no matches, 2+ = error.
+      if (exitCode >= 2 && !cappedByLimit) {
+        return {
+          success: false,
+          output: stderrText || `ripgrep failed with exit code ${exitCode}`,
+          outputSummary: `Search failed (exit ${exitCode})`,
+        }
+      }
 
-    let output = lines.join('\n')
-    if (cappedByLimit) {
-      output += `\n\n[... results capped at ${maxResults} lines; refine the pattern/glob/path or raise maxResults ...]`
-    }
+      if (lines.length === 0) {
+        return { success: true, output: 'No matches found.', outputSummary: 'No matches' }
+      }
 
-    return {
-      success: true,
-      output,
-      outputSummary: buildGrepSummary(mode, lines, cappedByLimit),
-    }
+      let output = lines.join('\n')
+      if (cappedByLimit) {
+        output += `\n\n[... results capped at ${maxResults} lines; refine the pattern/glob/path or raise maxResults ...]`
+      }
+
+      return {
+        success: true,
+        output,
+        outputSummary: buildGrepSummary(mode, lines, cappedByLimit),
+      }
+    }).pipe(
+      // Provides the Scope acquireRelease runs its release in; closes (kills
+      // any leftover rg) on completion of the workflow.
+      Effect.scoped,
+    )
   }
 }
 
