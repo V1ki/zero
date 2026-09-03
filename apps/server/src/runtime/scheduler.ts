@@ -3,6 +3,7 @@ import type { Session, SessionManager } from '@zero-os/core'
 import type { SessionDB } from '@zero-os/observe'
 import { CronScheduler } from '@zero-os/scheduler'
 import type {
+  ForkEffect,
   Notification,
   ScheduleConfig,
   SessionSource,
@@ -28,8 +29,11 @@ export interface StartSchedulerRuntimeOptions {
   addNotification(n: Omit<Notification, 'id' | 'createdAt'>): Notification
 }
 
-export function createSchedulerRuntime(sessionDb: SessionDB): SchedulerRuntime {
-  const scheduler = new CronScheduler()
+export function createSchedulerRuntime(
+  sessionDb: SessionDB,
+  forkEffect?: ForkEffect,
+): SchedulerRuntime {
+  const scheduler = new CronScheduler({ forkEffect })
   const schedulerHandle: SchedulerHandle = {
     addAndStart: (config) => scheduler.addAndStart(config),
     remove: (name) => scheduler.remove(name),

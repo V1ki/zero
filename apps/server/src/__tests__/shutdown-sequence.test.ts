@@ -59,6 +59,10 @@ describe('runShutdownSequence', () => {
         } as unknown as HeartbeatWriter,
         sessionDb: { close: () => calls.push('session-db:close') } as unknown as SessionDB,
         metrics: { close: () => calls.push('metrics:close') } as unknown as MetricsDB,
+        closeFiberRoot: () => {
+          calls.push('fiber-root:close')
+          return Promise.resolve()
+        },
       })
 
       expect(calls).toEqual([
@@ -75,6 +79,7 @@ describe('runShutdownSequence', () => {
         'sessions:flush',
         'session-db:close',
         'metrics:close',
+        'fiber-root:close',
       ])
       expect(activeStreamingSessions.size).toBe(0)
     } finally {

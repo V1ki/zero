@@ -9,7 +9,7 @@ import {
 } from '@zero-os/model'
 import type { MetricsDB } from '@zero-os/observe'
 import type { Vault } from '@zero-os/secrets'
-import type { SystemConfig } from '@zero-os/shared'
+import type { ForkEffect, SystemConfig } from '@zero-os/shared'
 import { createUsageRecorder } from '../observability'
 import { createOAuthRefreshers, createProviderRecoveryResolver } from './recovery'
 
@@ -25,11 +25,12 @@ export async function createModelRouterRuntime(options: {
   config: SystemConfig
   vault: Vault
   metrics: MetricsDB
+  forkEffect?: ForkEffect
 }): Promise<ModelRouterRuntime> {
-  const { zeroDir, config, vault, metrics } = options
+  const { zeroDir, config, vault, metrics, forkEffect } = options
   const litellmPricing = LiteLLMPricing.init(`${zeroDir}/cache`)
   await litellmPricing.ensureLoaded()
-  litellmPricing.startRefresh()
+  litellmPricing.startRefresh(forkEffect)
   console.log('[ZeRo OS] LiteLLM pricing fallback initialized')
 
   const usageRecorder = createUsageRecorder(metrics)
@@ -41,6 +42,7 @@ export async function createModelRouterRuntime(options: {
     secretGetter: (ref) => vault.get(ref) ?? undefined,
     store: new ModelCatalogStore(join(zeroDir, 'cache', 'model-catalog', 'catalog.json')),
     drivers: [new ChatGptCodexDiscoveryDriver()],
+    forkEffect,
   })
   await catalog.initialize()
   const modelRouter = new ModelRouter(config, new Map(vault.entries()), {

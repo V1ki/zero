@@ -1,4 +1,4 @@
-import type { ScheduleConfig } from '@zero-os/shared'
+import type { ForkEffect, ScheduleConfig } from '@zero-os/shared'
 import parser from 'cron-parser'
 import { Effect, Fiber } from 'effect'
 
@@ -7,6 +7,14 @@ export interface ScheduleEntry {
   nextRun: Date
   lastRun?: Date
   running: boolean
+}
+
+export interface CronSchedulerOptions {
+  /**
+   * Fork wait fibers into a host-owned lifetime (the composition root's
+   * fiber root). Defaults to a standalone Effect.runFork.
+   */
+  forkEffect?: ForkEffect
 }
 
 const MAX_TIMEOUT_MS = 2_147_483_647
@@ -21,6 +29,11 @@ export class CronScheduler {
   private onRemoved: ((name: string) => void) | null = null
   private queued: Map<string, ScheduleConfig[]> = new Map()
   private pendingReplace: Set<string> = new Set()
+  private readonly forkEffect: ForkEffect
+
+  constructor(options: CronSchedulerOptions = {}) {
+    this.forkEffect = options.forkEffect ?? ((effect) => Effect.runFork(effect))
+  }
 
   /**
    * Set the trigger handler called when a schedule fires.
@@ -138,7 +151,7 @@ export class CronScheduler {
       return
     }
 
-    this.fibers.set(name, Effect.runFork(this.waitAndFire(name, entry, delay)))
+    this.fibers.set(name, this.forkEffect(this.waitAndFire(name, entry, delay)))
   }
 
   /**

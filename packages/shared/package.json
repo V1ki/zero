@@ -8,7 +8,8 @@
   },
   "dependencies": {
     "yaml": "^2.7.0",
-    "proper-lockfile": "^4.1.2"
+    "proper-lockfile": "^4.1.2",
+    "effect": "^3.22.1"
   },
   "devDependencies": {
     "bun-types": "latest",

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { ModelPricing } from '@zero-os/shared'
+import type { ForkEffect, ModelPricing } from '@zero-os/shared'
 import { Effect, Fiber } from 'effect'
 
 export interface LiteLLMEntry {
@@ -89,9 +89,10 @@ export class LiteLLMPricing {
   }
 
   /** Start a 24h background refresh fiber. */
-  startRefresh(): void {
+  startRefresh(forkEffect?: ForkEffect): void {
     if (this.refreshFiber) return
-    this.refreshFiber = Effect.runFork(this.refreshLoop())
+    const fork = forkEffect ?? ((effect) => Effect.runFork(effect))
+    this.refreshFiber = fork(this.refreshLoop())
   }
 
   /** Stop refresh fiber and clear singleton. */

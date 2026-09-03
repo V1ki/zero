@@ -11,7 +11,7 @@ import {
 } from '@zero-os/memory'
 import type { MetricsDB } from '@zero-os/observe'
 import type { Vault } from '@zero-os/secrets'
-import type { SystemConfig } from '@zero-os/shared'
+import type { ForkEffect, SystemConfig } from '@zero-os/shared'
 import type { HeartbeatWriter } from '@zero-os/supervisor'
 import { createMemoryIndexRuntime } from './memory-index'
 
@@ -32,6 +32,7 @@ export interface MemoryRuntimeOptions {
   vault: Vault
   metrics: MetricsDB
   heartbeat: Pick<HeartbeatWriter, 'setReady'>
+  forkEffect?: ForkEffect
 }
 
 export async function createMemoryRuntime({
@@ -40,6 +41,7 @@ export async function createMemoryRuntime({
   vault,
   metrics,
   heartbeat,
+  forkEffect,
 }: MemoryRuntimeOptions): Promise<MemoryRuntime> {
   const memoryDir = join(zeroDir, 'memory')
   const baseMemoryStore = new MemoryStore(memoryDir)
@@ -48,6 +50,7 @@ export async function createMemoryRuntime({
   const memoryUsage = new MemoryUsageTracker({
     statsPath: join(memoryDir, 'usage-stats.json'),
     halfLifeDays: CONTEXT_PARAMS.retrieval.recencyHalfLifeDays,
+    forkEffect,
   })
   memoryUsage.load()
   const { memoryStore, embeddingClient, vectorIndex } = await createMemoryIndexRuntime({

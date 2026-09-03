@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import { LiteLLMPricing, type UsageRecorder, computeCost } from '@zero-os/model'
 import { MetricsDB, ObservabilityStore, SessionDB, Tracer, isUsagePurpose } from '@zero-os/observe'
+import type { ForkEffect } from '@zero-os/shared'
 import { generateId, now } from '@zero-os/shared'
 import { HeartbeatWriter } from '@zero-os/supervisor'
 
@@ -14,7 +15,10 @@ export interface ObservabilityRuntime {
   heartbeat: HeartbeatWriter
 }
 
-export function createObservabilityRuntime(zeroDir: string): ObservabilityRuntime {
+export function createObservabilityRuntime(
+  zeroDir: string,
+  forkEffect?: ForkEffect,
+): ObservabilityRuntime {
   const logsDir = join(zeroDir, 'logs')
   const observability = new ObservabilityStore(logsDir)
   const metrics = new MetricsDB(join(logsDir, 'metrics.db'))
@@ -24,6 +28,7 @@ export function createObservabilityRuntime(zeroDir: string): ObservabilityRuntim
   const tracer = new Tracer(logsDir)
   const heartbeat = new HeartbeatWriter(join(zeroDir, 'heartbeat.json'), {
     bootId: process.env.ZERO_HEARTBEAT_BOOT_ID || undefined,
+    forkEffect,
   })
   heartbeat.setReady(false, 'booting')
   heartbeat.start()

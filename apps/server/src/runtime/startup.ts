@@ -261,6 +261,7 @@ function createStartupShutdownRuntime({
       core.memoryUsage.stop()
       return core.memoryUsage.flush()
     },
+    closeFiberRoot: () => core.fiberRoot.shutdown(),
   })
 }
 

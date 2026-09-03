@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
+import type { ForkEffect } from '@zero-os/shared'
 import { Cause, Effect, Exit, Fiber } from 'effect'
 
 const HEARTBEAT_INTERVAL = 3_000 // 3 seconds
@@ -58,6 +59,11 @@ export interface HeartbeatData {
 
 export interface HeartbeatWriterOptions {
   bootId?: string
+  /**
+   * Fork the heartbeat interval into a host-owned lifetime (the composition
+   * root's fiber root). Defaults to a standalone Effect.runFork.
+   */
+  forkEffect?: ForkEffect
 }
 
 /**
@@ -75,9 +81,11 @@ export class HeartbeatWriter {
   private lastHeartbeat: HeartbeatData | null = null
   private ready = false
   private stage = 'booting'
+  private readonly forkEffect: ForkEffect
 
   constructor(filePath: string, options: HeartbeatWriterOptions = {}) {
     this.filePath = filePath
+    this.forkEffect = options.forkEffect ?? ((effect) => Effect.runFork(effect))
     this.tempFilePath = `${filePath}.${process.pid}.${randomUUID()}.tmp`
     this.bootId = options.bootId ?? PROCESS_BOOT_ID
     const dir = dirname(filePath)
@@ -131,7 +139,7 @@ export class HeartbeatWriter {
    */
   start(): void {
     if (this.heartbeatFiber) return
-    this.heartbeatFiber = Effect.runFork(this.heartbeatLoop())
+    this.heartbeatFiber = this.forkEffect(this.heartbeatLoop())
     this.heartbeatFiber.addObserver((exit) => {
       // Fail fast exactly like the previous setInterval callback: a failed
       // heartbeat write is a defect the process must surface. Interruption is

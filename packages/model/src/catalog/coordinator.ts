@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { ModelConfig, ProviderConfig, SystemConfig } from '@zero-os/shared'
+import type { ForkEffect, ModelConfig, ProviderConfig, SystemConfig } from '@zero-os/shared'
 import { Cause, Effect, Exit, Fiber } from 'effect'
 import { matchesModelFilters } from './filter'
 import type { ModelCatalogStore } from './store'
@@ -24,6 +24,11 @@ export interface ModelCatalogCoordinatorOptions {
   store: ModelCatalogStore
   drivers: ModelDiscoveryDriver[]
   now?: () => Date
+  /**
+   * 自动刷新 tick fiber fork 到宿主生命周期(组合根 fiber root)。默认独立
+   * Effect.runFork。
+   */
+  forkEffect?: ForkEffect
 }
 
 export interface RefreshModelCatalogOptions {
@@ -57,6 +62,7 @@ export class ModelCatalogCoordinator {
   private readonly store: ModelCatalogStore
   private readonly drivers: ModelDiscoveryDriver[]
   private readonly now: () => Date
+  private readonly forkEffect: ForkEffect
   private snapshot: ModelCatalogSnapshot = emptySnapshot()
   private listeners = new Set<CatalogListener>()
   private providerRefreshes = new Map<string, Promise<ProviderRefreshResult>>()
@@ -70,6 +76,7 @@ export class ModelCatalogCoordinator {
     this.store = options.store
     this.drivers = options.drivers
     this.now = options.now ?? (() => new Date())
+    this.forkEffect = options.forkEffect ?? ((effect) => Effect.runFork(effect))
   }
 
   async initialize(): Promise<void> {
@@ -173,7 +180,7 @@ export class ModelCatalogCoordinator {
 
   startAutoRefresh(): void {
     if (this.refreshFiber) return
-    this.refreshFiber = Effect.runFork(this.autoRefreshLoop())
+    this.refreshFiber = this.forkEffect(this.autoRefreshLoop())
     this.refreshFiber.addObserver((exit) => {
       // Fail fast exactly like the previous setInterval callback: refresh()
       // swallows per-provider failures internally, so a rejection here is a

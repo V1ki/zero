@@ -8,10 +8,11 @@ import {
   Vault,
   generateMasterKey,
 } from '@zero-os/secrets'
-import type { SystemConfig } from '@zero-os/shared'
+import type { ForkEffect, SystemConfig } from '@zero-os/shared'
 import { RepairEngine } from '@zero-os/supervisor'
 import { Cause, Effect, Exit, type Layer } from 'effect'
 import type { EventBus } from './bus'
+import { type FiberRootRuntime, createFiberRootRuntime } from './fiber-root'
 import { type MemoryRuntime, createMemoryRuntime } from './memory'
 import { type ModelRouterRuntime, createModelRouterRuntime } from './model-providers/router'
 import { type ObservabilityRuntime, createObservabilityRuntime } from './observability'
@@ -22,11 +23,15 @@ interface CreateCoreRuntimeOptions {
   zeroDir: string
   projectRoot: string
   bus: EventBus
+  /** 注入既有 fiber root(测试用);默认在组合根新建。 */
+  fiberRoot?: FiberRootRuntime
 }
 
-export async function createCoreRuntime({ zeroDir, projectRoot, bus }: CreateCoreRuntimeOptions) {
+export async function createCoreRuntime(options: CreateCoreRuntimeOptions) {
+  const { zeroDir, projectRoot, bus } = options
+  const fiberRoot = options.fiberRoot ?? createFiberRootRuntime()
   const { configPath, config, secretsRuntime, observabilityRuntime } =
-    await createCoreInfrastructureRuntime(zeroDir)
+    await createCoreInfrastructureRuntime(zeroDir, fiberRoot.fork)
   const { vault, secretFilter } = secretsRuntime
   const agentRuntime = await createAgentRuntimeComponents({
     zeroDir,
@@ -36,9 +41,11 @@ export async function createCoreRuntime({ zeroDir, projectRoot, bus }: CreateCor
     secretsRuntime,
     observabilityRuntime,
     bus,
+    forkEffect: fiberRoot.fork,
   })
 
   return {
+    fiberRoot,
     configPath,
     config,
     vault,
@@ -66,6 +73,7 @@ interface CoreInfrastructureRuntime {
 
 async function createCoreInfrastructureRuntime(
   zeroDir: string,
+  forkEffect?: ForkEffect,
 ): Promise<CoreInfrastructureRuntime> {
   ensureRuntimeDirectories(zeroDir)
   const secretsRuntime = await createSecretsRuntime(zeroDir)
@@ -77,7 +85,7 @@ async function createCoreInfrastructureRuntime(
     configPath,
     config,
     secretsRuntime,
-    observabilityRuntime: createObservabilityRuntime(zeroDir),
+    observabilityRuntime: createObservabilityRuntime(zeroDir, forkEffect),
   }
 }
 
@@ -171,6 +179,7 @@ interface CreateAgentRuntimeComponentsOptions {
   secretsRuntime: SecretsRuntime
   observabilityRuntime: ObservabilityRuntime
   bus: EventBus
+  forkEffect?: ForkEffect
 }
 
 async function createAgentRuntimeComponents({
@@ -181,6 +190,7 @@ async function createAgentRuntimeComponents({
   secretsRuntime,
   observabilityRuntime,
   bus,
+  forkEffect,
 }: CreateAgentRuntimeComponentsOptions) {
   const { metrics, sessionDb, heartbeat } = observabilityRuntime
   const modelRuntime = await createModelRouterRuntime({
@@ -188,6 +198,7 @@ async function createAgentRuntimeComponents({
     config,
     vault,
     metrics,
+    forkEffect,
   })
 
   const toolRegistry = createRuntimeToolRegistry({
@@ -205,9 +216,10 @@ async function createAgentRuntimeComponents({
     vault,
     metrics,
     heartbeat,
+    forkEffect,
   })
 
-  const schedulerRuntime = createSchedulerRuntime(sessionDb)
+  const schedulerRuntime = createSchedulerRuntime(sessionDb, forkEffect)
   const sessionManager = createRuntimeSessionManager({
     config,
     projectRoot,

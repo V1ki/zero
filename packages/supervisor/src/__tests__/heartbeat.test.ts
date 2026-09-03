@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { Effect } from 'effect'
 import { HeartbeatChecker, HeartbeatWriter, waitForHeartbeatReady } from '../heartbeat'
 
 const testDir = join(import.meta.dir, '__fixtures__')
@@ -65,6 +66,25 @@ describe('Heartbeat', () => {
 
       expect(writeCount).toBe(1)
       expect(new HeartbeatChecker(file).check().sequence).toBe(1)
+    } finally {
+      writer.stop()
+    }
+  })
+
+  test('start routes the interval fiber through the injected forkEffect', () => {
+    mkdirSync(testDir, { recursive: true })
+    const file = join(testDir, 'heartbeat-fork-effect.json')
+    let forkCount = 0
+    const writer = new HeartbeatWriter(file, {
+      forkEffect: (effect) => {
+        forkCount += 1
+        return Effect.runFork(effect)
+      },
+    })
+
+    try {
+      writer.start()
+      expect(forkCount).toBe(1)
     } finally {
       writer.stop()
     }

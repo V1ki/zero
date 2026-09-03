@@ -20,6 +20,7 @@ interface ShutdownRuntimeOptions {
   metrics: MetricsDB
   skipProcessExit?: boolean
   flushMemoryUsage?: () => Promise<void>
+  closeFiberRoot?: () => Promise<void>
 }
 
 export interface ShutdownRuntime {
@@ -42,6 +43,7 @@ export interface ShutdownSequenceOptions {
   sessionDb: SessionDB
   metrics: MetricsDB
   flushMemoryUsage?: () => Promise<void>
+  closeFiberRoot?: () => Promise<void>
 }
 
 interface CloseShutdownResourcesOptions {
@@ -69,6 +71,7 @@ export function createShutdownRuntime({
   metrics,
   skipProcessExit,
   flushMemoryUsage,
+  closeFiberRoot,
 }: ShutdownRuntimeOptions): ShutdownRuntime {
   let shuttingDown = false
   const activeStreamingSessionSets: Set<FeishuStreamingSession>[] = []
@@ -95,6 +98,7 @@ export function createShutdownRuntime({
         sessionDb,
         metrics,
         flushMemoryUsage,
+        closeFiberRoot,
       })
       if (!skipProcessExit) process.exit(0)
     },
@@ -115,6 +119,7 @@ export async function runShutdownSequence({
   sessionDb,
   metrics,
   flushMemoryUsage,
+  closeFiberRoot,
 }: ShutdownSequenceOptions): Promise<void> {
   console.log('\n[ZeRo OS] Shutting down...')
   publishShuttingDownHeartbeat(heartbeat)
@@ -147,6 +152,17 @@ export async function runShutdownSequence({
     sessionDb,
     metrics,
   })
+
+  // 兜底:各模块 stop()/dispose() 之后,统一 root scope 一把打断所有仍存活的
+  // 长生命周期 fiber(含中途才启动的),失败只告警不阻断退出。
+  if (closeFiberRoot) {
+    try {
+      await closeFiberRoot()
+    } catch (error) {
+      console.warn('[ZeRo OS] Fiber root shutdown failed:', error)
+    }
+    console.log('[ZeRo OS] Fiber root closed')
+  }
   console.log('[ZeRo OS] Shutdown complete.')
 }
 

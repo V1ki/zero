@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { MemoryUsageKind, MemoryUsageRecorder } from '@zero-os/shared'
+import type { ForkEffect, MemoryUsageKind, MemoryUsageRecorder } from '@zero-os/shared'
 import { Effect, Exit, Fiber } from 'effect'
 
 interface UsageRecord {
@@ -42,6 +42,11 @@ export interface MemoryUsageTrackerOptions {
   saturation?: number
   /** 脏后自动落盘的防抖间隔 ms;默认 30_000 */
   flushIntervalMs?: number
+  /**
+   * 防抖等待 fiber fork 到宿主生命周期(组合根 fiber root)。默认独立
+   * Effect.runFork。
+   */
+  forkEffect?: ForkEffect
 }
 
 const USAGE_KINDS: MemoryUsageKind[] = ['injected', 'read', 'used', 'harmful', 'unused']
@@ -92,6 +97,7 @@ export class MemoryUsageTracker implements MemoryUsageRecorder {
   private readonly halfLifeMs: number
   private readonly saturation: number
   private readonly flushIntervalMs: number
+  private readonly forkEffect: ForkEffect
   private dirty = false
   private flushFiber: Fiber.RuntimeFiber<void> | null = null
 
@@ -100,6 +106,7 @@ export class MemoryUsageTracker implements MemoryUsageRecorder {
     this.halfLifeMs = (options.halfLifeDays ?? 30) * 86_400_000
     this.saturation = options.saturation ?? 5
     this.flushIntervalMs = options.flushIntervalMs ?? 30_000
+    this.forkEffect = options.forkEffect ?? ((effect) => Effect.runFork(effect))
   }
 
   /** 从 sidecar 文件加载既有统计;文件缺失/损坏一律从空开始,不抛错。 */
@@ -219,7 +226,7 @@ export class MemoryUsageTracker implements MemoryUsageRecorder {
 
   private scheduleFlush(): void {
     if (this.flushFiber) return
-    const fiber = Effect.runFork(Effect.sleep(this.flushIntervalMs))
+    const fiber = this.forkEffect(Effect.sleep(this.flushIntervalMs))
     this.flushFiber = fiber
     fiber.addObserver((exit) => {
       // 到期先让位再触发落盘：sleep 完成后 flushFiber 清空，期间新 record() 可排下一轮
