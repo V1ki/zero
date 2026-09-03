@@ -1,4 +1,4 @@
-import { Vault, getMasterKey } from '@zero-os/secrets'
+import { MasterKeyMissingError, type Vault, loadVault } from '@zero-os/secrets'
 
 export async function runSecretCommand(options: {
   secretsPath: string
@@ -8,16 +8,14 @@ export async function runSecretCommand(options: {
   const key = options.args[1]
   const value = options.args[2]
 
-  let masterKey: Buffer
+  let vault: Vault
   try {
-    masterKey = await getMasterKey()
-  } catch {
+    vault = await loadVault(options.secretsPath)
+  } catch (error) {
+    if (!(error instanceof MasterKeyMissingError)) throw error
     console.error('[ZeRo OS] No master key found. Run `bun zero init` first.')
     process.exit(1)
   }
-
-  const vault = new Vault(masterKey, options.secretsPath)
-  vault.load()
 
   switch (action) {
     case 'set': {

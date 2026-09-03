@@ -1,5 +1,5 @@
 import { loadConfig } from '@zero-os/core'
-import { Vault, getMasterKey } from '@zero-os/secrets'
+import { MasterKeyMissingError, type Vault, loadVault } from '@zero-os/secrets'
 import { type ManagedOAuthProviderKind, toErrorMessage } from '@zero-os/shared'
 import type { ManagedOAuthStatus } from '../oauth/status'
 import {
@@ -57,16 +57,14 @@ export async function runProviderCommand(options: {
     process.exit(1)
   }
 
-  let masterKey: Buffer
+  let vault: Vault
   try {
-    masterKey = await getMasterKey()
-  } catch {
+    vault = await loadVault(options.secretsPath)
+  } catch (error) {
+    if (!(error instanceof MasterKeyMissingError)) throw error
     console.error('[ZeRo OS] No master key found. Run `bun zero init` first.')
     process.exit(1)
   }
-
-  const vault = new Vault(masterKey, options.secretsPath)
-  vault.load()
 
   let providerName: string = request.kind
   let label = getManagedOAuthProviderLabel(request.kind)

@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { Vault, getMasterKey } from '@zero-os/secrets'
+import { getMasterKey, loadVault } from '@zero-os/secrets'
 import { getManagedOAuthTokenRefForKind } from '../providers/managed-oauth'
 import { getSupervisorLaunchAgentStatus } from '../system/launchd'
 
@@ -25,9 +25,7 @@ export async function runStatusCommand(options: {
 
   if (secretsExist) {
     try {
-      const masterKey = await getMasterKey()
-      const vault = new Vault(masterKey, options.secretsPath)
-      vault.load()
+      const vault = await loadVault(options.secretsPath)
       const hasApiKey = vault.get('openai_codex_api_key')
       const hasChatGptOauth = vault.get(getManagedOAuthTokenRefForKind('chatgpt'))
       const hasClaudeOauth = vault.get(getManagedOAuthTokenRefForKind('anthropic'))

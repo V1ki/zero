@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { type WeixinChannel, runQrLogin } from '@zero-os/channel'
-import { Vault, getMasterKey } from '@zero-os/secrets'
+import { MasterKeyMissingError, type Vault, loadVault } from '@zero-os/secrets'
 import { readYaml, writeYaml } from '@zero-os/shared'
 import { Effect, Fiber } from 'effect'
 import type { ChannelAdapter, StreamAdapter, TypingHandle } from './adapter'
@@ -175,15 +175,15 @@ async function loginWeixinChannel(name: string, context: WeixinCliContext): Prom
   const { credentials } = result
   console.log(`[ZeRo OS] Login confirmed. accountId=${credentials.accountId}`)
 
-  let masterKey: Buffer
+  let vault: Vault
   try {
-    masterKey = await getMasterKey()
-  } catch {
+    vault = await loadVault(context.secretsPath)
+  } catch (error) {
+    if (!(error instanceof MasterKeyMissingError)) throw error
     console.error('[ZeRo OS] No master key available. Run `bun zero init` first.')
     return false
   }
 
-  const vault = new Vault(masterKey, context.secretsPath)
   const secretRefs = buildWeixinSecretRefs(name)
   vault.set(secretRefs.accountIdRef, credentials.accountId)
   vault.set(secretRefs.tokenRef, credentials.token)
