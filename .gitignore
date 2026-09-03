@@ -10,3 +10,4 @@ test-results
 benchmarks/**/results/**
 !benchmarks/**/results/
 !benchmarks/**/results/.gitkeep
+scripts-diag/

@@ -23,6 +23,7 @@ import type {
 import { formatDurationMillis } from './trajectory-record'
 import type {
   AssistantBlock,
+  AssistantMessageNode,
   AssistantRequestView,
   ContentBlock,
   ContextGateUsage,
@@ -260,6 +261,13 @@ function usageOf(entry: SessionRequestEntry): Record<string, number> {
  * Pair each request with the assistant message it produced. Preferred key: the
  * request's tool-call ids exactly match the assistant message's tool_use ids.
  * Fallback: k-th unpaired request pairs with the k-th unpaired assistant message.
+ *
+ * The request log also contains side-loop requests that must never own a main
+ * transcript message: sub-agent iterations inherit a stale `turnIndex` from the
+ * spawning context (it regresses below turns the main lane already reached),
+ * and memory-nudge continuation calls carry no response of their own. Both
+ * would otherwise steal later assistant messages through the jitter fallback
+ * and drag them into the wrong turn, poisoning every gate anchor that follows.
  */
 function pairRequestsWithAssistants(
   messages: readonly Message[],
@@ -278,6 +286,20 @@ function pairRequestsWithAssistants(
       message.content.some((block) => isToolUse(block) && callIds.has(block.id)),
     )
   }
+  // Side-loop requests are identified by a turnIndex that regresses below the
+  // highest turn the main lane already logged (main-lane turns only increase).
+  const mainLaneRequestIds = new Set<string>()
+  {
+    const byStart = [...requests].sort(
+      (left, right) => requestTiming(left).startedAt - requestTiming(right).startedAt,
+    )
+    let maxTurnIndex = Number.NEGATIVE_INFINITY
+    for (const request of byStart) {
+      if (request.turnIndex !== undefined && request.turnIndex < maxTurnIndex) continue
+      if (request.turnIndex !== undefined) maxTurnIndex = request.turnIndex
+      mainLaneRequestIds.add(request.id)
+    }
+  }
   const requestByAssistantId = new Map<string, SessionRequestEntry>()
   const unpairedRequests: SessionRequestEntry[] = []
   for (const request of requests) {
@@ -292,6 +314,11 @@ function pairRequestsWithAssistants(
     .filter((message) => !requestByAssistantId.has(message.id))
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
   for (const request of unpairedRequests) {
+    // Only main-lane requests that produced a visible response can own an
+    // assistant message; nudge/closure side calls log an empty response.
+    if (!mainLaneRequestIds.has(request.id) || request.response.trim() === '') {
+      continue
+    }
     const ts = request.ts
     // Nearest assistant completed at or before the request log timestamp.
     let owner: Message | undefined
@@ -1401,6 +1428,22 @@ export function buildTrajectorySnapshot(
     if (candidate > maxUsedSeq) maxUsedSeq = candidate
     return candidate
   }
+  // Snapshot of the walk-assigned seqs before any gate/era claim: gate rows
+  // resolve their seq band from walk rows only, so later claims by other
+  // gates cannot shift the bounds mid-pass.
+  const walkSeqList = [...usedSeqs].sort((left, right) => left - right)
+  const nextWalkSeqAbove = (seq: number): number | undefined => {
+    for (const candidate of walkSeqList) if (candidate > seq) return candidate
+    return undefined
+  }
+  const prevWalkSeqBelow = (seq: number): number | undefined => {
+    let prev: number | undefined
+    for (const candidate of walkSeqList) {
+      if (candidate >= seq) break
+      prev = candidate
+    }
+    return prev
+  }
   // Message flow is not guaranteed to be time-ordered (resumed sessions can
   // persist a misplaced head message), so insertion points resolve by time
   // across the whole node list instead of trusting array order.
@@ -1422,8 +1465,8 @@ export function buildTrajectorySnapshot(
   // Latest assistant step at or before `time`: gate records attach to the step
   // they interrupted. Also time-based (not array-order based) for the same
   // reason as nodeAfter.
-  const anchorAtOrBefore = (time: number): ConversationLocation | undefined => {
-    let anchor: ConversationLocation | undefined
+  const anchorNodeAtOrBefore = (time: number): AssistantMessageNode | undefined => {
+    let anchor: AssistantMessageNode | undefined
     let anchorTime = Number.NEGATIVE_INFINITY
     let anchorSeq = Number.NEGATIVE_INFINITY
     for (const node of nodes) {
@@ -1431,10 +1474,42 @@ export function buildTrajectorySnapshot(
       if (node.time > anchorTime || (node.time === anchorTime && node.seq > anchorSeq)) {
         anchorTime = node.time
         anchorSeq = node.seq
-        anchor = { kind: 'step', turn: { turn: node.turn }, step: { step: node.step } }
+        anchor = node
       }
     }
     return anchor
+  }
+  // Earliest assistant step at or after `time`: pre-turn gates (memory
+  // retrieval) open the iteration that follows them, so they anchor forward
+  // instead of closing the previous turn their timestamp trails.
+  const anchorNodeAfter = (time: number): AssistantMessageNode | undefined => {
+    let anchor: AssistantMessageNode | undefined
+    let anchorTime = Number.POSITIVE_INFINITY
+    let anchorSeq = Number.POSITIVE_INFINITY
+    for (const node of nodes) {
+      if (node.kind !== 'assistant' || node.time < time) continue
+      if (node.time < anchorTime || (node.time === anchorTime && node.seq < anchorSeq)) {
+        anchorTime = node.time
+        anchorSeq = node.seq
+        anchor = node
+      }
+    }
+    return anchor
+  }
+  const anchorAtOrBefore = (time: number): ConversationLocation | undefined => {
+    const anchor = anchorNodeAtOrBefore(time)
+    return anchor === undefined
+      ? undefined
+      : { kind: 'step', turn: { turn: anchor.turn }, step: { step: anchor.step } }
+  }
+  // Gates claim the gap between their anchor assistant and the next walk row
+  // (or the tail when the anchor is the last one) so the record renders right
+  // after the steps it follows; claimSeqBefore from the next-in-time row
+  // undershoots below time-earlier rows and put post-turn gates ahead of the
+  // steps they close.
+  const gateSeqAfterAnchor = (anchor: AssistantMessageNode): number => {
+    const upper = nextWalkSeqAbove(anchor.seq)
+    return upper === undefined ? claimSeqBefore(undefined) : claimSeqBetween(anchor.seq, upper)
   }
 
   // Gate events that predate every surviving message have no assistant to
@@ -1453,7 +1528,11 @@ export function buildTrajectorySnapshot(
   const gateLocationAtOrBefore = (time: number): ConversationLocation => {
     const anchor = anchorAtOrBefore(time)
     if (anchor !== undefined) return anchor
-    return { kind: 'turn', turn: { turn: requestTurnAtOrBefore(time) ?? turn } }
+    // A gate older than every assistant and every request (session-start
+    // retrieval) belongs to the first turn, not to whatever turn the walk
+    // ended on.
+    const firstTurn = requestsByStart[0]?.turnIndex ?? turn
+    return { kind: 'turn', turn: { turn: requestTurnAtOrBefore(time) ?? firstTurn } }
   }
 
   const compactionSpans = flatSpans.filter((span) => span.kind === 'context_compaction')
@@ -1514,8 +1593,9 @@ export function buildTrajectorySnapshot(
     const time = toEpochMillis(event.ts)
     if (time === null) continue
     const action = event.action ?? (event.event === 'task_closure_failed' ? 'failed' : 'unknown')
-    const insertBefore = nodeAfter(time)
-    const nodeSeq = claimSeqBefore(insertBefore === undefined ? undefined : insertBefore.seq)
+    const anchor = anchorNodeAtOrBefore(time)
+    const nodeSeq =
+      anchor === undefined ? claimSeqBefore(nodeAfter(time)?.seq) : gateSeqAfterAnchor(anchor)
     const label = `task closure ${action}`
     const answerParts: string[] = []
     const answer =
@@ -1591,8 +1671,9 @@ export function buildTrajectorySnapshot(
   for (const event of options.subAgentEvents ?? []) {
     const time = toEpochMillis(event.ts)
     if (time === null) continue
-    const insertBefore = nodeAfter(time)
-    const nodeSeq = claimSeqBefore(insertBefore === undefined ? undefined : insertBefore.seq)
+    const anchor = anchorNodeAtOrBefore(time)
+    const nodeSeq =
+      anchor === undefined ? claimSeqBefore(nodeAfter(time)?.seq) : gateSeqAfterAnchor(anchor)
     const childCalls = event.childToolCalls ?? []
     const tools =
       childCalls.length === 0
@@ -1664,8 +1745,9 @@ export function buildTrajectorySnapshot(
     if (event.source !== 'trace') continue
     const time = toEpochMillis(event.ts)
     if (time === null) continue
-    const insertBefore = nodeAfter(time)
-    const nodeSeq = claimSeqBefore(insertBefore === undefined ? undefined : insertBefore.seq)
+    const anchor = anchorNodeAtOrBefore(time)
+    const nodeSeq =
+      anchor === undefined ? claimSeqBefore(nodeAfter(time)?.seq) : gateSeqAfterAnchor(anchor)
     const toolCalls = event.relatedToolCalls ?? []
     const state =
       event.memoryWritten === undefined
@@ -1936,20 +2018,32 @@ export function buildTrajectorySnapshot(
         : claimSeqBefore(undefined)
       location = { kind: 'turn', turn: { turn: eraAnchor.turn } }
     } else {
-      const insertBefore = nodeAfter(start)
-      nodeSeq = claimSeqBefore(insertBefore === undefined ? undefined : insertBefore.seq)
-      // Era seqs are registered now, so a claim whose bound sits above the
-      // block would otherwise walk below it entirely; halve the gap between
-      // the block top and the bound instead so the record stays in order.
-      if (
-        eraRequests.length > 0 &&
-        insertBefore !== undefined &&
-        nodeSeq < eraSeqMin &&
-        insertBefore.seq > eraSeqMax
-      ) {
-        nodeSeq = claimSeqBetween(eraSeqMax, insertBefore.seq)
+      // A retrieval that is not hint-anchored and not from the compacted era
+      // opens the iteration that follows it: anchor forward to its first
+      // assistant step, claim the gap right below that step, and adopt that
+      // step's turn so the gate renders at the head of its own turn instead
+      // of closing the previous one its timestamp trails.
+      const next = anchorNodeAfter(start)
+      if (next === undefined) {
+        const insertBefore = nodeAfter(start)
+        nodeSeq = claimSeqBefore(insertBefore === undefined ? undefined : insertBefore.seq)
+        // Era seqs are registered now, so a claim whose bound sits above the
+        // block would otherwise walk below it entirely; halve the gap between
+        // the block top and the bound instead so the record stays in order.
+        if (
+          eraRequests.length > 0 &&
+          insertBefore !== undefined &&
+          nodeSeq < eraSeqMin &&
+          insertBefore.seq > eraSeqMax
+        ) {
+          nodeSeq = claimSeqBetween(eraSeqMax, insertBefore.seq)
+        }
+        location = gateLocationAtOrBefore(start)
+      } else {
+        const below = prevWalkSeqBelow(next.seq)
+        nodeSeq = below === undefined ? claimSeqBefore(next.seq) : claimSeqBetween(below, next.seq)
+        location = { kind: 'step', turn: { turn: next.turn }, step: { step: next.step } }
       }
-      location = gateLocationAtOrBefore(start)
     }
     const injected = selected.length > 0
     const durationMs =

@@ -1728,6 +1728,93 @@ describe('buildTrajectorySnapshot', () => {
     expect(turnCells(2).at(0)?.kind).toBe('user')
   })
 
+  it('keeps side-loop requests from stealing assistant messages in fallback pairing', () => {
+    // Sub-agent requests carry a turnIndex regressed below the main lane's
+    // highest logged turn, and nudge control calls log an empty response;
+    // both are side loops that must not own main-lane assistant messages
+    // even when they run closest in time to one.
+    const sideRequests: SessionRequestEntry[] = [
+      ...requests,
+      request({ id: 'sub-1', ts: T6, turnIndex: 1, response: 'sub-agent output' }),
+      request({ id: 'nudge-1', ts: T5, turnIndex: 2, response: '' }),
+    ]
+    const snapshot = buildTrajectorySnapshot(session, sideRequests, traces)
+
+    const assistantNodes = snapshot.eventNodes.filter((node) => node.kind === 'assistant')
+    expect(assistantNodes.map((node) => [node.turn, node.step])).toEqual([
+      [1, 0],
+      [1, 1],
+      [2, 0],
+    ])
+    const assistantViews = snapshot.requests.filter((view) => view.purpose === 'assistant')
+    expect(assistantViews).toHaveLength(2)
+    expect(
+      assistantViews.some(
+        (view) => view.activity !== undefined && view.activity.response === 'sub-agent output',
+      ),
+    ).toBe(false)
+  })
+
+  it('renders the retrieval gate at the head of its turn and the closure gate at its tail', () => {
+    // The retrieval side loop opens the iteration that follows it — even when
+    // it predates every message, like a session-start retrieval — while the
+    // closure gate closes the assistant it judged. Neither may land at the
+    // opposite end of the turn.
+    const retrieval = span({
+      id: 'span-retrieval',
+      name: 'memory_retrieval_decision',
+      startTime: '2026-08-24T06:59:57.000Z',
+      endTime: '2026-08-24T06:59:59.000Z',
+      durationMs: 2000,
+      status: 'success',
+      metadata: { layer: 'layer1' },
+      data: {
+        memoryRetrievalDecision: {
+          prompt: '查一下相关记忆',
+          queries: ['相关 记忆'],
+          selectedMemories: [],
+          tokens: { input: 90, output: 8 },
+          durationMs: 2000,
+        },
+      },
+    })
+    const snapshot = buildTrajectorySnapshot(session, requests, [...traces, retrieval], {
+      taskClosureEvents: [
+        {
+          ts: '2026-08-24T07:00:07.000Z',
+          event: 'task_closure_decision',
+          action: 'continue',
+          reason: 'tool still needed',
+          assistantMessageId: 'a2',
+          classifierRequest: { prompt: 'Is the task complete?' },
+          classifierResponse: {
+            model: 'gpt-5.6-sol',
+            content: [{ type: 'text', text: '{"action":"continue"}' }],
+          },
+        },
+      ],
+    })
+
+    const turns = deriveTrajectoryLayout({
+      nodes: snapshot.eventNodes,
+      eventLocations: snapshot.eventLocations,
+      partial: snapshot.partial,
+      runningCalls: snapshot.runningCalls,
+    })
+    expect(turns.map((turn) => turn.turn)).toEqual([1, 2])
+    const cells = turns[0]?.groups.flatMap((group) => group.cells) ?? []
+    const retrievalIndex = cells.findIndex(
+      (cell) => cell.kind === 'context' && cell.inputDetail === '查一下相关记忆',
+    )
+    const closureIndex = cells.findIndex(
+      (cell) => cell.kind === 'context' && cell.inputDetail === 'Is the task complete?',
+    )
+    const assistantIndexes = cells.flatMap((cell, i) => (cell.kind === 'message' ? [i] : []))
+    expect(retrievalIndex).toBeGreaterThan(-1)
+    expect(retrievalIndex).toBeLessThan(assistantIndexes[0] ?? Number.POSITIVE_INFINITY)
+    expect(closureIndex).toBeGreaterThan(assistantIndexes.at(-1) ?? Number.NEGATIVE_INFINITY)
+  })
+
   it('falls back to the written-state answer when a nudge recorded no output', () => {
     const snapshot = buildTrajectorySnapshot(session, requests, traces, {
       memoryNudgeEvents: [

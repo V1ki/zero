@@ -861,7 +861,7 @@ fuse_list: []
     const res = await app.request('/api/tools')
     expect(res.status).toBe(200)
     const data = await res.json()
-    expect(data.tools.length).toBe(15)
+    expect(data.tools.length).toBe(17)
     const names = data.tools.map((t: { name: string }) => t.name)
     expect(names).toContain('read')
     expect(names).toContain('read_image')

@@ -574,15 +574,15 @@ export function deriveTrajectoryLayout(
     }
     if (node.kind === 'context') {
       // Context events that follow a turn's last assistant without an
-      // intervening user message (memory nudges) close out that assistant's
-      // turn; the rest (retrievals, mid-turn notices) keep opening the turn of
-      // their following assistant. An explicit turn location means the event
-      // predates the surviving message window (compaction removed its turns):
-      // the adapter anchored it to the request timeline, which wins over both
-      // array-order heuristics.
+      // intervening user message (memory nudges, closures) close out that
+      // assistant's turn; the rest (retrievals, mid-turn notices) keep opening
+      // the turn of their following assistant. An explicit location means the
+      // adapter anchored the event to a specific turn — turn locations for
+      // pre-window (compacted) events, step locations for gates anchored to
+      // an assistant step — and wins over both array-order heuristics.
       const location = eventLocations?.get(node.seq)
       let turn: number
-      if (location?.kind === 'turn') {
+      if (location?.kind === 'turn' || location?.kind === 'step') {
         turn = location.turn.turn
       } else if (!userSinceLastAssistant && lastAssistantTurn !== null) {
         turn = lastAssistantTurn
