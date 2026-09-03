@@ -88,6 +88,21 @@ KeychainLive (Layer) ── 每个方法先查 env 旁路，再走 Bun.spawn('se
 - 新增 `apps/server/src/__tests__/secrets-runtime.test.ts`：用 stub Layer 注入验证 DI 缝——正常取 key 建 vault（用注入 key 重开 vault 验证）、first-run 生成 32 字节 key 并经 Layer 写入、有 vault 无 key 时启动致命错误。测试只装配 stub Layer，不触碰真实 Keychain。
 - `apps/server` 显式声明 `effect` 依赖。
 
-### 待做
+### 第四步（原"core 工具子进程执行切片"）：结论——暂缓，写入重启条件（2026-09-03）
 
-1. 视前三步结论决定是否推进 core 的工具子进程执行切片。
+调研了 `packages/core/src/tool/` 的三个子进程点后决定**不做**逐工具的 Effect 重写，理由：
+
+1. **Effect 对子进程执行的独特价值是结构化中断**（`acquireRelease` 中断即杀进程、timeout 变 race、清理自动化）。但当前工具执行不在 fiber 上：`execute()` 由 agent 循环直接 await，abort 是 `RunningToolRegistry.setAbortHandler` 推入的回调，timeout 是手写定时器。没有 fiber 运行时，逐工具重写只是把一套命令式模式换成 Effect 仪式，abort 管道原样保留——负收益（双范式交错、评审负担；且 grep 的"超时保留部分结果"语义与 `Effect.race` 丢弃败方状态的模型不合）。
+2. 工具层是爆炸半径最大的路径（session/tool/chat），仓库规则对此处的回归安全要求最高。
+3. 三个工具三种植习语（bash: `Bun.spawn`+终止锁存+强杀链；grep: `Bun.spawn`+行数截断早停杀；codex: `node:child_process` 回调式）。统一它们只有在"工具执行整体迁到 fiber 运行行时"这一次性架构决策里做才划算，不适合作为第四个孤立试点。
+
+**重启条件**：若将来把工具执行迁移为 fiber 化 runner（abort → `Fiber.interrupt`、timeout → `Effect.timeout`、子进程清理 → `acquireRelease`），在同一变更里迁移子进程工具；届时前三个试点（Keychain service、组合根 Layer 装配、fiber 中断语义已验证）将直接复用。
+
+### 总结论
+
+| 试点 | 状态 | Effect 带来的 |
+|---|---|---|
+| secrets/keychain | ✅ | 类型化错误、Layer DI、acquireRelease 资源安全、测试注入 |
+| scheduler/cron | ✅ | fiber 化定时器，中断替代手工 clearTimeout；长延时封顶因 Effect Clock 语义差异保留自管 |
+| server 组合根 | ✅ | `Keychain` service 消费 + `KeychainLive` 默认装配，stub Layer 测试缝 |
+| core 工具子进程 | ⏸ 暂缓 | 等待 fiber 化 runner 的架构决策（见重启条件） |
