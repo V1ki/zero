@@ -131,6 +131,7 @@
       "dependencies": {
         "@zero-os/observe": "workspace:*",
         "@zero-os/shared": "workspace:*",
+        "effect": "^3.22.1",
         "gray-matter": "^4.0.3",
         "vectra": "^0.9.0",
       },

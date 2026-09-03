@@ -8,6 +8,7 @@
   "dependencies": {
     "@zero-os/shared": "workspace:*",
     "@zero-os/observe": "workspace:*",
+    "effect": "^3.22.1",
     "gray-matter": "^4.0.3",
     "vectra": "^0.9.0"
   },

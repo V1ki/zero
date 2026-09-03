@@ -257,7 +257,10 @@ function createStartupShutdownRuntime({
     sessionDb: core.sessionDb,
     metrics: core.metrics,
     skipProcessExit,
-    flushMemoryUsage: () => core.memoryUsage.flush(),
+    flushMemoryUsage: () => {
+      core.memoryUsage.stop()
+      return core.memoryUsage.flush()
+    },
   })
 }
 

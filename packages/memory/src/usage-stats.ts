@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { MemoryUsageKind, MemoryUsageRecorder } from '@zero-os/shared'
+import { Effect, Exit, Fiber } from 'effect'
 
 interface UsageRecord {
   /** 指数衰减计数:每次访问 count = count * 0.5^(Δt/halfLife) + 1 */
@@ -92,7 +93,7 @@ export class MemoryUsageTracker implements MemoryUsageRecorder {
   private readonly saturation: number
   private readonly flushIntervalMs: number
   private dirty = false
-  private flushTimer: ReturnType<typeof setTimeout> | undefined
+  private flushFiber: Fiber.RuntimeFiber<void> | null = null
 
   constructor(options: MemoryUsageTrackerOptions) {
     this.statsPath = options.statsPath
@@ -217,13 +218,32 @@ export class MemoryUsageTracker implements MemoryUsageRecorder {
   }
 
   private scheduleFlush(): void {
-    if (this.flushTimer) return
-    this.flushTimer = setTimeout(() => {
-      this.flushTimer = undefined
-      void this.flush().catch(() => {})
-    }, this.flushIntervalMs)
-    // 后台落盘不应阻止进程退出;shutdown 路径会显式 flush。
-    this.flushTimer.unref?.()
+    if (this.flushFiber) return
+    const fiber = Effect.runFork(Effect.sleep(this.flushIntervalMs))
+    this.flushFiber = fiber
+    fiber.addObserver((exit) => {
+      // 到期先让位再触发落盘：sleep 完成后 flushFiber 清空，期间新 record() 可排下一轮
+      // （与旧 setTimeout 回调"先清 timer 再 void flush"逐字等价）；flush 失败吞掉、
+      // 保持脏标记等下次 record() 或 shutdown 重试。
+      if (this.flushFiber === fiber) this.flushFiber = null
+      if (Exit.isSuccess(exit)) {
+        void this.flush().catch(() => {})
+      }
+    })
+  }
+
+  /**
+   * 取消尚未到期的后台落盘 fiber（shutdown 先 stop 再显式 flush）。
+   * 旧实现用 unref 的 setTimeout 保证后台落盘不阻止进程退出；fiber 的 sleep
+   * 持有普通定时器引用，优雅退出路径因此必须经 shutdown 调 stop()——tracker
+   * 只在 server 运行时内存活，服务 socket 本就持有事件循环，实际暴露面仅此。
+   */
+  stop(): void {
+    const fiber = this.flushFiber
+    this.flushFiber = null
+    if (fiber) {
+      void Effect.runPromise(Fiber.interrupt(fiber)).catch(() => {})
+    }
   }
 
   /** 立即落盘(tmp+rename 原子写)。shutdown 与测试调用;失败时保持脏标记等下次重试。 */

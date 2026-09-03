@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test'
-import { EmbeddingClient } from '../embedding'
+import { EmbeddingClient, EmbeddingPayloadError, EmbeddingRequestError } from '../embedding'
 
 const originalFetch = globalThis.fetch
 
@@ -138,5 +138,31 @@ describe('EmbeddingClient', () => {
     expect(text).toContain('Deploy Runbook')
     expect(text).toContain('deploy ops')
     expect(text).toContain('Step 1 Step 2')
+  })
+
+  test('failures are typed TaggedError classes carrying diagnostic fields', async () => {
+    globalThis.fetch = mock(
+      async () => new Response('bad gateway', { status: 502 }),
+    ) as unknown as typeof fetch
+
+    const client = new EmbeddingClient({
+      baseUrl: 'https://example.test/v1',
+      apiKey: 'test-key',
+      model: 'text-embedding-v4',
+    })
+
+    const requestError = await client.embed('hello').catch((error) => error)
+    expect(requestError).toBeInstanceOf(EmbeddingRequestError)
+    expect(requestError).toBeInstanceOf(Error)
+    expect(requestError.status).toBe(502)
+    expect(requestError._tag).toBe('EmbeddingRequest')
+
+    globalThis.fetch = mock(
+      async () => new Response(JSON.stringify({ data: [] })),
+    ) as unknown as typeof fetch
+
+    const payloadError = await client.embed('hello').catch((error) => error)
+    expect(payloadError).toBeInstanceOf(EmbeddingPayloadError)
+    expect(payloadError._tag).toBe('EmbeddingPayload')
   })
 })

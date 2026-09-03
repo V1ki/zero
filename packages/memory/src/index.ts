@@ -18,6 +18,11 @@ export type {
 } from './retrieval-agent'
 export { EmbeddingClient } from './embedding'
 export type { EmbeddingConfig, EmbeddingProvider } from './embedding'
+export {
+  EmbeddingEmptyResultError,
+  EmbeddingPayloadError,
+  EmbeddingRequestError,
+} from './embedding'
 export { VectorIndex } from './vector-index'
 export type { MemoryVectorMeta, VectorIndexLike } from './vector-index'
 export { IndexedMemoryStore } from './indexed-store'

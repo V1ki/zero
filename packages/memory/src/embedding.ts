@@ -1,4 +1,18 @@
 import type { Memory } from '@zero-os/shared'
+import { Data } from 'effect'
+
+export class EmbeddingRequestError extends Data.TaggedError('EmbeddingRequest')<{
+  readonly message: string
+  readonly status: number
+}> {}
+
+export class EmbeddingPayloadError extends Data.TaggedError('EmbeddingPayload')<{
+  readonly message: string
+}> {}
+
+export class EmbeddingEmptyResultError extends Data.TaggedError('EmbeddingEmptyResult')<{
+  readonly message: string
+}> {}
 
 export interface EmbeddingConfig {
   baseUrl: string
@@ -31,7 +45,7 @@ export class EmbeddingClient implements EmbeddingProvider {
   async embed(text: string, sessionId?: string): Promise<number[]> {
     const [vector] = await this.embedBatch([text], sessionId)
     if (!vector) {
-      throw new Error('Embedding service returned an empty result')
+      throw new EmbeddingEmptyResultError({ message: 'Embedding service returned an empty result' })
     }
     return vector
   }
@@ -54,7 +68,10 @@ export class EmbeddingClient implements EmbeddingProvider {
     })
 
     if (!response.ok) {
-      throw new Error(`Embedding request failed with status ${response.status}`)
+      throw new EmbeddingRequestError({
+        message: `Embedding request failed with status ${response.status}`,
+        status: response.status,
+      })
     }
 
     const payload = (await response.json()) as EmbeddingResponse
@@ -62,7 +79,9 @@ export class EmbeddingClient implements EmbeddingProvider {
       ?.map((entry) => entry.embedding)
       .filter((entry): entry is number[] => Array.isArray(entry))
     if (!vectors || vectors.length !== texts.length) {
-      throw new Error('Embedding service returned an unexpected payload')
+      throw new EmbeddingPayloadError({
+        message: 'Embedding service returned an unexpected payload',
+      })
     }
 
     if (payload.usage && this.config.onUsage) {

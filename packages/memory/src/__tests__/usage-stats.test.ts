@@ -46,8 +46,10 @@ describe('MemoryUsageTracker', () => {
     expect(s1?.read).toBeCloseTo(2, 5)
     expect(s1?.used).toBeCloseTo(1, 5)
     expect(s1?.total).toBe(3)
-    // (2*2 + 1) / 5 = 1 → 封顶
-    expect(s1?.score).toBe(1)
+    // (2*2 + 1) / 5 = 1 → 封顶。score 经时间衰减，record→snapshot 间任何毫秒级
+    // 抖动都会让浮点值略低于 1，故用范围断言表达"饱和"而非精确浮点相等。
+    expect(s1?.score).toBeLessThanOrEqual(1)
+    expect(s1?.score).toBeGreaterThan(0.999)
     expect(Date.parse(s1?.lastAccessedAt ?? '')).not.toBeNaN()
 
     const s2 = snapshot.find((entry) => entry.id === 'mem_s2')
@@ -71,8 +73,9 @@ describe('MemoryUsageTracker', () => {
     tracker.record('mem_a', 'used')
     tracker.record('mem_a', 'used')
     tracker.record('mem_a', 'used')
-    // positive = 2*2 + 3 = 7 ≥ 5 → 封顶 1
-    expect(tracker.score('mem_a')).toBe(1)
+    // positive = 2*2 + 3 = 7 ≥ 5 → 封顶 1（范围断言容忍 ms 级时间衰减）
+    expect(tracker.score('mem_a')).toBeLessThanOrEqual(1)
+    expect(tracker.score('mem_a')).toBeGreaterThan(0.999)
   })
 
   test('injected alone does not feed score (observability only)', () => {
@@ -188,5 +191,32 @@ describe('MemoryUsageTracker', () => {
     expect(existsSync(join(tmpDir, '.usage-stats.tmp'))).toBe(false)
     const payload = JSON.parse(readFileSync(statsPath, 'utf-8')) as { version: number }
     expect(payload.version).toBe(1)
+  })
+
+  test('debounced background flush fires after interval', async () => {
+    const debouncePath = join(tmpDir, 'debounce-stats.json')
+    const tracker = new MemoryUsageTracker({ statsPath: debouncePath, flushIntervalMs: 20 })
+    tracker.record('mem_fiber', 'read')
+    expect(existsSync(debouncePath)).toBe(false)
+
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(existsSync(debouncePath)).toBe(true)
+    const payload = JSON.parse(readFileSync(debouncePath, 'utf-8')) as {
+      records: Record<string, { read: number }>
+    }
+    expect(payload.records.mem_fiber?.read).toBe(1)
+  })
+
+  test('stop cancels the pending debounced flush; explicit flush still works', async () => {
+    const stoppedPath = join(tmpDir, 'stopped-stats.json')
+    const tracker = new MemoryUsageTracker({ statsPath: stoppedPath, flushIntervalMs: 5_000 })
+    tracker.record('mem_stopped', 'read')
+    tracker.stop()
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(existsSync(stoppedPath)).toBe(false)
+
+    await tracker.flush()
+    expect(existsSync(stoppedPath)).toBe(true)
   })
 })
