@@ -7,15 +7,31 @@ import {
   toErrorMessage,
 } from '@zero-os/shared'
 import type { EmbeddingProvider } from './embedding'
+import {
+  buildMemoryFieldTokens,
+  calibrateVectorScore,
+  computeLexicalScores,
+  tokenizeForLexical,
+} from './scoring'
 import type { MemoryRepository } from './store'
 import type { VectorIndexLike } from './vector-index'
 
 const DEFAULT_TYPES: MemoryType[] = ['preference', 'decision', 'note', 'runbook', 'incident']
 
 export interface MemoryRetrieverConfig {
-  vectorWeight?: number
-  recencyWeight?: number
-  usageWeight?: number
+  /** 门槛分中校准向量的权重(与 relevanceLexicalWeight 合成纯相关性门槛分)。 */
+  relevanceVectorWeight?: number
+  /** 门槛分中词面重叠的权重。 */
+  relevanceLexicalWeight?: number
+  /**
+   * 排序偏置:recency/usage 只影响同门槛内的排序,不参与 minScore 门槛判定。
+   * 偏置远小于门槛分且线性饱和——低相关记忆即使满偏置也穿不透门槛。
+   */
+  rankRecencyBias?: number
+  rankUsageBias?: number
+  /** 向量分仿射校准锚点:cosine ∈ [floor, ceiling] 线性拉伸到 [0,1]。 */
+  vectorFloor?: number
+  vectorCeiling?: number
   recencyHalfLifeDays?: number
   /** 使用反馈:返回某记忆的近期使用度(0..1);缺省时 usage 项恒为 0。 */
   usageScore?: (memoryId: string) => number
@@ -23,7 +39,7 @@ export interface MemoryRetrieverConfig {
 
 /**
  * Memory retriever — searches memories by relevance.
- * Uses vector retrieval plus recency ranking.
+ * 门槛 = 校准向量 + 词面重叠(纯相关性,决定 minScore 去留);recency/usage 只做排序偏置。
  */
 export class MemoryRetriever {
   constructor(
@@ -142,19 +158,32 @@ export class MemoryRetriever {
         return tags.some((tag) => gateTags.has(tag))
       })
 
-    const scored = filtered.map(({ memory, vector, resolvedFrom }) => {
+    // 打分规则 v2:门槛分与排序分分离。
+    // 门槛 gate = vecW*校准向量 + lexW*词面重叠 —— 纯相关性,不受时间/使用反馈影响;
+    // 排序 score = gate + recencyBias*recency + usageBias*usage —— 同门槛内新近/常用优先。
+    // 动机(2026-09 trace 实证):旧混合分 0.7*vec+0.2*recency+0.1*usage 中 30% 与相关性
+    // 无关,真实命中 0.45~0.61 与噪声 0.31~0.45 区间重叠,任何全局 minScore 都无法分离。
+    const queryTokens = Array.from(new Set(tokenizeForLexical(query)))
+    const lexicalScores = computeLexicalScores(
+      queryTokens,
+      filtered.map(({ memory }) => buildMemoryFieldTokens(memory)),
+    )
+
+    const scored = filtered.map(({ memory, vector, resolvedFrom }, index) => {
+      const calibrated = calibrateVectorScore(vector, this.vectorFloor, this.vectorCeiling)
+      const lexical = lexicalScores[index] ?? 0
+      const gateScore =
+        this.relevanceVectorWeight * calibrated + this.relevanceLexicalWeight * lexical
       const recency = computeRecencyScore(memory, this.recencyHalfLifeDays)
       const usage = this.config.usageScore?.(memory.id) ?? 0
       const scoreBreakdown = {
-        keyword: 0,
+        keyword: lexical,
         recency,
         vector,
         usage,
+        gate: gateScore,
       }
-      // usage 权重(默认 0.1)远小于相关性权重且线性饱和,低相关记忆即使满 usage
-      // 也到不了 minScore 门槛——usage 只做同等相关间的排序偏置,不替代相关性。
-      const score =
-        this.vectorWeight * vector + this.recencyWeight * recency + this.usageWeight * usage
+      const score = gateScore + this.rankRecencyBias * recency + this.rankUsageBias * usage
 
       return {
         memory,
@@ -169,7 +198,10 @@ export class MemoryRetriever {
       return b.memory.confidence - a.memory.confidence
     })
 
-    return scored.filter((entry) => entry.score >= minScore).slice(0, topN)
+    // minScore 只判门槛分(相关性),排序偏置(recency/usage)不得把低相关条抬过门槛。
+    return scored
+      .filter((entry) => (entry.scoreBreakdown.gate ?? entry.score) >= minScore)
+      .slice(0, topN)
   }
 
   // 谱系指针只存 id 不存 type（merge 可跨类型），先按提示 type 查、再扫全类型。
@@ -203,16 +235,28 @@ export class MemoryRetriever {
     return current
   }
 
-  private get vectorWeight(): number {
-    return this.config.vectorWeight ?? 0.7
+  private get relevanceVectorWeight(): number {
+    return this.config.relevanceVectorWeight ?? 0.75
   }
 
-  private get recencyWeight(): number {
-    return this.config.recencyWeight ?? 0.2
+  private get relevanceLexicalWeight(): number {
+    return this.config.relevanceLexicalWeight ?? 0.25
   }
 
-  private get usageWeight(): number {
-    return this.config.usageWeight ?? 0.1
+  private get rankRecencyBias(): number {
+    return this.config.rankRecencyBias ?? 0.1
+  }
+
+  private get rankUsageBias(): number {
+    return this.config.rankUsageBias ?? 0.05
+  }
+
+  private get vectorFloor(): number {
+    return this.config.vectorFloor ?? 0.35
+  }
+
+  private get vectorCeiling(): number {
+    return this.config.vectorCeiling ?? 0.75
   }
 
   private get recencyHalfLifeDays(): number {

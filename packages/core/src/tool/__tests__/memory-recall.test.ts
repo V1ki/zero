@@ -59,8 +59,7 @@ beforeAll(async () => {
   const vectorIndex = new VectorIndex(join(testDir, 'vectors'))
   store = new IndexedMemoryStore(baseStore, embeddingClient, vectorIndex)
   retriever = new MemoryRetriever(store, embeddingClient, vectorIndex, {
-    vectorWeight: 0.8,
-    recencyWeight: 0.2,
+    recencyHalfLifeDays: 30,
   })
 
   await store.create('note', 'Deploy Checklist', 'Run bun run check before release', {

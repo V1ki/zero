@@ -49,8 +49,6 @@ async function createHarness() {
   const indexedStore = new IndexedMemoryStore(store, embeddingClient, vectorIndex)
   const lifecycle = new MemoryLifecycle(indexedStore)
   const retriever = new MemoryRetriever(indexedStore, embeddingClient, vectorIndex, {
-    vectorWeight: 0.8,
-    recencyWeight: 0.2,
     recencyHalfLifeDays: 30,
   })
 

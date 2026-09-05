@@ -323,7 +323,7 @@ describe('Session memory retrieval', () => {
       expect.objectContaining({
         topN: 8,
         confidenceThreshold: 0.5,
-        minScore: 0.3,
+        minScore: 0.5,
         sessionId: session.data.id,
       }),
     )
@@ -351,7 +351,7 @@ describe('Session memory retrieval', () => {
             query: 'x.com browser',
             mode: 'scored',
             options: expect.objectContaining({
-              minScore: 0.3,
+              minScore: 0.5,
             }),
             resultCount: 1,
             results: [

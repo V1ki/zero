@@ -5,6 +5,13 @@ export type { MemoryRepository } from './store'
 export { MemoManager } from './memo'
 export { MemoryRetriever } from './retrieval'
 export type { MemoryRetrieverConfig } from './retrieval'
+export {
+  buildMemoryFieldTokens,
+  calibrateVectorScore,
+  computeLexicalScores,
+  tokenizeForLexical,
+} from './scoring'
+export type { LexicalFieldTokens } from './scoring'
 export type { ScoredMemoryMatch } from '@zero-os/shared'
 export { MemoryLifecycle } from './lifecycle'
 export {

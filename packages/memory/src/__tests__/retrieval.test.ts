@@ -161,8 +161,6 @@ describe('MemoryRetriever', () => {
         },
       }),
       {
-        vectorWeight: 0.8,
-        recencyWeight: 0.2,
         recencyHalfLifeDays: 30,
       },
     )
@@ -195,7 +193,9 @@ describe('MemoryRetriever', () => {
     expect(results.length).toBeGreaterThan(0)
     expect(results[0]?.memory.title).toBe('Deploy API gateway')
     expect(results[0]?.scoreBreakdown.vector).toBeDefined()
-    expect(results[0]?.scoreBreakdown.keyword).toBe(0)
+    // v2:词面通道已实现,title/tags 命中查询 token 时 keyword > 0,gate 为门槛分
+    expect(results[0]?.scoreBreakdown.keyword).toBeGreaterThan(0)
+    expect(results[0]?.scoreBreakdown.gate).toBeDefined()
   })
 
   test('tag filter narrows vector matches after retrieval', async () => {
@@ -270,15 +270,13 @@ describe('MemoryRetriever', () => {
         resultsByVector: {
           6: [
             { memoryId: deployId, score: 0.92 },
-            { memoryId: redisId, score: 0.91 },
+            { memoryId: redisId, score: 0.92 },
             { memoryId: databaseId, score: 0.9 },
           ],
         },
       }),
       {
-        vectorWeight: 0.7,
-        recencyWeight: 0.2,
-        usageWeight: 0.1,
+        rankUsageBias: 0.05,
         usageScore: (id) => (id === redisId ? 1 : 0),
       },
     )
@@ -287,7 +285,8 @@ describe('MemoryRetriever', () => {
       confidenceThreshold: 0.1,
     })
 
-    // 无 usage 时 deploy(向量 0.92)排第一;redis 满 usage 后 0.7*0.91+0.2+0.1 反超
+    // deploy/redis 向量同分(门槛分并列)→ 满 usage 的 redis 靠排序偏置反超;
+    // 偏置只重排,不改变 database 门槛分最低的事实。
     expect(results[0]?.memory.id).toBe(redisId)
     expect(results[0]?.scoreBreakdown.usage).toBe(1)
     expect(results.find((entry) => entry.memory.id === deployId)?.scoreBreakdown.usage).toBe(0)
@@ -307,9 +306,7 @@ describe('MemoryRetriever', () => {
         },
       }),
       {
-        vectorWeight: 0.7,
-        recencyWeight: 0.2,
-        usageWeight: 0.1,
+        rankUsageBias: 0.05,
         usageScore: (id) => (id === databaseId ? 1 : 0),
       },
     )
@@ -319,7 +316,8 @@ describe('MemoryRetriever', () => {
       confidenceThreshold: 0.1,
     })
 
-    // database: 0.7*0.3+0.2+0.1=0.51 < 0.7 —— usage 封顶 0.1,低相关穿不透门槛
+    // database: 向量 0.3 校准后为 0,词面无命中 → 门槛分 0,满 usage 也只是排序偏置,
+    // 不参与 minScore 判定——低相关穿不透门槛。
     expect(results.map((entry) => entry.memory.id)).toEqual([deployId])
   })
 
@@ -394,8 +392,6 @@ describe('MemoryRetriever', () => {
         },
       }),
       {
-        vectorWeight: 0.8,
-        recencyWeight: 0.2,
         recencyHalfLifeDays: 30,
       },
     )
@@ -442,7 +438,7 @@ describe('MemoryRetriever', () => {
           ],
         },
       }),
-      { vectorWeight: 0.8, recencyWeight: 0.2, recencyHalfLifeDays: 30 },
+      { recencyHalfLifeDays: 30 },
     )
     const results = await retriever.retrieveScored('deploy')
     expect(results[0]?.memory.id).toBe(good.id) // NaN 日期的 bad 不被顶到第一
@@ -642,5 +638,152 @@ describe('MemoryRetriever authority gates & deep chains', () => {
     const results = await retriever.retrieveScored('q', { types: ['note'] })
     expect(results.length).toBe(1)
     expect(results[0]?.memory.id).toBe(final.id)
+  })
+})
+
+// 打分 v2 回归锁:门槛分 = 校准向量 + 词面重叠(纯相关性),recency/usage 只做排序偏置。
+describe('MemoryRetriever scoring v2 (relevance gate + ordering bias)', () => {
+  let dir: string
+  let store: MemoryStore
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'zero-retrieval-v2-'))
+    store = new MemoryStore(dir)
+  })
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  const meta = (m: { id: string; type: string; title: string; updatedAt: string }): [
+    string,
+    MemoryVectorMeta,
+  ] => [m.id, { memoryId: m.id, type: m.type, title: m.title, updatedAt: m.updatedAt }]
+
+  function makeRetriever(
+    hits: Array<{ memoryId: string; score: number }>,
+    metadataById: Map<string, MemoryVectorMeta>,
+  ) {
+    return new MemoryRetriever(
+      store,
+      {
+        // 任意查询都嵌入到向量 [1];词面通道由真实查询文本驱动
+        async embed() {
+          return [1]
+        },
+        async embedBatch(texts: string[]) {
+          return texts.map(() => [1])
+        },
+        memoryToText(memory) {
+          return memory.title
+        },
+      },
+      createVectorIndex({ resultsByVector: { 1: hits }, metadataById }),
+    )
+  }
+
+  test('minScore gates on relevance: stale exact-match survives, fresh zero-overlap drops', async () => {
+    const stale = await store.create(
+      'runbook',
+      'ASR transcript pipeline',
+      'yt-dlp download audio',
+      {
+        tags: ['asr'],
+        status: 'verified',
+        confidence: 0.9,
+        updatedAt: '2025-01-01T00:00:00.000Z',
+      },
+    )
+    const fresh = await store.create('note', 'Cooking notes', 'recipes for dinner', {
+      tags: ['cooking'],
+      status: 'verified',
+      confidence: 0.95,
+    })
+    const retriever = makeRetriever(
+      [
+        { memoryId: stale.id, score: 0.8 },
+        { memoryId: fresh.id, score: 0.5 },
+      ],
+      new Map([meta(stale), meta(fresh)]),
+    )
+
+    const results = await retriever.retrieveScored('yt-dlp asr', {
+      minScore: 0.5,
+      confidenceThreshold: 0.5,
+    })
+
+    // 陈旧但词面精确命中 + 高向量 → 门槛 0.75+0.25*0.7=0.925 通过;新写但零重叠 →
+    // 门槛 0.75*0.375≈0.281 被拦——recency 满分也救不了(排序偏置不参与门槛判定)。
+    expect(results.map((entry) => entry.memory.id)).toEqual([stale.id])
+    expect(results[0]?.scoreBreakdown.gate).toBeCloseTo(0.925, 3)
+  })
+
+  test('calibration anchors: floor→0, ceiling→1, beyond clamps; breakdown.vector stays raw', async () => {
+    const a = await store.create('note', 'Alpha note', 'alpha', {
+      status: 'verified',
+      confidence: 0.9,
+    })
+    const b = await store.create('note', 'Beta note', 'beta', {
+      status: 'verified',
+      confidence: 0.9,
+    })
+    const c = await store.create('note', 'Gamma note', 'gamma', {
+      status: 'verified',
+      confidence: 0.9,
+    })
+    const retriever = makeRetriever(
+      [
+        { memoryId: a.id, score: 0.35 },
+        { memoryId: b.id, score: 0.75 },
+        { memoryId: c.id, score: 0.95 },
+      ],
+      new Map([meta(a), meta(b), meta(c)]),
+    )
+
+    const results = await retriever.retrieveScored('zzz unmatched', { confidenceThreshold: 0.5 })
+
+    const byTitle = new Map(results.map((entry) => [entry.memory.title, entry]))
+    // 查询与三条零词面重叠 → gate 纯由校准向量决定(默认锚点 0.35/0.75,向量权重 0.75)
+    expect(byTitle.get('Alpha note')?.scoreBreakdown.gate).toBeCloseTo(0, 3)
+    expect(byTitle.get('Beta note')?.scoreBreakdown.gate).toBeCloseTo(0.75, 3)
+    expect(byTitle.get('Gamma note')?.scoreBreakdown.gate).toBeCloseTo(0.75, 3)
+    // vector 字段保留原始 cosine,不被校准覆盖(UI/trace 兼容)
+    expect(byTitle.get('Gamma note')?.scoreBreakdown.vector).toBe(0.95)
+  })
+
+  test('rare-token overlap outranks common-token overlap at equal vector score', async () => {
+    const common = await store.create('note', 'video download', 'download video', {
+      tags: ['video'],
+      status: 'verified',
+      confidence: 0.9,
+    })
+    const rare = await store.create('note', 'video yt-dlp', 'download video via yt-dlp', {
+      tags: ['video'],
+      status: 'verified',
+      confidence: 0.9,
+    })
+    const other = await store.create('note', 'cooking recipes', 'dinner ideas', {
+      tags: ['cooking'],
+      status: 'verified',
+      confidence: 0.9,
+    })
+    const retriever = makeRetriever(
+      [
+        { memoryId: common.id, score: 0.8 },
+        { memoryId: rare.id, score: 0.8 },
+        { memoryId: other.id, score: 0.8 },
+      ],
+      new Map([meta(common), meta(rare), meta(other)]),
+    )
+
+    const results = await retriever.retrieveScored('yt-dlp video', { confidenceThreshold: 0.5 })
+
+    // 'video' 池内 2/3 命中(常见)权重低;'yt-dlp/yt/dlp' 仅 1/3 持有(稀有)权重高——
+    // 等向量分下词面通道把稀有 token 命中者排到最前。
+    expect(results.map((entry) => entry.memory.title)).toEqual([
+      'video yt-dlp',
+      'video download',
+      'cooking recipes',
+    ])
   })
 })

@@ -73,6 +73,11 @@ export interface MemoryScoreBreakdown {
   vector?: number
   /** 使用反馈回路:该记忆的近期使用度(0..1),封顶权重远小于相关性权重。 */
   usage?: number
+  /**
+   * 门槛分(纯相关性):校准向量 + 词面重叠的加权和,不含 recency/usage。
+   * minScore 过滤只看此值;score 是它在排序偏置上的叠加。
+   */
+  gate?: number
 }
 
 /**

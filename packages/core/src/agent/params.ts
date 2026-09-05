@@ -107,16 +107,26 @@ export const CONTEXT_PARAMS = {
     topN: 8,
     confidenceThreshold: 0.5,
     perMemoryMaxTokens: 400,
-    // 2026-08-28 引入使用反馈回路:向量 0.8→0.7 腾出 0.1 给 usage(read/used 衰减计数)。
-    // usage 线性饱和且封顶 0.1:满 usage 只抬 0.1 分,低相关记忆穿不透 minScore,只做同等相关间的排序偏置。
-    vectorWeight: 0.7,
-    recencyWeight: 0.2,
-    usageWeight: 0.1,
+    // 打分规则 v2(2026-09-03):门槛分 gate = 0.75*校准向量 + 0.25*词面重叠,只看相关性;
+    // recency/usage 降级为排序偏置(+0.1/+0.05),不再参与 minScore 判定。
+    // 背景:旧混合分 0.7*vec+0.2*recency+0.1*usage 中 30% 与相关性无关,历史 trace 实证
+    // 真实命中 0.45~0.61 与噪声 0.31~0.45 区间重叠——0.7 门槛全灭(5347efbc 事故,
+    // memory_search 全量 0 结果、usage 无注入永无法积累的死锁),0.3 门槛噪声全过,无法两全。
+    relevanceVectorWeight: 0.75,
+    relevanceLexicalWeight: 0.25,
+    rankRecencyBias: 0.1,
+    rankUsageBias: 0.05,
+    // 向量 cosine 仿射校准锚点:cosine∈[floor,ceiling] → [0,1]。text-embedding-v4 实测
+    // 同一记忆因查询措辞不同 cosine 在 0.55~0.79 摆动,原始值不校准则门槛随模型漂移。
+    vectorFloor: 0.35,
+    vectorCeiling: 0.75,
     recencyHalfLifeDays: 30,
-    // 历史 trace 实证:真实命中的总分区间 0.3~0.66(最佳 0.657),从未到过 0.7。
-    // 5347efbc 曾把本值调到 0.7,导致上线后 memory_search 全量 0 结果(usage 也因无注入
-    // 永远无法积累,鸡生蛋死锁),故回到最后已知正常值 0.3。
-    minScore: 0.3,
+    // minScore 语义随 v2 变为"只判门槛分(纯相关性)"。2026-09-03 历史会话回放实证
+    // (10 个会话跨 0.15/0.3/0.7 三个时期, 54 组 selector 选中正例/148 组未选负例):
+    // gate@0.5 保留正例 85%,拦截返回候选的 31% 弱尾;近重复任务(X视频ASR) gate 0.61~0.87
+    // 全部通过。对照:旧公式 0.3 拦截率 0%(噪声全过),0.7 正例全灭(0/54)。门槛不做精确
+    // 筛选——layer1 的 LLM selector 负责精筛,门槛只负责拦噪声+控量。
+    minScore: 0.5,
     agentMaxIterations: 3,
     agentMaxOutputTokens: 512,
     agentMaxSelectedMemories: 3,

@@ -28,13 +28,19 @@ S3 回声检测 (turn 后)  ──►  sidecar,与正文解耦  ──►  回�
 
 ## 评分接入
 
+2026-09-03 打分规则升级为 v2(门槛/排序分离),usage 从"合成分权重"降级为"纯排序偏置":
+
 ```
-score = 0.7 × vector + 0.2 × recency + 0.1 × usage    (CONTEXT_PARAMS.retrieval)
+gate  = 0.75 × calibrate(vector, floor=0.35, ceiling=0.75) + 0.25 × lexical   门槛分(纯相关性)
+score = gate + 0.1 × recency + 0.05 × usage                                   排序分
 usage = min(1, (2 × read + used) / 5)                 线性饱和
 ```
 
-安全性质:usage 封顶 0.1,而 `minScore = 0.7` 对合成分把关——
-低相关记忆即使满 usage 也到不了门槛,usage 只做同等相关间的排序偏置。
+`minScore = 0.5` 只对 gate 把关:低相关记忆即使满 recency/usage 偏置也穿不透门槛,
+两者只在同门槛段内影响排序。动机与回归数据见 `CONTEXT_PARAMS.retrieval` 注释
+(旧合成分中 30% 与相关性无关,0.3/0.7 两代阈值都无法同时保召回和拦噪声)。
+lexical 为候选池 IDF 加权的词面重叠(CJK 二元组 + 拉丁 token,title/tags 满额、正文 6 折),
+实现见 `packages/memory/src/scoring.ts`。
 
 ## 存储与失效语义
 

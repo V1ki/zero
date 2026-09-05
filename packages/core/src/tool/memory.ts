@@ -433,8 +433,12 @@ function formatScoreBreakdown(breakdown: {
   recency: number
   vector?: number
   usage?: number
+  gate?: number
 }): string {
   const parts = []
+  if (breakdown.gate !== undefined) {
+    parts.push(`gate: ${formatScore(breakdown.gate)}`)
+  }
   if (breakdown.vector !== undefined) {
     parts.push(`vector: ${formatScore(breakdown.vector)}`)
   }

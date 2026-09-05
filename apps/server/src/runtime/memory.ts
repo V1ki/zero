@@ -63,9 +63,12 @@ export async function createMemoryRuntime({
   })
 
   const memoryRetriever = new MemoryRetriever(memoryStore, embeddingClient, vectorIndex, {
-    vectorWeight: CONTEXT_PARAMS.retrieval.vectorWeight,
-    recencyWeight: CONTEXT_PARAMS.retrieval.recencyWeight,
-    usageWeight: CONTEXT_PARAMS.retrieval.usageWeight,
+    relevanceVectorWeight: CONTEXT_PARAMS.retrieval.relevanceVectorWeight,
+    relevanceLexicalWeight: CONTEXT_PARAMS.retrieval.relevanceLexicalWeight,
+    rankRecencyBias: CONTEXT_PARAMS.retrieval.rankRecencyBias,
+    rankUsageBias: CONTEXT_PARAMS.retrieval.rankUsageBias,
+    vectorFloor: CONTEXT_PARAMS.retrieval.vectorFloor,
+    vectorCeiling: CONTEXT_PARAMS.retrieval.vectorCeiling,
     recencyHalfLifeDays: CONTEXT_PARAMS.retrieval.recencyHalfLifeDays,
     usageScore: (memoryId) => memoryUsage.score(memoryId),
   })
