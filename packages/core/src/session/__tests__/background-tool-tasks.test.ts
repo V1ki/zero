@@ -4,6 +4,7 @@ import type { ProviderAdapter } from '@zero-os/model'
 import type {
   CompletionRequest,
   CompletionResponse,
+  SecretFilter,
   StreamEvent,
   ToolContext,
   ToolResult,
@@ -325,6 +326,143 @@ describe('BackgroundToolTaskManager', () => {
       deliveryChannelId: 'oc_feishu',
       participantId: 'ou_user',
     })
+  })
+
+  test('emits progress from output reports, gated by the output delta', async () => {
+    const events: Array<{ topic: string; data: Record<string, unknown> }> = []
+    const deferred = createDeferred<ToolResult>()
+    const manager = new BackgroundToolTaskManager({
+      sessionId: 'sess-progress',
+      thresholdMs: 5,
+      progressIntervalMs: 60_000,
+      progressMinIntervalMs: 20,
+      progressOutputDeltaChars: 100,
+      logger: createLogger(),
+      emitBusEvent: (topic, data) => {
+        events.push({ topic, data })
+      },
+      onComplete: () => {},
+    })
+
+    await manager.run({
+      toolName: 'bash',
+      toolUseId: 'call_progress',
+      inputSummary: '{"command":"build"}',
+      execute: () => deferred.promise,
+    })
+    const taskId = events[0]?.data.taskId
+
+    // Reports for unknown or not-yet-backgrounded executions are ignored.
+    manager.reportProgress({ toolUseId: 'call_unknown', totalOutputChars: 5, outputTail: 'x' })
+
+    // Past the min interval, but below the output delta: no emission yet.
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    manager.reportProgress({
+      toolUseId: 'call_progress',
+      totalOutputChars: 50,
+      outputTail: 'a'.repeat(50),
+    })
+    expect(events.filter((event) => event.topic === 'background_tool:progress')).toHaveLength(0)
+
+    // Crossing the output delta emits immediately with the latest totals.
+    manager.reportProgress({
+      toolUseId: 'call_progress',
+      totalOutputChars: 200,
+      outputTail: 'compiling...\nalmost done\n',
+    })
+    const progress = events.find((event) => event.topic === 'background_tool:progress')
+    expect(progress?.data).toMatchObject({
+      sessionId: 'sess-progress',
+      taskId,
+      toolUseId: 'call_progress',
+      status: 'running',
+      totalOutputChars: 200,
+      lastOutputTail: 'compiling...\nalmost done\n',
+    })
+    expect(typeof progress?.data.elapsedMs).toBe('number')
+
+    deferred.resolve({ success: true, output: 'built', outputSummary: 'done' })
+  })
+
+  test('heartbeats progress for quiet background tasks and stops after completion', async () => {
+    const events: Array<{ topic: string; data: Record<string, unknown> }> = []
+    const deferred = createDeferred<ToolResult>()
+    const manager = new BackgroundToolTaskManager({
+      sessionId: 'sess-heartbeat',
+      thresholdMs: 5,
+      progressIntervalMs: 60,
+      progressMinIntervalMs: 10,
+      logger: createLogger(),
+      emitBusEvent: (topic, data) => {
+        events.push({ topic, data })
+      },
+      onComplete: () => {},
+    })
+
+    await manager.run({
+      toolName: 'slow_tool',
+      toolUseId: 'call_quiet',
+      inputSummary: '{}',
+      execute: () => deferred.promise,
+    })
+
+    const heartbeat = await waitFor(() =>
+      events.find((event) => event.topic === 'background_tool:progress'),
+    )
+    expect(heartbeat.data).toMatchObject({
+      sessionId: 'sess-heartbeat',
+      status: 'running',
+      totalOutputChars: 0,
+      lastOutputTail: '',
+    })
+
+    deferred.resolve({ success: true, output: 'quiet done', outputSummary: 'done' })
+    await waitFor(() => events.find((event) => event.topic === 'background_tool:completed'))
+    const progressCount = events.filter((event) => event.topic === 'background_tool:progress').length
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    expect(events.filter((event) => event.topic === 'background_tool:progress')).toHaveLength(
+      progressCount,
+    )
+  }, 5000)
+
+  test('filters secrets out of the progress tail', async () => {
+    const events: Array<{ topic: string; data: Record<string, unknown> }> = []
+    const deferred = createDeferred<ToolResult>()
+    const manager = new BackgroundToolTaskManager({
+      sessionId: 'sess-progress-secrets',
+      thresholdMs: 5,
+      progressIntervalMs: 60_000,
+      progressMinIntervalMs: 20,
+      progressOutputDeltaChars: 10,
+      secretFilter: {
+        filter: (value: string) => value.replaceAll('hunter2', '***'),
+      } as unknown as SecretFilter,
+      logger: createLogger(),
+      emitBusEvent: (topic, data) => {
+        events.push({ topic, data })
+      },
+      onComplete: () => {},
+    })
+
+    await manager.run({
+      toolName: 'bash',
+      toolUseId: 'call_progress_secrets',
+      inputSummary: '{}',
+      execute: () => deferred.promise,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    manager.reportProgress({
+      toolUseId: 'call_progress_secrets',
+      totalOutputChars: 40,
+      outputTail: 'token=hunter2 ok',
+    })
+
+    const progress = await waitFor(() =>
+      events.find((event) => event.topic === 'background_tool:progress'),
+    )
+    expect(progress.data.lastOutputTail).toBe('token=*** ok')
+
+    deferred.resolve({ success: true, output: 'done', outputSummary: 'done' })
   })
 })
 

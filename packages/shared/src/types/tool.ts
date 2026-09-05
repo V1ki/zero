@@ -231,10 +231,21 @@ export interface BackgroundToolExecutionInput {
   execute(): Promise<ToolResult>
 }
 
+export interface BackgroundToolProgressInput {
+  toolUseId: string
+  totalOutputChars: number
+  outputTail: string
+}
+
 export interface BackgroundToolTaskSink {
   readonly thresholdMs: number
   run(input: BackgroundToolExecutionInput): Promise<ToolResult>
   waitForCompletion?(taskId: string): Promise<ToolResult>
+  /**
+   * Live output progress from streaming tools (e.g. bash). Ignored until the
+   * execution is backgrounded; the implementation throttles emissions.
+   */
+  reportProgress?(input: BackgroundToolProgressInput): void
 }
 
 export interface ToolContext {

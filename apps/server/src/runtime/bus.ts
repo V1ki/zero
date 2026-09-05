@@ -7,6 +7,7 @@ export type BusEvent =
   | 'tool:call'
   | 'tool:result'
   | 'background_tool:started'
+  | 'background_tool:progress'
   | 'background_tool:completed'
   | 'model:switch'
   | 'notification'

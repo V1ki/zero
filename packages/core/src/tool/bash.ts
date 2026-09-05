@@ -8,6 +8,7 @@ import type {
 import { now } from '@zero-os/shared'
 import { Effect, Fiber } from 'effect'
 import { FuseListChecker } from '../config/fuse-list'
+import { BACKGROUND_TOOL_PROGRESS_TAIL_CHARS } from '../session/background-tool-tasks'
 import { BaseTool } from './base'
 import { buildToolProcessEnv } from './process-env'
 
@@ -176,7 +177,10 @@ function buildBashOutput(stdout: string, stderr: string, abortMessage?: string):
   return output
 }
 
-function createStreamCapture(stream?: ReadableStream<Uint8Array> | number | null) {
+function createStreamCapture(
+  stream?: ReadableStream<Uint8Array> | number | null,
+  onText?: (text: string) => void,
+) {
   if (!stream || typeof stream === 'number') {
     return {
       done: Promise.resolve(),
@@ -206,6 +210,7 @@ function createStreamCapture(stream?: ReadableStream<Uint8Array> | number | null
     if (overflow) {
       tail = (tail + overflow).slice(-TAIL_CAPTURE_CHARS)
     }
+    onText?.(text)
   }
 
   const flushDecoder = () => {
@@ -444,8 +449,22 @@ export class BashTool extends BaseTool {
         (proc) => Effect.sync(() => tryKillProcess(proc, 'SIGKILL')),
       )
 
-      const stdoutCapture = createStreamCapture(proc.stdout)
-      const stderrCapture = createStreamCapture(proc.stderr)
+      // Rolling combined tail of stdout+stderr for background progress reports.
+      // Aggregation only — throttling lives in the background task manager.
+      let progressChars = 0
+      let progressTail = ''
+      const onOutputText = (text: string) => {
+        progressChars += text.length
+        progressTail = (progressTail + text).slice(-BACKGROUND_TOOL_PROGRESS_TAIL_CHARS)
+        if (!ctx.currentToolUseId) return
+        ctx.backgroundToolTasks?.reportProgress?.({
+          toolUseId: ctx.currentToolUseId,
+          totalOutputChars: progressChars,
+          outputTail: progressTail,
+        })
+      }
+      const stdoutCapture = createStreamCapture(proc.stdout, onOutputText)
+      const stderrCapture = createStreamCapture(proc.stderr, onOutputText)
       let stdinWriteError: string | undefined
       const stdinWrite =
         stdin === undefined

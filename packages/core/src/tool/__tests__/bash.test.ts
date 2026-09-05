@@ -42,6 +42,35 @@ describe('BashTool output capture', () => {
     expect(result.output).toContain('oops')
   })
 
+  test('streams live output progress to the background task sink', async () => {
+    const reports: Array<{ toolUseId: string; totalOutputChars: number; outputTail: string }> = []
+    const ctx = {
+      ...makeCtx(),
+      currentToolUseId: 'toolu_progress_1',
+      backgroundToolTasks: {
+        thresholdMs: 60_000,
+        run: async () => ({ success: true, output: '', outputSummary: '' }),
+        reportProgress: (input: {
+          toolUseId: string
+          totalOutputChars: number
+          outputTail: string
+        }) => {
+          reports.push(input)
+        },
+      },
+    } as unknown as ToolContext
+
+    const result = await tool.run(ctx, { command: 'echo building; echo warnings >&2' })
+
+    expect(result.success).toBe(true)
+    expect(reports.length).toBeGreaterThanOrEqual(1)
+    const last = reports.at(-1)
+    expect(last?.toolUseId).toBe('toolu_progress_1')
+    expect(last?.totalOutputChars).toBeGreaterThan(0)
+    expect(last?.outputTail).toContain('building')
+    expect(last?.outputTail).toContain('warnings')
+  }, 5000)
+
   test('command timeout kills the process and reports the failure result', async () => {
     const registry = new SessionRunningToolRegistry()
     const handle = registry.register({

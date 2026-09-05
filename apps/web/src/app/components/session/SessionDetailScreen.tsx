@@ -762,7 +762,7 @@ function SessionDetailTimelineStage({
             No messages in this session.
           </div>
         ) : stageView === 'trajectory' ? (
-          <TrajectoryView snapshot={trajectorySnapshot} loading={loading} />
+          <TrajectoryView snapshot={trajectorySnapshot} loading={loading} sessionId={sessionId} />
         ) : (
           <TimelineView
             sessionId={sessionId}

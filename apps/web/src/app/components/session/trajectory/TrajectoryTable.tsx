@@ -5,6 +5,8 @@ import { structuredPatch } from 'diff'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import css from './TrajectoryTable.module.css'
+import type { BackgroundToolProgressEntry } from './background-progress'
+import { backgroundProgressElapsedMs } from './background-progress'
 import type { TrajectoryTurnModel } from './layout'
 import {
   IconChevronRightOutline14,
@@ -418,6 +420,8 @@ export interface TrajectoryTableProps {
   inspectCallId?: string | null
   /** Acknowledge a consumed (or unresolvable) inspect request. */
   onInspectApplied?: (() => void) | undefined
+  /** Live background-tool progress lookup by tool call id, when a session is live. */
+  getBackgroundProgress?: (callId: string) => BackgroundToolProgressEntry | undefined
 }
 
 /** Request-inspector fields shared by ordinary generation and compaction. */
@@ -723,6 +727,17 @@ function statusLabel(state: RecordState): string {
   if (state === 'error') return 'Failed'
   if (state === 'running') return 'Pending'
   return 'Completed'
+}
+
+/** Live background-tool progress for one running tool record, when available. */
+function backgroundProgressOf(
+  record: TableRecord | undefined,
+  getBackgroundProgress: ((callId: string) => BackgroundToolProgressEntry | undefined) | undefined,
+): BackgroundToolProgressEntry | undefined {
+  if (record === undefined || getBackgroundProgress === undefined) return undefined
+  if (stateOf(record) !== 'running') return undefined
+  if (record.cell.callId === undefined) return undefined
+  return getBackgroundProgress(record.cell.callId)
 }
 
 function TokenRows({ cell }: { cell: TrajectoryCellProps }) {
@@ -1780,16 +1795,20 @@ function OverviewSection({
   children,
 }: {
   label: string
-  onOpen: () => void
+  onOpen?: () => void
   children: ReactNode
 }) {
   return (
     <section className={css.overviewSection}>
       <h3 className={css.overviewHeading}>
-        <button type="button" className={css.overviewTitle} onClick={onOpen}>
-          <span>{label}</span>
-          <IconChevronRightOutline14 className={css.overviewTitleIcon} size={12} />
-        </button>
+        {onOpen === undefined ? (
+          <span className={css.overviewTitleStatic}>{label}</span>
+        ) : (
+          <button type="button" className={css.overviewTitle} onClick={onOpen}>
+            <span>{label}</span>
+            <IconChevronRightOutline14 className={css.overviewTitleIcon} size={12} />
+          </button>
+        )}
       </h3>
       <div
         className={`${css.overviewPreview} ${css.summaryScrollRegion}`}
@@ -1829,6 +1848,7 @@ export function TrajectoryTable({
   onToggleAssistant,
   inspectCallId = null,
   onInspectApplied,
+  getBackgroundProgress,
 }: TrajectoryTableProps) {
   const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null)
   const [selectedRequest, setSelectedRequest] = useState<SelectedRequest | null>(null)
@@ -1958,6 +1978,7 @@ export function TrajectoryTable({
     selected?.cell.kind === 'system' ? selected.cell.previousPromptDetail : undefined
   const promptSelected = selectedPrompt !== undefined
   const selectedState = selected === undefined ? undefined : stateOf(selected)
+  const selectedLiveProgress = backgroundProgressOf(selected, getBackgroundProgress)
   const selectedRequestRecordTemplates = useMemo(
     () =>
       selectedRequest === null
@@ -2419,6 +2440,7 @@ export function TrajectoryTable({
                 {({ displayText, listDisplayText, resultText, toolCallOnly, toolCallText }) => {
                   const isCollapsedSummary = record.collapsedSummary !== undefined
                   const isRequestOnly = record.cell.requestOnly === true
+                  const liveProgress = backgroundProgressOf(record, getBackgroundProgress)
                   const isInitialSystem =
                     record.cell.kind === 'system' && record.cell.index === allRecords[0]?.cell.index
                   const key = requestKey(record.turn, record.group)
@@ -2708,6 +2730,17 @@ export function TrajectoryTable({
                                 </span>
                               </span>
                             )}
+                          </span>
+                        )}
+                        {liveProgress !== undefined && (
+                          <span className={css.liveProgress}>
+                            <span className={css.liveProgressPulse} aria-hidden="true" />
+                            {formatElapsedSeconds(
+                              backgroundProgressElapsedMs(liveProgress, Date.now()) / 1000,
+                            )}
+                            <span className={css.liveProgressMeta}>
+                              · {liveProgress.totalOutputChars.toLocaleString()} chars
+                            </span>
                           </span>
                         )}
                       </td>
@@ -3199,6 +3232,23 @@ export function TrajectoryTable({
                         {statusLabel(selectedState)}
                       </dd>
                     </div>
+                    {selectedLiveProgress !== undefined && (
+                      <div>
+                        <dt>Running for</dt>
+                        <dd className={css.overviewLive}>
+                          <span className={css.liveProgressPulse} aria-hidden="true" />
+                          {formatElapsedSeconds(
+                            backgroundProgressElapsedMs(selectedLiveProgress, Date.now()) / 1000,
+                          )}
+                        </dd>
+                      </div>
+                    )}
+                    {selectedLiveProgress !== undefined && (
+                      <div>
+                        <dt>Output so far</dt>
+                        <dd>{selectedLiveProgress.totalOutputChars.toLocaleString()} chars</dd>
+                      </div>
+                    )}
                     {selected.cell.kind === 'tool' &&
                       selected.cell.evidenceDetail !== undefined && (
                         <div>
@@ -3319,6 +3369,12 @@ export function TrajectoryTable({
                         <RecordTiming record={selected} />
                       </OverviewSection>
                     )}
+                    {selectedLiveProgress !== undefined &&
+                      selectedLiveProgress.lastOutputTail !== '' && (
+                        <OverviewSection label="Live Output">
+                          <pre className={css.liveTail}>{selectedLiveProgress.lastOutputTail}</pre>
+                        </OverviewSection>
+                      )}
                   </div>
                 </>
               )}

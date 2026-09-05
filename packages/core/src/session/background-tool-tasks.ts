@@ -1,5 +1,6 @@
 import type {
   BackgroundToolExecutionInput,
+  BackgroundToolProgressInput,
   BackgroundToolTaskSink,
   SecretFilter,
   ToolLogger,
@@ -11,6 +12,8 @@ export const BACKGROUND_TOOL_TIMEOUT_MS = 60_000
 
 const MAX_OUTPUT_CHARS = 8_000
 const MAX_SUMMARY_CHARS = 500
+/** Cap for the live output tail carried on background_tool:progress events. */
+export const BACKGROUND_TOOL_PROGRESS_TAIL_CHARS = 1_024
 
 export type BackgroundToolTaskStatus = 'running' | 'success' | 'error'
 
@@ -45,12 +48,26 @@ export interface BackgroundToolChannelBinding {
 interface BackgroundToolTaskManagerOptions {
   sessionId: string
   thresholdMs?: number
+  /** Steady-state progress heartbeat interval (default 15s). */
+  progressIntervalMs?: number
+  /** Floor between any two progress emissions (default 1s). */
+  progressMinIntervalMs?: number
+  /** New output that forces an emission even before progressIntervalMs (default 4k chars). */
+  progressOutputDeltaChars?: number
   logger: ToolLogger
   secretFilter?: SecretFilter
   channelBinding?: BackgroundToolChannelBinding
   getChannelBinding?: () => BackgroundToolChannelBinding | undefined
   emitBusEvent?(topic: string, data: Record<string, unknown>): void
   onComplete(event: BackgroundToolCompletionEvent): Promise<void> | void
+}
+
+interface BackgroundToolProgressState {
+  startedAtMs: number
+  lastEmitAt: number
+  lastEmitChars: number
+  latestChars: number
+  latestTail: string
 }
 
 type ToolSettledResult =
@@ -60,11 +77,19 @@ type ToolSettledResult =
 
 export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
   readonly thresholdMs: number
+  readonly progressIntervalMs: number
+  readonly progressMinIntervalMs: number
+  readonly progressOutputDeltaChars: number
   private tasks = new Map<string, BackgroundToolTaskRecord>()
   private waiters = new Map<string, Set<(result: ToolResult) => void>>()
+  private progress = new Map<string, BackgroundToolProgressState>()
+  private progressTicker: ReturnType<typeof setInterval> | undefined
 
   constructor(private readonly options: BackgroundToolTaskManagerOptions) {
     this.thresholdMs = options.thresholdMs ?? BACKGROUND_TOOL_TIMEOUT_MS
+    this.progressIntervalMs = options.progressIntervalMs ?? 15_000
+    this.progressMinIntervalMs = options.progressMinIntervalMs ?? 1_000
+    this.progressOutputDeltaChars = options.progressOutputDeltaChars ?? 4_096
   }
 
   async run(input: BackgroundToolExecutionInput): Promise<ToolResult> {
@@ -93,6 +118,7 @@ export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
       toolUseId: input.toolUseId,
       inputSummary: input.inputSummary,
       startedAt,
+      startedAtMs,
     })
 
     void foreground.then((settled) => {
@@ -155,11 +181,101 @@ export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
     return this.tasks.get(id)
   }
 
+  /**
+   * Live output progress from a streaming tool execution. Reports before the
+   * execution is backgrounded (no task yet) or after it completed are ignored;
+   * emissions are throttled by emitProgressIfDue.
+   */
+  reportProgress(input: BackgroundToolProgressInput): void {
+    const task = this.findRunningTask(input.toolUseId)
+    if (!task) return
+    const state = this.progress.get(task.id)
+    if (!state) return
+
+    state.latestChars = input.totalOutputChars
+    state.latestTail = input.outputTail
+    this.emitProgressIfDue(task, state, true)
+  }
+
+  private findRunningTask(toolUseId: string): BackgroundToolTaskRecord | undefined {
+    for (const task of this.tasks.values()) {
+      if (task.toolUseId === toolUseId && task.status === 'running') return task
+    }
+    return undefined
+  }
+
+  private emitProgressIfDue(
+    task: BackgroundToolTaskRecord,
+    state: BackgroundToolProgressState,
+    fromOutputReport: boolean,
+  ): void {
+    const nowMs = Date.now()
+    const sinceEmitMs = nowMs - state.lastEmitAt
+    if (sinceEmitMs < this.progressMinIntervalMs) return
+    if (sinceEmitMs < this.progressIntervalMs) {
+      const newChars = state.latestChars - state.lastEmitChars
+      if (!fromOutputReport || newChars < this.progressOutputDeltaChars) return
+    }
+
+    state.lastEmitAt = nowMs
+    state.lastEmitChars = state.latestChars
+    this.options.emitBusEvent?.('background_tool:progress', {
+      sessionId: task.sessionId,
+      taskId: task.id,
+      tool: task.toolName,
+      toolUseId: task.toolUseId,
+      status: 'running',
+      elapsedMs: Math.max(0, nowMs - state.startedAtMs),
+      totalOutputChars: state.latestChars,
+      lastOutputTail: this.filterProgressTail(state.latestTail),
+      startedAt: task.startedAt,
+      ...this.getChannelEventData(),
+    })
+  }
+
+  private filterProgressTail(value: string): string {
+    const filtered = this.options.secretFilter?.filter(value) ?? value
+    return filtered.length <= BACKGROUND_TOOL_PROGRESS_TAIL_CHARS
+      ? filtered
+      : filtered.slice(-BACKGROUND_TOOL_PROGRESS_TAIL_CHARS)
+  }
+
+  private ensureProgressTicker(): void {
+    if (this.progressTicker) return
+    // Tick faster than the heartbeat interval so quiet tasks stay within one
+    // interval of the due time despite timer drift.
+    const tickMs = Math.max(20, Math.floor(this.progressIntervalMs / 2))
+    const ticker = setInterval(() => {
+      for (const [taskId, state] of this.progress) {
+        const task = this.tasks.get(taskId)
+        if (!task || task.status !== 'running') continue
+        this.emitProgressIfDue(task, state, false)
+      }
+    }, tickMs)
+    ticker.unref?.()
+    this.progressTicker = ticker
+  }
+
+  private stopProgressTickerIfIdle(): void {
+    if (!this.progressTicker) return
+    let running = false
+    for (const task of this.tasks.values()) {
+      if (task.status === 'running') {
+        running = true
+        break
+      }
+    }
+    if (running) return
+    clearInterval(this.progressTicker)
+    this.progressTicker = undefined
+  }
+
   private startTask(input: {
     toolName: string
     toolUseId: string
     inputSummary: string
     startedAt: string
+    startedAtMs: number
   }): BackgroundToolTaskRecord {
     const task: BackgroundToolTaskRecord = {
       id: generateId(),
@@ -171,6 +287,14 @@ export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
       startedAt: input.startedAt,
     }
     this.tasks.set(task.id, task)
+    this.progress.set(task.id, {
+      startedAtMs: input.startedAtMs,
+      lastEmitAt: input.startedAtMs,
+      lastEmitChars: 0,
+      latestChars: 0,
+      latestTail: '',
+    })
+    this.ensureProgressTicker()
     this.options.emitBusEvent?.('background_tool:started', {
       sessionId: task.sessionId,
       taskId: task.id,
@@ -204,6 +328,8 @@ export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
     task.durationMs = Math.max(0, result.completedAtMs - result.startedAtMs)
     task.outputSummary = this.filterAndTruncate(result.outputSummary, MAX_SUMMARY_CHARS)
     task.output = this.filterAndTruncate(result.output, MAX_OUTPUT_CHARS)
+    this.progress.delete(taskId)
+    this.stopProgressTickerIfIdle()
 
     const channelBinding = this.getChannelBinding()
     this.options.emitBusEvent?.('background_tool:completed', {

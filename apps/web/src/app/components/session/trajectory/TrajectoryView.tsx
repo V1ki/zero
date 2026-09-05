@@ -12,6 +12,7 @@ import { type TrajectoryAgentEntry, TrajectoryAgents } from './TrajectoryAgents'
 import { type TrajectoryRequestNumber, TrajectoryTable } from './TrajectoryTable'
 import { TrajectoryTimeline } from './TrajectoryTimeline'
 import { TrajectoryToolbar } from './TrajectoryToolbar'
+import { useBackgroundToolProgress } from './background-progress'
 import { createTrajectoryDurationStore, useSnapshotStoreValue } from './duration-store'
 import {
   type TrajectoryTurnModel,
@@ -83,9 +84,16 @@ export interface TrajectoryViewProps {
   snapshot: TrajectorySnapshot | null
   /** Whether the owning session detail is still loading its first payload. */
   loading?: boolean
+  /** Owning session id; enables the live background-tool progress overlay. */
+  sessionId?: string | null
 }
 
-export function TrajectoryView({ snapshot, loading = false }: TrajectoryViewProps) {
+export function TrajectoryView({
+  snapshot,
+  loading = false,
+  sessionId = null,
+}: TrajectoryViewProps) {
+  const getBackgroundProgress = useBackgroundToolProgress(sessionId)
   const [collapsedTurns, setCollapsedTurns] = useState<ReadonlySet<number>>(EMPTY_TURN_IDS)
   const [collapsedAssistants, setCollapsedAssistants] =
     useState<ReadonlySet<string>>(EMPTY_RECORD_IDS)
@@ -460,6 +468,7 @@ export function TrajectoryView({ snapshot, loading = false }: TrajectoryViewProp
           onToggleAssistant={toggleAssistant}
           inspectCallId={null}
           onInspectApplied={undefined}
+          getBackgroundProgress={getBackgroundProgress}
         />
       </div>
     </div>
