@@ -111,6 +111,11 @@ Catalog 协调器统一处理以下触发：
 5. 配置 reload 后按新 transport、过滤器和账号重新发现。
 6. 配置页的 `Refresh models`，或手动 API 调用。
 
+ChatGPT 目录读取和模型验证会先通过该 provider 的 TokenManager 检查凭据有效期；收到 HTTP 401
+时强制刷新 OAuth 凭据并重试一次。刷新失败或重试仍失败时保留原有目录，并明确返回错误。
+运行时会为目录刷新失败记录 `model_catalog_refresh_failed`，包含 provider、刷新原因和错误摘要，
+包括定时刷新。若 refresh grant 已失效，需要重新登录对应的 provider 实例。
+
 同一 provider、账号、transport 和配置版本的并发刷新会合并为一个请求。账号或 transport 在刷新
 途中发生变化时，新旧刷新相互隔离，旧结果不会写入当前 Registry。
 

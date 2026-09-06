@@ -10,6 +10,7 @@ import {
 import type { MetricsDB } from '@zero-os/observe'
 import type { Vault } from '@zero-os/secrets'
 import type { ForkEffect, SystemConfig } from '@zero-os/shared'
+import { ChatGptTokenManager } from '../../providers/chatgpt/oauth'
 import { createUsageRecorder } from '../observability'
 import { createOAuthRefreshers, createProviderRecoveryResolver } from './recovery'
 
@@ -41,7 +42,19 @@ export async function createModelRouterRuntime(options: {
     config,
     secretGetter: (ref) => vault.get(ref) ?? undefined,
     store: new ModelCatalogStore(join(zeroDir, 'cache', 'model-catalog', 'catalog.json')),
-    drivers: [new ChatGptCodexDiscoveryDriver()],
+    drivers: [
+      new ChatGptCodexDiscoveryDriver(fetch, async (context, reason) => {
+        const manager = new ChatGptTokenManager(vault, {
+          providerName: context.providerName,
+          tokenRef: context.provider.auth.oauthTokenRef,
+        })
+        if (reason === 'expiring') await manager.ensureFreshSession()
+        else await manager.refreshSession(reason)
+      }),
+    ],
+    onRefreshError: ({ providerName, message, reason }) => {
+      console.warn('[ZeRo OS] model_catalog_refresh_failed', { providerName, reason, message })
+    },
     forkEffect,
   })
   await catalog.initialize()

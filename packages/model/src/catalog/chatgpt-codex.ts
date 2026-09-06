@@ -28,7 +28,37 @@ export class ChatGptCodexDiscoveryDriver implements ModelDiscoveryDriver {
   readonly kind = 'chatgpt-codex'
   readonly defaultEnabled = true
 
-  constructor(private readonly fetcher: Fetcher = fetch) {}
+  constructor(
+    private readonly fetcher: Fetcher = fetch,
+    private readonly refreshAuth?: (
+      context: ModelDiscoveryContext,
+      reason: 'expiring' | 'unauthorized',
+    ) => Promise<void>,
+  ) {}
+
+  private async authenticatedRequest(
+    context: ModelDiscoveryContext,
+    request: (session: ChatGptOAuthSession) => Promise<Response>,
+  ): Promise<Response> {
+    await this.refreshAuth?.(context, 'expiring')
+    context.signal.throwIfAborted()
+    const original = requireSession(context.provider, context.secretGetter)
+    let response = await request(original)
+    if (response.status === 401 && this.refreshAuth) {
+      await response.body?.cancel()
+      await this.refreshAuth(context, 'unauthorized')
+      context.signal.throwIfAborted()
+      const refreshed = requireSession(context.provider, context.secretGetter)
+      if (
+        buildScope(context.providerName, context.provider, original).accountFingerprint !==
+        buildScope(context.providerName, context.provider, refreshed).accountFingerprint
+      ) {
+        throw new Error('Model discovery account changed during authentication refresh')
+      }
+      response = await request(refreshed)
+    }
+    return response
+  }
 
   supports(providerName: string, provider: ProviderConfig): boolean {
     const managedKind = provider.auth.managedOAuthProvider
@@ -56,10 +86,12 @@ export class ChatGptCodexDiscoveryDriver implements ModelDiscoveryDriver {
     const url = new URL(`${normalizeBaseUrl(context.provider.baseUrl)}/models`)
     url.searchParams.set('client_version', clientVersion)
 
-    const response = await this.fetcher(url, {
-      headers: buildHeaders(session, 'application/json'),
-      signal: context.signal,
-    })
+    const response = await this.authenticatedRequest(context, (session) =>
+      this.fetcher(url, {
+        headers: buildHeaders(session, 'application/json'),
+        signal: context.signal,
+      }),
+    )
     if (!response.ok) {
       throw new Error(`ChatGPT Codex model discovery failed with HTTP ${response.status}`)
     }
@@ -76,29 +108,30 @@ export class ChatGptCodexDiscoveryDriver implements ModelDiscoveryDriver {
     _scope: ModelDiscoveryScope,
     model: DiscoveredModel,
   ): Promise<ModelVerificationResult> {
-    const session = requireSession(context.provider, context.secretGetter)
-    const response = await this.fetcher(`${normalizeBaseUrl(context.provider.baseUrl)}/responses`, {
-      method: 'POST',
-      headers: {
-        ...buildHeaders(session, 'text/event-stream'),
-        originator: 'codex_cli_rs',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: model.modelId,
-        store: false,
-        stream: true,
-        instructions: 'Reply with OK.',
-        input: [
-          {
-            role: 'user',
-            content: [{ type: 'input_text', text: 'Reply with OK.' }],
-          },
-        ],
-        text: { verbosity: 'low' },
+    const response = await this.authenticatedRequest(context, (session) =>
+      this.fetcher(`${normalizeBaseUrl(context.provider.baseUrl)}/responses`, {
+        method: 'POST',
+        headers: {
+          ...buildHeaders(session, 'text/event-stream'),
+          originator: 'codex_cli_rs',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: model.modelId,
+          store: false,
+          stream: true,
+          instructions: 'Reply with OK.',
+          input: [
+            {
+              role: 'user',
+              content: [{ type: 'input_text', text: 'Reply with OK.' }],
+            },
+          ],
+          text: { verbosity: 'low' },
+        }),
+        signal: context.signal,
       }),
-      signal: context.signal,
-    })
+    )
 
     if (response.ok) {
       try {

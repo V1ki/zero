@@ -23,6 +23,11 @@ export interface ModelCatalogCoordinatorOptions {
   secretGetter(ref: string): string | undefined
   store: ModelCatalogStore
   drivers: ModelDiscoveryDriver[]
+  onRefreshError?: (error: {
+    providerName: string
+    message: string
+    reason: ModelCatalogRefreshReason
+  }) => void
   now?: () => Date
   /**
    * 自动刷新 tick fiber fork 到宿主生命周期(组合根 fiber root)。默认独立
@@ -61,6 +66,7 @@ export class ModelCatalogCoordinator {
   private readonly secretGetter: (ref: string) => string | undefined
   private readonly store: ModelCatalogStore
   private readonly drivers: ModelDiscoveryDriver[]
+  private readonly onRefreshError: ModelCatalogCoordinatorOptions['onRefreshError']
   private readonly now: () => Date
   private readonly forkEffect: ForkEffect
   private snapshot: ModelCatalogSnapshot = emptySnapshot()
@@ -75,6 +81,7 @@ export class ModelCatalogCoordinator {
     this.secretGetter = options.secretGetter
     this.store = options.store
     this.drivers = options.drivers
+    this.onRefreshError = options.onRefreshError
     this.now = options.now ?? (() => new Date())
     this.forkEffect = options.forkEffect ?? ((effect) => Effect.runFork(effect))
   }
@@ -126,7 +133,9 @@ export class ModelCatalogCoordinator {
         try {
           return await this.refreshProvider(providerName, options)
         } catch (error) {
-          errors.push({ providerName, message: safeErrorMessage(error) })
+          const message = safeErrorMessage(error)
+          errors.push({ providerName, message })
+          this.onRefreshError?.({ providerName, message, reason: options.reason })
           return undefined
         }
       }),

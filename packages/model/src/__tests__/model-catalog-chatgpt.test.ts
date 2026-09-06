@@ -160,3 +160,57 @@ describe('ChatGptCodexDiscoveryDriver', () => {
     ).resolves.toEqual({ ok: false, reason: 'model_not_found' })
   })
 })
+
+describe('catalog authentication recovery', () => {
+  test('retries a 401 once with refreshed credentials', async () => {
+    let stored = session
+    const headers: string[] = []
+    const reasons: string[] = []
+    const driver = new ChatGptCodexDiscoveryDriver(
+      async (_url, init) => {
+        headers.push(new Headers(init?.headers).get('Authorization') ?? '')
+        return headers.length === 1
+          ? new Response(null, { status: 401 })
+          : Response.json({ models: [{ slug: 'gpt-6-astra' }] })
+      },
+      async (_context, reason) => {
+        reasons.push(reason)
+        if (reason === 'unauthorized')
+          stored = JSON.stringify({ ...JSON.parse(session), accessToken: 'fresh-token' })
+      },
+    )
+    const result = await driver.discover({
+      providerName: 'chatgpt',
+      provider,
+      secretGetter: () => stored,
+      signal: AbortSignal.timeout(1000),
+    })
+    expect(result.models[0].modelId).toBe('gpt-6-astra')
+    expect(headers).toEqual(['Bearer access-token', 'Bearer fresh-token'])
+    expect(reasons).toEqual(['expiring', 'unauthorized'])
+  })
+
+  test('surfaces persistent 401 and refresh grant failures without looping', async () => {
+    for (const failRefresh of [false, true]) {
+      let calls = 0
+      const driver = new ChatGptCodexDiscoveryDriver(
+        async () => {
+          calls++
+          return new Response(null, { status: 401 })
+        },
+        async (_context, reason) => {
+          if (failRefresh && reason === 'unauthorized') throw new Error('refresh grant rejected')
+        },
+      )
+      await expect(
+        driver.discover({
+          providerName: 'chatgpt',
+          provider,
+          secretGetter: () => session,
+          signal: AbortSignal.timeout(1000),
+        }),
+      ).rejects.toThrow(failRefresh ? 'refresh grant rejected' : 'HTTP 401')
+      expect(calls).toBe(failRefresh ? 1 : 2)
+    }
+  })
+})
