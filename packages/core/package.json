@@ -6,17 +6,18 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@zero-os/shared": "workspace:*",
+    "@mozilla/readability": "^0.5.0",
+    "@openai/codex-sdk": "0.154.0",
     "@zero-os/model": "workspace:*",
     "@zero-os/observe": "workspace:*",
     "@zero-os/secrets": "workspace:*",
-    "@mozilla/readability": "^0.5.0",
-    "turndown": "^7.2.0",
+    "@zero-os/shared": "workspace:*",
+    "effect": "^3.22.1",
+    "gray-matter": "^4.0.3",
     "linkedom": "^0.18.9",
     "proper-lockfile": "^4.1.2",
     "simple-git": "^3.27.0",
-    "gray-matter": "^4.0.3",
-    "effect": "^3.22.1"
+    "turndown": "^7.2.0"
   },
   "devDependencies": {
     "bun-types": "latest",

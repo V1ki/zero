@@ -94,7 +94,7 @@ KeychainLive (Layer) ── 每个方法先查 env 旁路，再走 Bun.spawn('se
 
 1. **Effect 对子进程执行的独特价值是结构化中断**（`acquireRelease` 中断即杀进程、timeout 变 race、清理自动化）。但当前工具执行不在 fiber 上：`execute()` 由 agent 循环直接 await，abort 是 `RunningToolRegistry.setAbortHandler` 推入的回调，timeout 是手写定时器。没有 fiber 运行时，逐工具重写只是把一套命令式模式换成 Effect 仪式，abort 管道原样保留——负收益（双范式交错、评审负担；且 grep 的"超时保留部分结果"语义与 `Effect.race` 丢弃败方状态的模型不合）。
 2. 工具层是爆炸半径最大的路径（session/tool/chat），仓库规则对此处的回归安全要求最高。
-3. 三个工具三种植习语（bash: `Bun.spawn`+终止锁存+强杀链；grep: `Bun.spawn`+行数截断早停杀；codex: `node:child_process` 回调式）。统一它们只有在"工具执行整体迁到 fiber 运行行时"这一次性架构决策里做才划算，不适合作为第四个孤立试点。
+3. 三个工具三种植习语（bash: `Bun.spawn`+终止锁存+强杀链；grep: `Bun.spawn`+行数截断早停杀；codex: 官方 `@openai/codex-sdk`，SDK 内部经 `node:child_process` spawn `codex exec --experimental-json` 并流式解析 JSONL，abort 走 `AbortSignal`）。统一它们只有在"工具执行整体迁到 fiber 运行行时"这一次性架构决策里做才划算，不适合作为第四个孤立试点。codex 后续于 2026-09-16 从手写 `node:child_process` 回调迁到官方 SDK（进程 spawn 与 JSONL 解析收进 SDK，中断/进度接现有 RunningToolRegistry / background task 管道），本条仅作历史记录。
 
 **重启条件**：若将来把工具执行迁移为 fiber 化 runner（abort → `Fiber.interrupt`、timeout → `Effect.timeout`、子进程清理 → `acquireRelease`），在同一变更里迁移子进程工具；届时前三个试点（Keychain service、组合根 Layer 装配、fiber 中断语义已验证）将直接复用。
 
