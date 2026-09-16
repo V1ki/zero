@@ -129,6 +129,7 @@ export class CodexTool extends BaseTool {
       ctx.logger.info('codex_complete', {
         fileChanges: result.fileChanges.length,
         commands: result.commands.length,
+        errors: result.errors.length,
         hasResponse: !!result.response,
       })
       return formatCodexToolResult(result)
@@ -212,8 +213,17 @@ export class CodexTool extends BaseTool {
       signal: args.abortController.signal,
     })
 
-    for await (const event of events) {
-      processCodexEvent(event, result, onCommandOutput)
+    try {
+      for await (const event of events) {
+        processCodexEvent(event, result, onCommandOutput)
+      }
+    } catch (error) {
+      // `codex exec` exits non-zero on turn failure, and the SDK then throws
+      // past the stream end — discarding the turn.failed/error events it
+      // already yielded. When those events were collected they carry the real
+      // failure, so return them instead of the exit-code error; otherwise
+      // (spawn failure, mid-stream crash) let the error propagate.
+      if (args.abortController.signal.aborted || result.errors.length === 0) throw error
     }
 
     result.threadId = result.threadId ?? thread.id ?? args.resumeThreadId ?? null

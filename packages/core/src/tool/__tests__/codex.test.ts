@@ -156,13 +156,20 @@ esac
     expect(result.output).toContain('## Thread\nthreadId: thread_resume_123')
   })
 
-  test('maps turn.failed into the Errors section and a failed result', async () => {
+  test('surfaces turn.failed detail when codex exits non-zero after the event stream', async () => {
+    // Real-world shape (model at capacity): codex yields thread.started,
+    // error and turn.failed events on stdout, then exits 1 with only noise
+    // on stderr — the SDK throws on the exit code and would discard the
+    // already-yielded failure events without the guard in runTurn.
     const scriptPath = writeFakeCodex(
       'fake-codex-fail',
       `#!/bin/sh
 cat >/dev/null
 printf '%s\\n' '{"type":"thread.started","thread_id":"thread_fail"}'
-printf '%s\\n' '{"type":"turn.failed","error":{"message":"model unavailable"}}'
+printf '%s\\n' '{"type":"error","message":"Selected model is at capacity. Please try a different model."}'
+printf '%s\\n' '{"type":"turn.failed","error":{"message":"Selected model is at capacity. Please try a different model."}}'
+echo "Reading prompt from stdin..." >&2
+exit 1
 `,
     )
 
@@ -170,8 +177,12 @@ printf '%s\\n' '{"type":"turn.failed","error":{"message":"model unavailable"}}'
     const result = await tool.run(makeCtx(), { instruction: 'Do something' })
 
     expect(result.success).toBe(false)
-    expect(result.output).toContain('## Errors\nmodel unavailable')
-    expect(result.outputSummary).toBe('1 error(s)')
+    expect(result.output).toContain(
+      '## Errors\nSelected model is at capacity. Please try a different model.',
+    )
+    expect(result.output).not.toContain('exited with code 1')
+    expect(result.output).toContain('## Thread\nthreadId: thread_fail')
+    expect(result.outputSummary).toBe('2 error(s)')
   })
 
   test('surfaces non-zero codex exit codes with stderr detail', async () => {
