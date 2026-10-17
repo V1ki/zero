@@ -2,8 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import { now } from '@zero-os/shared'
 import type { ContentBlock, Message } from '@zero-os/shared'
 import {
-  buildTaskClosurePrompt,
   buildTaskClosureDecisionPrompt,
+  buildTaskClosurePrompt,
   buildTaskClosurePromptContext,
   extractAssistantTail,
   extractAssistantText,
@@ -32,9 +32,7 @@ describe('buildTaskClosurePrompt', () => {
   test('injects the classifier reason inside classifier_reason tags', () => {
     const prompt = buildTaskClosurePrompt('后续核验仍属于当前任务')
 
-    expect(prompt).toContain(
-      '<classifier_reason>后续核验仍属于当前任务</classifier_reason>',
-    )
+    expect(prompt).toContain('<classifier_reason>后续核验仍属于当前任务</classifier_reason>')
   })
 
   test('preserves the core continuation guidance from the static notice', () => {
@@ -111,14 +109,24 @@ test('buildTaskClosureDecisionPrompt renders tool summary without task context',
   expect(prompt).not.toContain('coverage_hint')
 })
 
+test('closure instructions preserve scope, prior authorization and partial completion', () => {
+  const prompt = buildTaskClosureDecisionPrompt('只分析这个函数', '分析完成')
+  const notice = buildTaskClosurePrompt('复核剩余工作')
+
+  expect(prompt).toContain('已有授权持续有效')
+  expect(prompt).toContain('不因只使用单一来源或首次总结就要求继续')
+  expect(prompt).toContain('不能仅因一个操作成功就判定整体完成')
+  expect(prompt).toContain('用户要求分析或列出选项，不等于授权实施建议')
+  expect(prompt).not.toContain('只分析了单一来源、')
+  expect(notice).toContain('已有授权持续有效')
+  expect(notice).toContain('分析请求保持分析范围')
+  expect(notice).toContain('若当前要求已经满足，正常交付')
+})
+
 test('buildTaskClosureDecisionPrompt includes tool call summary', () => {
-  const prompt = buildTaskClosureDecisionPrompt(
-    '2分钟后提醒我',
-    '已设置好，2分钟后会提醒你',
-    {
-      toolSummary: 'schedule 1次: create ✓',
-    },
-  )
+  const prompt = buildTaskClosureDecisionPrompt('2分钟后提醒我', '已设置好，2分钟后会提醒你', {
+    toolSummary: 'schedule 1次: create ✓',
+  })
 
   expect(prompt).toContain('<tool_calls_this_turn>')
   expect(prompt).toContain('schedule 1次: create ✓')

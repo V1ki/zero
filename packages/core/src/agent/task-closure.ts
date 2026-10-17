@@ -16,8 +16,9 @@ export function buildTaskClosurePrompt(reason: string): string {
   return `<system_notice>
 你刚才已经给出了一个阶段性结果，但把当前任务的必要后续动作写成了可选下一步。
 如果这些动作仍属于回答当前问题的必要组成部分，请直接继续执行，不要把它们交还给用户选择。
-只有在你确实缺少用户提供的信息、授权、凭据、登录态，或下一步涉及不可逆外部操作时，才说明真实阻塞并停止。
-不要用“如果你愿意”“如果你要”“要不要我继续”“我下一步可以”或类似可选分支菜单收尾。
+已有授权持续有效；只有下一动作超出授权范围，或确实缺少必要信息、凭据、登录态或决策时，才说明真实阻塞并停止。
+分析请求保持分析范围，不自动实施建议；若当前要求已经满足，正常交付，不为扩展话题继续执行。
+不要把当前任务的必要动作留作“如果你愿意”等可选服务。
 当前进度可参考上方的工具调用历史。
 <classifier_reason>${reason}</classifier_reason>
 </system_notice>`
@@ -38,25 +39,21 @@ export function buildTaskClosureDecisionPrompt(
 判定原则：
 - 如果 assistant 已经完整回答用户问题，返回 finish。
 - 如果 assistant 只是把完成当前问题所必需的低成本后续动作写成了“如果你愿意，我可以继续……”，返回 continue。
-- 如果 assistant 明确缺少用户提供的信息、授权、凭据、登录态，或下一步涉及不可逆外部动作，返回 block。
-- 如果 assistant 声称已完成某操作，且 <tool_calls_this_turn> 中有对应的成功工具调用记录，该操作视为已实际执行，不属于虚假确认，应返回 finish 而非 block。
-- 只有当用户明确要求”给我下一步选项 / 后续选项 / 还能做什么”时，菜单式收尾才算 finish。
+- 如果下一动作超出授权范围，或确实缺少必要信息、凭据、登录态或决策，返回 block。已有授权持续有效，不因操作属于外部写入、配置修改或不可逆动作而重复要求确认。
+- 成功工具记录可以证明对应操作已经执行，但仍须检查当前任务的其他要求；不能仅因一个操作成功就判定整体完成。
+- 按剩余必要工作判定，不按结尾措辞判定；当前要求已满足时返回 finish，额外建议不构成继续执行的理由。用户要求分析或列出选项，不等于授权实施建议。
 
 研究/分析类任务额外规则：
-- 如果用户要求分析、深入分析、研究、核验，或要求把“相关信息 / 相关线索”也一起分析，不能因为 assistant 已经给出一版总结就直接返回 finish。
-- 对研究/分析类任务，只有当 assistant 已覆盖原始材料的关键主张、扩展到主要相关信息、尽可能做了多源交叉验证，并明确区分已证实与未证实部分时，才可返回 finish。
-- 如果 assistant 当前更像第一轮读后总结、只分析了单一来源、或仍明确指出还有重要相关线索/来源值得继续查证，则返回 continue。
-- 如果继续查证、补充相关信息、拆分关键主张，会实质提升回答质量而不是只做边际润色，则返回 continue。
+- 以用户要求的范围和深度为准。普通解释、摘要或局部分析，已有材料足以支持结论且已区分证据与推断时，返回 finish；不因只使用单一来源或首次总结就要求继续。
+- 用户明确要求深入研究、多源交叉验证或相关线索分析时，检查这些要求是否完成。
+- 只有仍缺少完成当前要求所必需、会影响结论且可以继续取得的证据时，返回 continue；必要证据无法自行取得时说明真实阻塞。不要仅因更多研究可能有益就继续。
 
 后台任务额外规则：
 - 如果 <tool_calls_this_turn>、<user_message> 或 <assistant_text> 显示已有 background_tool.started / Background task started，且尚未看到对应的 background_tool.completed，而 assistant 当前是在说明后台任务仍在运行、会等待系统完成事件或完成后再继续，则返回 finish。这里的 finish 表示不要注入前台 task_closure continuation，把“等待已知后台完成事件”视为合法暂停态，不代表整个用户任务已经最终完成。
 - 不要把系统管理的后台任务等待判为 continue；continue 会把 agent 拉回前台，容易造成 sleep/ps/pgrep/lsof/wc/tail/ls/find/stat 之类人工轮询。
-- 不要把“等待 background_tool.completed”判为 block；block 只用于缺少用户信息、凭据、授权、登录态或不可逆外部动作。
+- 不要把“等待 background_tool.completed”判为 block；等待已知后台事件不需要用户介入。
 - 如果 assistant 声称后台任务产物已经完成、已验证或已发布，但没有 background_tool.completed 或其他成功工具记录支撑，则返回 block。
 - 如果 <user_message> 是 background_tool.completed，则根据其中的 status、output_summary、output 和后续工具记录判断；status=error 不一定代表任务失败，仍需看是否有可用产物和后续验收。
-
-特别示例：
-- 用户让你“看看某个帖子/链接，并把可能相关的信息也分析下”，而 assistant 只总结了当前内容或一两个来源，然后说“如果你愿意我还可以继续查更多相关信息/来源”，这通常应判为 continue，不是 finish。
 
 返回 JSON，不要其他内容：
 {"action":"finish|continue|block","reason":"简短原因"}

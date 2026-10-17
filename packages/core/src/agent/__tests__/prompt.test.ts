@@ -63,27 +63,19 @@ describe('buildRoleBlock', () => {
 })
 
 describe('buildRulesBlock', () => {
-  test('returns 9 rules in <rules> tags', () => {
+  test('keeps diagnostics and runtime events without competing execution policies', () => {
     const result = buildRulesBlock()
 
     expect(result).toStartWith('<rules>')
     expect(result).toEndWith('</rules>')
-
-    // Verify all 8 rules are present
-    expect(result).toContain('执行操作前先说明意图')
     expect(result).toContain('工具调用失败时先读错误信息做诊断')
-    expect(result).toContain('涉及不可逆操作')
-    expect(result).toContain('遇到超出能力范围的问题时如实告知')
+    expect(result).toContain('没有新证据时，不重复相同尝试')
     expect(result).toContain('回复使用中文')
-    expect(result).toContain('每完成一个阶段性目标后')
-    expect(result).toContain('阶段性汇报用于同步进度')
     expect(result).toContain('<system-reminder> 是系统注入的内部运行时提示')
     expect(result).toContain('<system_event> 是系统注入的运行时控制事件')
-
-    // Count lines inside the tags (9 rules = 9 lines)
-    const inner = result.replace('<rules>\n', '').replace('\n</rules>', '')
-    const lines = inner.split('\n').filter((l) => l.trim().length > 0)
-    expect(lines.length).toBe(9)
+    expect(result).not.toContain('执行操作前先说明意图')
+    expect(result).not.toContain('主动向用户确认')
+    expect(result).not.toContain('memory 工具写入')
   })
 })
 
@@ -106,11 +98,11 @@ describe('buildExecutionModeBlock', () => {
 
     expect(result).toContain('<execution_mode>')
     expect(result).toContain('</execution_mode>')
-    expect(result).toContain('默认工作模式：连续自治执行')
-    expect(result).toContain('不要因为完成了一个子步骤')
-    expect(result).toContain('只有在以下情况才暂停并请求用户介入')
-    expect(result).toContain('低成本后续验证')
-    expect(result).toContain('用户明确要求你列出后续选项')
+    expect(result).toContain('在用户已授权的范围内连续完成当前任务')
+    expect(result).toContain('已有授权持续有效')
+    expect(result).toContain('需要覆盖具体目标和范围的明确授权')
+    expect(result).toContain('分析请求保持分析范围')
+    expect(result).toContain('满足当前要求后正常交付')
   })
 })
 
@@ -120,10 +112,11 @@ describe('buildMemoryPolicyBlock', () => {
 
     expect(result).toContain('<memory_policy>')
     expect(result).toContain('</memory_policy>')
-    expect(result).toContain('会话中产生以下任何一种信息时，应主动写入 memory')
+    expect(result).toContain('主动保存值得跨会话复用的信息')
+    expect(result).toContain('遵守用户明确的记忆限制')
     expect(result).toContain('优先 memory.update')
     expect(result).toContain('临时排查日志')
-    expect(result).toContain('incident：值得复盘和复用的故障案例')
+    expect(result).toContain('incident：可复发故障的现象、影响、根因与修复')
     expect(result).toContain('session：由系统自动管理，不需要手动创建')
   })
 })
@@ -157,7 +150,7 @@ describe('buildToolRulesBlock', () => {
     expect(result).toContain('支持语义搜索')
     expect(result).toContain('Memory Read：根据 memory_search 返回的 path')
     expect(result).toContain('仅在 snippet 不足以回答时使用')
-    expect(result).toContain('每个阶段性成果完成时就评估')
+    expect(result).toContain('保存时机、分类和去重遵循 memory_policy')
     // Should not contain rules for tools not in the list
     expect(result).not.toContain('Write：')
     expect(result).not.toContain('Edit：')
@@ -208,7 +201,8 @@ describe('buildConstraintsBlock', () => {
     expect(result).toContain('代码修改后必须通过至少一种验证')
     expect(result).toContain('docs/zero-cli.md')
     expect(result).toContain('不要主动建议或执行未列出的 Zero 命令')
-    expect(result).toContain('单次回复不超过 2000 字')
+    expect(result).toContain('长度以完整回答和交付要求为准')
+    expect(result).not.toContain('2000 字')
   })
 })
 
@@ -219,7 +213,7 @@ describe('buildSafetyBlock', () => {
     expect(result).toContain('<safety>')
     expect(result).toContain('</safety>')
     expect(result).toContain('没有独立目标')
-    expect(result).toContain('不要把人类监督理解为每一步都要审批')
+    expect(result).toContain('子 agent 仅继承被委派任务中明确传入的授权')
     expect(result).toContain('不操纵或说服')
   })
 })
@@ -509,6 +503,8 @@ describe('buildBootstrapContextBlock', () => {
 
     expect(result).toContain('SOUL.md')
     expect(result).toContain('体现其人格和语调')
+    expect(result).toContain('不授予操作权限')
+    expect(result).toContain('修改该文件需要用户明确要求')
   })
 
   test('does not add persona instruction without SOUL.md', () => {
@@ -549,6 +545,35 @@ describe('buildSystemPrompt', () => {
     expect(result).not.toContain('<retrieved_memories>')
     expect(result).not.toContain('<new_skills>')
   })
+
+  test.each(['full', 'minimal'] as const)(
+    '%s retains authorization and tool protocols without duplicate memory triggers',
+    (promptMode) => {
+      const result = buildSystemPrompt({
+        ...baseComponents,
+        promptMode,
+        tools: ['bash', 'fetch', 'memory', 'spawn_agent', 'wait_agent'].map(makeTool),
+      })
+
+      expect(result.split('<execution_mode>')).toHaveLength(2)
+      expect(result.split('<safety>')).toHaveLength(2)
+      expect(result.split('每个阶段性成果完成后')).toHaveLength(2)
+      for (const contract of [
+        '已有授权持续有效',
+        '分析请求保持分析范围',
+        '不得包含密钥值',
+        '子 agent 仅继承',
+        'envSecrets',
+        'stdinSecretRef',
+        'credentialRef',
+        '应结束当前轮并等待 background_tool.completed',
+        '不要把 background_tool.started 中的 task id 或 tool_use_id 传给 wait_agent',
+      ]) {
+        expect(result).toContain(contract)
+      }
+      expect(result).not.toContain('已截断')
+    },
+  )
 
   test('includes skill_catalog when skills provided', () => {
     const result = buildSystemPrompt({
@@ -634,7 +659,8 @@ describe('buildSystemPrompt', () => {
       expect(result).toContain('docs/zero-cli.md')
       // Full-only sections should be absent
       expect(result).not.toContain('<rules>')
-      expect(result).not.toContain('<safety>')
+      expect(result).toContain('<safety>')
+      expect(result).toContain('<execution_mode>')
       expect(result).not.toContain('<tool_call_style>')
       expect(result).not.toContain('<identity>')
       expect(result).not.toContain('<skill_catalog>')

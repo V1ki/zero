@@ -34,9 +34,19 @@ describe('loadBootstrapFiles', () => {
 
     expect(files.length).toBe(BOOTSTRAP_FILE_NAMES.length)
     expect(files[0].name).toBe('SOUL.md')
-    expect(files[0].content).toContain('genuinely helpful')
+    expect(files[0].content).toBe(DEFAULT_TEMPLATES['SOUL.md'])
     expect(files[1].name).toBe('USER.md')
     expect(files[2].name).toBe('TOOLS.md')
+  })
+
+  test('default persona contains style only, without self-edit or memory instructions', () => {
+    const soul = DEFAULT_TEMPLATES['SOUL.md']
+
+    expect(soul).toContain('人格与语气')
+    expect(soul).toContain('保持独立判断')
+    expect(soul).not.toContain('update it')
+    expect(soul).not.toContain('memory files')
+    expect(soul).not.toContain('ask before acting externally')
   })
 
   test('loads custom files from workspace directory', () => {
