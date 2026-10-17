@@ -1,121 +1,40 @@
-# AGENTS.md
+# ZeRo OS 项目约定
 
-## Project
-ZeRo OS monorepo built with Bun + TypeScript.
+## 项目与入口
+- Bun + TypeScript ESM monorepo，工作区位于 `apps/*`、`packages/*`。
+- `apps/server`：启动、CLI 和运行时；`apps/web`：React/Vite UI 与 Web 服务；`apps/supervisor`：监督进程。
+- `packages/*`：核心领域模块；`e2e/`：Playwright 测试。
+- `.zero/` 是本地运行数据，包括日志、记忆、密钥和 agent 工作区，不按普通产品源码处理。
 
-## Mission
-- Deliver working, minimal, testable changes.
-- Prefer small, behavior-safe diffs over broad refactors.
-- Preserve runtime stability for server, websocket, session, tool, and chat flows.
-- Default to completing the requested change end-to-end in one pass: explore, implement, verify, and summarize.
+## 修改边界
+- 按用户要求完成工作。执行请求包括实现与验证；分析请求保持分析范围。
+- 修改前检查相关实现和已有差异。沿用现有模式、工具和包边界，采用最小完整改动，不做无关重构。
+- 不覆盖或撤销已有改动。若修改与已有差异重叠、归属不清或无法安全保留，先说明冲突并询问。
+- 默认保持公共导出、跨包接口和现有行为稳定。行为、接口或运维方式改变时，同步更新相关文档。
+- 不用静默回退或宽泛异常捕获掩盖失败；保留 TypeScript 类型安全，遵循现有 Biome 配置。
 
-## Agent Operating Model
-- Be autonomous, but not reckless: make reasonable assumptions and move forward unless truly blocked.
-- Do the work, not just the plan. Avoid stopping after analysis when implementation is feasible.
-- Prefer fixing root causes over patching symptoms.
-- Stay scoped to the user's request. Do not opportunistically refactor unrelated areas.
-- If you notice unexpected unrelated changes in files you need to touch, stop and ask before proceeding.
+## 数据与密钥
+- 不输出、粘贴或提交密钥值；不直接编辑 `.zero/secrets.enc`。
+- 不提交 `.zero/*`、`dist`、`node_modules` 或 `test-results`。
+- Keychain 测试必须使用隔离的 `KeychainTarget` 或 stub，禁止写入或删除生产项：service `com.zero-os.vault`、account `master-key`。
+- 保留 Keychain 测试前后的生产项摘要 canary 校验，不将密钥原文用于诊断输出。
 
-## Tech Stack
-- Runtime/package manager: **Bun**
-- Language: **TypeScript (ESM)**
-- Monorepo: workspaces in `apps/*`, `packages/*`
-- Web: Vite + React + Hono + Bun.serve
-- E2E: Playwright
-- Lint/format: Biome
+## Effect 参考源码
+- `repos/` 是只读上游参考；未经明确要求不修改，也不从中导入应用代码。
+- 使用 Effect API 前，查阅 `repos/effect/packages/effect/` 对应实现与测试。
+- 应用代码从正常依赖导入 Effect；参考源码版本应与安装依赖一致，更新前先核对两者。
 
-## Repository Map
-- `apps/server`: ZeRo OS bootstrap, CLI, runtime (`src/cli.ts`, `src/main.ts`)
-- `apps/web`: UI and API/web server integration (`src/server.ts`)
-- `apps/supervisor`: supervisor app entry
-- `packages/core|model|memory|observe|secrets|channel|scheduler|supervisor|shared`: domain modules
-- `e2e`: end-to-end tests
-- `.zero`: local runtime state (logs, memory, secrets, workspace) — treat as operational data, not product source
+## 验证
+- 每次代码修改至少执行一种相关验证；TypeScript 修改默认运行 `bun run check`。
+- 逻辑修改运行相关测试；UI、API、session 或 websocket 行为修改，在可行时运行相关 E2E。
+- 新测试放在附近的 `__tests__/`。先运行最小相关检查，仅在风险、失败或未解决疑点需要时扩大范围。
+- session、tool、memory 修改关注恢复行为与日志一致性；scheduler、channel 修改关注兼容性与错误呈现。
+- 区分本次失败、既有失败和未验证事项，不将未验证描述为通过。
 
-## Vendored Reference Sources
-- `repos/` holds vendored upstream source repos kept as **read-only reference material**, not application code.
-- Current: `repos/effect` = the Effect-TS monorepo at tag `effect@3.22.1`, pinned to match the installed `effect` dependency.
-- When writing Effect code, read the real source and tests under `repos/effect/packages/effect/` instead of guessing APIs or searching the web; verify every API against the source before using it.
-- Never edit files under `repos/` unless explicitly asked.
-- Never import from `repos/` — application code imports from normal package dependencies (e.g. `import { Effect } from 'effect'`).
-- To update the reference: `git subtree pull --prefix=repos/effect https://github.com/Effect-TS/effect.git effect@<installed-version> --squash`, keeping the tag in sync with the installed version.
-
-## Critical Safety Rules
-1. Never print, paste, or commit secret values.
-2. Never modify `.zero/secrets.enc` by direct file editing.
-3. Do not commit `.zero/*`, `dist`, `node_modules`, or `test-results`.
-4. Avoid destructive actions unless explicitly requested.
-5. Keychain tests must never target the production master-key entry (service `com.zero-os.vault`, account `master-key`): pass an isolated `KeychainTarget` or a stub `Keychain` layer. `KeychainLive` refuses production-target set/delete while `NODE_ENV=test` (bun:test sets it), and the keychain suites verify the real entry via a digest-only canary before/after each run.
-6. Never revert or overwrite user changes you did not make.
-7. Keep changes scoped to the requested task only.
-
-## Tool and Search Preferences
-- Prefer dedicated tools over raw shell when available.
-- Prefer `rg` for text search and `rg --files` for file discovery.
-- Read enough surrounding context before editing; avoid repeated tiny blind edits.
-- Batch related reads/searches when possible instead of exploring one file at a time.
-- Use shell for tasks that truly require execution, repo-wide validation, or tooling not exposed elsewhere.
-
-## Editing Constraints
-- Follow existing code patterns, naming, helpers, and package boundaries before introducing new abstractions.
-- Reuse existing utilities when possible; do not duplicate logic without a good reason.
-- Keep public exports and cross-package contracts stable unless the task explicitly requires breaking changes.
-- Preserve behavior by default; if behavior changes intentionally, make it explicit in the summary and add/update tests when appropriate.
-- When code changes affect behavior, interfaces, workflows, or operational expectations, update the corresponding documentation in the same task.
-- Avoid broad catch-all error handling or silent fallbacks that hide failures.
-- Prefer concise, maintainable diffs over cleverness.
-
-## Coding Conventions
-- Follow existing style via Biome:
-  - 2 spaces
-  - single quotes
-  - no semicolons
-  - line width ~100
-- Keep TypeScript type safety intact; avoid unnecessary casts such as `any`.
-- Add comments only when they clarify non-obvious intent.
-
-## Validation Expectations
-- Validate every code change with at least one relevant command.
-- For TypeScript changes, `bun run check` is the default baseline.
-- Run the narrowest useful validation first, then broaden if risk is higher.
-- Place new test files under a nearby `__tests__` directory instead of alongside product code. Legacy colocated tests may remain unless the task explicitly calls for migration.
-- Preferred validation choices:
-  - `bun run check` for TS/type-level changes
-  - `bun run test` for logic changes
-  - `bun run test:e2e` for UI/API/session/websocket behavior
-  - targeted test commands if a smaller relevant scope exists
-- If you cannot run a needed validation, say so clearly and explain why.
-
-## Dev Commands (from repo root)
-- Install deps: `bun install`
-- Type check: `bun run check`
-- Lint: `bun run lint`
-- Unit/integration tests: `bun run test`
-- E2E: `bun run test:e2e`
-- Start system: `bun zero start`
-- Web dev/build:
-  - `bun run dev:web`
-  - `bun run build:web`
-
-## Change Workflow for Agents
-1. Identify the relevant files, then read/search broadly enough to understand current behavior.
-2. Implement the smallest coherent patch that solves the actual problem.
-3. Update any impacted documentation alongside the code change.
-4. Verify with at least one relevant command; use broader validation for higher-risk changes.
-5. Summarize clearly:
-   - files changed
-   - why the change was made
-   - verification commands and results
-   - any risks, assumptions, or follow-ups
-
-## Task-Specific Guidance
-- If touching session, tool, or memory flows (`apps/server`, `packages/core`, `packages/memory`, `packages/observe`), prioritize regression safety and logging consistency.
-- If touching websocket or UI routing (`apps/web`, relevant `e2e/*`), run relevant e2e coverage when feasible.
-- If touching scheduler or channel integrations, preserve backward compatibility and graceful error surfacing.
-- If touching secrets or operational state handling, be extra careful not to expose or mutate local runtime data unintentionally.
-
-## Communication Style for Agents
-- Be concise and concrete.
-- Lead with what changed and why.
-- Do not dump large file contents unless explicitly requested.
-- Mention blockers early if the task cannot be completed safely.
+## 常用命令
+- 类型检查：`bun run check`
+- 格式与静态检查：`bun run lint`
+- 单元和集成测试：`bun run test`
+- E2E：`bun run test:e2e`
+- Web 开发与构建：`bun run dev:web`、`bun run build:web`
+- ZeRo 运维命令使用前查阅 `docs/zero-cli.md`。
