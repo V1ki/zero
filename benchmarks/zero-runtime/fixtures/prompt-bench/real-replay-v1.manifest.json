@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "file": "../../../../.zero/benchmarks/real-replay-fixtures-v1-20260906/suite.json",
+  "sha256": "5d8870da2b51a92027bcbce38c4ad93734e495bbc47168f476d4468f98ef10df",
+  "caseIds": [
+    "real-file-path",
+    "real-game-steering",
+    "real-workbook-summary",
+    "real-intrachapter-duplication",
+    "closure-real-io-complete",
+    "closure-real-io-truncated"
+  ],
+  "origin": "zero-session-replay",
+  "preflight": {
+    "worksheetRows": 22,
+    "statusCounts": {
+      "暂不考虑": 11,
+      "计划更新": 8,
+      "未填写": 1,
+      "计划做": 2
+    },
+    "chapterCopies": {
+      "112": 3,
+      "113": 1,
+      "115": 3
+    }
+  }
+}

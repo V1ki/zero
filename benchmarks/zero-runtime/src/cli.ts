@@ -2,6 +2,8 @@
 
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { importLegacy } from '../../platform/src/adapters/legacy'
+import { exportRecords } from '../../platform/src/report'
 import { selectCases } from './cases'
 import { parseCliOptions } from './config'
 import { writeMarkdownReport } from './report'
@@ -58,6 +60,10 @@ async function main() {
   }
   writeJson(join(options.outDir, 'summary.json'), summary)
   writeMarkdownReport(join(options.outDir, 'report.md'), summary)
+  exportRecords(
+    join(options.outDir, 'platform'),
+    importLegacy('runtime', join(options.outDir, 'summary.json')),
+  )
   console.log(`[zero-runtime-bench] wrote ${options.outDir}`)
 }
 

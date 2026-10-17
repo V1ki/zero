@@ -1,0 +1,8 @@
+{
+  "name": "@zero-os/benchmark-platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": { "test": "bun test src/__tests__", "bench": "bun run src/cli.ts" }
+}

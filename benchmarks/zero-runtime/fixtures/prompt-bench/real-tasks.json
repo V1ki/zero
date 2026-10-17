@@ -1,0 +1,1317 @@
+{
+  "schema": 2,
+  "createdAt": "2026-09-06",
+  "status": "curated-candidates-not-runnable",
+  "selectionOrigin": "ZeRo 本地 .zero/logs/sessions.db 会话消息及 .zero/logs/sessions/<date>/<session>/trace.jsonl；替换此前误用 Codex 任务的清单。",
+  "sampling": {
+    "inventory": ".zero/benchmarks/session-corpus-v2-20260906/inventory.json",
+    "logicalSnapshotHash": "c04f9175f94974713cabbb50aee845d0f7042a6843a223df36360a3d768599f9",
+    "window": {
+      "since": "2026-06-08T00:00:00+08:00",
+      "until": "2026-09-06T00:00:00+08:00",
+      "semantics": "message.createdAt >= since and < until"
+    },
+    "counts": {
+      "sessions": 722,
+      "messages": 127979,
+      "taskMessageCandidates": 7687,
+      "recentSessions": 159,
+      "recentTaskMessageCandidates": 1496,
+      "storedEmptyAssistantMessages": 145
+    },
+    "logDirectories": {
+      "count": 1143,
+      "distinctSessionIds": 1143,
+      "duplicateDirectories": 0,
+      "notInDatabase": 421
+    },
+    "frequencyUnit": "关键词多标签、去重 session 覆盖数，不是独立任务次数；分类来自原始用户候选消息，不含助手回复和工具结果。",
+    "families": [
+      {
+        "id": "source-research",
+        "label": "网页、论文与原始资料查找",
+        "sessionCount": 89,
+        "sessionIds": [
+          "sess_20260604_0912_wxi_1cd2",
+          "sess_20260606_1734_wxi_5871",
+          "sess_20260608_1043_fei_aaf2",
+          "sess_20260609_0614_fei_e8a9",
+          "sess_20260609_1336_fei_b73c",
+          "sess_20260610_1036_fei_4a90",
+          "sess_20260611_0724_fei_97ae",
+          "sess_20260611_1548_fei_db97",
+          "sess_20260612_1456_fei_beef",
+          "sess_20260612_1724_fei_f069",
+          "sess_20260613_1413_fei_30af",
+          "sess_20260614_1347_fei_85b7",
+          "sess_20260615_1641_fei_2f2e",
+          "sess_20260616_1554_fei_9032",
+          "sess_20260617_1446_fei_9679",
+          "sess_20260617_1448_fei_9339",
+          "sess_20260619_0822_fei_deb1",
+          "sess_20260620_1716_fei_ec78",
+          "sess_20260621_1925_fei_6399",
+          "sess_20260622_1643_fei_8141",
+          "sess_20260623_1328_fei_2c52",
+          "sess_20260624_1436_fei_c763",
+          "sess_20260624_1815_fei_5ecc",
+          "sess_20260625_1406_fei_4f2a",
+          "sess_20260625_1849_fei_5b59",
+          "sess_20260626_0911_fei_3525",
+          "sess_20260627_1552_fei_8657",
+          "sess_20260627_2338_fei_7ccf",
+          "sess_20260628_0127_fei_bd88",
+          "sess_20260629_1117_fei_68f6",
+          "sess_20260630_1458_fei_eb0a",
+          "sess_20260630_1956_fei_38a7",
+          "sess_20260701_2143_fei_fff2",
+          "sess_20260702_0915_fei_1ffd",
+          "sess_20260702_0941_wxi_4e9a",
+          "sess_20260702_1916_fei_c30b",
+          "sess_20260703_1119_wxi_3259",
+          "sess_20260703_1349_fei_94a1",
+          "sess_20260705_1315_fei_5c81",
+          "sess_20260706_0837_wxi_7dab",
+          "sess_20260706_1447_fei_d35e",
+          "sess_20260707_0009_fei_55b4",
+          "sess_20260707_1147_fei_f800",
+          "sess_20260707_1451_fei_183c",
+          "sess_20260708_1517_din_7815",
+          "sess_20260708_1704_fei_f2eb",
+          "sess_20260709_0952_fei_2a14",
+          "sess_20260709_1407_wxi_5246",
+          "sess_20260709_1414_fei_5781",
+          "sess_20260709_1938_fei_72fe",
+          "sess_20260709_2057_fei_7358",
+          "sess_20260710_1851_fei_2d0b",
+          "sess_20260711_0853_fei_9c67",
+          "sess_20260712_1325_fei_54e8",
+          "sess_20260713_0856_wxi_5593",
+          "sess_20260713_0958_fei_bb50",
+          "sess_20260713_1620_fei_82ce",
+          "sess_20260713_1958_fei_c641",
+          "sess_20260715_1758_fei_6e2f",
+          "sess_20260716_1051_fei_c848",
+          "sess_20260716_1949_fei_10cf",
+          "sess_20260717_1525_fei_d708",
+          "sess_20260718_1938_fei_8c5d",
+          "sess_20260718_1950_fei_d179",
+          "sess_20260719_1937_fei_11b9",
+          "sess_20260720_1351_fei_3447",
+          "sess_20260720_1438_fei_a777",
+          "sess_20260721_1603_fei_7157",
+          "sess_20260722_2059_fei_0404",
+          "sess_20260723_1552_fei_308b",
+          "sess_20260724_0901_fei_98e5",
+          "sess_20260724_1915_fei_6a3c",
+          "sess_20260725_1621_wxi_cd39",
+          "sess_20260727_1824_fei_ee91",
+          "sess_20260728_1356_fei_479e",
+          "sess_20260729_2008_fei_2aa7",
+          "sess_20260730_0821_fei_87fd",
+          "sess_20260802_1640_wxi_8fb5",
+          "sess_20260805_2012_fei_c4fd",
+          "sess_20260808_2359_wxi_e3ad",
+          "sess_20260812_1109_fei_4400",
+          "sess_20260813_1612_fei_98ca",
+          "sess_20260826_0123_fei_f31b",
+          "sess_20260826_1524_fei_dc2f",
+          "sess_20260830_2124_fei_d9f0",
+          "sess_20260831_1349_fei_8f53",
+          "sess_20260902_1516_fei_bce9",
+          "sess_20260904_0851_fei_f6e6",
+          "sess_20260905_1146_fei_91d0"
+        ]
+      },
+      {
+        "id": "code-review",
+        "label": "代码、PR 与问题修复",
+        "sessionCount": 54,
+        "sessionIds": [
+          "sess_20260608_1040_fei_2e04",
+          "sess_20260608_1043_fei_aaf2",
+          "sess_20260609_1336_fei_b73c",
+          "sess_20260610_1036_fei_4a90",
+          "sess_20260611_0724_fei_97ae",
+          "sess_20260611_1548_fei_db97",
+          "sess_20260612_1456_fei_beef",
+          "sess_20260612_1724_fei_f069",
+          "sess_20260613_1413_fei_30af",
+          "sess_20260614_1347_fei_85b7",
+          "sess_20260615_1641_fei_2f2e",
+          "sess_20260616_1041_fei_fe70",
+          "sess_20260616_1554_fei_9032",
+          "sess_20260617_1446_fei_9679",
+          "sess_20260617_1448_fei_9339",
+          "sess_20260619_0822_fei_deb1",
+          "sess_20260620_1716_fei_ec78",
+          "sess_20260621_1925_fei_6399",
+          "sess_20260622_1513_din_3c2d",
+          "sess_20260622_1643_fei_8141",
+          "sess_20260622_1755_fei_5aa1",
+          "sess_20260623_1328_fei_2c52",
+          "sess_20260624_1815_fei_5ecc",
+          "sess_20260625_1409_fei_e8e9",
+          "sess_20260625_1849_fei_5b59",
+          "sess_20260626_0911_fei_3525",
+          "sess_20260627_2338_fei_7ccf",
+          "sess_20260629_0909_fei_0c4e",
+          "sess_20260629_1117_fei_68f6",
+          "sess_20260630_1458_fei_eb0a",
+          "sess_20260701_2143_fei_fff2",
+          "sess_20260702_0915_fei_1ffd",
+          "sess_20260703_1926_fei_c887",
+          "sess_20260705_1315_fei_5c81",
+          "sess_20260706_1447_fei_d35e",
+          "sess_20260708_1704_fei_f2eb",
+          "sess_20260709_1414_fei_5781",
+          "sess_20260710_1851_fei_2d0b",
+          "sess_20260712_1325_fei_54e8",
+          "sess_20260713_1958_fei_c641",
+          "sess_20260716_1051_fei_c848",
+          "sess_20260716_1949_fei_10cf",
+          "sess_20260717_1525_fei_d708",
+          "sess_20260721_1603_fei_7157",
+          "sess_20260723_1552_fei_308b",
+          "sess_20260724_0901_fei_98e5",
+          "sess_20260729_2008_fei_2aa7",
+          "sess_20260801_2153_fei_9670",
+          "sess_20260812_1109_fei_4400",
+          "sess_20260813_1612_fei_98ca",
+          "sess_20260822_1937_fei_0f83",
+          "sess_20260823_1624_fei_ff32",
+          "sess_20260823_1642_fei_9dff",
+          "sess_20260831_1349_fei_8f53"
+        ]
+      },
+      {
+        "id": "model-evaluation",
+        "label": "模型测试与部署配置",
+        "sessionCount": 49,
+        "sessionIds": [
+          "sess_20260606_1734_wxi_5871",
+          "sess_20260610_1036_fei_4a90",
+          "sess_20260613_2041_fei_08f2",
+          "sess_20260615_1641_fei_2f2e",
+          "sess_20260617_1448_fei_9339",
+          "sess_20260619_0822_fei_deb1",
+          "sess_20260620_1716_fei_ec78",
+          "sess_20260621_1925_fei_6399",
+          "sess_20260621_2126_fei_f423",
+          "sess_20260622_1643_fei_8141",
+          "sess_20260623_0816_wxi_c8fb",
+          "sess_20260623_1328_fei_2c52",
+          "sess_20260630_0847_fei_09a7",
+          "sess_20260630_1956_fei_38a7",
+          "sess_20260701_2143_fei_fff2",
+          "sess_20260703_1926_fei_c887",
+          "sess_20260708_1704_fei_f2eb",
+          "sess_20260709_0952_fei_2a14",
+          "sess_20260709_1414_fei_5781",
+          "sess_20260709_1938_fei_72fe",
+          "sess_20260709_2057_fei_7358",
+          "sess_20260710_1851_fei_2d0b",
+          "sess_20260711_0853_fei_9c67",
+          "sess_20260712_1325_fei_54e8",
+          "sess_20260713_1958_fei_c641",
+          "sess_20260714_1546_fei_2fb9",
+          "sess_20260715_1758_fei_6e2f",
+          "sess_20260716_1051_fei_c848",
+          "sess_20260716_1949_fei_10cf",
+          "sess_20260717_1525_fei_d708",
+          "sess_20260718_1950_fei_d179",
+          "sess_20260722_1703_wxi_d76b",
+          "sess_20260723_0746_fei_17b7",
+          "sess_20260723_1414_fei_5ea1",
+          "sess_20260723_1552_fei_308b",
+          "sess_20260724_0901_fei_98e5",
+          "sess_20260725_1621_wxi_cd39",
+          "sess_20260727_1824_fei_ee91",
+          "sess_20260728_1032_fei_07fd",
+          "sess_20260729_2008_fei_2aa7",
+          "sess_20260730_0821_fei_87fd",
+          "sess_20260806_1415_fei_2a52",
+          "sess_20260811_1944_wxi_6f26",
+          "sess_20260812_1109_fei_4400",
+          "sess_20260813_1612_fei_98ca",
+          "sess_20260826_0052_fei_db9e",
+          "sess_20260826_0110_fei_89a6",
+          "sess_20260826_1524_fei_dc2f",
+          "sess_20260904_0851_fei_f6e6"
+        ]
+      },
+      {
+        "id": "research-publishing",
+        "label": "研究并制作公众号内容",
+        "sessionCount": 46,
+        "sessionIds": [
+          "sess_20260608_1043_fei_aaf2",
+          "sess_20260609_1336_fei_b73c",
+          "sess_20260610_1036_fei_4a90",
+          "sess_20260611_1548_fei_db97",
+          "sess_20260612_1456_fei_beef",
+          "sess_20260612_1724_fei_f069",
+          "sess_20260613_1413_fei_30af",
+          "sess_20260614_1347_fei_85b7",
+          "sess_20260615_1641_fei_2f2e",
+          "sess_20260616_1554_fei_9032",
+          "sess_20260617_1446_fei_9679",
+          "sess_20260619_0822_fei_deb1",
+          "sess_20260620_1716_fei_ec78",
+          "sess_20260621_1925_fei_6399",
+          "sess_20260622_1643_fei_8141",
+          "sess_20260623_1328_fei_2c52",
+          "sess_20260624_1815_fei_5ecc",
+          "sess_20260625_1849_fei_5b59",
+          "sess_20260626_0911_fei_3525",
+          "sess_20260627_2338_fei_7ccf",
+          "sess_20260629_1117_fei_68f6",
+          "sess_20260630_1458_fei_eb0a",
+          "sess_20260630_1956_fei_38a7",
+          "sess_20260702_0915_fei_1ffd",
+          "sess_20260703_1349_fei_94a1",
+          "sess_20260705_1315_fei_5c81",
+          "sess_20260706_1017_fei_ed4a",
+          "sess_20260706_1447_fei_d35e",
+          "sess_20260707_1451_fei_183c",
+          "sess_20260708_1704_fei_f2eb",
+          "sess_20260709_1414_fei_5781",
+          "sess_20260710_1851_fei_2d0b",
+          "sess_20260712_1325_fei_54e8",
+          "sess_20260713_0856_wxi_5593",
+          "sess_20260713_0958_fei_bb50",
+          "sess_20260713_1958_fei_c641",
+          "sess_20260716_1949_fei_10cf",
+          "sess_20260719_1937_fei_11b9",
+          "sess_20260720_1351_fei_3447",
+          "sess_20260721_1603_fei_7157",
+          "sess_20260722_2059_fei_0404",
+          "sess_20260723_1552_fei_308b",
+          "sess_20260724_0901_fei_98e5",
+          "sess_20260727_1824_fei_ee91",
+          "sess_20260729_2008_fei_2aa7",
+          "sess_20260730_0821_fei_87fd"
+        ]
+      },
+      {
+        "id": "file-processing",
+        "label": "文件、表格与格式处理",
+        "sessionCount": 33,
+        "sessionIds": [
+          "sess_20260608_1040_fei_2e04",
+          "sess_20260615_0957_wxi_4c86",
+          "sess_20260616_1041_fei_fe70",
+          "sess_20260620_2125_fei_5bc6",
+          "sess_20260622_1513_din_3c2d",
+          "sess_20260622_1755_fei_5aa1",
+          "sess_20260623_0947_wxi_e513",
+          "sess_20260624_1436_fei_c763",
+          "sess_20260625_1409_fei_e8e9",
+          "sess_20260625_1935_din_e428",
+          "sess_20260627_1552_fei_8657",
+          "sess_20260630_1458_fei_eb0a",
+          "sess_20260703_1119_wxi_3259",
+          "sess_20260706_0837_wxi_7dab",
+          "sess_20260706_0910_fei_32e1",
+          "sess_20260707_0936_fei_4b82",
+          "sess_20260712_0004_fei_6696",
+          "sess_20260712_0007_fei_bf3b",
+          "sess_20260713_0856_wxi_5593",
+          "sess_20260713_1620_fei_82ce",
+          "sess_20260716_1051_fei_c848",
+          "sess_20260723_1552_fei_308b",
+          "sess_20260724_0901_fei_98e5",
+          "sess_20260727_1824_fei_ee91",
+          "sess_20260728_1356_fei_479e",
+          "sess_20260802_1640_wxi_8fb5",
+          "sess_20260806_1415_fei_2a52",
+          "sess_20260808_2359_wxi_e3ad",
+          "sess_20260811_1944_wxi_6f26",
+          "sess_20260826_0123_fei_f31b",
+          "sess_20260831_1349_fei_8f53",
+          "sess_20260901_1906_fei_c92d",
+          "sess_20260904_0851_fei_f6e6"
+        ]
+      },
+      {
+        "id": "media-transcription",
+        "label": "视频、音频与转写",
+        "sessionCount": 29,
+        "sessionIds": [
+          "sess_20260604_0912_wxi_1cd2",
+          "sess_20260606_1734_wxi_5871",
+          "sess_20260612_1707_fei_1410",
+          "sess_20260615_1029_fei_d494",
+          "sess_20260618_2144_din_0b47",
+          "sess_20260620_1716_fei_ec78",
+          "sess_20260621_2126_fei_f423",
+          "sess_20260623_0816_wxi_c8fb",
+          "sess_20260623_0947_wxi_e513",
+          "sess_20260624_1815_fei_5ecc",
+          "sess_20260628_0127_fei_bd88",
+          "sess_20260701_2143_fei_fff2",
+          "sess_20260702_0941_wxi_4e9a",
+          "sess_20260702_1916_fei_c30b",
+          "sess_20260705_1315_fei_5c81",
+          "sess_20260706_0837_wxi_7dab",
+          "sess_20260706_1017_fei_ed4a",
+          "sess_20260707_1147_fei_f800",
+          "sess_20260709_1407_wxi_5246",
+          "sess_20260713_0856_wxi_5593",
+          "sess_20260717_1525_fei_d708",
+          "sess_20260722_1703_wxi_d76b",
+          "sess_20260725_1621_wxi_cd39",
+          "sess_20260727_1824_fei_ee91",
+          "sess_20260808_2359_wxi_e3ad",
+          "sess_20260811_1944_wxi_6f26",
+          "sess_20260814_2048_fei_6832",
+          "sess_20260902_1516_fei_bce9",
+          "sess_20260905_1146_fei_91d0"
+        ]
+      },
+      {
+        "id": "runtime-diagnosis",
+        "label": "运行状态与环境排查",
+        "sessionCount": 18,
+        "sessionIds": [
+          "sess_20260612_1707_fei_1410",
+          "sess_20260621_2126_fei_f423",
+          "sess_20260622_1138_fei_a2d1",
+          "sess_20260622_1643_fei_8141",
+          "sess_20260625_1409_fei_e8e9",
+          "sess_20260625_2220_fei_f8ae",
+          "sess_20260630_1458_fei_eb0a",
+          "sess_20260701_2143_fei_fff2",
+          "sess_20260712_1325_fei_54e8",
+          "sess_20260716_1051_fei_c848",
+          "sess_20260717_1525_fei_d708",
+          "sess_20260718_1950_fei_d179",
+          "sess_20260723_1414_fei_5ea1",
+          "sess_20260730_0821_fei_87fd",
+          "sess_20260803_1521_fei_4245",
+          "sess_20260806_1415_fei_2a52",
+          "sess_20260824_1515_fei_68b5",
+          "sess_20260826_1524_fei_dc2f"
+        ]
+      },
+      {
+        "id": "market-comparison",
+        "label": "价格与设备比较",
+        "sessionCount": 11,
+        "sessionIds": [
+          "sess_20260621_2126_fei_f423",
+          "sess_20260702_0941_wxi_4e9a",
+          "sess_20260713_0856_wxi_5593",
+          "sess_20260713_1620_fei_82ce",
+          "sess_20260724_1915_fei_6a3c",
+          "sess_20260725_1621_wxi_cd39",
+          "sess_20260728_1032_fei_07fd",
+          "sess_20260802_1640_wxi_8fb5",
+          "sess_20260811_1944_wxi_6f26",
+          "sess_20260824_1515_fei_68b5",
+          "sess_20260831_0916_fei_3a33"
+        ]
+      }
+    ],
+    "selectionMethod": "全库元数据扫描，近90天频率筛选；人工细读11个来源session的14个片段，覆盖简单/中等/困难和已观察到的失败。非随机抽样。"
+  },
+  "splitPolicy": "同一 session 的题放同组。公众号同模板近重复未完全聚类，holdout 仅为候选；正式运行前按任务模板/来源材料再次去重。",
+  "cases": [
+    {
+      "id": "real-zero-remember-endpoint",
+      "title": "记忆中的接入域名，一句话回答",
+      "difficulty": "simple",
+      "split": "development",
+      "family": "model-evaluation",
+      "frequencySessionCount": 49,
+      "requestParaphrase": "提醒此前提供过的模型接入域名，只用一句话。",
+      "source": {
+        "kind": "zero-session",
+        "sessionId": "sess_20260902_1636_web_e1a3",
+        "database": ".zero/logs/sessions.db",
+        "table": "session_messages",
+        "messagesSha256": "2e1f7bca082bc1e397593d96fa359c73f93c8675152efcaa6c52470336ff2902",
+        "ranges": [
+          {
+            "startInclusive": 0,
+            "endExclusive": 4
+          }
+        ],
+        "userMessages": [
+          {
+            "index": 0,
+            "id": "01a06142-e5ba-7000-b0b9-9c52fa9d74b7",
+            "createdAt": "2026-09-02T08:36:09.274Z",
+            "textSha256": "2e12180b79597df73ba50b59385349e49aa295ef38825a447eb4ee8503961483"
+          }
+        ],
+        "traceFiles": [".zero/logs/sessions/2026-09-02/sess_20260902_1636_web_e1a3/trace.jsonl"]
+      },
+      "historicalAssessment": {
+        "observed": "实际调用 memory_search 后给出文字答复；这是接入信息回忆探针，不能解释为自然高频需求。",
+        "toolCalls": {
+          "memory_search": 1
+        },
+        "toolResultErrors": 0,
+        "backgroundErrorMessages": 0,
+        "validationLimit": "历史答复需对照当时记忆快照核验"
+      },
+      "requiredFrozenInputs": ["提供脱敏的历史记忆命中与干扰命中"],
+      "acceptanceCriteria": [
+        "从正确记忆提取域名",
+        "只给域名和必要短说明，不输出凭据",
+        "记忆缺失时说明缺失，不猜测"
+      ],
+      "executionStatus": "needs-frozen-inputs-and-independent-gold",
+      "holdoutNote": null
+    },
+    {
+      "id": "real-zero-explain-io",
+      "title": "解释工程提效和 IO 点表，并正确结束",
+      "difficulty": "simple",
+      "split": "development",
+      "family": "file-processing",
+      "frequencySessionCount": 33,
+      "requestParaphrase": "先问工程效率提升含义，执行期间追加询问 IO 点表含义。",
+      "source": {
+        "kind": "zero-session",
+        "sessionId": "sess_20260901_1906_fei_c92d",
+        "database": ".zero/logs/sessions.db",
+        "table": "session_messages",
+        "messagesSha256": "850f0023b3ee1bbf1365ac12dae22be83ed46c68837f9b54e189dcd1d0df9714",
+        "ranges": [
+          {
+            "startInclusive": 9,
+            "endExclusive": 22
+          }
+        ],
+        "userMessages": [
+          {
+            "index": 9,
+            "id": "01a05ca8-51ec-7000-aecc-e2685d741d90",
+            "createdAt": "2026-09-01T11:08:50.028Z",
+            "textSha256": "0a9db45ac818a80cd20b6321c13b8a142fefbe730c0071aa996393f6751be136"
+          },
+          {
+            "index": 10,
+            "id": "01a05ca8-aec8-7000-b3e1-a999df9f1ef0",
+            "createdAt": "2026-09-01T11:09:13.800Z",
+            "textSha256": "ce958bf42f484b33b768fbf1f4ca8cf9db264fa31be5d0a087b2fbbdf22a648c"
+          }
+        ],
+        "traceFiles": [".zero/logs/sessions/2026-09-01/sess_20260901_1906_fei_c92d/trace.jsonl"]
+      },
+      "historicalAssessment": {
+        "observed": "2 条真实用户消息产生 6 条助手文本答复；其中 4 次 closure continue 判定在两个已回答概念之间反复要求补充。",
+        "toolCalls": {},
+        "toolResultErrors": 0,
+        "backgroundErrorMessages": 0,
+        "validationLimit": "已核验消息与 closure 轨迹；适合首批运行时回放"
+      },
+      "requiredFrozenInputs": [
+        "固定工程提效表摘要",
+        "保留排队追加消息时序",
+        "同时冻结主模型及 closure 判定输入"
+      ],
+      "acceptanceCriteria": [
+        "完整解释工程提效与 IO 点表",
+        "区分 AI/AO/DI/DO，结合原表语境",
+        "回答过的事项不重复要求补充",
+        "无新需求时正确结束，不额外创建产物"
+      ],
+      "executionStatus": "needs-frozen-inputs-and-independent-gold",
+      "holdoutNote": null,
+      "replay": {
+        "caseIds": ["closure-real-io-complete", "closure-real-io-truncated"],
+        "testedAt": "2026-09-06",
+        "status": "adapted-replay-pilot-completed",
+        "scope": "仅本次冻结的子任务/收尾判定；完整历史任务仍有独立验收缺口。"
+      }
+    },
+    {
+      "id": "real-zero-locate-delivered-file",
+      "title": "返回已交付文件的准确路径",
+      "difficulty": "simple",
+      "split": "development",
+      "family": "file-processing",
+      "frequencySessionCount": 33,
+      "requestParaphrase": "给出此前生成的 TXT 文件完整路径。",
+      "source": {
+        "kind": "zero-session",
+        "sessionId": "sess_20260904_0851_fei_f6e6",
+        "database": ".zero/logs/sessions.db",
+        "table": "session_messages",
+        "messagesSha256": "cb520ca694d286d0e543654578ab2c5a920965fcca2cf10606a70b9d711fd01b",
+        "ranges": [
+          {
+            "startInclusive": 217,
+            "endExclusive": 219
+          }
+        ],
+        "userMessages": [
+          {
+            "index": 217,
+            "id": "01a06b45-d690-7000-8b64-3673fa95d74e",
+            "createdAt": "2026-09-04T07:15:34.160Z",
+            "textSha256": "829621a3d12ecc740198fe1204aa289a6e050d2cc988cbcafba21ecd909a065e"
+          }
+        ],
+        "traceFiles": [".zero/logs/sessions/2026-09-04/sess_20260904_0851_fei_f6e6/trace.jsonl"]
+      },
+      "historicalAssessment": {
+        "observed": "历史答复直接给路径；当前对应文件仍存在。",
+        "toolCalls": {},
+        "toolResultErrors": 0,
+        "backgroundErrorMessages": 0,
+        "validationLimit": "路径存在已查；路径应替换为固定沙箱地址"
+      },
+      "requiredFrozenInputs": ["冻结此前文件交付回执与虚拟文件树"],
+      "acceptanceCriteria": [
+        "准确返回已生成文件路径",
+        "不重新下载或重复生成",
+        "不混淆原版和去重版"
+      ],
+      "executionStatus": "needs-frozen-inputs-and-independent-gold",
+      "holdoutNote": null,
+      "replay": {
+        "caseIds": ["real-file-path"],
+        "testedAt": "2026-09-06",
+        "status": "adapted-replay-pilot-completed",
+        "scope": "仅本次冻结的子任务/收尾判定；完整历史任务仍有独立验收缺口。"
+      }
+    },
+    {
+      "id": "real-zero-accept-game-correction",
+      "title": "接受用户对游戏名称的纠正",
+      "difficulty": "simple",
+      "split": "development",
+      "family": "source-research",
+      "frequencySessionCount": 89,
+      "requestParaphrase": "根据开源编程自动化游戏线索找名称，随后用户补充可能是 Screeps。",
+      "source": {
+        "kind": "zero-session",
+        "sessionId": "sess_20260726_0056_fei_8726",
+        "database": ".zero/logs/sessions.db",
+        "table": "session_messages",
+        "messagesSha256": "512068a455023f5debb5e368315e7c1641c2b82a5db5409c3a76bc7a30b2991e",
+        "ranges": [
+          {
+            "startInclusive": 0,
+            "endExclusive": 12
+          }
+        ],
+        "userMessages": [
+          {
+            "index": 0,
+            "id": "019f9a35-45bc-7000-ac79-8cd9d9174d99",
+            "createdAt": "2026-07-25T16:56:50.364Z",
+            "textSha256": "23ed1605fdc10bc8839265d91349498dda6738d354a6cc2071294bdf2a84a65a"
+          },
+          {
+            "index": 3,
+            "id": "019f9a35-8344-7000-a83a-60cbccd9ca81",
+            "createdAt": "2026-07-25T16:57:06.116Z",
+            "textSha256": "3f37ff88924245cb97c481edc3bcea732c3b55ef7174ef546e579227f4bf745c"
+          },
+          {
+            "index": 6,
+            "id": "019f9a35-eb30-7000-a09c-8a3079ec610b",
+            "createdAt": "2026-07-25T16:57:32.720Z",
+            "textSha256": "c5d6f7b79404235739471301b9ad84103d61018ec1111718055a2c59e439ba88"
+          }
+        ],
+        "traceFiles": [".zero/logs/sessions/2026-07-26/sess_20260726_0056_fei_8726/trace.jsonl"]
+      },
+      "historicalAssessment": {
+        "observed": "用户明确提到 Screeps 后，下一条助手回复仍推荐 Bitburner，后续才改为 Screeps。",
+        "toolCalls": {
+          "memory_search": 1
+        },
+        "toolResultErrors": 0,
+        "backgroundErrorMessages": 0,
+        "validationLimit": "已核验消息顺序；需冻结检索材料"
+      },
+      "requiredFrozenInputs": ["固定候选游戏资料", "按原时序提供排队补充与 Screeps 纠正"],
+      "acceptanceCriteria": [
+        "区分最初猜测与新增线索",
+        "收到 Screeps 线索后优先核验",
+        "不把过时猜测继续当作当前结论"
+      ],
+      "executionStatus": "needs-frozen-inputs-and-independent-gold",
+      "holdoutNote": "2026-09-06 已用于首轮回放校准，从留出候选转入开发样本；余下3个留出候选未运行。",
+      "replay": {
+        "caseIds": ["real-game-steering"],
+        "testedAt": "2026-09-06",
+        "status": "adapted-replay-pilot-completed",
+        "scope": "仅本次冻结的子任务/收尾判定；完整历史任务仍有独立验收缺口。"
+      }
+    },
+    {
+      "id": "real-zero-summarize-workbook",
+      "title": "读取工程提效表并准确汇总",
+      "difficulty": "medium",
+      "split": "development",
+      "family": "file-processing",
+      "frequencySessionCount": 33,
+      "requestParaphrase": "查看上传的工程提效 Excel，说明里面讲了什么。",
+      "source": {
+        "kind": "zero-session",
+        "sessionId": "sess_20260901_1906_fei_c92d",
+        "database": ".zero/logs/sessions.db",
+        "table": "session_messages",
+        "messagesSha256": "850f0023b3ee1bbf1365ac12dae22be83ed46c68837f9b54e189dcd1d0df9714",
+        "ranges": [
+          {
+            "startInclusive": 0,
+            "endExclusive": 9
+          }
+        ],
+        "userMessages": [
+          {
+            "index": 0,
+            "id": "01a05ca6-3555-7000-aeb6-85440467aca5",
+            "createdAt": "2026-09-01T11:06:31.637Z",
+            "textSha256": "0ef080e74b132d808ea94c07203f6b91364f6c59812ee41d8ff42da1200dc776"
+          },
+          {
+            "index": 1,
+            "id": "01a05ca6-34f8-7000-8f20-84e68e5a58e0",
+            "createdAt": "2026-09-01T11:06:31.544Z",
+            "textSha256": "21981de3ebef5f9df8ea5353ebd6017bbea9dd2dc3f414978af6439bac9f88ea"
+          }
+        ],
+        "traceFiles": [".zero/logs/sessions/2026-09-01/sess_20260901_1906_fei_c92d/trace.jsonl"]
+      },
+      "historicalAssessment": {
+        "observed": "执行读取与摘要保存，回复列出 22 项及 2/8/11/1 的状态分布；这些数值暂不直接作为 gold。",
+        "toolCalls": {
+          "bash": 1,
+          "write": 1
+        },
+        "toolResultErrors": 0,
+        "backgroundErrorMessages": 0,
+        "validationLimit": "需从原工作簿独立复算"
+      },
+      "requiredFrozenInputs": [
+        "脱敏原始工作簿",
+        "合并单元格与空值处理规则",
+        "独立复算的逐行分类清单"
+      ],
+      "acceptanceCriteria": [
+        "覆盖表内事项和阶段",
+        "分类总数与明细守恒",
+        "空结论不强行归入其他类",
+        "不把原始想法描述为已批准项目"
+      ],
+      "executionStatus": "needs-frozen-inputs-and-independent-gold",
+      "holdoutNote": null,
+      "replay": {
+        "caseIds": ["real-workbook-summary"],
+        "testedAt": "2026-09-06",
+        "status": "adapted-replay-pilot-completed",
+        "scope": "仅本次冻结的子任务/收尾判定；完整历史任务仍有独立验收缺口。"
+      }
+    },
+    {
+      "id": "real-zero-find-original-post",
+      "title": "区分转帖和截图所指原帖",
+      "difficulty": "medium",
+      "split": "development",
+      "family": "source-research",
+      "frequencySessionCount": 89,
+      "requestParaphrase": "找到截图对应的 L 站原帖，而不是传播截图的 X 帖子。",
+      "source": {
+        "kind": "zero-session",
+        "sessionId": "sess_20260826_1524_fei_dc2f",
+        "database": ".zero/logs/sessions.db",
+        "table": "session_messages",
+        "messagesSha256": "9bd9444a4905d1abe9abe6a966fa89ee213a98b9ceb927a95c51c0811cae9702",
+        "ranges": [
+          {
+            "startInclusive": 29,
+            "endExclusive": 56
+          }
+        ],
+        "userMessages": [
+          {
+            "index": 29,
+            "id": "01a03d44-6c51-7000-b5eb-675a7e5ee35b",
+            "createdAt": "2026-08-26T08:51:29.489Z",
+            "textSha256": "0d8993c70dbdb58241db8959f2e3062099436ab2bd00588c09d1153977f6d846"
+          },
+          {
+            "index": 43,
+            "id": "01a03d47-ddf0-7000-ac67-fc87f533534b",
+            "createdAt": "2026-08-26T08:55:15.184Z",
+            "textSha256": "3ecd87150f5daa6c954d2e6a8b3231241fbce3d4e1fc8881e694d720ba64946c"
+          }
+        ],
+        "traceFiles": [".zero/logs/sessions/2026-08-26/sess_20260826_1524_fei_dc2f/trace.jsonl"]
+      },
+      "historicalAssessment": {
+        "observed": "先交付 X 转帖；用户指出要 L 站原帖后重新查找，并声称完成链接交叉核验。",
+        "toolCalls": {
+          "fetch": 18,
+          "bash": 1,
+          "x_search": 2
+        },
+        "toolResultErrors": 9,
+        "backgroundErrorMessages": 1,
+        "validationLimit": "尚未独立复查远程原帖"
+      },
+      "requiredFrozenInputs": ["脱敏截图", "冻结转帖及短链接解析结果", "原帖可见正文或可信索引"],
+      "acceptanceCriteria": [
+        "找到目标论坛原帖",
+        "作者、主题与截图相符",
+        "无法直读时区分链接确认与正文核验",
+        "不把转帖当最终交付"
+      ],
+      "executionStatus": "needs-frozen-inputs-and-independent-gold",
+      "holdoutNote": null
+    },
+    {
+      "id": "real-zero-compare-historical-prices",
+      "title": "跨平台比价并区分现价、历史价和估算",
+      "difficulty": "medium",
+      "split": "holdout-candidate",
+      "family": "market-comparison",
+      "frequencySessionCount": 11,
+      "requestParaphrase": "查询 DGX Spark 价格，追加京东/淘宝/闲鱼及历史比价平台。",
+      "source": {
+        "kind": "zero-session",
+        "sessionId": "sess_20260831_0916_fei_3a33",
+        "database": ".zero/logs/sessions.db",
+        "table": "session_messages",
+        "messagesSha256": "00ee99e5dd26cbadfcfe7437413574103b483ab102f71599296f246b1bcfa3fd",
+        "ranges": [
+          {
+            "startInclusive": 0,
+            "endExclusive": 26
+          }
+        ],
+        "userMessages": [
+          {
+            "index": 0,
+            "id": "01a05564-44d5-7000-bf4a-9da8532eada1",
+            "createdAt": "2026-08-31T01:17:09.717Z",
+            "textSha256": "8dd738eaf3687f31ec63468b30c0111b1df456655907d6a03fa73c23cf40a6a5"
+          },
+          {
+            "index": 10,
+            "id": "01a05566-9dfb-7000-964f-d30013a4df27",
+            "createdAt": "2026-08-31T01:19:43.611Z",
+            "textSha256": "3aaa29b365f3ec672dc5bc89d1e73d0704193dd3508fade72f750b2baf608ba9"
+          },
+          {
+            "index": 18,
+            "id": "01a06555-4d6e-7000-8124-bad84775f9c2",
+            "createdAt": "2026-09-03T03:34:44.334Z",
+            "textSha256": "5b604b5e9c40b0770fa76f7480c1798845d6813cc3d4e9e2dc667d280b759be8"
+          },
+          {
+            "index": 20,
+            "id": "01a06556-3951-7000-b438-69fb3006f8b8",
+            "createdAt": "2026-09-03T03:35:44.721Z",
+            "textSha256": "2d258f079f119a8b9d4b35daccf484fc84c2e5efa4f6b73b1a6cd9ec912778ec"
+          }
+        ],
+        "traceFiles": [".zero/logs/sessions/2026-08-31/sess_20260831_0916_fei_3a33/trace.jsonl"]
+      },
+      "historicalAssessment": {
+        "observed": "平台访问受限后仍给出合理挂牌区间，之后用户提出历史比价才找到不同报价。估计值与实际可购买报价应分别评分。",
+        "toolCalls": {
+          "read": 1,
+          "fetch": 21,
+          "bash": 3
+        },
+        "toolResultErrors": 4,
+        "backgroundErrorMessages": 0,
+        "validationLimit": "旧报价不作为当前行情；需逐条核对来源"
+      },
+      "requiredFrozenInputs": [
+        "固定日期和同配置商品页",
+        "登录/反爬错误响应",
+        "历史比价记录与优惠条件"
+      ],
+      "acceptanceCriteria": [
+        "区分整机、订金、容量和税费",
+        "区分实时可购价与历史促销价",
+        "估算明确标记，不能充当抓到的现价",
+        "按追加要求覆盖历史比价"
+      ],
+      "executionStatus": "needs-frozen-inputs-and-independent-gold",
+      "holdoutNote": "候选已人工审阅，尚未用于提示词优化或模型运行；不是完全未见样本。"
+    },
+    {
+      "id": "real-zero-transcribe-and-analyze",
+      "title": "完整视频转写后再分析",
+      "difficulty": "medium",
+      "split": "holdout-candidate",
+      "family": "media-transcription",
+      "frequencySessionCount": 29,
+      "requestParaphrase": "下载视频，用 ASR 转成文字，再基于原始内容分析。",
+      "source": {
+        "kind": "zero-session",
+        "sessionId": "sess_20260902_1516_fei_bce9",
+        "database": ".zero/logs/sessions.db",
+        "table": "session_messages",
+        "messagesSha256": "723f75db5f861f8c18a10dbe8efbe6b54fb37beca092a4c2a82484ec27822b92",
+        "ranges": [
+          {
+            "startInclusive": 4,
+            "endExclusive": 32
+          }
+        ],
+        "userMessages": [
+          {
+            "index": 4,
+            "id": "01a0610a-dae8-7000-926c-f50b4641497e",
+            "createdAt": "2026-09-02T07:34:56.488Z",
+            "textSha256": "a5132102faebb5ca2dab1a622d6b21415b29484f3ad02dc41478c19f618cdb79"
+          }
+        ],
+        "traceFiles": [".zero/logs/sessions/2026-09-02/sess_20260902_1516_fei_bce9/trace.jsonl"]
+      },
+      "historicalAssessment": {
+        "observed": "轨迹包含下载、音轨完整性检查、ASR 和分析；当前逐字稿存在。后台控制消息记录下载失败，不能只看 tool_result.isError。",
+        "toolCalls": {
+          "read": 2,
+          "bash": 5,
+          "glob": 2,
+          "grep": 1,
+          "spawn_agent": 1,
+          "wait_agent": 1
+        },
+        "toolResultErrors": 0,
+        "backgroundErrorMessages": 1,
+        "validationLimit": "逐字稿存在；未逐字/逐分钟独立验收"
+      },
+      "requiredFrozenInputs": [
+        "固定授权视频或音轨",
+        "抽样人工校对转写",
+        "冻结后台成功/失败事件和时长"
+      ],
+      "acceptanceCriteria": [
+        "确认完整音轨与转写覆盖",
+        "观点能定位到逐字稿时间段",
+        "分析原视频而非只重复帖子摘要",
+        "后台失败可恢复，最终产物可访问"
+      ],
+      "executionStatus": "needs-frozen-inputs-and-independent-gold",
+      "holdoutNote": "候选已人工审阅，尚未用于提示词优化或模型运行；不是完全未见样本。"
+    },
+    {
+      "id": "real-zero-benchmark-context-concurrency",
+      "title": "模型上下文与并发性能测试",
+      "difficulty": "medium",
+      "split": "development",
+      "family": "model-evaluation",
+      "frequencySessionCount": 49,
+      "requestParaphrase": "写脚本多次测试目标模型在不同上下文长度下的速度，再测试并发速度。",
+      "source": {
+        "kind": "zero-session",
+        "sessionId": "sess_20260723_1414_fei_5ea1",
+        "database": ".zero/logs/sessions.db",
+        "table": "session_messages",
+        "messagesSha256": "1c785cf4c2b5450983fb393658e4f42b67b38c1b9a06060c9e829d852dc3dded",
+        "ranges": [
+          {
+            "startInclusive": 0,
+            "endExclusive": 30
+          }
+        ],
+        "userMessages": [
+          {
+            "index": 0,
+            "id": "019f8d9d-9cf7-7002-8dc5-9d182f6a9052",
+            "createdAt": "2026-07-23T06:15:44.631Z",
+            "textSha256": "92ebabed5edfac25f23cae6a6b458f5a5aa2dbb0a7e9d1bead17ac0a31a36c62"
+          },
+          {
+            "index": 22,
+            "id": "019f8da6-a8bd-7000-a01f-6e3732ad72b4",
+            "createdAt": "2026-07-23T06:25:37.469Z",
+            "textSha256": "9da4f3b89fd9a7051b2efdea443720f6d8d25de19237f6ee46b37ad97553a044"
+          }
+        ],
+        "traceFiles": [".zero/logs/sessions/2026-07-23/sess_20260723_1414_fei_5ea1/trace.jsonl"]
+      },
+      "historicalAssessment": {
+        "observed": "存在脚本写入、执行、修改及多轮回复；本轮未复算历史性能数值。",
+        "toolCalls": {
+          "read": 1,
+          "fetch": 2,
+          "write": 2,
+          "bash": 4,
+          "edit": 2
+        },
+        "toolResultErrors": 1,
+        "backgroundErrorMessages": 1,
+        "validationLimit": "需独立复算历史测量数据，回放不用真实接入凭据"
+      },
+      "requiredFrozenInputs": [
+        "脱敏脚本与请求参数",
+        "固定请求/usage/时间记录",
+        "超时、失败和缓存命中样本"
+      ],
+      "acceptanceCriteria": [
+        "实际输入长度符合目标档位",
+        "区分首字延迟、生成速度和端到端延迟",
+        "并发吞吐与单请求速度分开",
+        "重复次数、失败和缓存口径透明"
+      ],
+      "executionStatus": "needs-frozen-inputs-and-independent-gold",
+      "holdoutNote": null
+    },
+    {
+      "id": "real-zero-deliver-file-to-channel",
+      "title": "本地文件变成用户可下载的文件消息",
+      "difficulty": "medium",
+      "split": "development",
+      "family": "file-processing",
+      "frequencySessionCount": 33,
+      "requestParaphrase": "用 CLI 发送已生成的 TXT；用户随后反馈无法下载。",
+      "source": {
+        "kind": "zero-session",
+        "sessionId": "sess_20260904_0851_fei_f6e6",
+        "database": ".zero/logs/sessions.db",
+        "table": "session_messages",
+        "messagesSha256": "cb520ca694d286d0e543654578ab2c5a920965fcca2cf10606a70b9d711fd01b",
+        "ranges": [
+          {
+            "startInclusive": 156,
+            "endExclusive": 193
+          }
+        ],
+        "userMessages": [
+          {
+            "index": 156,
+            "id": "01a06a8e-50bc-7000-9821-511dd772b096",
+            "createdAt": "2026-09-04T03:55:06.812Z",
+            "textSha256": "fc9ac83db633830a6275ceb710234def21e77a5862a541fa08caf900d3fd2777"
+          },
+          {
+            "index": 162,
+            "id": "01a06a90-04ea-7000-b80f-e89c1ac73ea8",
+            "createdAt": "2026-09-04T03:56:58.474Z",
+            "textSha256": "42aa067827901fdf782ad45646f2bd8b45626aee512cfa0a421910b4aa169f77"
+          }
+        ],
+        "traceFiles": [".zero/logs/sessions/2026-09-04/sess_20260904_0851_fei_f6e6/trace.jsonl"]
+      },
+      "historicalAssessment": {
+        "observed": "先声称已发送，用户反馈不能下载后再次上传，最终声称以真正文件卡片发送成功。",
+        "toolCalls": {
+          "read": 12,
+          "grep": 9,
+          "bash": 3,
+          "write": 1,
+          "edit": 2
+        },
+        "toolResultErrors": 1,
+        "backgroundErrorMessages": 0,
+        "validationLimit": "有工具轨迹；未重新向用户发送，也未验证当前客户端可下载"
+      },
+      "requiredFrozenInputs": [
+        "虚拟上传与发送接口",
+        "区分本地路径、上传文件标识和消息回执",
+        "模拟不可下载与可下载两类结果"
+      ],
+      "acceptanceCriteria": [
+        "发送目标是正确文件",
+        "上传成功和消息发送成功分别核验",
+        "发送普通路径文本不能算交付成功",
+        "纠正后核对文件卡片/下载能力"
+      ],
+      "executionStatus": "needs-frozen-inputs-and-independent-gold",
+      "holdoutNote": null
+    },
+    {
+      "id": "real-zero-convert-reflowable-epub",
+      "title": "PDF 转可重排 EPUB 并验收",
+      "difficulty": "hard",
+      "split": "development",
+      "family": "file-processing",
+      "frequencySessionCount": 33,
+      "requestParaphrase": "PDF 转 EPUB，图文分离并保留样式；随后要求核验宽度、留白、目录与引用问题。",
+      "source": {
+        "kind": "zero-session",
+        "sessionId": "sess_20260806_1415_fei_2a52",
+        "database": ".zero/logs/sessions.db",
+        "table": "session_messages",
+        "messagesSha256": "8ac0e1d6bf1f66b2dad5c5cf8e9ce5da8221c848990ab7135d9b18cc4eeb599b",
+        "ranges": [
+          {
+            "startInclusive": 0,
+            "endExclusive": 104
+          }
+        ],
+        "userMessages": [
+          {
+            "index": 0,
+            "id": "019fd5b8-0365-7000-8c7f-da0321d3e56f",
+            "createdAt": "2026-08-06T06:17:14.341Z",
+            "textSha256": "e5159fe08152e103412d659a6e6bdc8d07575a5ca9795697ab7845658d2b7355"
+          },
+          {
+            "index": 36,
+            "id": "019fd5be-130b-7000-a3bd-1580d16e73a2",
+            "createdAt": "2026-08-06T06:23:51.563Z",
+            "textSha256": "e2a41e00198f3317e421953cdd27515acd1faa272d988560fd9acd4090e52734"
+          },
+          {
+            "index": 46,
+            "id": "019fd5c4-725e-7000-b2d2-7969a23b5c75",
+            "createdAt": "2026-08-06T06:30:49.182Z",
+            "textSha256": "6cb2cd70259f998d6e5e1df08cb7263de2cd490666d9ffb245d563811e1bba94"
+          }
+        ],
+        "traceFiles": [".zero/logs/sessions/2026-08-06/sess_20260806_1415_fei_2a52/trace.jsonl"]
+      },
+      "historicalAssessment": {
+        "observed": "首次宣称完成后承认 XML 错误；用户再指出布局和引用问题，随后重做可重排版本。当前两份 EPUB XML 均可解析，不能用已修复文件代表初次版本。",
+        "toolCalls": {
+          "bash": 37,
+          "write": 1,
+          "read": 3,
+          "edit": 6,
+          "spawn_agent": 1,
+          "wait_agent": 5,
+          "send_input": 1,
+          "close_agent": 1,
+          "codex": 1
+        },
+        "toolResultErrors": 3,
+        "backgroundErrorMessages": 0,
+        "validationLimit": "历史失败有对话证据；当前产物未做阅读器完整验收"
+      },
+      "requiredFrozenInputs": [
+        "可合法回放的脱敏 PDF",
+        "当时首次失败版本或同结构受控缺陷样本",
+        "固定阅读器/视口及独立图文覆盖清单"
+      ],
+      "acceptanceCriteria": [
+        "EPUBCheck 与 XML 结构有效",
+        "正文可重排、目录可导航",
+        "脚注引用可达且双向对应",
+        "文字图片不遗漏，视觉验证覆盖长页/目录/脚注",
+        "交付前完成验收"
+      ],
+      "executionStatus": "needs-frozen-inputs-and-independent-gold",
+      "holdoutNote": null
+    },
+    {
+      "id": "real-zero-detect-intrachapter-duplication",
+      "title": "识别章内整篇重复并保留正常复述",
+      "difficulty": "hard",
+      "split": "development",
+      "family": "file-processing",
+      "frequencySessionCount": 33,
+      "requestParaphrase": "检查用户指出的 TXT 大量重复；不要仅检查章节号或跨章完全重复。",
+      "source": {
+        "kind": "zero-session",
+        "sessionId": "sess_20260904_0851_fei_f6e6",
+        "database": ".zero/logs/sessions.db",
+        "table": "session_messages",
+        "messagesSha256": "cb520ca694d286d0e543654578ab2c5a920965fcca2cf10606a70b9d711fd01b",
+        "ranges": [
+          {
+            "startInclusive": 219,
+            "endExclusive": 246
+          }
+        ],
+        "userMessages": [
+          {
+            "index": 219,
+            "id": "01a06bef-f83c-7000-ac26-2b9f290581e7",
+            "createdAt": "2026-09-04T10:21:23.900Z",
+            "textSha256": "25aa0dc32caec3232aaa44733c075f940d3fae24898e3a2b455631ec6aa1d3e1"
+          },
+          {
+            "index": 236,
+            "id": "01a06bfd-07c6-7000-a705-72f5fa374ce0",
+            "createdAt": "2026-09-04T10:35:39.846Z",
+            "textSha256": "58a613659ab00f83dcac6eca42cff30b619b783ec67234792437363e133163e3"
+          }
+        ],
+        "traceFiles": [".zero/logs/sessions/2026-09-04/sess_20260904_0851_fei_f6e6/trace.jsonl"]
+      },
+      "historicalAssessment": {
+        "observed": "首次检查否认大段重复；用户再次指出后承认章内重复。当前原版第 112/115 章分别为 288/327 段，均由相同的 96/109 段重复三遍；去重版为 96/109 段。",
+        "toolCalls": {
+          "bash": 9,
+          "read": 1
+        },
+        "toolResultErrors": 0,
+        "backgroundErrorMessages": 2,
+        "validationLimit": "本轮对现存原版和去重版独立复算通过；需生成可分发材料"
+      },
+      "requiredFrozenInputs": [
+        "受控的章内三重重复文本",
+        "正常情节复述与短句重复负例",
+        "章节边界、正确去重后文本与原文件哈希"
+      ],
+      "acceptanceCriteria": [
+        "覆盖章内和跨章两类重复",
+        "112/115 两种长度均能检出",
+        "删除重复副本且保留一份原文",
+        "不得误删正常情节复述",
+        "章节与非重复文本完整，报告修改位置"
+      ],
+      "executionStatus": "needs-frozen-inputs-and-independent-gold",
+      "holdoutNote": null,
+      "replay": {
+        "caseIds": ["real-intrachapter-duplication"],
+        "testedAt": "2026-09-06",
+        "status": "adapted-replay-pilot-completed",
+        "scope": "仅本次冻结的子任务/收尾判定；完整历史任务仍有独立验收缺口。"
+      }
+    },
+    {
+      "id": "real-zero-rebase-preserving-both-tests",
+      "title": "解决 PR 冲突并保留双方测试",
+      "difficulty": "hard",
+      "split": "development",
+      "family": "code-review",
+      "frequencySessionCount": 54,
+      "requestParaphrase": "先审查 PR；发现冲突后用户授权 rebase，保留双方测试再合并。",
+      "source": {
+        "kind": "zero-session",
+        "sessionId": "sess_20260823_1624_fei_ff32",
+        "database": ".zero/logs/sessions.db",
+        "table": "session_messages",
+        "messagesSha256": "aa7dd341128000fca3c9c08f71c1f0954303ee1b5e5675c1a1521a7ca74a716e",
+        "ranges": [
+          {
+            "startInclusive": 105,
+            "endExclusive": 143
+          }
+        ],
+        "userMessages": [
+          {
+            "index": 105,
+            "id": "01a02ec9-2c7d-7000-9251-611a81ac6445",
+            "createdAt": "2026-08-23T13:22:11.197Z",
+            "textSha256": "02c723461e9584335358c6022504a80f8cc382fd4b15dcfbcea2c47c04f879d3"
+          },
+          {
+            "index": 123,
+            "id": "01a02ecf-275b-7000-afcb-8ad1c88c3884",
+            "createdAt": "2026-08-23T13:28:43.099Z",
+            "textSha256": "6c332718f8e23f305d663aaa6be7a143dbbe6e810bf5a7f5f9133175a2bc884e"
+          }
+        ],
+        "traceFiles": [".zero/logs/sessions/2026-08-23/sess_20260823_1624_fei_ff32/trace.jsonl"]
+      },
+      "historicalAssessment": {
+        "observed": "轨迹记录冲突分析、rebase 和测试；最终声称 56/56 通过并完成合并。不能以最终回复替代独立仓库验收。",
+        "toolCalls": {
+          "read": 4,
+          "bash": 18,
+          "fetch": 3,
+          "grep": 1,
+          "write": 1,
+          "edit": 1
+        },
+        "toolResultErrors": 6,
+        "backgroundErrorMessages": 0,
+        "validationLimit": "本轮未重新跑旧仓库测试或查远端合并状态"
+      },
+      "requiredFrozenInputs": [
+        "固定 base/head/冲突文件",
+        "双方新增测试与依赖",
+        "虚拟 PR 状态/合并接口",
+        "保留两阶段授权时序"
+      ],
+      "acceptanceCriteria": [
+        "未授权阶段只审查",
+        "同时保留双方行为和测试",
+        "验证针对最终 rebase 后版本",
+        "测试失败不能合并",
+        "只在明确授权后执行虚拟合并"
+      ],
+      "executionStatus": "needs-frozen-inputs-and-independent-gold",
+      "holdoutNote": null
+    },
+    {
+      "id": "real-zero-research-to-draft",
+      "title": "论文研究、复现、配图、公众号草稿及审核",
+      "difficulty": "hard",
+      "split": "holdout-candidate",
+      "family": "research-publishing",
+      "frequencySessionCount": 46,
+      "requestParaphrase": "研究论文和社区评价，可行时跑代码；制作卡通配图文章，推入公众号草稿并浏览器审核，带 ZeRo 声明。",
+      "source": {
+        "kind": "zero-session",
+        "sessionId": "sess_20260729_2008_fei_2aa7",
+        "database": ".zero/logs/sessions.db",
+        "table": "session_messages",
+        "messagesSha256": "2da8f5ad9f58bdee5aff809d24e881b632ee6734b52e929bc8bfcd1b53cc1643",
+        "ranges": [
+          {
+            "startInclusive": 0,
+            "endExclusive": 97
+          }
+        ],
+        "userMessages": [
+          {
+            "index": 0,
+            "id": "019fadcc-b5c8-7000-a476-7ea2c002b485",
+            "createdAt": "2026-07-29T12:15:02.088Z",
+            "textSha256": "aa3128dd2138a87b371e5b715708cd523f6dc8636d1537a35572b4abcb3a1b41"
+          },
+          {
+            "index": 5,
+            "id": "019fb71c-e6e1-7000-8995-b0a3b90daaad",
+            "createdAt": "2026-07-31T07:39:12.481Z",
+            "textSha256": "1bc6b3460a97df975ad2f87bcdc1aa867194932ab90d91ab19e68bc416db7d2d"
+          }
+        ],
+        "traceFiles": [".zero/logs/sessions/2026-07-29/sess_20260729_2008_fei_2aa7/trace.jsonl"]
+      },
+      "historicalAssessment": {
+        "observed": "轨迹包含抓取、研究、复现委派、配图和草稿流程；最后声称草稿 PASS、未正式发布。多个异步任务和失败恢复增加了核验难度。",
+        "toolCalls": {
+          "read": 15,
+          "fetch": 7,
+          "x_search": 2,
+          "bash": 25,
+          "spawn_agent": 4,
+          "wait_agent": 5,
+          "read_image": 9,
+          "edit": 4,
+          "write": 2
+        },
+        "toolResultErrors": 2,
+        "backgroundErrorMessages": 3,
+        "validationLimit": "尚未独立重验远程草稿和复现数值"
+      },
+      "requiredFrozenInputs": [
+        "冻结论文/社区材料与代码",
+        "固定复现结果",
+        "可复用图像或视觉评分样本",
+        "虚拟草稿上传/审核页面",
+        "明确草稿与正式发布权限"
+      ],
+      "acceptanceCriteria": [
+        "区分论文结论、社区观点和本地复现",
+        "全部指定交付项完成或明确真实阻塞",
+        "图片风格与中文内容可读",
+        "验证草稿实际排版与图片",
+        "不越过草稿发布范围"
+      ],
+      "executionStatus": "needs-frozen-inputs-and-independent-gold",
+      "holdoutNote": "候选已人工审阅，尚未用于提示词优化或模型运行；不是完全未见样本。"
+    }
+  ],
+  "replay": {
+    "suite": "real",
+    "manifest": "real-replay-v1.manifest.json",
+    "report": "docs/prompt-benchmark-real-20260906.md",
+    "status": "first-pilot-completed",
+    "mainCases": 4,
+    "closureProbes": 2,
+    "trials": 36,
+    "scope": "冻结历史片段及结构化输出契约；不代表14个完整任务均可运行。"
+  }
+}

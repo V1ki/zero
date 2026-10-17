@@ -1,5 +1,12 @@
 # Zero Runtime Benchmark
 
+Shared execution/evaluation contracts and reports now live in the
+[benchmark platform](../platform/README.md). The Session, prompt comparison and compaction-prompt
+runners provide a `platform/` report alongside their original output. Prompt comparison now
+runs as a native platform plugin with per-operation telemetry and disposable-process execution;
+Session and compaction-prompt still use result adapters. Other benchmark
+families can implement the plugin interface or add a legacy-result adapter incrementally.
+
 Benchmark for comparing model backends inside the real Zero runtime.
 
 The benchmark is intentionally different from an API replay script:
@@ -17,6 +24,15 @@ The benchmark is intentionally different from an API replay script:
 4. `expansion`: the place to add frozen historical-session cases over time.
 
 ## Commands
+
+Compare frozen system-prompt versions with real models and isolated simulated tools:
+
+```bash
+bun run prompt:bench help
+```
+
+This separate prompt benchmark does not run a live `Session`. It includes task behavior and
+labeled task-closure cases; see [the prompt benchmark guide](../../docs/prompt-benchmark.md).
 
 Preview the current matrix without calling any model:
 

@@ -19,6 +19,8 @@ import {
   buildWorkingStateCompaction,
   formatWorkingState,
 } from '../../../packages/core/src/agent/evidence'
+import { importLegacy } from '../../platform/src/adapters/legacy'
+import { exportRecords } from '../../platform/src/report'
 import { scoreCompactedContext } from './compaction-quality'
 
 export type PromptBenchSecretSource = 'vault' | 'env'
@@ -407,6 +409,10 @@ export async function runPromptBenchmark(
     }
     writeFileSync(join(options.outDir, 'summary.json'), JSON.stringify(report, null, 2), 'utf-8')
     writeFileSync(join(options.outDir, 'report.md'), renderPromptBenchmarkMarkdown(report), 'utf-8')
+    exportRecords(
+      join(options.outDir, 'platform'),
+      importLegacy('compaction', join(options.outDir, 'summary.json')),
+    )
     return report
   } finally {
     db.close()
