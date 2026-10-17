@@ -222,6 +222,11 @@ interface AgentExecutionState {
   currentTraceSpanId?: string
 }
 
+// wait_agent exists to hold the turn until sub-agents settle; backgrounding
+// it would detach the wait from the turn and emit a background_tool.completed
+// message on every timeout, so it always runs in the foreground.
+const FOREGROUND_ONLY_TOOLS = new Set(['wait_agent'])
+
 function createAgentToolExecutor(options: {
   toolRegistry: ToolRegistry
   toolContext: ToolContext
@@ -263,7 +268,7 @@ function createAgentToolExecutor(options: {
         return result
       }
 
-      if (!backgroundTasks) {
+      if (!backgroundTasks || FOREGROUND_ONLY_TOOLS.has(toolName)) {
         return runTool()
       }
 

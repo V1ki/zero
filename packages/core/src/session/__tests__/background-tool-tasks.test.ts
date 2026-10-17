@@ -79,6 +79,11 @@ class SlowTool extends BaseTool {
   }
 }
 
+class WaitAgentToolStub extends SlowTool {
+  name = 'wait_agent'
+  description = 'Wait test tool'
+}
+
 class CapturingBashTool extends BaseTool {
   name = 'bash'
   description = 'Capturing bash test tool'
@@ -418,7 +423,9 @@ describe('BackgroundToolTaskManager', () => {
 
     deferred.resolve({ success: true, output: 'quiet done', outputSummary: 'done' })
     await waitFor(() => events.find((event) => event.topic === 'background_tool:completed'))
-    const progressCount = events.filter((event) => event.topic === 'background_tool:progress').length
+    const progressCount = events.filter(
+      (event) => event.topic === 'background_tool:progress',
+    ).length
     await new Promise((resolve) => setTimeout(resolve, 150))
     expect(events.filter((event) => event.topic === 'background_tool:progress')).toHaveLength(
       progressCount,
@@ -509,7 +516,56 @@ describe('Agent background tool execution', () => {
     expect(completion.xml).toContain('later done')
   })
 
-  test('background bash calls without explicit timeout use a long runtime timeout', async () => {    const completions: BackgroundToolCompletionEvent[] = []
+  test('wait_agent runs in the foreground and never becomes a background task', async () => {
+    const completions: BackgroundToolCompletionEvent[] = []
+    const deferred = createDeferred<ToolResult>()
+    const registry = new ToolRegistry()
+    registry.register(new WaitAgentToolStub(deferred.promise))
+    const adapter = new BackgroundToolAdapter('wait_agent')
+    const manager = new BackgroundToolTaskManager({
+      sessionId: 'sess-foreground-wait',
+      thresholdMs: 5,
+      logger: createLogger(),
+      onComplete: (event) => {
+        completions.push(event)
+      },
+    })
+    const agent = new Agent(
+      { name: 'foreground-wait-agent', agentInstruction: 'test', promptMode: 'minimal' },
+      adapter,
+      registry,
+      {
+        sessionId: 'sess-foreground-wait',
+        workDir: join(testProject.projectRoot, '.zero', 'workspace', 'foreground-wait-agent'),
+        logger: createLogger(),
+        backgroundToolTasks: manager,
+      },
+    )
+
+    let finished = false
+    const pending = agent.run(createContext(registry), 'wait for sub-agent').then((r) => {
+      finished = true
+      return r
+    })
+    // Give the manager's threshold far more time than it needs; a backgrounded
+    // tool would have returned the background-started placeholder by now.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(finished).toBe(false)
+    deferred.resolve({ success: true, output: 'agents settled', outputSummary: 'settled' })
+    await pending
+
+    const toolResultText = adapter.requests[1]?.messages
+      .flatMap((message) => message.content)
+      .filter((block) => block.type === 'tool_result')
+      .map((block) => block.content)
+      .join('\n')
+    expect(toolResultText).toContain('agents settled')
+    expect(toolResultText).not.toContain('background_tool.started')
+    expect(completions).toHaveLength(0)
+  })
+
+  test('background bash calls without explicit timeout use a long runtime timeout', async () => {
+    const completions: BackgroundToolCompletionEvent[] = []
     const deferred = createDeferred<ToolResult>()
     const registry = new ToolRegistry()
     const bash = new CapturingBashTool(deferred.promise)
