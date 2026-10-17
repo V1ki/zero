@@ -165,7 +165,7 @@ bun zero secret set openai_codex_api_key <value>
 - 不带 `--name` 时保持旧行为，例如写入 `chatgpt` / `chatgpt_oauth_token`
 - 带 `--name` 时创建独立 provider 实例，例如 `chatgpt-work` 和 `chatgpt_oauth_work`
 - 如果本地 Web server 正在运行，登录成功后会尝试热重载 model provider 配置
-- ChatGPT Codex provider 登录成功后会按账号和 transport 自动发现并验证模型；结果缓存在
+- ChatGPT Codex 和 Anthropic provider 登录成功后会按账号和 transport 自动发现并验证模型；结果缓存在
   `.zero/cache/model-catalog/catalog.json`
 - 多个订阅发现相同 `model_id` 后，会自动组成 `pool/<model_id>`；provider 配置顺序决定初始优先级
 - 自动发现失败不会清空已验证缓存或手工模型；配置页 Models 标签可手动执行 `Refresh models`

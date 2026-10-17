@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { join } from 'node:path'
 import type { CompletionRequest, ContentBlock, Message } from '@zero-os/shared'
 import { generateId, now } from '@zero-os/shared'
-import { AnthropicAdapter } from '../adapters/anthropic'
+import { AnthropicAdapter, CLAUDE_CODE_CLIENT_VERSION } from '../adapters/anthropic'
 import { convertAnthropicMessages, convertAnthropicTools } from '../adapters/anthropic'
 
 /**
@@ -871,7 +871,7 @@ describe('Anthropic Adapter (Pure Logic)', () => {
         'claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,effort-2025-11-24',
       ])
       expect(seenBrowserHeaders).toEqual(['true'])
-      expect(seenUserAgents).toEqual(['claude-cli/2.1.97 (external, cli)'])
+      expect(seenUserAgents).toEqual([`claude-cli/${CLAUDE_CODE_CLIENT_VERSION} (external, cli)`])
       expect(seenSessionIds).toEqual(['sess-1'])
       expect(seenBodies).toEqual([
         expect.objectContaining({

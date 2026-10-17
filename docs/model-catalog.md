@@ -6,7 +6,9 @@ Runtime Model Catalog 负责按 provider 实例、OAuth 账号和 API transport 
 这里的 provider 表示一个订阅/凭据实例；模型厂商类型由 managed OAuth kind 和 discovery driver
 表达。例如 `chatgpt` 和 `chatgpt-personal` 是两个独立订阅，它们都通过同一个 ChatGPT driver 发现模型。
 
-首个 discovery driver 支持 ChatGPT Codex transport：
+当前有两个 discovery driver。
+
+ChatGPT Codex driver 支持 ChatGPT Codex transport：
 
 - provider 名为 `chatgpt`，或 `managed_oauth_provider: chatgpt`
 - `api_type: openai_responses`
@@ -14,6 +16,30 @@ Runtime Model Catalog 负责按 provider 实例、OAuth 账号和 API transport 
 
 ChatGPT Web 模型名不会映射到 Codex transport。目录中可见的模型必须通过一次最小 Responses
 调用，状态达到 `verified` 后才会进入 Registry 和自动路由。
+
+Anthropic Models driver 支持 Anthropic Messages transport：
+
+- provider 名为 `anthropic` / `anthropic-*`，或 `managed_oauth_provider: anthropic`，或
+  `base_url` 指向 `https://api.anthropic.com`
+- `api_type: anthropic_messages`（`anthropic-deepseek` 不参与发现）
+- 认证支持 Claude OAuth session 和 `api_key`；OAuth 请求沿用运行时 adapter 的 Claude Code
+  transport 头，api_key 请求只带 `x-api-key`
+
+目录来自 `GET /v1/models`，按 `has_more` / `last_id` 自动翻页。`max_input_tokens`、`max_tokens`
+和 `capabilities`（image_input / thinking / effort）会映射为 `max_context`、`max_output`、
+capability 和 `supported_reasoning_efforts`；API 未返回的字段使用系统默认值并在 provenance 中标记
+`system_default`。模型 id 会归一化为 `family: claude`、`lane: opus|sonnet|haiku|fable|mythos`
+和点分 `version`（如 `claude-opus-4-8` → `4.8`，`claude-3-5-sonnet-20241022` → `3.5`），
+以便 route 用 `family`、`lanes` 和 `prefer: newest` 选择代际。
+
+Anthropic 会按 Claude Code 客户端版本号限制新模型（例如 Fable 5.1 要求 ≥ 2.1.251，Opus 5.5 要求
+≥ 2.1.280）。OAuth transport 的版本号默认值定义在 `packages/model/src/adapters/anthropic.ts`，
+可用环境变量 `ZERO_CLAUDE_CODE_CLIENT_VERSION` 覆盖；版本过低时对应模型会以
+`invalid_request_error` 标为 `unavailable`，错误原文写在 `lastError`。
+
+每个新模型或元数据变化的模型会通过一次 `max_tokens: 8` 的最小 Messages 调用验证。HTTP 404、
+403 和明确指向模型的 400 会标为 `unavailable`；请求形状错误、429、5xx 会作为刷新错误抛出并保留
+last-known-good 目录。手工配置的同名或同 `model_id` 模型仍然优先。
 
 ## 配置
 
@@ -111,7 +137,7 @@ Catalog 协调器统一处理以下触发：
 5. 配置 reload 后按新 transport、过滤器和账号重新发现。
 6. 配置页的 `Refresh models`，或手动 API 调用。
 
-ChatGPT 目录读取和模型验证会先通过该 provider 的 TokenManager 检查凭据有效期；收到 HTTP 401
+ChatGPT 和 Anthropic OAuth 目录读取和模型验证会先通过该 provider 的 TokenManager 检查凭据有效期；收到 HTTP 401
 时强制刷新 OAuth 凭据并重试一次。刷新失败或重试仍失败时保留原有目录，并明确返回错误。
 运行时会为目录刷新失败记录 `model_catalog_refresh_failed`，包含 provider、刷新原因和错误摘要，
 包括定时刷新。若 refresh grant 已失效，需要重新登录对应的 provider 实例。

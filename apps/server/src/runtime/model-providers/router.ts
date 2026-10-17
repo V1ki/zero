@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 import {
+  AnthropicModelsDiscoveryDriver,
   ChatGptCodexDiscoveryDriver,
   LiteLLMPricing,
   ModelCatalogCoordinator,
@@ -11,6 +12,7 @@ import type { MetricsDB } from '@zero-os/observe'
 import type { Vault } from '@zero-os/secrets'
 import type { ForkEffect, SystemConfig } from '@zero-os/shared'
 import { ChatGptTokenManager } from '../../providers/chatgpt/oauth'
+import { ClaudeTokenManager } from '../../providers/claude/oauth'
 import { createUsageRecorder } from '../observability'
 import { createOAuthRefreshers, createProviderRecoveryResolver } from './recovery'
 
@@ -45,6 +47,14 @@ export async function createModelRouterRuntime(options: {
     drivers: [
       new ChatGptCodexDiscoveryDriver(fetch, async (context, reason) => {
         const manager = new ChatGptTokenManager(vault, {
+          providerName: context.providerName,
+          tokenRef: context.provider.auth.oauthTokenRef,
+        })
+        if (reason === 'expiring') await manager.ensureFreshSession()
+        else await manager.refreshSession(reason)
+      }),
+      new AnthropicModelsDiscoveryDriver(fetch, async (context, reason) => {
+        const manager = new ClaudeTokenManager(vault, {
           providerName: context.providerName,
           tokenRef: context.provider.auth.oauthTokenRef,
         })

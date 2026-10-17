@@ -51,6 +51,7 @@ export type {
 } from './catalog/coordinator'
 export { ModelCatalogStore } from './catalog/store'
 export { ChatGptCodexDiscoveryDriver, parseChatGptCodexModels } from './catalog/chatgpt-codex'
+export { AnthropicModelsDiscoveryDriver, parseAnthropicModels } from './catalog/anthropic'
 export { mergeCatalogIntoConfig } from './catalog/merge'
 export type {
   DiscoveredModel,

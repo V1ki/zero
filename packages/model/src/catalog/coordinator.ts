@@ -109,6 +109,14 @@ export class ModelCatalogCoordinator {
     return this.snapshot.entries.filter((entry) => {
       const scope = scopes.get(entry.providerName)
       if (!scope || !sameScope(entry, scope)) return false
+      // Local policy also applies to last-known-good entries when discovery fails.
+      if (
+        !matchesModelFilters(
+          entry.modelId,
+          this.config.providers[entry.providerName].discovery ?? {},
+        )
+      )
+        return false
       if (entry.status === 'verified') return true
       return (
         entry.status === 'stale' &&

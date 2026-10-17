@@ -14,6 +14,7 @@ import type {
   ModelDiscoveryScope,
   ModelVerificationResult,
 } from '../catalog/types'
+import { ModelRegistry } from '../registry'
 import { ModelRouter } from '../router'
 
 const temporaryDirectories: string[] = []
@@ -365,6 +366,124 @@ describe('mergeCatalogIntoConfig', () => {
 })
 
 describe('ModelRouter catalog activation', () => {
+  for (const failure of ['invalid_grant', 'network unavailable']) {
+    for (const filters of [{ deny: ['gpt-5.5'] }, { allow: ['gpt-6-*'] }]) {
+      for (const status of ['verified', 'stale'] as const) {
+        test(`filters ${status} LKG on reload and startup despite ${failure}: ${JSON.stringify(filters)}`, async () => {
+          const driver = new FakeDiscoveryDriver()
+          driver.supports = () => true
+          driver.models = ['gpt-5.5', 'gpt-6-astra'].map((modelId) => ({
+            ...driver.models[0],
+            modelName: modelId,
+            modelId,
+          }))
+          const sourceConfig: SystemConfig = {
+            ...config,
+            providers: { chatgpt: provider, 'chatgpt-personal': provider },
+            defaultModel: 'pool/gpt-6-astra',
+          }
+          const { coordinator } = await createCoordinator(driver, undefined, sourceConfig)
+          await coordinator.refresh({ reason: 'manual', force: true })
+          if (status === 'stale') {
+            driver.models = [driver.models[1]]
+            await coordinator.refresh({ reason: 'manual', force: true })
+          }
+          const snapshot = coordinator.getSnapshot()
+          expect(snapshot.entries.filter((entry) => entry.modelId === 'gpt-5.5')).toHaveLength(2)
+          expect(snapshot.entries.find((entry) => entry.modelId === 'gpt-5.5')?.status).toBe(status)
+          const filteredConfig: SystemConfig = {
+            ...sourceConfig,
+            providers: Object.fromEntries(
+              Object.entries(sourceConfig.providers).map(([name, value]) => [
+                name,
+                { ...value, discovery: { ...value.discovery, ...filters } },
+              ]),
+            ),
+          }
+          driver.discover = async () => {
+            throw new Error(failure)
+          }
+          const router = new ModelRouter(sourceConfig, new Map(), { catalog: coordinator })
+          expect(router.resolveModel('pool/gpt-5.5')).toBeDefined()
+          router.reload(filteredConfig, new Map())
+
+          const assertFiltered = (registry: ModelRegistry) => {
+            expect(
+              registry.listModels().map((model) => `${model.providerName}/${model.modelName}`),
+            ).toEqual(['pool/gpt-6-astra', 'chatgpt/gpt-6-astra', 'chatgpt-personal/gpt-6-astra'])
+            expect(registry.resolve('chatgpt/gpt-5.5')).toBeUndefined()
+            expect(registry.resolve('chatgpt-personal/gpt-5.5')).toBeUndefined()
+            expect(registry.resolve('pool/gpt-5.5')).toBeUndefined()
+            expect(registry.listModelPools()).toMatchObject([
+              {
+                name: 'pool/gpt-6-astra',
+                members: [
+                  { model: 'chatgpt/gpt-6-astra' },
+                  { model: 'chatgpt-personal/gpt-6-astra' },
+                ],
+              },
+            ])
+          }
+          assertFiltered(router.getRegistry())
+          expect(coordinator.getActiveEntries().map((entry) => entry.modelId)).toEqual([
+            'gpt-6-astra',
+            'gpt-6-astra',
+          ])
+          const result = await router.refreshCatalog({ reason: 'config_reload', force: true })
+          expect(result.errors).toHaveLength(2)
+          expect(result.errors.every((error) => error.message === failure)).toBe(true)
+          assertFiltered(router.getRegistry())
+          expect(coordinator.getSnapshot()).toEqual(snapshot)
+
+          // Registry must also defend callers that bypass the coordinator's active view.
+          assertFiltered(
+            new ModelRegistry(filteredConfig, new Map(), { catalogEntries: snapshot.entries }),
+          )
+          const directory = await mkdtemp(join(tmpdir(), 'zero-model-catalog-'))
+          temporaryDirectories.push(directory)
+          const store = new ModelCatalogStore(join(directory, 'catalog.json'))
+          await store.save(snapshot)
+          const restored = new ModelCatalogCoordinator({
+            config: filteredConfig,
+            secretGetter: () => undefined,
+            store,
+            drivers: [driver],
+          })
+          await restored.initialize()
+          assertFiltered(
+            new ModelRouter(filteredConfig, new Map(), { catalog: restored }).getRegistry(),
+          )
+
+          // Removing local restrictions restores the untouched LKG without discovery.
+          router.reload(sourceConfig, new Map())
+          expect(router.resolveModel('pool/gpt-5.5')).toBeDefined()
+        })
+      }
+    }
+  }
+
+  test('discovery filters preserve explicit manual models without creating filtered catalog pools', async () => {
+    const { coordinator } = await createCoordinator()
+    await coordinator.refresh({ reason: 'manual', force: true })
+    const manualConfig: SystemConfig = {
+      ...config,
+      providers: {
+        chatgpt: {
+          ...provider,
+          discovery: { deny: ['*'] },
+          models: { manual: { ...coordinator.getActiveEntries()[0].modelConfig, maxOutput: 1234 } },
+        },
+      },
+    }
+    const registry = new ModelRegistry(manualConfig, new Map(), {
+      catalogEntries: coordinator.getActiveEntries(),
+    })
+    expect(registry.listModels()).toMatchObject([
+      { modelName: 'manual', source: 'manual', maxOutput: 1234 },
+    ])
+    expect(registry.listModelPools()).toEqual([])
+  })
+
   test('atomically exposes verified models without switching the active model', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'zero-model-catalog-'))
     temporaryDirectories.push(directory)

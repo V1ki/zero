@@ -13,6 +13,7 @@ import { OpenAIChatAdapter } from './adapters/openai-chat'
 import { OpenAIResponsesAdapter } from './adapters/openai-resp'
 import { TrackedAdapter, type UsageRecorder } from './adapters/tracked'
 import { XResponsesAdapter } from './adapters/x-resp'
+import { matchesModelFilters } from './catalog/filter'
 import { mergeCatalogIntoConfig } from './catalog/merge'
 import type { ModelCatalogEntry } from './catalog/types'
 import { LiteLLMPricing } from './pricing'
@@ -105,11 +106,16 @@ export class ModelRegistry {
         this.manualModels.add(modelIdKey(providerName, model.modelId))
       }
     }
-    for (const entry of options.catalogEntries ?? []) {
+    // Apply current policy even when callers supply an unfiltered cached catalog.
+    const catalogEntries = (options.catalogEntries ?? []).filter((entry) => {
+      const provider = config.providers[entry.providerName]
+      return provider && matchesModelFilters(entry.modelId, provider.discovery ?? {})
+    })
+    for (const entry of catalogEntries) {
       this.catalogEntries.set(modelKey(entry.providerName, entry.modelName), entry)
       this.catalogEntries.set(modelIdKey(entry.providerName, entry.modelId), entry)
     }
-    const effectiveConfig = mergeCatalogIntoConfig(config, options.catalogEntries ?? [])
+    const effectiveConfig = mergeCatalogIntoConfig(config, catalogEntries)
     for (const [name, provider] of Object.entries(effectiveConfig.providers)) {
       this.providers.set(name, provider)
     }
@@ -119,10 +125,7 @@ export class ModelRegistry {
       this.modelPoolSources.set(name, 'configured')
     }
     this.modelPoolAliases = configuredPools.aliases
-    for (const [name, pool] of buildCatalogModelPools(
-      effectiveConfig,
-      options.catalogEntries ?? [],
-    )) {
+    for (const [name, pool] of buildCatalogModelPools(effectiveConfig, catalogEntries)) {
       if (this.modelPools.has(name)) continue
       this.modelPools.set(name, pool)
       this.modelPoolSources.set(name, 'catalog')

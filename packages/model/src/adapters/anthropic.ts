@@ -25,7 +25,17 @@ const DEEPSEEK_DEFAULT_EFFORT = 'high' as const
 const CLAUDE_CODE_SYSTEM_PROMPT = "You are Claude Code, Anthropic's official CLI for Claude."
 const CLAUDE_CODE_BETA =
   'claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,effort-2025-11-24'
-const CLAUDE_CODE_USER_AGENT = 'claude-cli/2.1.97 (external, cli)'
+/**
+ * Claude Code client version presented on the OAuth transport. Anthropic gates
+ * newer models on a minimum client version (e.g. Fable 5.1 needs >= 2.1.251,
+ * Opus 5.5 needs >= 2.1.280), so this must track a release that supports every
+ * model the account should be able to reach. Override with
+ * ZERO_CLAUDE_CODE_CLIENT_VERSION when Anthropic raises the floor again.
+ */
+export const DEFAULT_CLAUDE_CODE_CLIENT_VERSION = '2.1.280'
+export const CLAUDE_CODE_CLIENT_VERSION =
+  process.env.ZERO_CLAUDE_CODE_CLIENT_VERSION?.trim() || DEFAULT_CLAUDE_CODE_CLIENT_VERSION
+const CLAUDE_CODE_USER_AGENT = `claude-cli/${CLAUDE_CODE_CLIENT_VERSION} (external, cli)`
 const CLAUDE_CODE_OUTPUT_EFFORT = 'high'
 const CLAUDE_PREEMPTIVE_REFRESH_WINDOW_MS = 5 * 60_000
 const CLAUDE_MIN_VALIDITY_MS = 60_000
@@ -737,3 +747,20 @@ function sanitizeAnthropicToolId(id: string): string {
   if (ANTHROPIC_TOOL_ID_RE.test(id)) return id
   return id.replace(/[^a-zA-Z0-9_-]/g, '-')
 }
+
+/**
+ * Headers the Claude Code OAuth transport expects on raw (non-SDK) requests.
+ * Mirrors the defaults applied to the SDK client above so that catalog
+ * discovery and message completion share one transport identity.
+ */
+export function buildClaudeCodeOAuthHeaders(accessToken: string): Record<string, string> {
+  return {
+    authorization: `Bearer ${accessToken}`,
+    'anthropic-beta': CLAUDE_CODE_BETA,
+    'anthropic-dangerous-direct-browser-access': 'true',
+    'user-agent': CLAUDE_CODE_USER_AGENT,
+    'x-app': 'cli',
+  }
+}
+
+export { CLAUDE_CODE_SYSTEM_PROMPT }
