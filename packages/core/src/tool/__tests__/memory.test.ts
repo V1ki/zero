@@ -129,7 +129,7 @@ describe('MemoryTool', () => {
     expect(result.output).toContain('Memory updated')
   })
 
-  test('deletes a memory', async () => {
+  test('delete archives a memory (reversible)', async () => {
     // Create then delete
     const createResult = await tool.run(makeCtx(store), {
       action: 'create',
@@ -139,17 +139,19 @@ describe('MemoryTool', () => {
     })
     const idMatch = createResult.output.match(/mem_[\w-]+/)
     expect(idMatch).not.toBeNull()
+    const id = expectDefined(idMatch)[0]
 
     const result = await tool.run(makeCtx(store), {
       action: 'delete',
       type: 'note',
-      id: expectDefined(idMatch)[0],
+      id,
     })
     expect(result.success).toBe(true)
-    expect(result.output).toContain('Memory deleted')
+    expect(result.output).toContain('Memory archived')
+    expect(store.get('note', id)?.status).toBe('archived')
   })
 
-  test('deletes a memory without type when id is enough', async () => {
+  test('delete archives a memory without type when id is enough', async () => {
     const createResult = await tool.run(makeCtx(store), {
       action: 'create',
       type: 'incident',
@@ -158,13 +160,15 @@ describe('MemoryTool', () => {
     })
     const idMatch = createResult.output.match(/mem_[\w-]+/)
     expect(idMatch).not.toBeNull()
+    const id = expectDefined(idMatch)[0]
 
     const result = await tool.run(makeCtx(store), {
       action: 'delete',
-      id: expectDefined(idMatch)[0],
+      id,
     })
     expect(result.success).toBe(true)
-    expect(result.output).toContain('Memory deleted')
+    expect(result.output).toContain('Memory archived')
+    expect(store.get('incident', id)?.status).toBe('archived')
   })
 
   test('fails without memoryStore in context', async () => {

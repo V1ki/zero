@@ -152,7 +152,7 @@ export class IndexedMemoryStore implements MemoryRepository {
       if (!updated) return undefined
 
       try {
-        await this.upsertMemory(updated, context?.sessionId)
+        await this.upsertMemory(updated, context?.sessionId, existing)
         invalidateClusterCache() // status/内容/向量变化 → 簇成员与权威建议变化
         return updated
       } catch (error) {
@@ -246,11 +246,18 @@ export class IndexedMemoryStore implements MemoryRepository {
     return memories.length
   }
 
-  private async upsertMemory(memory: Memory, sessionId?: string): Promise<void> {
-    const vector = await this.embeddingClient.embed(
-      this.embeddingClient.memoryToText(memory),
-      sessionId,
-    )
+  private async upsertMemory(memory: Memory, sessionId?: string, previous?: Memory): Promise<void> {
+    const text = this.embeddingClient.memoryToText(memory)
+    // 元数据-only 更新（status/谱系/edges/confidence，嵌入文本不变）复用已有向量只刷元数据：
+    // 归档/恢复/取代不产生 embedding 调用，也不依赖 embedding 服务可用（设计 10.3）。
+    if (previous && this.embeddingClient.memoryToText(previous) === text) {
+      const existingVector = await this.vectorIndex.getVector?.(memory.id)
+      if (existingVector) {
+        await this.vectorIndex.upsert(memory.id, existingVector, this.toVectorMeta(memory))
+        return
+      }
+    }
+    const vector = await this.embeddingClient.embed(text, sessionId)
     await this.vectorIndex.upsert(memory.id, vector, this.toVectorMeta(memory))
   }
 

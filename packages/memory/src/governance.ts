@@ -125,6 +125,27 @@ export class MemoryGovernanceService {
     return updated
   }
 
+  // 归档的逆操作：archived → draft，并清谱系指针（与 verify 同理，否则恢复后仍被检索重定向走）。
+  // 提交时复检仍为 archived，堵住判定到落盘之间被并发改状态的窗口。
+  async restore(type: MemoryType, id: string): Promise<MemoryGovernanceResult<Memory>> {
+    const current = this.deps.store.get(type, id)
+    if (!current) return { ok: false, status: 404, error: 'Memory not found' }
+    if (current.status !== 'archived') {
+      return { ok: false, status: 409, error: `memory is not archived (status: ${current.status})` }
+    }
+    const updated = await this.deps.store.update(
+      type,
+      id,
+      { status: 'draft' as MemoryStatus, supersededBy: undefined, mergedInto: undefined },
+      { precondition: (memory) => memory.status === 'archived' },
+    )
+    if (!updated) {
+      return { ok: false, status: 409, error: 'memory changed concurrently; reload and retry' }
+    }
+    invalidateClusterCache()
+    return { ok: true, value: updated }
+  }
+
   async verify(type: MemoryType, id: string): Promise<Memory | undefined> {
     const updated = await this.deps.store.update(type, id, {
       status: 'verified' as MemoryStatus,
@@ -351,4 +372,29 @@ export class MemoryGovernanceService {
     }
     return undefined
   }
+}
+
+/**
+ * 删除会话时对其记忆的处置：可逆归档而非物理删除（P0：删除操作 0 处不可逆）。
+ * 归档后检索不再命中，可在 Memory 页按 archived 状态找回并恢复。返回本次新归档的条数。
+ */
+export async function archiveSessionMemories(
+  store: MemoryRepository,
+  sessionId: string,
+): Promise<number> {
+  let archived = 0
+  for (const type of ALL_MEMORY_TYPES) {
+    for (const memory of store.list(type)) {
+      if (memory.sessionId !== sessionId || memory.status === 'archived') continue
+      const updated = await store.update(
+        type,
+        memory.id,
+        { status: 'archived' as MemoryStatus },
+        { precondition: (current) => current.status !== 'archived' },
+      )
+      if (updated) archived++
+    }
+  }
+  if (archived > 0) invalidateClusterCache()
+  return archived
 }

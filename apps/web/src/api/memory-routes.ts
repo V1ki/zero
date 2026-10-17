@@ -88,6 +88,14 @@ export function createMemoryRoutes({
       return c.json({ memory: updated })
     })
 
+    .post('/:type/:id/restore', async (c) => {
+      const type = c.req.param('type') as MemoryType
+      const id = c.req.param('id')
+      const result = await governance.restore(type, id)
+      if (!result.ok) return c.json({ error: result.error }, result.status)
+      return c.json({ memory: result.value })
+    })
+
     .post('/:type/:id/verify', async (c) => {
       const type = c.req.param('type') as MemoryType
       const id = c.req.param('id')

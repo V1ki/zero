@@ -156,7 +156,7 @@ export function MetadataBar({
       <ConfirmDialog
         open={showDeleteConfirm}
         title="删除此 Session？"
-        description="删除后 Session 及其关联的记忆数据将被永久移除，无法恢复。"
+        description="删除后 Session 将被永久移除；其关联的记忆会被归档（检索不再命中，可在 Memory 页按 archived 状态找回并恢复）。"
         confirmText="删除"
         danger
         onConfirm={handleDelete}

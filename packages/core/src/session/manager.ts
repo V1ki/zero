@@ -1,5 +1,9 @@
 import type { MemoryRepository } from '@zero-os/memory'
-import { SESSION_MEMORY_PROMPT, shouldEvaluateSessionMemory } from '@zero-os/memory'
+import {
+  SESSION_MEMORY_PROMPT,
+  archiveSessionMemories,
+  shouldEvaluateSessionMemory,
+} from '@zero-os/memory'
 import type { ModelRouter } from '@zero-os/model'
 import type { MetricsDB, SessionDB, SessionRow } from '@zero-os/observe'
 import type {
@@ -448,7 +452,8 @@ class SessionManagerStore {
   ): Promise<boolean> {
     const dbDeleted = this.sessionDb?.deleteSession(id) ?? false
     metrics?.deleteSessionMetrics(id)
-    await memoryStore?.deleteBySessionId(id)
+    // 会话删除不连带物理删记忆：归档可逆，Memory 页按 archived 找回。
+    if (memoryStore) await archiveSessionMemories(memoryStore, id)
     return dbDeleted
   }
 

@@ -12,6 +12,7 @@ import {
 import { useNavigate } from '@tanstack/react-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { MemoryGraphPanel } from '../components/memory/MemoryGraphPanel'
+import { groupByCluster, pickCover } from '../components/memory/fold'
 import { ConfirmDialog } from '../components/shared/ConfirmDialog'
 import { Skeleton } from '../components/shared/Skeleton'
 import { apiFetch, apiPatch, apiPost, apiPut } from '../lib/api'
@@ -116,39 +117,6 @@ function StatusPill({ status }: { status: string }) {
       {status}
     </span>
   )
-}
-
-function clusterKey(memory: MemoryItem): string {
-  if (memory.topicKey) return `topic:${memory.topicKey}`
-  if (memory.sessionId) return `sess:${memory.sessionId}|${memory.type}`
-  return `id:${memory.id}`
-}
-
-function memoryStatusRank(status: string): number {
-  if (status === 'verified') return 0
-  if (status === 'archived') return 3
-  return 1
-}
-
-function pickCover(group: MemoryItem[]): MemoryItem {
-  return [...group].sort((a, b) => {
-    const ra = memoryStatusRank(a.status)
-    const rb = memoryStatusRank(b.status)
-    if (ra !== rb) return ra - rb
-    if (b.confidence !== a.confidence) return b.confidence - a.confidence
-    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-  })[0]
-}
-
-function groupByCluster(items: MemoryItem[]): [string, MemoryItem[]][] {
-  const map = new Map<string, MemoryItem[]>()
-  for (const memory of items) {
-    const key = clusterKey(memory)
-    const existing = map.get(key)
-    if (existing) existing.push(memory)
-    else map.set(key, [memory])
-  }
-  return [...map.entries()]
 }
 
 function MemoryCard({

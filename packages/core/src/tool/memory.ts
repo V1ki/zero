@@ -53,12 +53,12 @@ function mergeLiveDocContent(existing: string, incoming: string, maxChars: numbe
 }
 
 /**
- * MemoryTool — create, update, delete, or list memories.
+ * MemoryTool — create, update, delete (reversible archive), or list memories.
  */
 export class MemoryTool extends BaseTool {
   name = 'memory'
   description =
-    '显式创建、更新、删除或列出记忆。用于“记住/更新/删除”这类写入维护操作，不用于 recall。用户偏好用 preference 类型，架构决策用 decision 类型。'
+    '显式创建、更新、删除或列出记忆。用于“记住/更新/删除”这类写入维护操作，不用于 recall。delete 为可逆归档（检索不再命中，不物理删除）。用户偏好用 preference 类型，架构决策用 decision 类型。'
   parameters = {
     type: 'object',
     properties: {
@@ -206,13 +206,19 @@ export class MemoryTool extends BaseTool {
         if (!resolvedType.success) {
           return resolvedType.result
         }
-        const deleted = await ctx.memoryStore.delete(resolvedType.type, id)
+        // delete = 可逆归档（P0：删除操作 0 处不可逆）。归档后检索不再命中，可在 Memory 页恢复。
+        const archived = await ctx.memoryStore.update(
+          resolvedType.type,
+          id,
+          { status: 'archived' },
+          { sessionId: ctx.sessionId },
+        )
         return {
-          success: deleted,
-          output: deleted
-            ? `Memory deleted: ${resolvedType.type}/${id}`
+          success: archived !== undefined,
+          output: archived
+            ? `Memory archived (reversible, excluded from recall): ${resolvedType.type}/${id}`
             : `Memory not found: ${resolvedType.type}/${id}`,
-          outputSummary: deleted ? `Deleted ${id}` : 'Memory not found',
+          outputSummary: archived ? `Archived ${id}` : 'Memory not found',
         }
       }
 

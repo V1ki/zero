@@ -35,7 +35,7 @@ export type { MemoryVectorMeta, VectorIndexLike } from './vector-index'
 export { IndexedMemoryStore } from './indexed-store'
 export { computeMemoryClusters, getMemoryClusters, invalidateClusterCache } from './clustering'
 export type { ClusterMember, MemoryCluster, ClusterResult } from './clustering'
-export { MemoryGovernanceService } from './governance'
+export { MemoryGovernanceService, archiveSessionMemories } from './governance'
 export type {
   MemoryGovernanceErrorStatus,
   MemoryGovernanceResult,
