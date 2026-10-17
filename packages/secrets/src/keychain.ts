@@ -196,6 +196,7 @@ export const KeychainLive = Layer.succeed(Keychain, {
     Effect.gen(function* () {
       if (getEnvMasterKey()) {
         yield* Effect.sync(() => {
+          // biome-ignore lint/performance/noDelete: unsetting an env var requires delete
           delete process.env.ZERO_MASTER_KEY_BASE64
         })
         return

@@ -3,9 +3,9 @@ import { useNavigate } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Skeleton } from '../components/shared/Skeleton'
-import { useWebSocket } from '../useWebSocket'
 import { apiFetch } from '../lib/api'
 import { formatTimeAgo } from '../lib/format'
+import { useWebSocket } from '../useWebSocket'
 
 // --- Main Page ---
 

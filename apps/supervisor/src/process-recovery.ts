@@ -144,7 +144,8 @@ export async function verifySpawnedReplacement(options: {
 
     const result = options.checker.check()
     const matchesChild = result.pid === options.child.pid && result.bootId === options.bootId
-    const isRecentEnough = result.lastBeat !== undefined && result.lastBeat.getTime() >= options.notBefore
+    const isRecentEnough =
+      result.lastBeat !== undefined && result.lastBeat.getTime() >= options.notBefore
 
     if (matchesChild) {
       if (result.alive && result.ready && isRecentEnough) return true

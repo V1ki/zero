@@ -11,3 +11,8 @@ benchmarks/**/results/**
 !benchmarks/**/results/
 !benchmarks/**/results/.gitkeep
 scripts-diag/
+# 根目录本地产物（agent 工作区、导出结果、交接文件、编辑器计划）
+/workspace/
+/outputs/
+/shared/
+/.zcode/

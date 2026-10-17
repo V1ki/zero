@@ -1,4 +1,4 @@
-import { expect, test as base, type Response } from '@playwright/test'
+import { type Response, test as base, expect } from '@playwright/test'
 
 type E2EFixtures = {
   createdWebSessionIds: Set<string>
@@ -22,6 +22,7 @@ async function captureSessionId(response: Response, target: Set<string>) {
 
 export const test = base.extend<E2EFixtures>({
   createdWebSessionIds: [
+    // biome-ignore lint/correctness/noEmptyPattern: Playwright requires an object destructuring pattern for fixture args
     async ({}, use) => {
       await use(new Set<string>())
     },

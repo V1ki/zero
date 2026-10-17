@@ -17,6 +17,7 @@ describe('macOS Keychain integration', () => {
   beforeAll(async () => {
     productionKeyDigest = await snapshotProductionMasterKey()
     previousMasterKeyEnv = process.env.ZERO_MASTER_KEY_BASE64
+    // biome-ignore lint/performance/noDelete: unsetting an env var requires delete
     delete process.env.ZERO_MASTER_KEY_BASE64
     await deleteMasterKey(testTarget)
   })
@@ -24,6 +25,7 @@ describe('macOS Keychain integration', () => {
   afterAll(async () => {
     await deleteMasterKey(testTarget)
     if (previousMasterKeyEnv === undefined) {
+      // biome-ignore lint/performance/noDelete: unsetting an env var requires delete
       delete process.env.ZERO_MASTER_KEY_BASE64
     } else {
       process.env.ZERO_MASTER_KEY_BASE64 = previousMasterKeyEnv

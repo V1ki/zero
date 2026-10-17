@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 
 type TraceStatus = 'running' | 'success' | 'error'
@@ -184,27 +184,33 @@ function redactTraceText(value: string): string {
     .replace(/\/Users\/[^\s,，)）]+/g, '<local-path>')
     .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '<ip>')
     .replace(/\b\d{4,}\b/g, '<number>')
-    .replace(/(密码|口令|password|passcode|token|api[_-]?key)(分别是|是|:|：)?\s*[^\s,，。;；]+/gi, '$1$2 <redacted>')
+    .replace(
+      /(密码|口令|password|passcode|token|api[_-]?key)(分别是|是|:|：)?\s*[^\s,，。;；]+/gi,
+      '$1$2 <redacted>',
+    )
     .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, '<email>')
 }
 
 function compactText(value: string | undefined, maxLength = 220): string | undefined {
   if (!value) return undefined
   const compacted = redactTraceText(value).replace(/\s+/g, ' ').trim()
-  if (!compacted || compacted === '<system_notice>' || compacted === '<system-reminder>') return undefined
+  if (!compacted || compacted === '<system_notice>' || compacted === '<system-reminder>')
+    return undefined
   if (compacted.length <= maxLength) return compacted
   return `${compacted.slice(0, Math.max(0, maxLength - 1))}…`
 }
 
 function normalizeError(value: string | undefined): string {
-  return compactText(value, 180)
-    ?.replace(/span_[\w-]+/g, 'span_*')
-    .replace(/sess_[\w-]+/g, 'sess_*')
-    .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/g, '<ts>')
-    .replace(/\d+/g, '#')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 180) || 'unknown error'
+  return (
+    compactText(value, 180)
+      ?.replace(/span_[\w-]+/g, 'span_*')
+      .replace(/sess_[\w-]+/g, 'sess_*')
+      .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/g, '<ts>')
+      .replace(/\d+/g, '#')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 180) || 'unknown error'
+  )
 }
 
 function confidence(support: number): PatchCandidate['confidence'] {
@@ -274,13 +280,20 @@ function classifyTaskCluster(prompt: string, toolEvents: ToolEvent[]): TaskClust
   const lower = prompt.toLowerCase()
   const tools = new Set(toolEvents.map((event) => event.toolName))
   const nonMemoryTools = toolEvents.filter(
-    (event) => event.toolName !== 'memory' && event.toolName !== 'memory_search' && event.toolName !== 'memory_read',
+    (event) =>
+      event.toolName !== 'memory' &&
+      event.toolName !== 'memory_search' &&
+      event.toolName !== 'memory_read',
   )
 
   if (/公众号|图片|图像|配图|视频|音频|tts|manim|封面|svg|artifact/.test(lower)) {
     return 'image_or_media'
   }
-  if (/代码|仓库|repo|commit|typescript|python|bug|测试|实现|重构|修复|package|tsc|bun test|源码/.test(lower)) {
+  if (
+    /代码|仓库|repo|commit|typescript|python|bug|测试|实现|重构|修复|package|tsc|bun test|源码/.test(
+      lower,
+    )
+  ) {
     return 'code_or_repo_work'
   }
   if (/论文|文章|x\.com|twitter|github|研究|搜索|调查|查一下|http|网页内容|引用|评论/.test(lower)) {
@@ -289,13 +302,18 @@ function classifyTaskCluster(prompt: string, toolEvents: ToolEvent[]): TaskClust
   if (/browser|浏览器|网页|dom|截图|登录态|打开.*页面|预览链接/.test(lower)) {
     return 'browser_automation'
   }
-  if (/excel|xlsx|csv|jsonl|文件|下载|epub|pdf|表格|数据|目录|路径|读取|压缩包|rar|zip/.test(lower)) {
+  if (
+    /excel|xlsx|csv|jsonl|文件|下载|epub|pdf|表格|数据|目录|路径|读取|压缩包|rar|zip/.test(lower)
+  ) {
     return 'file_data_work'
   }
   if (/定时|每天|cron|部署|服务|启动|服务器|ssh|运维/.test(lower) || tools.has('schedule')) {
     return 'scheduling_or_ops'
   }
-  if (/memory|记忆|回忆|记住|长期|session 类型的记忆|当前会话即将结束/.test(lower) || nonMemoryTools.length === 0) {
+  if (
+    /memory|记忆|回忆|记住|长期|session 类型的记忆|当前会话即将结束/.test(lower) ||
+    nonMemoryTools.length === 0
+  ) {
     return 'memory_maintenance'
   }
   return 'general_agent_work'
@@ -328,7 +346,13 @@ function extractCases(entries: TraceEntry[]): CaseRecord[] {
         const toolName = asString(data?.tool) ?? asString(metadata?.toolName)
         if (!toolName) return []
         const result = asRecord(data?.toolResult) ?? asRecord(metadata?.toolResult)
-        return [{ toolName, status: entry.status, outputSummary: compactText(asString(result?.outputSummary)) }]
+        return [
+          {
+            toolName,
+            status: entry.status,
+            outputSummary: compactText(asString(result?.outputSummary)),
+          },
+        ]
       })
 
     const closureFailures = spanEntries.filter((entry) => entry.kind === 'closure_failed')
@@ -392,10 +416,15 @@ function isRuntimePrompt(prompt: string): boolean {
 
 function onlyMemoryWorkflow(chain: string): boolean {
   const tools = chain.split(' → ')
-  return tools.every((tool) => tool === 'memory' || tool === 'memory_search' || tool === 'memory_read')
+  return tools.every(
+    (tool) => tool === 'memory' || tool === 'memory_search' || tool === 'memory_read',
+  )
 }
 
-function classifyFailure(toolName: string | undefined, summary: string): {
+function classifyFailure(
+  toolName: string | undefined,
+  summary: string,
+): {
   category: PatchCategory
   normalizedTitle: string
   recommendation: string
@@ -513,7 +542,10 @@ function classifyFailure(toolName: string | undefined, summary: string): {
   }
 }
 
-function minePatches(cases: CaseRecord[], options: CliOptions): {
+function minePatches(
+  cases: CaseRecord[],
+  options: CliOptions,
+): {
   patches: PatchCandidate[]
   suppressed: SuppressedPattern[]
 } {
@@ -543,17 +575,15 @@ function minePatches(cases: CaseRecord[], options: CliOptions): {
       const summary = normalizeError(event.outputSummary)
       const analysis = classifyFailure(event.toolName, summary)
       const key = `${item.cluster}:${analysis.category}:${analysis.normalizedTitle}`
-      const group =
-        failures.get(key) ??
-        {
-          toolName: event.toolName,
-          summary: analysis.normalizedTitle,
-          category: analysis.category,
-          recommendation: analysis.recommendation,
-          suppress: analysis.suppress,
-          cluster: item.cluster,
-          cases: [],
-        }
+      const group = failures.get(key) ?? {
+        toolName: event.toolName,
+        summary: analysis.normalizedTitle,
+        category: analysis.category,
+        recommendation: analysis.recommendation,
+        suppress: analysis.suppress,
+        cluster: item.cluster,
+        cases: [],
+      }
       group.cases.push(item)
       failures.set(key, group)
     }
@@ -561,16 +591,14 @@ function minePatches(cases: CaseRecord[], options: CliOptions): {
       const summary = normalizeError(signal)
       const analysis = classifyFailure(undefined, summary)
       const key = `${item.cluster}:${analysis.category}:${analysis.normalizedTitle}`
-      const group =
-        failures.get(key) ??
-        {
-          summary: analysis.normalizedTitle,
-          category: analysis.category,
-          recommendation: analysis.recommendation,
-          suppress: analysis.suppress,
-          cluster: item.cluster,
-          cases: [],
-        }
+      const group = failures.get(key) ?? {
+        summary: analysis.normalizedTitle,
+        category: analysis.category,
+        recommendation: analysis.recommendation,
+        suppress: analysis.suppress,
+        cluster: item.cluster,
+        cases: [],
+      }
       group.cases.push(item)
       failures.set(key, group)
     }
@@ -586,20 +614,28 @@ function minePatches(cases: CaseRecord[], options: CliOptions): {
         reason: 'memory/session lifecycle workflow, not a domain skill',
         title: `Reusable tool chain: ${chain}`,
         support: unique.length,
-        evidence: unique.slice(0, options.maxEvidence).map((item) => evidenceLine(item, options.includePrompts)),
+        evidence: unique
+          .slice(0, options.maxEvidence)
+          .map((item) => evidenceLine(item, options.includePrompts)),
       })
       continue
     }
 
     patches.push({
       kind: 'success_pattern',
-      category: chain.includes('fetch') ? 'web_access' : chain.includes('bash') ? 'command_execution' : 'general_workflow',
+      category: chain.includes('fetch')
+        ? 'web_access'
+        : chain.includes('bash')
+          ? 'command_execution'
+          : 'general_workflow',
       cluster: unique[0]?.cluster ?? 'all',
       title: `Reusable tool chain: ${chain}`,
       support: unique.length,
       confidence: confidence(unique.length),
       recommendation: `When a task matches this pattern, consider this proven tool sequence: ${chain}. Keep an explicit verification/read-back step before reporting completion.`,
-      evidence: unique.slice(0, options.maxEvidence).map((item) => evidenceLine(item, options.includePrompts)),
+      evidence: unique
+        .slice(0, options.maxEvidence)
+        .map((item) => evidenceLine(item, options.includePrompts)),
     })
   }
 
@@ -615,7 +651,9 @@ function minePatches(cases: CaseRecord[], options: CliOptions): {
         reason: group.suppress,
         title,
         support: unique.length,
-        evidence: unique.slice(0, options.maxEvidence).map((item) => evidenceLine(item, options.includePrompts)),
+        evidence: unique
+          .slice(0, options.maxEvidence)
+          .map((item) => evidenceLine(item, options.includePrompts)),
       })
       continue
     }
@@ -628,13 +666,19 @@ function minePatches(cases: CaseRecord[], options: CliOptions): {
       support: unique.length,
       confidence: confidence(unique.length),
       recommendation: group.recommendation,
-      evidence: unique.slice(0, options.maxEvidence).map((item) => evidenceLine(item, options.includePrompts)),
+      evidence: unique
+        .slice(0, options.maxEvidence)
+        .map((item) => evidenceLine(item, options.includePrompts)),
     })
   }
 
   return {
-    patches: patches.sort((left, right) => right.support - left.support || left.title.localeCompare(right.title)),
-    suppressed: suppressed.sort((left, right) => right.support - left.support || left.title.localeCompare(right.title)),
+    patches: patches.sort(
+      (left, right) => right.support - left.support || left.title.localeCompare(right.title),
+    ),
+    suppressed: suppressed.sort(
+      (left, right) => right.support - left.support || left.title.localeCompare(right.title),
+    ),
   }
 }
 
@@ -642,18 +686,28 @@ function renderSkillDraft(params: { patches: PatchCandidate[] }): string {
   const lines: string[] = []
   lines.push('---')
   lines.push('name: zero-trace-derived-agent-ops')
-  lines.push('description: Benchmark-only compact SKILL.md draft distilled from recurring ZeRo trace patterns. Review before installing.')
+  lines.push(
+    'description: Benchmark-only compact SKILL.md draft distilled from recurring ZeRo trace patterns. Review before installing.',
+  )
   lines.push('---')
   lines.push('')
   lines.push('# ZeRo Trace-Derived Agent Operations')
   lines.push('')
-  lines.push('> Draft generated by benchmark Trace2Skill miner. It contains only generalized SOPs; raw evidence remains in the benchmark report.')
+  lines.push(
+    '> Draft generated by benchmark Trace2Skill miner. It contains only generalized SOPs; raw evidence remains in the benchmark report.',
+  )
   lines.push('')
   lines.push('## Universal Tool-Use Guardrails')
   lines.push('')
-  lines.push('- After any tool failure, read the error output and classify the root cause before retrying. Do not repeat the same failing command blindly.')
-  lines.push('- For state-changing work, add a read-back or verification step before reporting completion.')
-  lines.push('- Keep runtime hygiene issues separate from domain skills: closure classifier failures, malformed tool-call JSON, and session-memory cleanup are not task-domain evidence.')
+  lines.push(
+    '- After any tool failure, read the error output and classify the root cause before retrying. Do not repeat the same failing command blindly.',
+  )
+  lines.push(
+    '- For state-changing work, add a read-back or verification step before reporting completion.',
+  )
+  lines.push(
+    '- Keep runtime hygiene issues separate from domain skills: closure classifier failures, malformed tool-call JSON, and session-memory cleanup are not task-domain evidence.',
+  )
   lines.push('')
 
   const highSupport = params.patches.filter((patch) => patch.support >= 3)
@@ -668,7 +722,12 @@ function renderSkillDraft(params: { patches: PatchCandidate[] }): string {
   for (const category of categories) {
     const patches = highSupport.filter((patch) => patch.category === category)
     if (patches.length === 0) continue
-    lines.push(`## ${category.split('_').map((part) => part[0].toUpperCase() + part.slice(1)).join(' ')}`)
+    lines.push(
+      `## ${category
+        .split('_')
+        .map((part) => part[0].toUpperCase() + part.slice(1))
+        .join(' ')}`,
+    )
     lines.push('')
     const seen = new Set<string>()
     for (const patch of patches) {
@@ -698,12 +757,16 @@ function renderMarkdown(params: {
   const lines: string[] = []
   lines.push('---')
   lines.push('name: trace-derived-zero-agent-skill-draft')
-  lines.push('description: Benchmark-only draft mined from ZeRo trace.jsonl evidence. Review before installing.')
+  lines.push(
+    'description: Benchmark-only draft mined from ZeRo trace.jsonl evidence. Review before installing.',
+  )
   lines.push('---')
   lines.push('')
   lines.push('# Trace-Derived ZeRo Agent Skill Draft')
   lines.push('')
-  lines.push('> Benchmark-only experiment. This file is not an installed skill and was generated from sanitized trace evidence.')
+  lines.push(
+    '> Benchmark-only experiment. This file is not an installed skill and was generated from sanitized trace evidence.',
+  )
   lines.push('')
   lines.push('## Evidence Summary')
   lines.push('')
@@ -712,7 +775,9 @@ function renderMarkdown(params: {
   lines.push(`- Cases: ${params.cases.length}`)
   lines.push(`- Success cases: ${params.cases.filter((item) => item.status === 'success').length}`)
   lines.push(`- Error cases: ${params.cases.filter((item) => item.status === 'error').length}`)
-  lines.push(`- Tool events: ${params.cases.reduce((sum, item) => sum + item.toolEvents.length, 0)}`)
+  lines.push(
+    `- Tool events: ${params.cases.reduce((sum, item) => sum + item.toolEvents.length, 0)}`,
+  )
   lines.push(`- Actionable patch candidates: ${params.patches.length}`)
   lines.push(`- Suppressed runtime/lifecycle patterns: ${params.suppressed.length}`)
   lines.push('')
@@ -807,7 +872,11 @@ const cases = uniqueCases(traceFiles.flatMap((path) => extractCases(readTraceJso
 const mined = minePatches(cases, options)
 const sessions = new Set(cases.map((item) => item.sessionId)).size
 mkdirSync(dirname(output), { recursive: true })
-writeFileSync(output, renderMarkdown({ traceFiles: traceFiles.length, sessions, cases, ...mined }), 'utf-8')
+writeFileSync(
+  output,
+  renderMarkdown({ traceFiles: traceFiles.length, sessions, cases, ...mined }),
+  'utf-8',
+)
 if (options.skillOutput) {
   const skillOutput = resolve(options.skillOutput)
   mkdirSync(dirname(skillOutput), { recursive: true })

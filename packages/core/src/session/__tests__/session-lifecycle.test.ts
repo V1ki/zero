@@ -4,10 +4,11 @@ import type { Message, SystemConfig } from '@zero-os/shared'
 import { BashTool } from '../../tool/bash'
 import { ReadTool } from '../../tool/read'
 import { ToolRegistry } from '../../tool/registry'
-import { createTestProjectRoot } from './test-helpers'
 import { Session } from '../session'
+import { createTestProjectRoot } from './test-helpers'
 
 const API_KEY = 'sk-c6c02cbd0c25473f97f9be0da6070f6d'
+const RUN_REAL_API = process.env.ZERO_RUN_MODEL_REAL_API === '1'
 
 const config: SystemConfig = {
   providers: {
@@ -53,38 +54,44 @@ describe('Session Lifecycle', () => {
     testProject.cleanup()
   })
 
-  test('complete lifecycle: create → init → message → get messages (real API)', async () => {
-    const router = createRouter()
-    const registry = createToolRegistry()
-    const session = new Session('web', router, registry, {
-      projectRoot: testProject.projectRoot,
-    })
+  test.skipIf(!RUN_REAL_API)(
+    'complete lifecycle: create → init → message → get messages (real API)',
+    async () => {
+      const router = createRouter()
+      const registry = createToolRegistry()
+      const session = new Session('web', router, registry, {
+        projectRoot: testProject.projectRoot,
+      })
 
-    session.initAgent({
-      name: 'lifecycle-test',
-      agentInstruction: 'You are a helpful assistant. Reply briefly.',
-    })
+      session.initAgent({
+        name: 'lifecycle-test',
+        agentInstruction: 'You are a helpful assistant. Reply briefly.',
+      })
 
-    let messages: Message[]
-    try {
-      messages = await session.handleMessage('Say exactly "lifecycle test" and nothing else.')
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      if (message.includes('403')) {
-        console.warn('[test] real API unavailable for session lifecycle test, skipping assertions')
-        return
+      let messages: Message[]
+      try {
+        messages = await session.handleMessage('Say exactly "lifecycle test" and nothing else.')
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (message.includes('403')) {
+          console.warn(
+            '[test] real API unavailable for session lifecycle test, skipping assertions',
+          )
+          return
+        }
+        throw error
       }
-      throw error
-    }
-    expect(messages.length).toBeGreaterThanOrEqual(2) // user + assistant
+      expect(messages.length).toBeGreaterThanOrEqual(2) // user + assistant
 
-    const allMessages = session.getMessages()
-    expect(allMessages.length).toBeGreaterThanOrEqual(2)
+      const allMessages = session.getMessages()
+      expect(allMessages.length).toBeGreaterThanOrEqual(2)
 
-    const lastMsg = allMessages[allMessages.length - 1]
-    expect(lastMsg.role).toBe('assistant')
-    expect(lastMsg.content.length).toBeGreaterThan(0)
-  }, 30000)
+      const lastMsg = allMessages[allMessages.length - 1]
+      expect(lastMsg.role).toBe('assistant')
+      expect(lastMsg.content.length).toBeGreaterThan(0)
+    },
+    30000,
+  )
 
   test('session starts without routing metadata', () => {
     const router = createRouter()

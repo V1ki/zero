@@ -66,7 +66,10 @@ export async function notifyStop(
   )
 }
 
-function sleepUntilAborted(ms: number, getAbortSignal: () => AbortSignal | undefined): Promise<void> {
+function sleepUntilAborted(
+  ms: number,
+  getAbortSignal: () => AbortSignal | undefined,
+): Promise<void> {
   const abortSignal = getAbortSignal()
   if (!abortSignal) return new Promise((resolve) => setTimeout(resolve, ms))
   if (abortSignal.aborted) return Promise.reject(makeAbortError())

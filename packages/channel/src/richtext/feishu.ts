@@ -23,17 +23,18 @@ export function renderMarkdownForFeishu(
  * 5. Normalize @mentions: fix common AI mistakes in mention syntax
  * 6. Compress excessive blank lines
  */
-function optimizeMarkdownForFeishu(
-  text: string,
-  options?: RenderMarkdownForFeishuOptions,
-): string {
+function optimizeMarkdownForFeishu(text: string, options?: RenderMarkdownForFeishuOptions): string {
   const protectedContent = protectMarkdownCodeContent(text, 'FEISHU_MD')
   let result = protectedContent.processed
 
   // Convert Obsidian wikilink images ![[path]] to standard markdown ![alt](path)
   // This must happen before the image reference processing below
   result = result.replace(/!\[\[([^\]]+)\]\]/g, (_match, path: string) => {
-    const fileName = path.split('/').pop()?.replace(/\.[^.]+$/, '') ?? 'image'
+    const fileName =
+      path
+        .split('/')
+        .pop()
+        ?.replace(/\.[^.]+$/, '') ?? 'image'
     return `![${fileName}](${path})`
   })
 

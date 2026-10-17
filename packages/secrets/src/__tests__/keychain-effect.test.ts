@@ -32,6 +32,7 @@ describe('Keychain Effect adapter', () => {
 
   afterAll(async () => {
     if (previousMasterKeyEnv === undefined) {
+      // biome-ignore lint/performance/noDelete: unsetting an env var requires delete
       delete process.env.ZERO_MASTER_KEY_BASE64
     } else {
       process.env.ZERO_MASTER_KEY_BASE64 = previousMasterKeyEnv
@@ -46,6 +47,7 @@ describe('Keychain Effect adapter', () => {
       const retrieved = await getMasterKey(isolatedTarget)
       expect(retrieved).toEqual(envKey)
     } finally {
+      // biome-ignore lint/performance/noDelete: unsetting an env var requires delete
       delete process.env.ZERO_MASTER_KEY_BASE64
     }
   })
@@ -60,6 +62,7 @@ describe('Keychain Effect adapter', () => {
       const retrieved = await getMasterKey(isolatedTarget)
       expect(retrieved).toEqual(replacementKey)
     } finally {
+      // biome-ignore lint/performance/noDelete: unsetting an env var requires delete
       delete process.env.ZERO_MASTER_KEY_BASE64
     }
   })
@@ -93,6 +96,7 @@ describe('Keychain Effect adapter', () => {
   // spawn touches the real entry.
   test('test guard: setMasterKey on the production target is refused while NODE_ENV=test', async () => {
     const previous = process.env.ZERO_MASTER_KEY_BASE64
+    // biome-ignore lint/performance/noDelete: unsetting an env var requires delete
     delete process.env.ZERO_MASTER_KEY_BASE64
     try {
       const err = await setMasterKey(generateMasterKey()).then(
@@ -109,6 +113,7 @@ describe('Keychain Effect adapter', () => {
 
   test('test guard: deleteMasterKey on the production target is refused while NODE_ENV=test', async () => {
     const previous = process.env.ZERO_MASTER_KEY_BASE64
+    // biome-ignore lint/performance/noDelete: unsetting an env var requires delete
     delete process.env.ZERO_MASTER_KEY_BASE64
     try {
       const err = await deleteMasterKey().then(

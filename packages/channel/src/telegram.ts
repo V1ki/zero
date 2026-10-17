@@ -5,9 +5,9 @@ import { toErrorMessage } from '@zero-os/shared'
 import { Telegraf } from 'telegraf'
 import type { Channel, ImageAttachment, IncomingMessage, MessageHandler } from './base'
 import {
+  type TelegramRichText,
   chunkTelegramRichText,
   markdownToTelegramRichText,
-  type TelegramRichText,
 } from './richtext'
 
 export interface TelegramBotCommand {

@@ -3,9 +3,9 @@ import { renderMarkdownForFeishu } from '../richtext/feishu'
 
 describe('renderMarkdownForFeishu', () => {
   test('converts Obsidian wikilink images in normal text', () => {
-    expect(renderMarkdownForFeishu('封面：![[assets/cover.png]]', { preserveExternalImages: true })).toBe(
-      '封面：![cover](assets/cover.png)',
-    )
+    expect(
+      renderMarkdownForFeishu('封面：![[assets/cover.png]]', { preserveExternalImages: true }),
+    ).toBe('封面：![cover](assets/cover.png)')
   })
 
   test('does not convert Obsidian wikilink images inside inline code', () => {

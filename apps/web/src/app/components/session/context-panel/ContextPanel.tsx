@@ -6,6 +6,11 @@ import type {
 } from '../../../../session-judge-types'
 import { apiFetch, apiPost } from '../../../lib/api'
 import { formatCost, formatNumber, formatTimeAgo } from '../../../lib/format'
+import {
+  getMemoryRetrievalSearchCount,
+  getMemoryRetrievalSelectedCount,
+  readMemoryRetrievalDetail,
+} from '../memory/memory-retrieval'
 import type {
   DecisionTimelineItem,
   SessionDecisionEvent,
@@ -14,11 +19,6 @@ import type {
   TraceSpan,
 } from '../timeline/timeline'
 import { filterDisplayableDecisions, getTaskClosureTraceDetails } from '../timeline/timeline'
-import {
-  getMemoryRetrievalSearchCount,
-  getMemoryRetrievalSelectedCount,
-  readMemoryRetrievalDetail,
-} from '../memory/memory-retrieval'
 import {
   type ContextPanelMemoryResult,
   type ContextPanelModelHistoryEntry,

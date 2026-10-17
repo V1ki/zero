@@ -1,4 +1,4 @@
-import { normalizeReasoningEffort, type ReasoningEffort } from '@zero-os/shared'
+import { type ReasoningEffort, normalizeReasoningEffort } from '@zero-os/shared'
 import type { Command, CommandArgs, CommandResult } from '../types'
 
 interface ThinkCommandArgs extends CommandArgs {

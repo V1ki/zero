@@ -18,6 +18,7 @@ import {
 } from './test-helpers'
 
 const API_KEY = 'sk-c6c02cbd0c25473f97f9be0da6070f6d'
+const RUN_REAL_API = process.env.ZERO_RUN_MODEL_REAL_API === '1'
 const CLAUDE_OAUTH_JSON = JSON.stringify({
   accessToken: 'claude-access-token',
   refreshToken: 'claude-refresh-token',
@@ -497,34 +498,38 @@ describe('Session', () => {
     expect(staticContext.tools.map((tool) => tool.name)).toContain('memory_read')
   })
 
-  test('handles real conversation with AI (real API)', async () => {
-    const router = createRouter()
-    const registry = createToolRegistry()
-    const session = new Session('web', router, registry, {
-      projectRoot: testProject.projectRoot,
-    })
-    session.initAgent({
-      name: 'test-agent',
-      agentInstruction: 'You are a helpful assistant. Reply briefly.',
-    })
+  test.skipIf(!RUN_REAL_API)(
+    'handles real conversation with AI (real API)',
+    async () => {
+      const router = createRouter()
+      const registry = createToolRegistry()
+      const session = new Session('web', router, registry, {
+        projectRoot: testProject.projectRoot,
+      })
+      session.initAgent({
+        name: 'test-agent',
+        agentInstruction: 'You are a helpful assistant. Reply briefly.',
+      })
 
-    let messages: Message[]
-    try {
-      messages = await session.handleMessage('Say exactly "ZeRo OS running" and nothing else.')
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      if (message.includes('403')) {
-        console.warn('[test] real API unavailable for session test, skipping assertions')
-        return
+      let messages: Message[]
+      try {
+        messages = await session.handleMessage('Say exactly "ZeRo OS running" and nothing else.')
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (message.includes('403')) {
+          console.warn('[test] real API unavailable for session test, skipping assertions')
+          return
+        }
+        throw error
       }
-      throw error
-    }
 
-    expect(messages.length).toBeGreaterThanOrEqual(2) // user + assistant
-    const lastMsg = messages[messages.length - 1]
-    expect(lastMsg.role).toBe('assistant')
-    expect(lastMsg.content.length).toBeGreaterThan(0)
-  }, 30000)
+      expect(messages.length).toBeGreaterThanOrEqual(2) // user + assistant
+      const lastMsg = messages[messages.length - 1]
+      expect(lastMsg.role).toBe('assistant')
+      expect(lastMsg.content.length).toBeGreaterThan(0)
+    },
+    30000,
+  )
 })
 
 describe('SessionManager', () => {

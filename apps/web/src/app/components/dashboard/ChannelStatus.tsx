@@ -1,7 +1,7 @@
 import { Plugs } from '@phosphor-icons/react'
 import { useCallback, useEffect, useState } from 'react'
-import { useWebSocket } from '../../useWebSocket'
 import { apiFetch } from '../../lib/api'
+import { useWebSocket } from '../../useWebSocket'
 
 interface Channel {
   name: string

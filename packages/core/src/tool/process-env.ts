@@ -2,7 +2,9 @@ import type { ToolContext } from '@zero-os/shared'
 
 export function buildToolProcessEnv(ctx: ToolContext): Record<string, string> {
   const env = Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+    Object.entries(process.env).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
   )
 
   env.ZERO_WORKSPACE = ctx.workDir

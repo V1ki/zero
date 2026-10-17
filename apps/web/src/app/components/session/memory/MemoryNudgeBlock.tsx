@@ -10,8 +10,8 @@ import {
 } from '@phosphor-icons/react'
 import * as React from 'react'
 import { formatTime } from '../../../lib/format'
-import type { SubAgentChildToolCall, TraceSpan } from '../timeline/timeline'
 import { ToolCallDetail, summarizeToolInput } from '../ToolCallDetail'
+import type { SubAgentChildToolCall, TraceSpan } from '../timeline/timeline'
 
 interface MemoryNudgeBlockProps {
   id: string

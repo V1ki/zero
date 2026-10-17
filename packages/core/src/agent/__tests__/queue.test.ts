@@ -2,10 +2,10 @@ import { describe, expect, test } from 'bun:test'
 import type { ContentBlock, Message } from '@zero-os/shared'
 import { generateId, now } from '@zero-os/shared'
 import {
-  buildQueuedInjectionText,
-  buildQueuedInjectionTrace,
   CONTINUATION_PROMPT,
   type QueuedMessage,
+  buildQueuedInjectionText,
+  buildQueuedInjectionTrace,
   formatAppliedQueuedIntent,
   formatQueuedMessages,
   injectQueuedMessages,

@@ -1,8 +1,8 @@
 import { X } from '@phosphor-icons/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useWebSocket } from '../../useWebSocket'
 import { apiFetch, apiPost } from '../../lib/api'
 import { useUIStore } from '../../stores/ui'
+import { useWebSocket } from '../../useWebSocket'
 import { ChatDrawerInput } from './ChatDrawerInput'
 import { ChatDrawerMessageList } from './ChatDrawerMessageList'
 import {

@@ -11,9 +11,7 @@ describe('ChatDrawer assistant rendering', () => {
   })
 
   test('keeps markdown replies on the markdown renderer path', () => {
-    expect(
-      shouldRenderAssistantAsPlainText('## Summary\n- item one\n- item two'),
-    ).toBe(false)
+    expect(shouldRenderAssistantAsPlainText('## Summary\n- item one\n- item two')).toBe(false)
     expect(
       shouldRenderAssistantAsPlainText('Use `bun run check` and then review the output.'),
     ).toBe(false)

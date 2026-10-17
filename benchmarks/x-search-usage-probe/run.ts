@@ -4,9 +4,9 @@ import { appendFile, mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Vault, getMasterKey } from '@zero-os/secrets'
 import {
+  XPremiumTokenManager,
   getXPremiumBaseUrl,
   getXPremiumOAuthSessionRef,
-  XPremiumTokenManager,
 } from '../../apps/server/src/providers/x-premium'
 import {
   type ProbeRecord,

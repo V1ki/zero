@@ -5,7 +5,7 @@
   "type": "module",
   "workspaces": ["packages/*", "apps/*", "benchmarks/*"],
   "scripts": {
-    "test": "bun test --recursive packages apps",
+    "test": "bun test apps/server/ apps/supervisor/ apps/web/ packages/channel/ packages/compaction/ packages/core/ packages/memory/ packages/model/ packages/observe/ packages/scheduler/ packages/secrets/ packages/shared/ packages/supervisor/",
     "test:e2e": "bunx playwright test",
     "e2e:server": "bun run e2e/server.ts",
     "check": "bunx tsc -p tsconfig.check.json",

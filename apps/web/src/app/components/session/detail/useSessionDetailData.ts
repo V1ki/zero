@@ -1,6 +1,6 @@
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
-import { useWebSocket } from '../../../useWebSocket'
 import { apiFetch, isAbortError } from '../../../lib/api'
+import { useWebSocket } from '../../../useWebSocket'
 import type { MemoryInjectionEntry } from '../memory/memory-retrieval'
 import type {
   SessionDecisionEvent,

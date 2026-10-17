@@ -1,9 +1,9 @@
 import { Warning } from '@phosphor-icons/react'
 import { useCallback, useEffect, useState } from 'react'
-import { useWebSocket } from '../../useWebSocket'
 import { apiFetch, apiPost } from '../../lib/api'
 import { formatTimeAgo } from '../../lib/format'
 import { useUIStore } from '../../stores/ui'
+import { useWebSocket } from '../../useWebSocket'
 
 interface Notification {
   id: string

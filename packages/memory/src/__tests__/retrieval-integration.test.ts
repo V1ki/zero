@@ -111,14 +111,21 @@ describe('Memory Pipeline: Indexed store -> Vector index -> Retrieval', () => {
     const harness = await createHarness()
 
     try {
-      const memory = await harness.store.create('note', 'Old deploy note', 'deploy gateway history', {
-        tags: ['deploy'],
-        status: 'verified',
-        confidence: 0.9,
-      })
+      const memory = await harness.store.create(
+        'note',
+        'Old deploy note',
+        'deploy gateway history',
+        {
+          tags: ['deploy'],
+          status: 'verified',
+          confidence: 0.9,
+        },
+      )
       await harness.store.update('note', memory.id, { status: 'archived' })
 
-      const results = await harness.retriever.retrieve('deploy gateway', { confidenceThreshold: 0.1 })
+      const results = await harness.retriever.retrieve('deploy gateway', {
+        confidenceThreshold: 0.1,
+      })
 
       expect(results).toEqual([])
     } finally {
@@ -130,16 +137,26 @@ describe('Memory Pipeline: Indexed store -> Vector index -> Retrieval', () => {
     const harness = await createHarness()
 
     try {
-      const winner = await harness.store.create('note', 'Deploy decision winner', 'deploy gateway plan', {
-        tags: ['deploy'],
-        status: 'verified',
-        confidence: 0.9,
-      })
-      const loser = await harness.store.create('note', 'Deploy decision loser', 'deploy gateway plan', {
-        tags: ['deploy'],
-        status: 'verified',
-        confidence: 0.6,
-      })
+      const winner = await harness.store.create(
+        'note',
+        'Deploy decision winner',
+        'deploy gateway plan',
+        {
+          tags: ['deploy'],
+          status: 'verified',
+          confidence: 0.9,
+        },
+      )
+      const loser = await harness.store.create(
+        'note',
+        'Deploy decision loser',
+        'deploy gateway plan',
+        {
+          tags: ['deploy'],
+          status: 'verified',
+          confidence: 0.6,
+        },
+      )
 
       await harness.lifecycle.resolveConflict('note', winner.id, loser.id)
 
@@ -165,11 +182,16 @@ describe('Memory Pipeline: Indexed store -> Vector index -> Retrieval', () => {
         status: 'verified',
         confidence: 0.95,
       })
-      await harness.store.create('note', 'TypeScript preference', 'language preference typescript', {
-        tags: ['preference', 'typescript'],
-        status: 'verified',
-        confidence: 0.95,
-      })
+      await harness.store.create(
+        'note',
+        'TypeScript preference',
+        'language preference typescript',
+        {
+          tags: ['preference', 'typescript'],
+          status: 'verified',
+          confidence: 0.95,
+        },
+      )
 
       const results = await harness.retriever.retrieveScored('deploy gateway', {
         topN: 5,

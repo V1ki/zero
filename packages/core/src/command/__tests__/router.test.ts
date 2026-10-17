@@ -42,9 +42,7 @@ describe('CommandRouter', () => {
   test('matching command returns result', async () => {
     const router = new CommandRouter()
     const expected = { handled: true, reply: 'started' }
-    router.register(
-      createCommand('/new', (content) => (content === '/new' ? {} : null), expected),
-    )
+    router.register(createCommand('/new', (content) => (content === '/new' ? {} : null), expected))
 
     const result = await router.handle('/new', createContext())
 
@@ -54,9 +52,14 @@ describe('CommandRouter', () => {
   test('source filtering skips commands not allowed for the current source', async () => {
     const router = new CommandRouter()
     router.register(
-      createCommand('/restart', (content) => (content === '/restart' ? {} : null), {
-        handled: true,
-      }, ['feishu']),
+      createCommand(
+        '/restart',
+        (content) => (content === '/restart' ? {} : null),
+        {
+          handled: true,
+        },
+        ['feishu'],
+      ),
     )
 
     const result = await router.handle('/restart', createContext('telegram'))

@@ -306,10 +306,7 @@ describe('WeixinChannel lifecycle', () => {
       }
       return new Response(JSON.stringify({ ret: 0 }), { status: 200 })
     }
-    const ch = new WeixinChannel(
-      { accountId: 'a', token: 't', homeDir: tempDir },
-      { fetchImpl },
-    )
+    const ch = new WeixinChannel({ accountId: 'a', token: 't', homeDir: tempDir }, { fetchImpl })
 
     await ch.start()
     await pollStarted

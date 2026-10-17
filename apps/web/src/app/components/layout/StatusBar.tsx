@@ -8,7 +8,13 @@ interface StatusBarProps {
   currentSessions: number
 }
 
-export function StatusBar({ status, model, uptime, heartbeatAge, currentSessions }: StatusBarProps) {
+export function StatusBar({
+  status,
+  model,
+  uptime,
+  heartbeatAge,
+  currentSessions,
+}: StatusBarProps) {
   const statusConfig = {
     running: { label: 'Running', dot: 'bg-emerald-400', text: 'text-emerald-400', bg: '' },
     degraded: {

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
-import type { TimelineItem } from '../timeline/timeline'
 import { TimelineView } from '../timeline/TimelineView'
+import type { TimelineItem } from '../timeline/timeline'
 
 describe('DecisionBlock', () => {
   test('renders context_compression preview with model and cost', () => {

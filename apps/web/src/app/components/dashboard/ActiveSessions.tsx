@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useWebSocket } from '../../useWebSocket'
 import { apiFetch } from '../../lib/api'
 import { formatTimeAgo } from '../../lib/format'
+import { useWebSocket } from '../../useWebSocket'
 import { PulseDot } from '../shared/PulseDot'
 
 interface Session {

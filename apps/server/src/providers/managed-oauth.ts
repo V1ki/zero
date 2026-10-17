@@ -16,11 +16,11 @@ import {
 } from './claude/config'
 import { ClaudeOAuthDriver } from './claude/oauth'
 import {
+  XPremiumOAuthDriver,
   ensureXPremiumProviderConfig,
   getXPremiumOAuthSessionRef,
   getXPremiumProviderLabel,
   resolveXPremiumProviderInstance,
-  XPremiumOAuthDriver,
 } from './x-premium'
 
 export const MANAGED_OAUTH_TOKEN_REFS = new Set([
