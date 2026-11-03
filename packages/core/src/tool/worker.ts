@@ -3,6 +3,9 @@ import { steerRunningWorker } from '../session/running-tool-registry'
 import { BaseTool } from './base'
 import { runCodexWorker } from './worker/codex-worker'
 import { CodexWorkerServer } from './worker/codex-worker-server'
+import type { CodexWorkerUsageRecord } from './worker/codex-worker-usage'
+
+export type { CodexWorkerUsageRecord } from './worker/codex-worker-usage'
 
 const workerTypes = ['codex', 'dsh'] as const
 
@@ -51,10 +54,18 @@ export class WorkerTool extends BaseTool {
   }
 
   private readonly server: CodexWorkerServer
+  private readonly recordUsage?: (entry: CodexWorkerUsageRecord) => void
 
-  constructor(options: { codexPath?: string; secretFilter?: SecretFilter } = {}) {
+  constructor(
+    options: {
+      codexPath?: string
+      secretFilter?: SecretFilter
+      recordUsage?: (entry: CodexWorkerUsageRecord) => void
+    } = {},
+  ) {
     super()
     this.server = new CodexWorkerServer(options)
+    this.recordUsage = options.recordUsage
   }
 
   close(): Promise<void> {
@@ -110,6 +121,7 @@ export class WorkerTool extends BaseTool {
         resumeThreadId: optionalString(args, 'resumeThreadId'),
       },
       this.server,
+      this.recordUsage,
     )
   }
 }

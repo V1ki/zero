@@ -15,7 +15,11 @@ import type { EventBus } from './bus'
 import { type FiberRootRuntime, createFiberRootRuntime } from './fiber-root'
 import { type MemoryRuntime, createMemoryRuntime } from './memory'
 import { type ModelRouterRuntime, createModelRouterRuntime } from './model-providers/router'
-import { type ObservabilityRuntime, createObservabilityRuntime } from './observability'
+import {
+  type ObservabilityRuntime,
+  createCodexWorkerUsageRecorder,
+  createObservabilityRuntime,
+} from './observability'
 import { type SchedulerRuntime, createSchedulerRuntime } from './scheduler'
 import { createRuntimeToolRegistry } from './tools'
 
@@ -201,7 +205,10 @@ async function createAgentRuntimeComponents({
     forkEffect,
   })
 
-  const worker = new WorkerTool({ secretFilter: secretsRuntime.secretFilter })
+  const worker = new WorkerTool({
+    secretFilter: secretsRuntime.secretFilter,
+    recordUsage: createCodexWorkerUsageRecorder(metrics),
+  })
   const toolRegistry = createRuntimeToolRegistry({
     zeroDir,
     config,

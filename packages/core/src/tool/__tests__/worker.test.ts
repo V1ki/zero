@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { BackgroundToolProgressInput, ToolContext } from '@zero-os/shared'
 import { SessionRunningToolRegistry } from '../../session/running-tool-registry'
-import { WorkerTool } from '../worker'
+import { type CodexWorkerUsageRecord, WorkerTool } from '../worker'
 
 const fixtures: Array<{ tool: WorkerTool; workspace: string }> = []
 
@@ -46,12 +46,24 @@ function setup() {
       await Bun.sleep(5)
     expect(trace().some((entry) => entry.method === method)).toBe(true)
   }
-  const tool = new WorkerTool({ codexPath: binary })
+  // Mirror the ledger's upsert key. Streaming snapshots can revise the same turn.
+  const usage = new Map<string, CodexWorkerUsageRecord>()
+  const tool = new WorkerTool({
+    codexPath: binary,
+    recordUsage: (record) => {
+      usage.set(JSON.stringify([record.threadId, record.turnId]), record)
+    },
+  })
   fixtures.push({ tool, workspace })
-  return { workspace, ctx, trace, tool, waitForRequest }
+  return { workspace, ctx, trace, tool, usage, waitForRequest }
 }
 
-function startWaiting(tool: WorkerTool, ctx: ToolContext, resumeThreadId?: string) {
+function startWaiting(
+  tool: WorkerTool,
+  ctx: ToolContext,
+  resumeThreadId?: string,
+  instruction = 'wait',
+) {
   const registry = new SessionRunningToolRegistry()
   const target = registry.register({ toolUseId: 'original', toolName: 'worker', abortable: true })
   const scoped = { ...ctx, currentToolUseId: target.toolUseId, runningToolRegistry: registry }
@@ -72,7 +84,7 @@ function startWaiting(tool: WorkerTool, ctx: ToolContext, resumeThreadId?: strin
         },
       },
     },
-    { type: 'codex', action: 'run', instruction: 'wait', resumeThreadId },
+    { type: 'codex', action: 'run', instruction, resumeThreadId },
   )
   const ready = Promise.race([
     started.promise,
@@ -95,7 +107,7 @@ afterEach(async () => {
 
 describe('WorkerTool', () => {
   test('requires type and instruction and declines the reserved dsh backend without starting Codex', async () => {
-    const { tool, ctx, trace } = setup()
+    const { tool, ctx, trace, usage } = setup()
     const definition = tool.toDefinition()
     expect(definition.name).toBe('worker')
     expect(definition.parameters.required).toEqual(expect.arrayContaining(['type', 'instruction']))
@@ -109,10 +121,11 @@ describe('WorkerTool', () => {
       expect(result.output).toMatch(/type|instruction|dsh/i)
     }
     expect(trace()).toEqual([])
+    expect(usage.size).toBe(0)
   })
 
   test('starts a local app-server and retains early notifications for the requested turn', async () => {
-    const { tool, ctx, workspace, trace } = setup()
+    const { tool, ctx, workspace, trace, usage } = setup()
     const progress: BackgroundToolProgressInput[] = []
     const result = await tool.run(
       {
@@ -139,6 +152,19 @@ describe('WorkerTool', () => {
     ]) {
       expect(result.output).toContain(value)
     }
+    expect([...usage.values()]).toEqual([
+      expect.objectContaining({
+        sessionId: ctx.sessionId,
+        toolUseId: 'tool-progress',
+        threadId: 'thread-fixture-1',
+        turnId: 'turn-fixture-1',
+        model: 'fixture-model',
+        provider: 'fixture-provider',
+        usage: { input: 778, cacheRead: 456, cacheWrite: 0, output: 179, reasoning: 0 },
+        durationMs: expect.any(Number),
+        createdAt: expect.any(String),
+      }),
+    ])
     expect(result.output).not.toContain('from other turn')
     expect(result.output).toContain(
       `${join(workspace, 'updated.ts')} → ${join(workspace, 'renamed.ts')}`,
@@ -180,6 +206,133 @@ describe('WorkerTool', () => {
     })
   })
 
+  test.each(['replay-before-resume', 'replay-after-resume', 'replay-before-turn-ack'])(
+    'uses the confirmed preceding turn as a baseline at %s without charging replay to the new session',
+    async (threadId) => {
+      const { tool, ctx, usage } = setup()
+      const result = await tool.run(
+        { ...ctx, currentToolUseId: 'external-resume' },
+        { type: 'codex', resumeThreadId: threadId, instruction: 'usage:coalesced' },
+      )
+      expect(result.success).toBe(true)
+      // The only current snapshot's last covers request two. Its total covers both and history.
+      expect([...usage.values()]).toEqual([
+        expect.objectContaining({
+          sessionId: ctx.sessionId,
+          toolUseId: 'external-resume',
+          threadId,
+          turnId: 'turn-fixture-1',
+          usageStatus: 'reported',
+          usage: { input: 110, cacheRead: 50, cacheWrite: 15, output: 50, reasoning: 12 },
+        }),
+      ])
+    },
+  )
+
+  test('records unreported turns when totals are unchanged or the resumed baseline is unknown', async () => {
+    const { tool, ctx, usage } = setup()
+    for (const [resumeThreadId, instruction] of [
+      ['replay-before-resume', 'usage:unchanged'],
+      ['unknown-baseline', 'usage:coalesced'],
+      ['replay-stale-no-history', 'usage:coalesced'],
+    ]) {
+      const result = await tool.run(ctx, { type: 'codex', resumeThreadId, instruction })
+      expect(result.success).toBe(true)
+      expect(result.output).not.toContain('3175')
+    }
+    expect(usage.size).toBe(3)
+    for (const record of usage.values()) {
+      expect(record).toMatchObject({
+        usageStatus: 'unreported',
+        usage: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0 },
+      })
+    }
+  })
+
+  test('recovers the exact turn from its rollout when a resume supplies neither history nor replay', async () => {
+    const { tool, ctx, usage } = setup()
+    const result = await tool.run(ctx, {
+      type: 'codex',
+      resumeThreadId: 'rollout-thread',
+      instruction: 'usage:coalesced',
+    })
+    expect(result.success).toBe(true)
+    expect([...usage.values()]).toEqual([
+      expect.objectContaining({
+        usageStatus: 'reported',
+        usage: { input: 110, cacheRead: 50, cacheWrite: 15, output: 50, reasoning: 12 },
+      }),
+    ])
+  })
+
+  test.each(['unknown-baseline', 'replay-stale-no-history', 'replay-stale-different-history'])(
+    'counts only verifiable increases on resume for %s',
+    async (resumeThreadId) => {
+      const { tool, ctx, usage } = setup()
+      const result = await tool.run(ctx, {
+        type: 'codex',
+        resumeThreadId,
+        instruction: 'usage:two',
+      })
+      expect(result.success).toBe(true)
+      expect([...usage.values()]).toEqual([
+        expect.objectContaining({
+          usageStatus: 'partial',
+          usage: { input: 50, cacheRead: 20, cacheWrite: 5, output: 30, reasoning: 7 },
+        }),
+      ])
+    },
+  )
+
+  test('bills hot resumes to their own session and corrects stale replay totals from the rollout', async () => {
+    const { tool, ctx, usage } = setup()
+    const first = await tool.run(
+      { ...ctx, currentToolUseId: 'first' },
+      { type: 'codex', instruction: 'usage:two' },
+    )
+    expect(first.success).toBe(true)
+    const [previous] = usage.values()
+    expect(previous).toMatchObject({
+      sessionId: ctx.sessionId,
+      toolUseId: 'first',
+      usage: { input: 110, cacheRead: 50, cacheWrite: 15, output: 50, reasoning: 12 },
+    })
+    const other = { ...ctx, sessionId: 'another-session', currentToolUseId: 'resume' }
+    const resumed = await tool.run(other, {
+      type: 'codex',
+      resumeThreadId: previous.threadId,
+      instruction: 'usage:coalesced',
+    })
+    expect(resumed.success).toBe(true)
+    expect([...usage.values()]).toEqual([
+      previous,
+      expect.objectContaining({
+        sessionId: other.sessionId,
+        toolUseId: 'resume',
+        threadId: previous.threadId,
+        usage: { input: 110, cacheRead: 50, cacheWrite: 15, output: 50, reasoning: 12 },
+      }),
+    ])
+    // An external client advanced the thread beyond the replayed total. Only this turn is billable.
+    const afterExternal = await tool.run(
+      { ...other, currentToolUseId: 'after-external' },
+      {
+        type: 'codex',
+        model: 'after-external-turn',
+        resumeThreadId: previous.threadId,
+        instruction: 'usage:coalesced',
+      },
+    )
+    expect(afterExternal.success).toBe(true)
+    expect(usage.size).toBe(3)
+    expect([...usage.values()].at(-1)).toMatchObject({
+      toolUseId: 'after-external',
+      sessionId: other.sessionId,
+      usageStatus: 'reported',
+      usage: { input: 110, cacheRead: 50, cacheWrite: 15, output: 50, reasoning: 12 },
+    })
+  })
+
   test('resumes the supplied thread and merges writable roots without broadening the other permissions', async () => {
     const { tool, ctx, workspace, trace } = setup()
     const customCwd = join(workspace, 'custom-cwd')
@@ -213,10 +366,16 @@ describe('WorkerTool', () => {
   })
 
   test('declines server-initiated approval without hanging the turn', async () => {
-    const { tool, ctx, trace } = setup()
+    const { tool, ctx, trace, usage } = setup()
     const result = await tool.run(ctx, { type: 'codex', instruction: 'approval' })
     expect(result.success).toBe(true)
     expect(trace()).toContainEqual({ decision: 'decline' })
+    expect([...usage.values()]).toEqual([
+      expect.objectContaining({
+        usageStatus: 'unreported',
+        usage: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0 },
+      }),
+    ])
   })
 
   test('preserves a failed turn error and treats EOF before completion as failure without replay', async () => {
@@ -328,7 +487,7 @@ describe('WorkerTool', () => {
   })
 
   test('routes concurrent steer and interrupt to their own sessions on one server', async () => {
-    const { tool, ctx, workspace, trace } = setup()
+    const { tool, ctx, workspace, trace, usage } = setup()
     const otherWorkspace = join(workspace, 'other')
     const otherRoot = join(otherWorkspace, 'project')
     mkdirSync(otherRoot, { recursive: true })
@@ -340,8 +499,8 @@ describe('WorkerTool', () => {
       channelBinding: undefined,
     }
     // Both sessions use the same toolUseId, so only the session registry distinguishes them.
-    const adjusted = startWaiting(tool, ctx)
-    const interrupted = startWaiting(tool, otherCtx)
+    const adjusted = startWaiting(tool, ctx, undefined, 'usage:wait')
+    const interrupted = startWaiting(tool, otherCtx, undefined, 'usage:wait')
     const [a, b] = await Promise.all([adjusted.ready, interrupted.ready])
     expect(a.threadId).not.toBe(b.threadId)
 
@@ -365,6 +524,17 @@ describe('WorkerTool', () => {
     expect(stopped.output).toContain('stop second worker')
     expect(stopped.output).not.toContain('finish with adjusted scope')
     expect(interrupted.target.getTerminalMetadata()?.cause).toBe('abort')
+    expect(usage.size).toBe(2)
+    for (const [ids, sessionId] of [
+      [a, ctx.sessionId],
+      [b, otherCtx.sessionId],
+    ] as const) {
+      expect(usage.get(JSON.stringify([ids.threadId, ids.turnId]))).toMatchObject({
+        sessionId,
+        toolUseId: 'original',
+        usage: { input: 60, cacheRead: 30, cacheWrite: 10, output: 20, reasoning: 5 },
+      })
+    }
     const events = trace()
     expect(events.filter((e) => e.method === 'turn/steer')).toEqual([
       expect.objectContaining({ threadId: a.threadId, expectedTurnId: a.turnId }),

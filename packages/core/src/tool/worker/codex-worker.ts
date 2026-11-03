@@ -5,6 +5,7 @@ import { BACKGROUND_TOOL_PROGRESS_TAIL_CHARS } from '../../session/background-to
 import { buildToolContextEnv } from '../process-env'
 import { CodexAppServerRequestError } from './app-server-client'
 import type { CodexWorkerConnection, CodexWorkerServer } from './codex-worker-server'
+import { CodexTurnUsage, type CodexWorkerUsageRecord } from './codex-worker-usage'
 
 interface CodexWorkerInput {
   instruction: string
@@ -16,6 +17,7 @@ interface CodexWorkerInput {
 
 type Fields = Record<string, unknown>
 const INTERRUPT_TIMEOUT_MS = 5_000
+const TOKEN_USAGE = 'thread/tokenUsage/updated'
 
 function fields(value: unknown, name: string): Fields {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -56,7 +58,6 @@ class TurnOutput {
   readonly files: Array<{ path: string; kind: string; destination?: string }> = []
   readonly commands: string[] = []
   readonly errors = new Set<string>()
-  usage?: string
   private readonly completedItems = new Set<string>()
   private readonly commandStreams = new Map<string, { preview: string; length: number }>()
   private progressChars = 0
@@ -93,18 +94,6 @@ class TurnOutput {
       case 'item/completed':
         this.item(fields(params.item, 'completed item'))
         break
-      case 'thread/tokenUsage/updated': {
-        const usage = fields(fields(params.tokenUsage, 'usage').total, 'total usage')
-        if (
-          typeof usage.inputTokens !== 'number' ||
-          typeof usage.cachedInputTokens !== 'number' ||
-          typeof usage.outputTokens !== 'number'
-        ) {
-          throw new Error('Invalid Codex app-server token usage')
-        }
-        this.usage = `Input: ${usage.inputTokens} (cached: ${usage.cachedInputTokens}), Output: ${usage.outputTokens}`
-        break
-      }
       case 'error':
         if (params.willRetry !== true) {
           this.errors.add(stringField(fields(params.error, 'error'), 'message'))
@@ -154,6 +143,7 @@ class TurnOutput {
     threadId: string | undefined,
     turnId: string | undefined,
     outcomeUnknown: boolean,
+    usage: string | undefined,
   ): ToolResult {
     const sections: string[] = []
     if (threadId)
@@ -174,7 +164,7 @@ class TurnOutput {
       sections.push(`## File Changes\n${lines.join('\n')}`)
     }
     if (this.commands.length) sections.push(`## Commands\n${this.commands.join('\n')}`)
-    if (this.usage) sections.push(`## Token Usage\n${this.usage}`)
+    if (usage) sections.push(`## Token Usage\n${usage}`)
     return {
       success: this.errors.size === 0,
       output: sections.join('\n\n'),
@@ -215,23 +205,34 @@ class ThreadSubscription {
     )
   }
 
-  async unsubscribe(): Promise<void> {
+  async unsubscribe(onUsage?: (params: Fields) => void): Promise<void> {
     this.handleLateResume = undefined
     this.fail = this.release
-    this.notify = (method) => {
+    const onClose = (method: string) => {
       if (method === 'thread/closed') this.release()
     }
-    await this.connection.unsubscribe(this.id)
-    this.release()
+    this.notify = (method, params) => {
+      if (method === TOKEN_USAGE) onUsage?.(params)
+      else onClose(method)
+    }
+    try {
+      await this.connection.unsubscribe(this.id)
+      this.release()
+    } finally {
+      // An unconfirmed unsubscribe keeps its reservation, not the completed tool context.
+      this.notify = onClose
+    }
   }
 
-  private detachAfterReturn(): void {
-    void this.unsubscribe().catch((error: unknown) => {
-      this.logger.warn('worker_thread_cleanup_failed', {
-        threadId: this.id,
-        error: toErrorMessage(error),
+  private detachAfterReturn(usage?: CodexTurnUsage, onUsage?: (params: Fields) => void): void {
+    void this.unsubscribe(onUsage)
+      .catch((error: unknown) => {
+        this.logger.warn('worker_thread_cleanup_failed', {
+          threadId: this.id,
+          error: toErrorMessage(error),
+        })
       })
-    })
+      .finally(() => usage?.finish())
   }
 
   guardUnconfirmedResume(): void {
@@ -244,7 +245,11 @@ class ThreadSubscription {
     if (this.lateResume !== undefined) this.handleLateResume(this.lateResume)
   }
 
-  guardUnconfirmedTurn(expectedTurnId: string | undefined, alreadyInterrupted: boolean): void {
+  guardUnconfirmedTurn(
+    expectedTurnId: string | undefined,
+    alreadyInterrupted: boolean,
+    usage: CodexTurnUsage,
+  ): void {
     let turnId = expectedTurnId
     let interruptSent = alreadyInterrupted
     const interrupt = () => {
@@ -260,18 +265,34 @@ class ThreadSubscription {
           })
         })
     }
-    this.fail = this.release
+    const onUsage = (params: Fields) => {
+      if (turnId && params.threadId === this.id && params.turnId === turnId)
+        usage.update(params.tokenUsage)
+    }
+    this.fail = () => {
+      this.release()
+      void usage.finish()
+    }
     this.notify = (method, params) => {
       if (method === 'thread/closed') {
         this.release()
+        void usage.finish()
+        return
+      }
+      if (method === TOKEN_USAGE) {
+        onUsage(params)
         return
       }
       if (method !== 'turn/started' && method !== 'turn/completed') return
       const turn = params.turn as Fields | undefined
       if (!turn || typeof turn.id !== 'string' || !turn.id || (turnId && turn.id !== turnId)) return
-      turnId = turn.id
-      if (method === 'turn/started') interrupt()
-      else if (isTerminalStatus(turn.status)) this.detachAfterReturn()
+      if (method === 'turn/started') {
+        turnId = turn.id
+        usage.start(turnId)
+        interrupt()
+      } else if (turn.id === turnId && isTerminalStatus(turn.status)) {
+        this.detachAfterReturn(usage, onUsage)
+      }
     }
     interrupt()
   }
@@ -281,12 +302,14 @@ export async function runCodexWorker(
   ctx: ToolContext,
   input: CodexWorkerInput,
   server: CodexWorkerServer,
+  recordUsage?: (entry: CodexWorkerUsageRecord) => void,
 ): Promise<ToolResult> {
   const cwd = resolve(ctx.projectRoot ?? ctx.workDir, input.workingDirectory ?? '.')
   const handle = ctx.currentToolUseId
     ? ctx.runningToolRegistry?.get(ctx.currentToolUseId)
     : undefined
   const output = new TurnOutput(ctx)
+  const startedAt = Date.now()
   const turnReady = Promise.withResolvers<void>()
   const completed = Promise.withResolvers<void>()
   const stopped = Promise.withResolvers<Error>()
@@ -296,6 +319,8 @@ export async function runCodexWorker(
   let threadId: string | undefined
   let turnId: string | undefined
   let observedTurnId: string | undefined
+  let previousTurnId: string | undefined
+  let usage: CodexTurnUsage | undefined
   let submitting = false
   let closing = false
   let unavailable = false
@@ -304,6 +329,29 @@ export async function runCodexWorker(
   let interruptFailure: string | undefined
   let abortTimer: ReturnType<typeof setTimeout> | undefined
   const earlyEvents: Array<{ method: string; params: Fields }> = []
+
+  function isResumeUsage(method: string, params: Fields): boolean {
+    return (
+      method === TOKEN_USAGE &&
+      !!input.resumeThreadId &&
+      params.threadId === input.resumeThreadId &&
+      typeof params.turnId === 'string' &&
+      !!params.turnId
+    )
+  }
+
+  function startUsage(activeTurnId: string): void {
+    // Previous-turn replay can share a read with this turn's first update and start ACK.
+    // Establish the historical baseline before recording any current-turn snapshots.
+    if (!usage) return
+    if (previousTurnId && previousTurnId !== activeTurnId) {
+      for (const { method, params } of earlyEvents) {
+        if (isResumeUsage(method, params) && params.turnId === previousTurnId)
+          usage.setBaseline(params.tokenUsage)
+      }
+    }
+    usage.start(activeTurnId)
+  }
 
   function onNotification(method: string, params: Fields): void {
     if (method === 'thread/closed') {
@@ -314,7 +362,16 @@ export async function runCodexWorker(
         stopped.resolve(new Error('Codex thread closed before the worker received its turn result'))
       return
     }
-    if (closing || !submitting || terminalStatus || params.threadId !== threadId) return
+    if (!submitting && !closing && isResumeUsage(method, params)) {
+      earlyEvents.push({ method, params })
+      return
+    }
+    if (closing || !submitting || params.threadId !== threadId) return
+    if (method === TOKEN_USAGE && turnId && params.turnId === turnId) {
+      usage?.update(params.tokenUsage)
+      return
+    }
+    if (terminalStatus) return
     // Items and completion can arrive before the turn/start continuation installs the ID.
     if (!turnId) {
       if (method === 'turn/started') {
@@ -450,6 +507,31 @@ export async function runCodexWorker(
     resumeUnconfirmed = false
     subscription ??= subscribe(connection, id)
     threadId = id
+    const previous: unknown = Array.isArray(state.turns) ? state.turns.at(-1) : undefined
+    if (
+      input.resumeThreadId &&
+      previous &&
+      typeof previous === 'object' &&
+      'id' in previous &&
+      typeof previous.id === 'string' &&
+      previous.id
+    ) {
+      previousTurnId = previous.id
+    }
+    const modelName = thread.model ?? state.model
+    const providerName = thread.modelProvider ?? state.modelProvider
+    usage = new CodexTurnUsage(
+      ctx,
+      {
+        id,
+        model: typeof modelName === 'string' && modelName ? modelName : input.model,
+        provider: typeof providerName === 'string' && providerName ? providerName : undefined,
+        path: typeof state.path === 'string' ? state.path : undefined,
+        resumed: !!input.resumeThreadId,
+      },
+      startedAt,
+      recordUsage,
+    )
     if (unavailable) throw await stopped.promise
     if (abortReason) throw new Error(abortReason)
     if (
@@ -476,6 +558,7 @@ export async function runCodexWorker(
     })
     if (started instanceof Error) throw started
     turnId = idField(fields(started.turn, 'started turn'))
+    startUsage(turnId)
     ctx.logger.info('worker_turn_started', {
       type: 'codex',
       toolUseId: ctx.currentToolUseId,
@@ -490,6 +573,14 @@ export async function runCodexWorker(
   } catch (error) {
     output.errors.add(toErrorMessage(error))
   } finally {
+    // A matching turn/started also identifies usage already received if the RPC ACK was lost.
+    if (threadId && !turnId && observedTurnId && submitting) {
+      startUsage(observedTurnId)
+      for (const { method, params } of earlyEvents) {
+        if (method === TOKEN_USAGE && params.turnId === observedTurnId)
+          usage?.update(params.tokenUsage)
+      }
+    }
     closing = true
     turnReady.resolve()
     clearTimeout(abortTimer)
@@ -500,12 +591,15 @@ export async function runCodexWorker(
         subscription.release()
       } else if (resumeUnconfirmed) {
         subscription.guardUnconfirmedResume()
-      } else if (submitting && !terminalStatus) {
-        subscription.guardUnconfirmedTurn(turnId ?? observedTurnId, !!abortTimer)
+      } else if (submitting && !terminalStatus && usage) {
+        subscription.guardUnconfirmedTurn(turnId ?? observedTurnId, !!abortTimer, usage)
         for (const event of earlyEvents) subscription.notify(event.method, event.params)
       } else if (threadId) {
         try {
-          await subscription.unsubscribe()
+          await subscription.unsubscribe((params) => {
+            if (turnId && params.threadId === threadId && params.turnId === turnId)
+              usage?.update(params.tokenUsage)
+          })
         } catch (error) {
           output.errors.add(`Codex thread cleanup failed: ${toErrorMessage(error)}`)
         }
@@ -515,7 +609,14 @@ export async function runCodexWorker(
     }
   }
 
-  const result = output.result(threadId, turnId ?? observedTurnId, submitting && !terminalStatus)
+  const usageTurnId = turnId ?? observedTurnId
+  await usage?.finish()
+  const result = output.result(
+    threadId,
+    usageTurnId,
+    submitting && !terminalStatus,
+    usage?.summary(),
+  )
   if (terminalStatus === 'interrupted' || (abortReason && !submitting)) {
     handle?.markFinished({
       cause: 'abort',

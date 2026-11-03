@@ -108,6 +108,7 @@ export type UsageCategory = 'completion' | 'aggregated' | 'embedding'
 export const USAGE_PURPOSES = [
   'agent_loop',
   'sub_agent',
+  'codex_worker',
   'task_closure',
   'compression',
   'tool_io_digest',

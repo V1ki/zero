@@ -13,6 +13,70 @@ const threads = new Map()
 const retainedSubscriptions = new Set()
 const activeTurns = new Map()
 const approvals = new Map()
+const threadUsage = new Map()
+
+function tokens(
+  inputTokens,
+  cachedInputTokens,
+  cacheWriteInputTokens,
+  outputTokens,
+  reasoningOutputTokens,
+) {
+  return {
+    totalTokens: inputTokens + outputTokens,
+    inputTokens,
+    cachedInputTokens,
+    cacheWriteInputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+  }
+}
+
+const firstRequest = tokens(100, 30, 10, 20, 5)
+const secondRequest = tokens(75, 20, 5, 30, 7)
+const historicalTotal = tokens(3_000, 1_000, 100, 600, 200)
+
+function addTokens(a, b) {
+  return Object.fromEntries(Object.entries(b).map(([key, count]) => [key, (a?.[key] ?? 0) + count]))
+}
+
+function sendUsage(threadId, turnId, last, total) {
+  const snapshot = { threadId, turnId, tokenUsage: { last, total } }
+  threadUsage.set(threadId, snapshot)
+  send({ method: 'thread/tokenUsage/updated', params: snapshot })
+}
+
+function replayUsage(threadId) {
+  send({ method: 'thread/tokenUsage/updated', params: threadUsage.get(threadId) })
+}
+
+function rolloutPath(threadId) {
+  if (threadId.startsWith('thread-fixture-') || threadId === 'rollout-thread') {
+    return join(workspace, `rollout-${encodeURIComponent(threadId)}.jsonl`)
+  }
+}
+
+function writeRollout(threadId, turnId, counts) {
+  const path = rolloutPath(threadId)
+  if (!path) return
+  const line = {
+    type: 'token_usage_record',
+    payload: {
+      thread_id: threadId,
+      turn_id: turnId,
+      turn_token_usage: {
+        total_tokens: counts.totalTokens,
+        input_tokens: counts.inputTokens,
+        cached_input_tokens: counts.cachedInputTokens,
+        cache_write_input_tokens: counts.cacheWriteInputTokens,
+        output_tokens: counts.outputTokens,
+        reasoning_output_tokens: counts.reasoningOutputTokens,
+      },
+    },
+  }
+  appendFileSync(path, `${JSON.stringify(line)}\n`)
+}
+
 const zeroKeys = [
   'ZERO_WORKSPACE',
   'ZERO_PROJECT_ROOT',
@@ -68,11 +132,50 @@ for await (const line of lines) {
       env: zeroEnv(env),
       extraEnvKeys: Object.keys(env ?? {}).filter((key) => !zeroKeys.includes(key)).length,
     })
+    const firstExternalResume =
+      !threadUsage.has(threadId) &&
+      (threadId.startsWith('replay-') || ['unknown-baseline', 'rollout-thread'].includes(threadId))
+    if (method === 'thread/resume' && (firstExternalResume || model === 'after-external-turn')) {
+      // Replay the last snapshot our client saw, then account for an external client's turn.
+      if (model === 'after-external-turn') replayUsage(threadId)
+      writeRollout(threadId, 'historical-turn', secondRequest)
+      threadUsage.set(threadId, {
+        threadId,
+        turnId: 'historical-turn',
+        tokenUsage: { last: secondRequest, total: historicalTotal },
+      })
+    }
+    // Only these legacy responses identify the immediately preceding turn in thread.turns.
+    let previousTurnId
+    if (
+      ['replay-before-resume', 'replay-after-resume', 'replay-before-turn-ack'].includes(threadId)
+    ) {
+      previousTurnId = 'historical-turn'
+    }
+    if (threadId === 'replay-before-resume') replayUsage(threadId)
+    if (threadId === 'replay-stale-no-history' || threadId === 'replay-stale-different-history') {
+      replayUsage(threadId)
+      const interveningTurnId = 'intervening-turn'
+      threadUsage.set(threadId, {
+        threadId,
+        turnId: interveningTurnId,
+        tokenUsage: { last: firstRequest, total: addTokens(historicalTotal, firstRequest) },
+      })
+      if (threadId === 'replay-stale-different-history') previousTurnId = interveningTurnId
+    }
     send({
       id,
       result: {
-        thread: { id: threadId, turns: [] },
-        model,
+        thread: {
+          id: threadId,
+          path: rolloutPath(threadId),
+          modelProvider: 'fixture-provider',
+          turns: previousTurnId
+            ? [{ id: previousTurnId, status: 'completed', items: [], error: null }]
+            : [],
+        },
+        model: model ?? 'fixture-model',
+        modelProvider: 'fixture-provider',
         cwd,
         approvalPolicy,
         sandbox: {
@@ -84,6 +187,7 @@ for await (const line of lines) {
         },
       },
     })
+    if (threadId === 'replay-after-resume') replayUsage(threadId)
   } else if (method === 'turn/start') {
     const threadId = params.threadId
     if (!threads.has(threadId) || activeTurns.has(threadId)) {
@@ -106,8 +210,28 @@ for await (const line of lines) {
       }, 5)
       continue
     }
+    if (threadId === 'replay-before-turn-ack') replayUsage(threadId)
     if (mode !== 'early') send({ id, result: { turn: turn('inProgress') } })
-    if (mode === 'keep thread loaded') {
+    if (mode.startsWith('usage:')) {
+      const previous = threadUsage.get(threadId)?.tokenUsage
+      if (mode === 'usage:unchanged') {
+        // A current turn ID may accompany unchanged totals and the preceding model request's last.
+        sendUsage(threadId, turnId, previous.last, previous.total)
+      } else {
+        const firstTotal = addTokens(previous?.total, firstRequest)
+        if (mode !== 'usage:coalesced') {
+          sendUsage(threadId, turnId, firstRequest, firstTotal)
+          sendUsage(threadId, turnId, firstRequest, firstTotal)
+        }
+        if (mode === 'usage:two' || mode === 'usage:coalesced') {
+          const finalTotal = addTokens(firstTotal, secondRequest)
+          sendUsage(threadId, turnId, secondRequest, finalTotal)
+          sendUsage(threadId, turnId, secondRequest, finalTotal)
+          writeRollout(threadId, turnId, addTokens(firstRequest, secondRequest))
+        }
+      }
+      if (mode !== 'usage:wait') complete('completed')
+    } else if (mode === 'keep thread loaded') {
       retainedSubscriptions.add(threadId)
       complete('completed')
     } else if (mode === 'close retained threads') {
@@ -180,26 +304,7 @@ for await (const line of lines) {
         ],
       })
       completedItem({ id: 'reply', type: 'agentMessage', text: 'the final worker response' })
-      const last = {
-        totalTokens: 12,
-        inputTokens: 9,
-        outputTokens: 3,
-        cachedInputTokens: 0,
-        cacheWriteInputTokens: 0,
-        reasoningOutputTokens: 0,
-      }
-      event('thread/tokenUsage/updated', {
-        tokenUsage: {
-          last,
-          total: {
-            ...last,
-            totalTokens: 1413,
-            inputTokens: 1234,
-            outputTokens: 179,
-            cachedInputTokens: 456,
-          },
-        },
-      })
+      sendUsage(threadId, turnId, tokens(9, 0, 0, 3, 0), tokens(1234, 456, 0, 179, 0))
       complete('completed')
       if (mode === 'early') send({ id, result: { turn: turn('inProgress') } })
     }

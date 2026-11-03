@@ -609,6 +609,54 @@ describe('MetricsDB', () => {
     usageDb.close()
   })
 
+  test('counts each Codex worker turn once under its own purpose', () => {
+    const ledger = MetricsDB.createInMemory()
+    try {
+      const first = {
+        id: 'worker:codex:thread-1:turn-1',
+        sessionId: 'session-1',
+        category: 'aggregated' as const,
+        purpose: 'codex_worker' as const,
+        provider: 'codex',
+        model: 'gpt-5',
+        inputTokens: 30,
+        cacheReadTokens: 70,
+        outputTokens: 20,
+        reasoningTokens: 10,
+        cost: 0,
+        durationMs: 100,
+        createdAt: new Date().toISOString(),
+      }
+      ledger.recordUsage(first)
+      ledger.recordUsage(first)
+      ledger.recordUsage({ ...first, id: 'worker:codex:thread-1:turn-2', inputTokens: 45 })
+      ledger.recordUsage({
+        ...first,
+        id: 'main-request',
+        purpose: 'agent_loop',
+        category: 'completion',
+      })
+
+      expect(ledger.sessionUsageByPurpose(first.sessionId)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            purpose: 'codex_worker',
+            requestCount: 2,
+            totalTokens: 115,
+            reasoningTokens: 20,
+          }),
+          expect.objectContaining({ purpose: 'agent_loop', requestCount: 1, totalTokens: 50 }),
+        ]),
+      )
+      const stats = ledger.sessionStats(first.sessionId)
+      expect(stats).toMatchObject({ requestCount: 3, totalTokens: 165, effectiveInputTokens: 315 })
+      expect(ledger.sessionStatsBatch([first.sessionId]).get(first.sessionId)).toEqual(stats)
+      expect(ledger.summary('1d')).toMatchObject({ requestCount: 3, totalTokens: 165 })
+    } finally {
+      ledger.close()
+    }
+  })
+
   test('migrateLegacyRequestsToUsageLedger includes same-timestamp legacy requests without duplicating mirrored usage', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'metrics-migrate-'))
     const migrationDb = new MetricsDB(join(tempDir, 'metrics.db'))

@@ -85,6 +85,12 @@ Worker 结束后释放该线程的订阅，ZeRo 关闭时回收进程。若进�
 `tool_use_id` 就是这个值。返回“已接收”表示 Codex 收到了针对当前轮次的指令。任务结束后，
 将上次返回的线程 ID 传入 `resumeThreadId` 即可继续下一轮。
 
+ZeRo 将 Codex 每轮上报的 Token 计入发起调用的会话账本，归类为 `codex_worker`。
+`steer` 的消耗归入当前轮次，续跑只计新一轮。会话的 Token 总数按未缓存输入加输出计算，
+缓存读取、缓存写入和输出中的推理 Token 分别记录。只能核实本轮部分用量时，账本按可核实的
+数量记录并标记为 `partial`。无法核实本轮用量时标记为 `unreported`。Worker 暂只统计
+Token，账本的 `costStatus` 为 `token_only`，金额字段以 0 占位。
+
 Worker 使用运行 ZeRo 的用户所配置的 Codex 登录或模型提供方。使用环境变量提供 API key
 时，在 Codex 自定义提供方配置中显式设置 `env_key`；仅设置 `CODEX_API_KEY` 不能为
 内置提供方的 app-server 完成认证。工作区写入遵循 `workspace-write`，审批策略为

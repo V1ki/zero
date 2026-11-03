@@ -88,6 +88,14 @@ through its **Worker instruction** field.
 Acceptance means Codex received the instruction for its current turn. A finished run can be continued
 by passing its thread ID as `resumeThreadId`.
 
+ZeRo records the tokens Codex reports for each Worker turn in the calling session's usage ledger
+under `codex_worker`. A `steer` belongs to the active turn. Resuming a thread adds only the new
+turn's tokens. Session totals use uncached input plus output. Cache reads, cache writes, and the
+reasoning portion of output are tracked separately. If ZeRo can verify only part of a turn's
+reported usage, it records that amount as `partial`. If it can verify none, the turn is marked
+`unreported`. Worker usage is token-only. The ledger marks the cost as `token_only` and stores
+zero in the amount field.
+
 Use the Codex login or provider configuration of the user running ZeRo. For an
 environment-supplied API key, set `env_key` on a custom Codex provider. Setting
 `CODEX_API_KEY` alone does not authenticate the built-in provider in app-server mode.

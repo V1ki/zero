@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import type { CodexWorkerUsageRecord } from '@zero-os/core'
 import { LiteLLMPricing, type UsageRecorder, computeCost } from '@zero-os/model'
 import { MetricsDB, ObservabilityStore, SessionDB, Tracer, isUsagePurpose } from '@zero-os/observe'
 import type { ForkEffect } from '@zero-os/shared'
@@ -76,6 +77,36 @@ export function createUsageRecorder(metrics: MetricsDB): UsageRecorder {
         createdAt: now(),
       })
     },
+  }
+}
+
+export function createCodexWorkerUsageRecorder(
+  metrics: MetricsDB,
+): (entry: CodexWorkerUsageRecord) => void {
+  return (entry) => {
+    metrics.recordUsage({
+      id: `worker:codex:${entry.threadId}:${entry.turnId}`,
+      sessionId: entry.sessionId,
+      category: 'aggregated',
+      purpose: 'codex_worker',
+      model: entry.model,
+      provider: entry.provider,
+      inputTokens: entry.usage.input,
+      outputTokens: entry.usage.output,
+      cacheReadTokens: entry.usage.cacheRead,
+      cacheWriteTokens: entry.usage.cacheWrite,
+      reasoningTokens: entry.usage.reasoning,
+      cost: 0,
+      durationMs: entry.durationMs,
+      createdAt: entry.createdAt,
+      metadata: JSON.stringify({
+        toolUseId: entry.toolUseId,
+        threadId: entry.threadId,
+        turnId: entry.turnId,
+        usageStatus: entry.usageStatus,
+        costStatus: 'token_only',
+      }),
+    })
   }
 }
 
