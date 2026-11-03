@@ -173,7 +173,7 @@ describe('startZeroOS Integration', () => {
         'memory_read',
         'memory',
         'schedule',
-        'codex',
+        'worker',
         'spawn_agent',
         'wait_agent',
         'close_agent',

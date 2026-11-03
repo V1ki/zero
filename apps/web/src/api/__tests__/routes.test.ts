@@ -873,17 +873,18 @@ fuse_list: []
     expect(names).toContain('memory_search')
     expect(names).toContain('memory_read')
     expect(names).toContain('schedule')
-    expect(names).toContain('codex')
+    expect(names).toContain('worker')
+    expect(names).not.toContain('codex')
     expect(names).toContain('spawn_agent')
     expect(names).toContain('wait_agent')
     expect(names).toContain('close_agent')
     expect(names).toContain('send_input')
 
     const readTool = data.tools.find((t: { name: string }) => t.name === 'read')
-    const codexTool = data.tools.find((t: { name: string }) => t.name === 'codex')
+    const workerTool = data.tools.find((t: { name: string }) => t.name === 'worker')
 
     expect(readTool?.kind).toBe('built-in')
-    expect(codexTool?.kind).toBe('tool')
+    expect(workerTool?.kind).toBe('tool')
   })
 
   test('GET /api/metrics/cost-by-day returns data array', async () => {

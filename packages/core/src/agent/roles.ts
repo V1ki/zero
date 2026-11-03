@@ -22,8 +22,8 @@ const BUILTIN_ROLES: Record<string, RoleDefinition> = {
   coder: {
     name: 'Coder',
     agentInstruction:
-      'You are a Coder SubAgent for ZeRo OS. Write, modify, and test code. Make minimal, correct changes. For multi-file refactors or complex code changes, prefer using the codex tool to delegate the work.',
-    defaultTools: ['read', 'read_image', 'write', 'edit', 'bash', 'codex'],
+      'You are a Coder SubAgent for ZeRo OS. Write, modify, and test code. Make minimal, correct changes. For multi-file refactors or complex code changes, prefer delegating to the worker tool with type "codex".',
+    defaultTools: ['read', 'read_image', 'write', 'edit', 'bash', 'worker'],
   },
   reviewer: {
     name: 'Reviewer',
@@ -61,6 +61,11 @@ export async function loadRoles(projectRoot: string): Promise<Record<string, Rol
       if (!normalized) {
         console.warn(`[roles] Skipping invalid role file: ${filePath}`)
         continue
+      }
+      if (normalized.defaultTools.includes('codex')) {
+        console.warn(
+          `[roles] ${filePath} references the removed "codex" tool. To delegate to Codex, list "worker" and use type "codex" in tool calls.`,
+        )
       }
       roles[roleId] = normalized
     } catch (error) {

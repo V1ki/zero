@@ -469,7 +469,7 @@ export function createSessionRoutes(zero: ZeroOS) {
 
       const status = session.abortRunningTool(toolUseId)
       if (status === 'not_abortable') {
-        return c.json({ ok: false, error: 'Tool call is not an abortable bash run' }, 409)
+        return c.json({ ok: false, error: 'This tool call does not support abort' }, 409)
       }
 
       return c.json({ ok: true, status })

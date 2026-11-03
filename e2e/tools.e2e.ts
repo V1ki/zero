@@ -1,6 +1,15 @@
 import { expect, test } from './fixtures'
 
 test.describe('Tools Page', () => {
+  test('exposes Codex through the worker tool', async ({ page }) => {
+    await page.goto('/tools')
+    const main = page.locator('main')
+    const worker = main.locator('.card').filter({ has: page.getByText('worker', { exact: true }) })
+    await worker.getByRole('button', { name: 'Show parameters' }).click()
+    await expect(worker.locator('pre')).toContainText('"codex"')
+    await expect(main.getByText('codex', { exact: true })).toHaveCount(0)
+  })
+
   test('shows tools heading', async ({ page }) => {
     await page.goto('/tools')
     await expect(page.locator('main h1')).toContainText('Tools')

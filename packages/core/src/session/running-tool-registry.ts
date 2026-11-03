@@ -6,6 +6,7 @@ import type {
   RunningToolState,
   RunningToolTerminalMetadata,
 } from '@zero-os/shared'
+import { isAbortableTool } from '@zero-os/shared'
 import { findToolNameByUseId } from './session-messages'
 
 class SessionRunningToolHandle implements RunningToolHandle {
@@ -92,5 +93,5 @@ export function requestSessionRunningToolAbort(options: {
   }
 
   const toolName = findToolNameByUseId(options.messages, options.toolUseId)
-  return toolName === 'bash' ? 'already_finished' : 'not_abortable'
+  return isAbortableTool(toolName) ? 'already_finished' : 'not_abortable'
 }

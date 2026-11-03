@@ -188,6 +188,10 @@ export interface AgentControlHandle {
 
 export type RunningToolState = 'running' | 'abort_requested' | 'finished'
 
+export function isAbortableTool(name: string | undefined): boolean {
+  return name === 'bash' || name === 'worker'
+}
+
 export type RunningToolAbortRequestStatus =
   | 'accepted'
   | 'already_requested'

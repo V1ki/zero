@@ -2,7 +2,6 @@ import { join } from 'node:path'
 import {
   BashTool,
   CloseAgentTool,
-  CodexTool,
   EditTool,
   FetchTool,
   GlobTool,
@@ -17,6 +16,7 @@ import {
   SpawnAgentTool,
   ToolRegistry,
   WaitAgentTool,
+  WorkerTool,
   WriteTool,
   XSearchTool,
   loadFuseList,
@@ -99,7 +99,7 @@ export function createRuntimeToolRegistry({
   toolRegistry.register(new MemoryReadTool())
   toolRegistry.register(new MemoryTool())
   toolRegistry.register(new ScheduleTool())
-  toolRegistry.register(new CodexTool())
+  toolRegistry.register(new WorkerTool())
 
   const xSearchTool = createXSearchTool({ config, vault })
   if (xSearchTool) toolRegistry.register(xSearchTool)

@@ -1,7 +1,7 @@
 import type { ProviderAdapter } from '@zero-os/model'
 import type { UsagePurpose } from '@zero-os/observe'
 import type { Message, ToolContext, ToolResult } from '@zero-os/shared'
-import { now, toErrorMessage } from '@zero-os/shared'
+import { isAbortableTool, now, toErrorMessage } from '@zero-os/shared'
 import type { ToolRegistry } from '../tool/registry'
 import { createAgentLoopHooks } from './agent-hooks'
 import { AgentLoop, type ToolExecutor } from './agent-loop'
@@ -243,7 +243,7 @@ function createAgentToolExecutor(options: {
       const runningToolHandle = options.toolContext.runningToolRegistry?.register({
         toolUseId,
         toolName,
-        abortable: toolName === 'bash',
+        abortable: isAbortableTool(toolName),
       })
       const backgroundTasks = options.toolContext.backgroundToolTasks
       const executionInput = prepareToolInputForBackgroundExecution(toolName, input, {

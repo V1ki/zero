@@ -335,21 +335,27 @@ export function ToolCallDetail({
     isError,
     status,
     durationMs,
-    abortPending,
-    onAbort,
     nested,
   })
 
-  if (evidence?.length) {
-    return (
-      <>
-        <EvidencePointers evidence={evidence} nested={nested} />
-        {detail}
-      </>
-    )
-  }
-
-  return detail
+  return (
+    <>
+      {evidence?.length ? <EvidencePointers evidence={evidence} nested={nested} /> : null}
+      {status === 'running' && onAbort ? (
+        <div className="flex justify-end px-4 pt-2">
+          <button
+            type="button"
+            onClick={onAbort}
+            disabled={abortPending}
+            className="rounded-xl border border-rose-400/25 bg-rose-400/8 px-3 py-1.5 text-[11px] text-rose-100 transition-colors hover:border-rose-400/40 hover:bg-rose-400/14 disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            {abortPending ? 'Aborting...' : 'Abort'}
+          </button>
+        </div>
+      ) : null}
+      {detail}
+    </>
+  )
 }
 
 export function summarizeToolInput(name: string, input: Record<string, unknown>): string {
@@ -413,8 +419,6 @@ function BashToolDetail({
   isError,
   status,
   durationMs,
-  abortPending,
-  onAbort,
   nested,
 }: Omit<ToolCallDetailProps, 'name'>) {
   const command = stringValue(input.command) ?? '(missing command)'
@@ -437,19 +441,6 @@ function BashToolDetail({
         {hasOutput && stderr ? <MetaChip>stderr {stderrLines} lines</MetaChip> : null}
         <StatusChip isError={isError} />
       </ToolMetaRow>
-
-      {status === 'running' && onAbort ? (
-        <div className="flex justify-end">
-          <button
-            type="button"
-            onClick={onAbort}
-            disabled={abortPending}
-            className="rounded-xl border border-rose-400/25 bg-rose-400/8 px-3 py-1.5 text-[11px] text-rose-100 transition-colors hover:border-rose-400/40 hover:bg-rose-400/14 disabled:cursor-not-allowed disabled:opacity-70"
-          >
-            {abortPending ? 'Aborting...' : 'Abort'}
-          </button>
-        </div>
-      ) : null}
 
       {runSummary ? <InfoStrip tone="cyan" label="Run Summary" text={runSummary} /> : null}
 

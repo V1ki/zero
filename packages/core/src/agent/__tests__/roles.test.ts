@@ -36,8 +36,8 @@ describe('roles', () => {
     expect(roles.coder).toEqual({
       name: 'Coder',
       agentInstruction:
-        'You are a Coder SubAgent for ZeRo OS. Write, modify, and test code. Make minimal, correct changes. For multi-file refactors or complex code changes, prefer using the codex tool to delegate the work.',
-      defaultTools: ['read', 'read_image', 'write', 'edit', 'bash', 'codex'],
+        'You are a Coder SubAgent for ZeRo OS. Write, modify, and test code. Make minimal, correct changes. For multi-file refactors or complex code changes, prefer delegating to the worker tool with type "codex".',
+      defaultTools: ['read', 'read_image', 'write', 'edit', 'bash', 'worker'],
     })
     expect(roles.reviewer).toEqual({
       name: 'Reviewer',

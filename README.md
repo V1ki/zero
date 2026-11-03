@@ -69,6 +69,21 @@ It is not just a chat UI. The repository is organized around a runtime that can:
 7. Logs, traces, metrics, and session state are written through the observability layer.
 8. The final response is sent back through the originating channel.
 
+### Worker tool
+
+The main agent and the built-in Coder can delegate an engineering task with `worker`,
+for example `{"type":"codex","instruction":"Review the changes and run the relevant tests"}`.
+Each call starts the bundled local Codex app-server over stdio. It defaults to the project
+root and accepts `workingDirectory`, `model`, and `additionalDirectories`. Pass the
+returned thread ID as `resumeThreadId` to continue. The reserved `dsh` type returns an
+unsupported-worker error.
+
+Use the Codex login or provider configuration of the user running ZeRo. For an
+environment-supplied API key, set `env_key` on a custom Codex provider. Setting
+`CODEX_API_KEY` alone does not authenticate the built-in provider in app-server mode.
+The worker uses `workspace-write` and an approval policy of `never`. Custom roles
+that delegate coding tasks should include `worker` in their tool list.
+
 ## Runtime State
 
 ZeRo OS keeps local operational state under `.zero/`. This directory is runtime data, not

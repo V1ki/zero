@@ -50,6 +50,7 @@ const knownToolNames = new Set([
   'spawn_agent',
   'wait_agent',
   'web_search',
+  'worker',
   'write',
   'x_search',
 ])
@@ -75,6 +76,7 @@ const alwaysMutatingToolNames = new Set([
   'send_input',
   'send_message',
   'spawn_agent',
+  'worker',
   'write',
 ])
 

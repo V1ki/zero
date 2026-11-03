@@ -282,13 +282,13 @@ describe('TimelineView', () => {
     expect(html).toContain('data-tool-renderer="memory"')
   })
 
-  test('shows an abort action for a selected running bash call when a session id is available', () => {
+  test.each(['bash', 'worker'])('shows an abort action for a selected running %s call', (name) => {
     const items: TimelineItem[] = [
       {
         type: 'tool-call',
         id: 'tool-abort-1',
-        name: 'bash',
-        input: { command: 'sleep 30' },
+        name,
+        input: name === 'bash' ? { command: 'sleep 30' } : { type: 'codex', instruction: 'test' },
         status: 'running',
         createdAt: '2026-04-19T10:36:00.000Z',
       },

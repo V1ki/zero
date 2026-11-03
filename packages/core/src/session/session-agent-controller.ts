@@ -108,7 +108,6 @@ export class SessionAgentRuntimeController {
       registry: this.runningToolRegistry,
       messages,
       toolUseId,
-      reason: 'Command aborted by user from Session Detail.',
     })
   }
 

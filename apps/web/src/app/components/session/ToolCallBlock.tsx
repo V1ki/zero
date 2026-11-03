@@ -10,6 +10,7 @@ import {
   Terminal,
   XCircle,
 } from '@phosphor-icons/react'
+import { isAbortableTool } from '@zero-os/shared'
 import { useEffect, useState } from 'react'
 import { apiPost } from '../../lib/api'
 import { toolColors } from '../../lib/colors'
@@ -184,7 +185,9 @@ export function ToolCallBlock({
           status={status}
           durationMs={durationMs}
           abortPending={abortPending}
-          onAbort={name.toLowerCase() === 'bash' && isRunning ? handleAbort : undefined}
+          onAbort={
+            sessionId && isRunning && isAbortableTool(name.toLowerCase()) ? handleAbort : undefined
+          }
         />
       )}
     </div>

@@ -114,6 +114,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@mozilla/readability": "^0.5.0",
+        "@openai/codex": "0.154.0",
         "@openai/codex-sdk": "0.154.0",
         "@zero-os/model": "workspace:*",
         "@zero-os/observe": "workspace:*",

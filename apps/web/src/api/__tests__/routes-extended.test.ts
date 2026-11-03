@@ -268,23 +268,21 @@ describe('API Routes Extended', () => {
     expect(res.status).toBe(404)
   })
 
-  test('POST /api/sessions/:id/tool-calls/:toolUseId/abort is idempotent for live bash runs', async () => {
+  test.each(['bash', 'worker'])('tool-calls/abort is idempotent for live %s runs', async (name) => {
     const session = zero.sessionManager.create('web')
     pushSessionMessages(session, {
       id: 'abort_tool_assistant_1',
       sessionId: session.data.id,
       role: 'assistant',
       messageType: 'message',
-      content: [
-        { type: 'tool_use', id: 'call_abort_live_1', name: 'bash', input: { command: 'sleep 5' } },
-      ],
+      content: [{ type: 'tool_use', id: 'call_abort_live_1', name, input: {} }],
       createdAt: new Date().toISOString(),
     })
 
     const runningToolRegistry = getRunningToolRegistry(session)
     runningToolRegistry.register({
       toolUseId: 'call_abort_live_1',
-      toolName: 'bash',
+      toolName: name,
       abortable: true,
     })
 
@@ -303,28 +301,29 @@ describe('API Routes Extended', () => {
     expect(await second.json()).toEqual({ ok: true, status: 'already_requested' })
   })
 
-  test('POST /api/sessions/:id/tool-calls/:toolUseId/abort returns already_finished for completed bash calls', async () => {
-    const session = zero.sessionManager.create('web')
-    pushSessionMessages(session, {
-      id: 'abort_tool_assistant_2',
-      sessionId: session.data.id,
-      role: 'assistant',
-      messageType: 'message',
-      content: [
-        { type: 'tool_use', id: 'call_abort_done_1', name: 'bash', input: { command: 'pwd' } },
-      ],
-      createdAt: new Date().toISOString(),
-    })
+  test.each(['bash', 'worker'])(
+    'tool-calls/abort returns already_finished for completed %s calls',
+    async (name) => {
+      const session = zero.sessionManager.create('web')
+      pushSessionMessages(session, {
+        id: 'abort_tool_assistant_2',
+        sessionId: session.data.id,
+        role: 'assistant',
+        messageType: 'message',
+        content: [{ type: 'tool_use', id: 'call_abort_done_1', name, input: {} }],
+        createdAt: new Date().toISOString(),
+      })
 
-    const res = await app.request(
-      `/api/sessions/${session.data.id}/tool-calls/call_abort_done_1/abort`,
-      { method: 'POST' },
-    )
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ ok: true, status: 'already_finished' })
-  })
+      const res = await app.request(
+        `/api/sessions/${session.data.id}/tool-calls/call_abort_done_1/abort`,
+        { method: 'POST' },
+      )
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true, status: 'already_finished' })
+    },
+  )
 
-  test('POST /api/sessions/:id/tool-calls/:toolUseId/abort rejects non-bash tool ids', async () => {
+  test('POST /api/sessions/:id/tool-calls/:toolUseId/abort rejects unsupported tool ids', async () => {
     const session = zero.sessionManager.create('web')
     pushSessionMessages(session, {
       id: 'abort_tool_assistant_3',
@@ -344,7 +343,7 @@ describe('API Routes Extended', () => {
     expect(res.status).toBe(409)
     expect(await res.json()).toEqual({
       ok: false,
-      error: 'Tool call is not an abortable bash run',
+      error: 'This tool call does not support abort',
     })
   })
 

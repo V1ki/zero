@@ -60,6 +60,19 @@ ZeRo OS 是一个基于 Bun + TypeScript 的 monorepo，用来运行一个具备
 7. 日志、trace、指标和会话状态通过可观测层落盘。
 8. 最终响应通过原始渠道返回。
 
+### Worker 编码工具
+
+主 Agent 和内置 Coder 可以调用 `worker` 委派编码任务。例如
+`{"type":"codex","instruction":"检查当前改动并运行相关测试"}`。
+每次调用会在本机启动随依赖安装的 Codex app-server，通过标准输入输出通信。默认工作目录
+为项目根，支持 `workingDirectory`、`model` 和 `additionalDirectories`。续跑时将上次
+返回的线程 ID 传入 `resumeThreadId`。`dsh` 为预留类型，当前调用会返回未实现错误。
+
+Worker 使用运行 ZeRo 的用户所配置的 Codex 登录或模型提供方。使用环境变量提供 API key
+时，在 Codex 自定义提供方配置中显式设置 `env_key`；仅设置 `CODEX_API_KEY` 不能为
+内置提供方的 app-server 完成认证。工作区写入遵循 `workspace-write`，审批策略为
+`never`。自定义角色如需委派编码任务，应在工具清单中使用 `worker`。
+
 ## 运行时状态
 
 ZeRo OS 会把本地运行数据放在 `.zero/` 下。这个目录是运行态数据，不是产品源码。
