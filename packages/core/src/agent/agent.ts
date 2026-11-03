@@ -225,7 +225,10 @@ interface AgentExecutionState {
 // wait_agent exists to hold the turn until sub-agents settle; backgrounding
 // it would detach the wait from the turn and emit a background_tool.completed
 // message on every timeout, so it always runs in the foreground.
-const FOREGROUND_ONLY_TOOLS = new Set(['wait_agent'])
+// A worker steer call also waits for acknowledgement before reporting success.
+function runsInForeground(toolName: string, input: Record<string, unknown>): boolean {
+  return toolName === 'wait_agent' || (toolName === 'worker' && input.action === 'steer')
+}
 
 function createAgentToolExecutor(options: {
   toolRegistry: ToolRegistry
@@ -243,7 +246,7 @@ function createAgentToolExecutor(options: {
       const runningToolHandle = options.toolContext.runningToolRegistry?.register({
         toolUseId,
         toolName,
-        abortable: isAbortableTool(toolName),
+        abortable: isAbortableTool(toolName, input.action),
       })
       const backgroundTasks = options.toolContext.backgroundToolTasks
       const executionInput = prepareToolInputForBackgroundExecution(toolName, input, {
@@ -268,7 +271,7 @@ function createAgentToolExecutor(options: {
         return result
       }
 
-      if (!backgroundTasks || FOREGROUND_ONLY_TOOLS.has(toolName)) {
+      if (!backgroundTasks || runsInForeground(toolName, input)) {
         return runTool()
       }
 

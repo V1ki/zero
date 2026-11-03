@@ -4,6 +4,8 @@ import { OutputSecretFilter } from '@zero-os/secrets'
 
 const require = createRequire(import.meta.url)
 const RPC_TIMEOUT_MS = 60_000
+const STEER_TIMEOUT_MS = 10_000
+const MAX_LATE_THREAD_REQUESTS = 256
 const STDERR_LIMIT = 4096
 const MAX_FRAME_BYTES = 64 * 1024 * 1024
 
@@ -17,6 +19,9 @@ interface ClientOptions {
   env: Record<string, string>
   codexPath?: string
   onNotification: (method: string, params: RpcObject) => void
+  /** A timed-out start or resume may still subscribe this connection to a thread. */
+  onLateResult?: (method: string, result: RpcObject, expectedResumeThreadId?: string) => void
+  onLateResumeRejected?: (threadId: string) => void
   filterDiagnostic?: (text: string) => string
 }
 
@@ -46,13 +51,17 @@ function serverReply(method: string): RpcObject {
   }
 }
 
-/** One local stdio connection per worker invocation. Request IDs are scoped to each direction. */
+/** A shared stdio connection. Request IDs are scoped to each direction and never reused. */
 export class CodexAppServerClient {
   private readonly child: ChildProcessWithoutNullStreams
   private readonly disconnect = Promise.withResolvers<Error>()
   readonly closed = this.disconnect.promise
   private readonly exited = Promise.withResolvers<void>()
   private readonly pending = new Map<number, PromiseWithResolvers<RpcObject>>()
+  private readonly lateThreadRequests = new Map<
+    number,
+    { method: string; expectedResumeThreadId?: string }
+  >()
   private nextId = 1
   private failure?: Error
   private closing?: Promise<void>
@@ -123,15 +132,32 @@ export class CodexAppServerClient {
     this.child.once('exit', expectClose)
   }
 
-  async request(method: string, params: RpcObject): Promise<RpcObject> {
+  async request(
+    method: string,
+    params: RpcObject,
+    options: { timeoutMs?: number } = {},
+  ): Promise<RpcObject> {
     if (this.failure) throw this.failure
     const id = this.nextId++
     const reply = Promise.withResolvers<RpcObject>()
     this.pending.set(id, reply)
-    const timeout = setTimeout(
-      () => this.fail(new Error(`Codex app-server timed out acknowledging ${method}`)),
-      RPC_TIMEOUT_MS,
-    )
+    const expectedResumeThreadId =
+      method === 'thread/resume' && typeof params.threadId === 'string'
+        ? params.threadId
+        : undefined
+    const timeoutMs =
+      options.timeoutMs ?? (method === 'turn/steer' ? STEER_TIMEOUT_MS : RPC_TIMEOUT_MS)
+    const timeout = setTimeout(() => {
+      this.pending.delete(id)
+      if (method === 'thread/start' || expectedResumeThreadId !== undefined) {
+        if (this.lateThreadRequests.size >= MAX_LATE_THREAD_REQUESTS) {
+          const oldest = this.lateThreadRequests.keys().next()
+          if (!oldest.done) this.lateThreadRequests.delete(oldest.value)
+        }
+        this.lateThreadRequests.set(id, { method, expectedResumeThreadId })
+      }
+      reply.reject(new Error(`Codex app-server timed out acknowledging ${method}`))
+    }, timeoutMs)
     try {
       this.write({ id, method, params })
       return await reply.promise
@@ -169,16 +195,25 @@ export class CodexAppServerClient {
       }
       return
     }
-    const reply = typeof frame.id === 'number' ? this.pending.get(frame.id) : undefined
-    if (!reply) throw new Error('Unexpected Codex app-server response ID')
-    if (isObject(frame.error) && typeof frame.error.message === 'string') {
-      reply.reject(new CodexAppServerRequestError(this.redact(frame.error.message)))
-    } else if (isObject(frame.result)) {
-      reply.resolve(frame.result)
+    const id = frame.id
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1 || id >= this.nextId) {
+      throw new Error('Unexpected Codex app-server response ID')
+    }
+    const reply = this.pending.get(id)
+    const late = this.lateThreadRequests.get(id)
+    this.lateThreadRequests.delete(id)
+    if (isObject(frame.error) && typeof frame.error.message === 'string' && !('result' in frame)) {
+      if (late?.expectedResumeThreadId !== undefined) {
+        this.options.onLateResumeRejected?.(late.expectedResumeThreadId)
+      }
+      reply?.reject(new CodexAppServerRequestError(this.redact(frame.error.message)))
+    } else if (isObject(frame.result) && !('error' in frame)) {
+      if (late) this.options.onLateResult?.(late.method, frame.result, late.expectedResumeThreadId)
+      reply?.resolve(frame.result)
     } else {
       throw new Error('Invalid response from Codex app-server')
     }
-    if (typeof frame.id === 'number') this.pending.delete(frame.id)
+    this.pending.delete(id)
   }
 
   private redact(message: string): string {
@@ -192,6 +227,7 @@ export class CodexAppServerClient {
     this.disconnect.resolve(this.failure)
     for (const reply of this.pending.values()) reply.reject(this.failure)
     this.pending.clear()
+    this.lateThreadRequests.clear()
     // close() retains its rejection for the owner awaiting cleanup in finally.
     void this.close().catch(() => {})
   }

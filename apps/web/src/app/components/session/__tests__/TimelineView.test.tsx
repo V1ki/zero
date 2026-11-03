@@ -282,38 +282,49 @@ describe('TimelineView', () => {
     expect(html).toContain('data-tool-renderer="memory"')
   })
 
-  test.each(['bash', 'worker'])('shows an abort action for a selected running %s call', (name) => {
-    const items: TimelineItem[] = [
-      {
-        type: 'tool-call',
-        id: 'tool-abort-1',
-        name,
-        input: name === 'bash' ? { command: 'sleep 30' } : { type: 'codex', instruction: 'test' },
-        status: 'running',
-        createdAt: '2026-04-19T10:36:00.000Z',
-      },
-    ]
+  test.each([
+    { name: 'bash', action: undefined, status: 'running', abort: true, steer: false },
+    { name: 'worker', action: undefined, status: 'running', abort: true, steer: true },
+    { name: 'worker', action: 'steer', status: 'running', abort: false, steer: false },
+    { name: 'worker', action: 'run', status: 'success', abort: false, steer: false },
+  ] as const)(
+    'shows eligible controls for $name/$action ($status)',
+    ({ name, action, status, abort, steer }) => {
+      const items: TimelineItem[] = [
+        {
+          type: 'tool-call',
+          id: 'tool-abort-1',
+          name,
+          input:
+            name === 'bash'
+              ? { command: 'sleep 30' }
+              : { type: 'codex', ...(action && { action }), instruction: 'test' },
+          status,
+          createdAt: '2026-04-19T10:36:00.000Z',
+        },
+      ]
 
-    const html = renderToStaticMarkup(
-      <TimelineView
-        sessionId="sess_abort"
-        items={items}
-        selectedToolId="tool-abort-1"
-        selectedDecisionId={null}
-        selectedTaskClosureId={null}
-        selectedMemoryNudgeId={null}
-        selectedSubAgentId={null}
-        highlightedAssistantMessageId={null}
-        highlightedSubAgentId={null}
-        onSelectTool={() => {}}
-        onSelectDecision={() => {}}
-        onSelectTaskClosure={() => {}}
-        onSelectMemoryNudge={() => {}}
-        onSelectSubAgent={() => {}}
-      />,
-    )
+      const html = renderToStaticMarkup(
+        <TimelineView
+          sessionId="sess_abort"
+          items={items}
+          selectedToolId="tool-abort-1"
+          selectedDecisionId={null}
+          selectedTaskClosureId={null}
+          selectedMemoryNudgeId={null}
+          selectedSubAgentId={null}
+          highlightedAssistantMessageId={null}
+          highlightedSubAgentId={null}
+          onSelectTool={() => {}}
+          onSelectDecision={() => {}}
+          onSelectTaskClosure={() => {}}
+          onSelectMemoryNudge={() => {}}
+          onSelectSubAgent={() => {}}
+        />,
+      )
 
-    expect(html).toContain('Abort')
-    expect(html).toContain('running')
-  })
+      expect(html.includes('>Abort<')).toBe(abort)
+      expect(html.includes('Send instruction')).toBe(steer)
+    },
+  )
 })

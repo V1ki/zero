@@ -73,10 +73,20 @@ It is not just a chat UI. The repository is organized around a runtime that can:
 
 The main agent and the built-in Coder can delegate an engineering task with `worker`,
 for example `{"type":"codex","instruction":"Review the changes and run the relevant tests"}`.
-Each call starts the bundled local Codex app-server over stdio. It defaults to the project
-root and accepts `workingDirectory`, `model`, and `additionalDirectories`. Pass the
-returned thread ID as `resumeThreadId` to continue. The reserved `dsh` type returns an
-unsupported-worker error.
+The first `run` starts a local Codex app-server. Workers in the same ZeRo runtime share its stdio
+connection and can run concurrently on separate Codex threads. Each thread supports one active
+Worker. Each run has its own session and channel context and accepts `workingDirectory` (defaulting
+to the project root), `model`, and `additionalDirectories`. Workers unsubscribe when finished.
+ZeRo closes the process on shutdown. If it exits unexpectedly, check the affected threads and
+workspaces before retrying. The next call starts a new server. The `dsh` type is reserved.
+
+To adjust an active run, call the same tool with
+`{"type":"codex","action":"steer","targetToolUseId":"<original tool_use_id>","instruction":"Focus on the failing test first."}`.
+Use the original Worker call ID from the same ZeRo session. The background task notice includes it as
+`tool_use_id`. In Session Detail, you can also expand the running Worker and send an adjustment
+through its **Worker instruction** field.
+Acceptance means Codex received the instruction for its current turn. A finished run can be continued
+by passing its thread ID as `resumeThreadId`.
 
 Use the Codex login or provider configuration of the user running ZeRo. For an
 environment-supplied API key, set `env_key` on a custom Codex provider. Setting

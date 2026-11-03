@@ -17,7 +17,7 @@ interface RestartRecoveryOptions {
 interface RecordRestartSentinelOptions {
   zeroDir: string
   restartSentinelPath: string
-  sessionManager: SessionManager
+  interruptedSessions: InterruptedSessionRef[]
   channels: Map<string, Channel>
 }
 
@@ -70,10 +70,9 @@ export async function recoverInterruptedSessionsAfterRestart({
 export async function recordRestartSentinel({
   zeroDir,
   restartSentinelPath,
-  sessionManager,
+  interruptedSessions,
   channels,
 }: RecordRestartSentinelOptions): Promise<void> {
-  const interruptedSessions = await sessionManager.drainAndCollectInterrupted(30_000)
   const trigger = consumeRestartTrigger(zeroDir)
   const sentinel: RestartSentinelFile = {
     ts: new Date().toISOString(),

@@ -6,21 +6,9 @@ import type { HeartbeatWriter } from '@zero-os/supervisor'
 import { abortActiveStreamingSessions } from './channel-runtime/runtime'
 import { recordRestartSentinel } from './restart'
 
-interface ShutdownRuntimeOptions {
-  zeroDir: string
-  restartSentinelPath: string
-  scheduler: CronScheduler
-  sessionManager: SessionManager
-  channels: Map<string, Channel>
-  stopChannelRecovery?: () => void
-  disposeRuntimeEventListeners(): void
-  disposePricing(): void
-  heartbeat: HeartbeatWriter
-  sessionDb: SessionDB
-  metrics: MetricsDB
+interface ShutdownRuntimeOptions
+  extends Omit<ShutdownSequenceOptions, 'activeStreamingSessionSets'> {
   skipProcessExit?: boolean
-  flushMemoryUsage?: () => Promise<void>
-  closeFiberRoot?: () => Promise<void>
 }
 
 export interface ShutdownRuntime {
@@ -37,6 +25,7 @@ export interface ShutdownSequenceOptions {
   channels: Map<string, Channel>
   activeStreamingSessionSets: Set<FeishuStreamingSession>[]
   stopChannelRecovery?: () => void
+  closeWorker(): Promise<void>
   disposeRuntimeEventListeners(): void
   disposePricing(): void
   heartbeat: HeartbeatWriter
@@ -58,49 +47,23 @@ interface CloseShutdownResourcesOptions {
 }
 
 export function createShutdownRuntime({
-  zeroDir,
-  restartSentinelPath,
-  scheduler,
-  sessionManager,
-  channels,
-  stopChannelRecovery,
-  disposeRuntimeEventListeners,
-  disposePricing,
-  heartbeat,
-  sessionDb,
-  metrics,
   skipProcessExit,
-  flushMemoryUsage,
-  closeFiberRoot,
+  ...options
 }: ShutdownRuntimeOptions): ShutdownRuntime {
-  let shuttingDown = false
+  let shutdownPromise: Promise<void> | undefined
   const activeStreamingSessionSets: Set<FeishuStreamingSession>[] = []
 
   return {
-    isShuttingDown: () => shuttingDown,
+    isShuttingDown: () => shutdownPromise !== undefined,
     registerFeishuStreamingSessionSet(sessionSet) {
       activeStreamingSessionSets.push(sessionSet)
     },
-    async shutdown() {
-      if (shuttingDown) return
-      shuttingDown = true
-      await runShutdownSequence({
-        zeroDir,
-        restartSentinelPath,
-        scheduler,
-        sessionManager,
-        channels,
-        activeStreamingSessionSets,
-        stopChannelRecovery,
-        disposeRuntimeEventListeners,
-        disposePricing,
-        heartbeat,
-        sessionDb,
-        metrics,
-        flushMemoryUsage,
-        closeFiberRoot,
+    shutdown() {
+      shutdownPromise ??= Promise.resolve().then(async () => {
+        await runShutdownSequence({ ...options, activeStreamingSessionSets })
+        if (!skipProcessExit) process.exit(0)
       })
-      if (!skipProcessExit) process.exit(0)
+      return shutdownPromise
     },
   }
 }
@@ -113,6 +76,7 @@ export async function runShutdownSequence({
   channels,
   activeStreamingSessionSets,
   stopChannelRecovery,
+  closeWorker,
   disposeRuntimeEventListeners,
   disposePricing,
   heartbeat,
@@ -127,17 +91,27 @@ export async function runShutdownSequence({
   scheduler.stop()
   console.log('[ZeRo OS] Scheduler stopped')
 
-  // 使用反馈统计落盘:纯文件写,尽早做且 best-effort——失败只丢本轮统计提示。
-  try {
-    await flushMemoryUsage?.()
-  } catch (error) {
-    console.warn('[ZeRo OS] Memory usage stats flush failed:', error)
-  }
+  // Start persisting usage while turns drain, without delaying process cleanup.
+  const memoryFlushed = Promise.resolve()
+    .then(flushMemoryUsage)
+    .catch((error) => console.warn('[ZeRo OS] Memory usage stats flush failed:', error))
 
+  // Drain has a bounded deadline. Reap the shared process before any network shutdown work.
+  const interruptedSessions = await sessionManager
+    .drainAndCollectInterrupted(30_000)
+    .finally(async () => {
+      try {
+        await closeWorker()
+      } catch (error) {
+        console.warn('[ZeRo OS] Codex app-server shutdown failed:', error)
+      }
+    })
+
+  await memoryFlushed
   await recordRestartSentinel({
     zeroDir,
     restartSentinelPath,
-    sessionManager,
+    interruptedSessions,
     channels,
   })
   await abortActiveStreamingSessions(activeStreamingSessionSets)

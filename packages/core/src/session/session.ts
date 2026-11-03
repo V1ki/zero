@@ -452,6 +452,10 @@ export class Session {
     return this.agentRuntime.abortRunningTool(this.conversation.messages, toolUseId)
   }
 
+  steerRunningWorker(toolUseId: string, instruction: string): Promise<void> {
+    return this.agentRuntime.steerRunningWorker(toolUseId, instruction)
+  }
+
   getSubAgentSnapshot(): AgentSnapshot[] {
     return this.agentRuntime.getSubAgentSnapshot()
   }

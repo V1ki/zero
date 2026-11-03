@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { OutputSecretFilter } from '@zero-os/secrets'
 import type { ToolContext } from '@zero-os/shared'
@@ -11,7 +12,7 @@ import { ReadImageTool } from '../read-image'
 import { ToolRegistry } from '../registry'
 import { WriteTool } from '../write'
 
-const testDir = join(import.meta.dir, '__fixtures__')
+const testDir = mkdtempSync(join(tmpdir(), 'zero-file-tools-'))
 const tinyPngBase64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII='
 const ctx: ToolContext = {

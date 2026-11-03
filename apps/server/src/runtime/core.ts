@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { SessionManager, type ToolRegistry, loadConfig } from '@zero-os/core'
+import { SessionManager, type ToolRegistry, WorkerTool, loadConfig } from '@zero-os/core'
 import {
   Keychain,
   KeychainLive,
@@ -201,12 +201,14 @@ async function createAgentRuntimeComponents({
     forkEffect,
   })
 
+  const worker = new WorkerTool({ secretFilter: secretsRuntime.secretFilter })
   const toolRegistry = createRuntimeToolRegistry({
     zeroDir,
     config,
     vault,
     modelRouter: modelRuntime.modelRouter,
     metrics,
+    worker,
   })
   console.log(`[ZeRo OS] ${toolRegistry.list().length} tools registered`)
 
@@ -234,6 +236,7 @@ async function createAgentRuntimeComponents({
 
   return {
     ...modelRuntime,
+    worker,
     toolRegistry,
     ...memoryRuntime,
     scheduler: schedulerRuntime.scheduler,

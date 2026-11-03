@@ -248,6 +248,7 @@ function createStartupShutdownRuntime({
     sessionManager: core.sessionManager,
     channels,
     stopChannelRecovery: () => channelRecovery.stop(),
+    closeWorker: () => core.worker.close(),
     disposeRuntimeEventListeners,
     disposePricing: () => {
       core.modelRouter.dispose()

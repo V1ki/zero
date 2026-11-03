@@ -16,7 +16,7 @@ import {
   SpawnAgentTool,
   ToolRegistry,
   WaitAgentTool,
-  WorkerTool,
+  type WorkerTool,
   WriteTool,
   XSearchTool,
   loadFuseList,
@@ -34,6 +34,7 @@ export interface RuntimeToolRegistryOptions {
   vault: Vault
   modelRouter: ModelRouter
   metrics: MetricsDB
+  worker: WorkerTool
 }
 
 interface XSearchToolOptions {
@@ -84,6 +85,7 @@ export function createRuntimeToolRegistry({
   vault,
   modelRouter,
   metrics,
+  worker,
 }: RuntimeToolRegistryOptions): ToolRegistry {
   const fuseRules = loadFuseList(join(zeroDir, 'fuse_list.yaml'))
   const toolRegistry = new ToolRegistry()
@@ -99,7 +101,7 @@ export function createRuntimeToolRegistry({
   toolRegistry.register(new MemoryReadTool())
   toolRegistry.register(new MemoryTool())
   toolRegistry.register(new ScheduleTool())
-  toolRegistry.register(new WorkerTool())
+  toolRegistry.register(worker)
 
   const xSearchTool = createXSearchTool({ config, vault })
   if (xSearchTool) toolRegistry.register(xSearchTool)

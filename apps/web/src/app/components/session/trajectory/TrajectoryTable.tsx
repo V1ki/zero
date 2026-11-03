@@ -4,6 +4,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { structuredPatch } from 'diff'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
+import { WorkerSteerForm, isCodexWorkerRun } from '../WorkerSteerForm'
 import css from './TrajectoryTable.module.css'
 import type { BackgroundToolProgressEntry } from './background-progress'
 import { backgroundProgressElapsedMs } from './background-progress'
@@ -28,7 +29,7 @@ import type {
 import { cellBadgeKind, formatElapsedSeconds, trajectoryRecordId } from './trajectory-record'
 import { groupTrajectoryVirtualRows, trajectoryVirtualRecordKey } from './trajectory-virtual-rows'
 import type { TrajectoryVirtualRow } from './trajectory-virtual-rows'
-import type { AssistantRequestConfig, ConversationPromptSnapshot } from './types'
+import type { AssistantRequestConfig, ConversationPromptSnapshot, RunningToolCall } from './types'
 
 const BOTTOM_FOLLOW_THRESHOLD_PX = 2
 const OLDER_LOAD_THRESHOLD_PX = 48
@@ -378,6 +379,9 @@ function AssistantTimingPanel({ metrics }: { metrics: AssistantMetricDetail }) {
 
 /** Props for the trajectory ledger. */
 export interface TrajectoryTableProps {
+  sessionId?: string | null
+  /** Calls with an active tool span, excluding pending model output. */
+  runningCalls?: readonly RunningToolCall[]
   /** Session-global request numbers for the request groups visible in this context. */
   requestNumbers?: readonly TrajectoryRequestNumber[]
   /** Grouped records in display order. */
@@ -729,13 +733,13 @@ function statusLabel(state: RecordState): string {
   return 'Completed'
 }
 
-/** Live background-tool progress for one running tool record, when available. */
+/** A foreground result can be the handoff receipt for a still-live background task. */
 function backgroundProgressOf(
   record: TableRecord | undefined,
   getBackgroundProgress: ((callId: string) => BackgroundToolProgressEntry | undefined) | undefined,
 ): BackgroundToolProgressEntry | undefined {
   if (record === undefined || getBackgroundProgress === undefined) return undefined
-  if (stateOf(record) !== 'running') return undefined
+  if (record.cell.kind !== 'tool' && record.cell.kind !== 'subtool') return undefined
   if (record.cell.callId === undefined) return undefined
   return getBackgroundProgress(record.cell.callId)
 }
@@ -1827,6 +1831,8 @@ function OverviewSection({
  * @returns The ledger and an optional local record inspector.
  */
 export function TrajectoryTable({
+  sessionId,
+  runningCalls,
   requestNumbers: sessionRequestNumbers,
   turns,
   streamingCells = [],
@@ -1979,6 +1985,14 @@ export function TrajectoryTable({
   const promptSelected = selectedPrompt !== undefined
   const selectedState = selected === undefined ? undefined : stateOf(selected)
   const selectedLiveProgress = backgroundProgressOf(selected, getBackgroundProgress)
+  const workerCallId =
+    selected?.cell.kind === 'tool' &&
+    isCodexWorkerRun(selected.cell.text, selected.cell.inputDetail) &&
+    (selectedLiveProgress !== undefined ||
+      (selectedState === 'running' &&
+        runningCalls?.some((call) => call.callId === selected.cell.callId)))
+      ? selected.cell.callId
+      : undefined
   const selectedRequestRecordTemplates = useMemo(
     () =>
       selectedRequest === null
@@ -3229,7 +3243,11 @@ export function TrajectoryTable({
                     <div>
                       <dt>Status</dt>
                       <dd className={selectedState === 'error' ? css.error : undefined}>
-                        {statusLabel(selectedState)}
+                        {selectedLiveProgress
+                          ? 'Running in background'
+                          : workerCallId
+                            ? 'Running'
+                            : statusLabel(selectedState)}
                       </dd>
                     </div>
                     {selectedLiveProgress !== undefined && (
@@ -3274,6 +3292,13 @@ export function TrajectoryTable({
                     )}
                   </dl>
                   <div className={css.overviewSections}>
+                    {sessionId && workerCallId && (
+                      <WorkerSteerForm
+                        key={workerCallId}
+                        sessionId={sessionId}
+                        toolUseId={workerCallId}
+                      />
+                    )}
                     {isGateQaRecord(selected) ? (
                       <>
                         {selected.cell.inputDetail && (

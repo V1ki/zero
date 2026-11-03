@@ -445,6 +445,8 @@ export function TrajectoryView({
       />
       <div className={css.ledger}>
         <TrajectoryTable
+          sessionId={sessionId}
+          runningCalls={runningCalls}
           requestNumbers={requestNumbers}
           turns={timelineTurns}
           streamingCells={streamingCells}

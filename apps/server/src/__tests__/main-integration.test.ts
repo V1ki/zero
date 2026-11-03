@@ -1,6 +1,7 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { WorkerTool } from '@zero-os/core'
 import type { ProviderAdapter } from '@zero-os/model'
 import {
   createTestProjectRoot,
@@ -56,7 +57,15 @@ describe('startZeroOS Integration', () => {
     expect(observed.webRegistered).toBe(true)
     expect(observed.externalChannelsRegistered).toBe(false)
 
-    await hookedZero.shutdown()
+    const worker = hookedZero.toolRegistry.get('worker')
+    if (!(worker instanceof WorkerTool)) throw new Error('Expected a Codex Worker tool')
+    const close = spyOn(worker, 'close')
+    try {
+      await hookedZero.shutdown()
+      expect(close).toHaveBeenCalledTimes(1)
+    } finally {
+      close.mockRestore()
+    }
   })
 
   test('registers an unconfigured Weixin channel without starting it', async () => {

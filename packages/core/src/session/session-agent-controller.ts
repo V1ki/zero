@@ -17,7 +17,11 @@ import {
   BackgroundToolTaskManager,
 } from './background-tool-tasks'
 import { createLiveDocHandle } from './live-doc'
-import { SessionRunningToolRegistry, requestSessionRunningToolAbort } from './running-tool-registry'
+import {
+  SessionRunningToolRegistry,
+  requestSessionRunningToolAbort,
+  steerRunningWorker,
+} from './running-tool-registry'
 import type { SessionDeps } from './session-types'
 
 export interface SessionAgentRuntimeInitOptions {
@@ -109,6 +113,10 @@ export class SessionAgentRuntimeController {
       messages,
       toolUseId,
     })
+  }
+
+  steerRunningWorker(toolUseId: string, instruction: string): Promise<void> {
+    return steerRunningWorker(this.runningToolRegistry, toolUseId, instruction)
   }
 
   getSubAgentSnapshot(): AgentSnapshot[] {

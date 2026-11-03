@@ -16,6 +16,7 @@ import {
   type BackgroundToolCompletionEvent,
   BackgroundToolTaskManager,
 } from '../background-tool-tasks'
+import { SessionRunningToolRegistry } from '../running-tool-registry'
 import { Session, type SessionDeps } from '../session'
 import {
   createTestModelRouter,
@@ -55,10 +56,14 @@ function createTextResponse(id: string, text: string): CompletionResponse {
   }
 }
 
-function createToolResponse(id: string, toolName = 'slow_tool'): CompletionResponse {
+function createToolResponse(
+  id: string,
+  toolName: string,
+  input: Record<string, unknown>,
+): CompletionResponse {
   return {
     id,
-    content: [{ type: 'tool_use', id: 'call_slow_1', name: toolName, input: { query: 'slow' } }],
+    content: [{ type: 'tool_use', id: 'call_slow_1', name: toolName, input }],
     stopReason: 'tool_use',
     usage: { input: 1, output: 1 },
     model: 'fake-background-test',
@@ -77,11 +82,6 @@ class SlowTool extends BaseTool {
   protected async execute(_ctx: ToolContext, _input: unknown): Promise<ToolResult> {
     return this.result
   }
-}
-
-class WaitAgentToolStub extends SlowTool {
-  name = 'wait_agent'
-  description = 'Wait test tool'
 }
 
 class CapturingBashTool extends BaseTool {
@@ -104,12 +104,15 @@ class BackgroundToolAdapter implements ProviderAdapter {
   readonly apiType = 'fake-background-tool'
   readonly requests: CompletionRequest[] = []
 
-  constructor(private readonly toolName = 'slow_tool') {}
+  constructor(
+    private readonly toolName = 'slow_tool',
+    private readonly input: Record<string, unknown> = { query: 'slow' },
+  ) {}
 
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
     this.requests.push(request)
     if (this.requests.length === 1) {
-      return createToolResponse('resp_tool', this.toolName)
+      return createToolResponse('resp_tool', this.toolName, this.input)
     }
     return createTextResponse('resp_done', 'background handoff done')
   }
@@ -474,12 +477,20 @@ describe('BackgroundToolTaskManager', () => {
 })
 
 describe('Agent background tool execution', () => {
-  test('slow tools return a foreground background-started result and complete later', async () => {
+  test.each(['slow_tool', 'worker'])('%s run moves to the background', async (toolName) => {
     const completions: BackgroundToolCompletionEvent[] = []
     const deferred = createDeferred<ToolResult>()
     const registry = new ToolRegistry()
-    registry.register(new SlowTool(deferred.promise))
-    const adapter = new BackgroundToolAdapter()
+    const slowTool = new SlowTool(deferred.promise)
+    slowTool.name = toolName
+    registry.register(slowTool)
+    const adapter = new BackgroundToolAdapter(
+      toolName,
+      toolName === 'worker'
+        ? { type: 'codex', action: 'run', instruction: 'run task' }
+        : { query: 'slow' },
+    )
+    const handles = new SessionRunningToolRegistry()
     const manager = new BackgroundToolTaskManager({
       sessionId: 'sess-agent',
       thresholdMs: 5,
@@ -495,6 +506,7 @@ describe('Agent background tool execution', () => {
       {
         sessionId: 'sess-agent',
         workDir: join(testProject.projectRoot, '.zero', 'workspace', 'background-agent'),
+        runningToolRegistry: handles,
         logger: createLogger(),
         backgroundToolTasks: manager,
       },
@@ -502,6 +514,7 @@ describe('Agent background tool execution', () => {
 
     const run = await agent.run(createContext(registry), 'run slow tool')
     expect(run.at(-1)?.role).toBe('assistant')
+    expect(handles.get('call_slow_1')?.abortable).toBe(toolName === 'worker')
 
     const secondRequestText = adapter.requests[1]?.messages
       .flatMap((message) => message.content)
@@ -516,12 +529,25 @@ describe('Agent background tool execution', () => {
     expect(completion.xml).toContain('later done')
   })
 
-  test('wait_agent runs in the foreground and never becomes a background task', async () => {
+  test.each(['wait_agent', 'worker'])('%s control waits in the foreground', async (toolName) => {
     const completions: BackgroundToolCompletionEvent[] = []
     const deferred = createDeferred<ToolResult>()
     const registry = new ToolRegistry()
-    registry.register(new WaitAgentToolStub(deferred.promise))
-    const adapter = new BackgroundToolAdapter('wait_agent')
+    const controlTool = new SlowTool(deferred.promise)
+    controlTool.name = toolName
+    registry.register(controlTool)
+    const adapter = new BackgroundToolAdapter(
+      toolName,
+      toolName === 'worker'
+        ? {
+            type: 'codex',
+            action: 'steer',
+            targetToolUseId: 'original-run',
+            instruction: 'adjust task',
+          }
+        : {},
+    )
+    const handles = new SessionRunningToolRegistry()
     const manager = new BackgroundToolTaskManager({
       sessionId: 'sess-foreground-wait',
       thresholdMs: 5,
@@ -537,6 +563,7 @@ describe('Agent background tool execution', () => {
       {
         sessionId: 'sess-foreground-wait',
         workDir: join(testProject.projectRoot, '.zero', 'workspace', 'foreground-wait-agent'),
+        runningToolRegistry: handles,
         logger: createLogger(),
         backgroundToolTasks: manager,
       },
@@ -550,8 +577,14 @@ describe('Agent background tool execution', () => {
     // Give the manager's threshold far more time than it needs; a backgrounded
     // tool would have returned the background-started placeholder by now.
     await new Promise((resolve) => setTimeout(resolve, 50))
+    const handle = await waitFor(() => handles.get('call_slow_1'))
+    expect(handle.requestAbort()).toBe('not_abortable')
     expect(finished).toBe(false)
-    deferred.resolve({ success: true, output: 'agents settled', outputSummary: 'settled' })
+    deferred.resolve({
+      success: true,
+      output: 'control call confirmed',
+      outputSummary: 'confirmed',
+    })
     await pending
 
     const toolResultText = adapter.requests[1]?.messages
@@ -559,7 +592,7 @@ describe('Agent background tool execution', () => {
       .filter((block) => block.type === 'tool_result')
       .map((block) => block.content)
       .join('\n')
-    expect(toolResultText).toContain('agents settled')
+    expect(toolResultText).toContain('control call confirmed')
     expect(toolResultText).not.toContain('background_tool.started')
     expect(completions).toHaveLength(0)
   })

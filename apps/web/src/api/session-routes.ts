@@ -459,6 +459,21 @@ export function createSessionRoutes(zero: ZeroOS) {
 
     .route('/', createSessionObservabilityRoutes(zero))
 
+    .post('/sessions/:id/tool-calls/:toolUseId/steer', async (c) => {
+      const session = zero.sessionManager.get(c.req.param('id'))
+      if (!session) return c.json({ error: 'Session not found' }, 404)
+      const body = await c.req.json<{ instruction?: unknown } | null>().catch(() => null)
+      if (typeof body?.instruction !== 'string' || !body.instruction.trim()) {
+        return c.json({ error: 'instruction must be a non-empty string' }, 400)
+      }
+      try {
+        await session.steerRunningWorker(c.req.param('toolUseId'), body.instruction.trim())
+        return c.json({ ok: true, status: 'accepted' })
+      } catch (error) {
+        return c.json({ error: toErrorMessage(error) }, 409)
+      }
+    })
+
     .post('/sessions/:id/tool-calls/:toolUseId/abort', (c) => {
       const id = c.req.param('id')
       const toolUseId = c.req.param('toolUseId')

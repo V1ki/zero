@@ -1,13 +1,15 @@
-import type { ToolContext, ToolResult } from '@zero-os/shared'
+import type { SecretFilter, ToolContext, ToolResult } from '@zero-os/shared'
+import { steerRunningWorker } from '../session/running-tool-registry'
 import { BaseTool } from './base'
 import { runCodexWorker } from './worker/codex-worker'
+import { CodexWorkerServer } from './worker/codex-worker-server'
 
 const workerTypes = ['codex', 'dsh'] as const
 
 export class WorkerTool extends BaseTool {
   name = 'worker'
   description =
-    'Delegate an engineering task to a worker. Use type "codex" to inspect a workspace, edit files, and run commands. Pass the returned thread ID to continue the same task.'
+    'Delegate an engineering task to a Codex worker. Use action "steer" to send new instructions to an active run. To continue a finished run, use resumeThreadId.'
   parameters = {
     type: 'object',
     properties: {
@@ -16,7 +18,20 @@ export class WorkerTool extends BaseTool {
         enum: workerTypes,
         description: 'codex is available. dsh is reserved.',
       },
-      instruction: { type: 'string', description: 'Task and expected outcome for the worker.' },
+      action: {
+        type: 'string',
+        enum: ['run', 'steer'],
+        description: 'Defaults to run. Use steer to adjust work in the same active Codex turn.',
+      },
+      instruction: {
+        type: 'string',
+        description: 'Task for run, or the additional instruction for steer.',
+      },
+      targetToolUseId: {
+        type: 'string',
+        description:
+          'Required for steer. Original worker tool call ID (tool_use_id in the background task notice).',
+      },
       workingDirectory: {
         type: 'string',
         description: 'Working directory. Defaults to the project root.',
@@ -35,8 +50,15 @@ export class WorkerTool extends BaseTool {
     required: ['type', 'instruction'],
   }
 
-  constructor(private readonly options: { codexPath?: string } = {}) {
+  private readonly server: CodexWorkerServer
+
+  constructor(options: { codexPath?: string; secretFilter?: SecretFilter } = {}) {
     super()
+    this.server = new CodexWorkerServer(options)
+  }
+
+  close(): Promise<void> {
+    return this.server.close()
   }
 
   protected async execute(ctx: ToolContext, input: unknown): Promise<ToolResult> {
@@ -46,6 +68,30 @@ export class WorkerTool extends BaseTool {
     if (args.type !== 'codex') throw new Error('Unknown worker type. Available worker: codex.')
     if (!isNonEmptyString(args.instruction))
       throw new Error('instruction must be a non-empty string.')
+
+    if (args.action === 'steer') {
+      if (!isNonEmptyString(args.targetToolUseId))
+        throw new Error('steer requires targetToolUseId.')
+      if (
+        ['workingDirectory', 'additionalDirectories', 'model', 'resumeThreadId'].some(
+          (key) => args[key] !== undefined,
+        )
+      ) {
+        throw new Error(
+          'workingDirectory, additionalDirectories, model and resumeThreadId are only available for run.',
+        )
+      }
+      await steerRunningWorker(ctx.runningToolRegistry, args.targetToolUseId, args.instruction)
+      return {
+        success: true,
+        output: 'Codex accepted the additional instruction for the active turn.',
+        outputSummary: 'Worker instruction accepted',
+      }
+    }
+    if (args.action !== undefined && args.action !== 'run')
+      throw new Error('Unknown worker action. Use run or steer.')
+    if (args.targetToolUseId !== undefined)
+      throw new Error('targetToolUseId requires action "steer".')
 
     const directories = args.additionalDirectories
     if (
@@ -63,7 +109,7 @@ export class WorkerTool extends BaseTool {
         additionalDirectories: directories,
         resumeThreadId: optionalString(args, 'resumeThreadId'),
       },
-      this.options.codexPath,
+      this.server,
     )
   }
 }

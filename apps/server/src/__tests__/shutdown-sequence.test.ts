@@ -7,11 +7,13 @@ import type { SessionManager } from '@zero-os/core'
 import type { MetricsDB, SessionDB } from '@zero-os/observe'
 import type { CronScheduler } from '@zero-os/scheduler'
 import type { HeartbeatWriter } from '@zero-os/supervisor'
-import { runShutdownSequence } from '../runtime/shutdown'
+import { createShutdownRuntime } from '../runtime/shutdown'
 
 describe('runShutdownSequence', () => {
-  test('keeps the shutdown lifecycle order explicit', async () => {
+  test('waits for the shared Worker once before closing session storage', async () => {
     const calls: string[] = []
+    const workerClosing = Promise.withResolvers<void>()
+    const workerClosed = Promise.withResolvers<void>()
     const zeroDir = mkdtempSync(join(tmpdir(), 'zero-shutdown-sequence-'))
     const activeStreamingSessions = new Set<FeishuStreamingSession>([
       {
@@ -26,7 +28,7 @@ describe('runShutdownSequence', () => {
     ])
 
     try {
-      await runShutdownSequence({
+      const runtime = createShutdownRuntime({
         zeroDir,
         restartSentinelPath: join(zeroDir, 'restart-sentinel.json'),
         scheduler: { stop: () => calls.push('scheduler:stop') } as unknown as CronScheduler,
@@ -47,7 +49,12 @@ describe('runShutdownSequence', () => {
             } as unknown as Channel,
           ],
         ]),
-        activeStreamingSessionSets: [activeStreamingSessions],
+        skipProcessExit: true,
+        closeWorker: async () => {
+          calls.push('worker:close')
+          workerClosing.resolve()
+          await workerClosed.promise
+        },
         stopChannelRecovery: () => calls.push('channel-recovery:stop'),
         disposeRuntimeEventListeners: () => calls.push('dispose:listeners'),
         disposePricing: () => calls.push('dispose:pricing'),
@@ -64,6 +71,14 @@ describe('runShutdownSequence', () => {
           return Promise.resolve()
         },
       })
+      runtime.registerFeishuStreamingSessionSet(activeStreamingSessions)
+      const shutdown = runtime.shutdown()
+      expect(runtime.isShuttingDown()).toBe(true)
+      await workerClosing.promise
+      expect(runtime.shutdown()).toBe(shutdown)
+      expect(calls).not.toContain('sessions:flush')
+      workerClosed.resolve()
+      await shutdown
 
       expect(calls).toEqual([
         'heartbeat:ready:false:shutting_down',
@@ -72,6 +87,7 @@ describe('runShutdownSequence', () => {
         'channel-recovery:stop',
         'scheduler:stop',
         'sessions:drain:30000',
+        'worker:close',
         'stream:abort:ZeRo OS is restarting...',
         'dispose:listeners',
         'dispose:pricing',

@@ -1,6 +1,12 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { ControlKind, Message, MessageChannelSource, MessageType } from '@zero-os/shared'
+import type {
+  ControlKind,
+  Message,
+  MessageChannelSource,
+  MessageType,
+  ToolUseBlock,
+} from '@zero-os/shared'
 import { generateId, now } from '@zero-os/shared'
 
 export interface SessionImageAttachment {
@@ -151,13 +157,13 @@ export function isTopLevelUserTurn(message: Message): boolean {
   return message.content.some((block) => block.type === 'text' || block.type === 'image')
 }
 
-export function findToolNameByUseId(messages: Message[], toolUseId: string): string | undefined {
+export function findToolUseById(messages: Message[], toolUseId: string): ToolUseBlock | undefined {
   for (const message of messages) {
     if (message.role !== 'assistant') continue
     for (const block of message.content) {
       if (block.type !== 'tool_use') continue
       if (block.id === toolUseId && typeof block.name === 'string') {
-        return block.name.toLowerCase()
+        return block
       }
     }
   }

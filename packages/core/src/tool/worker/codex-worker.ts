@@ -2,8 +2,9 @@ import { resolve } from 'node:path'
 import type { ToolContext, ToolResult } from '@zero-os/shared'
 import { now, toErrorMessage } from '@zero-os/shared'
 import { BACKGROUND_TOOL_PROGRESS_TAIL_CHARS } from '../../session/background-tool-tasks'
-import { buildToolProcessEnv } from '../process-env'
-import { CodexAppServerClient, CodexAppServerRequestError } from './app-server-client'
+import { buildToolContextEnv } from '../process-env'
+import { CodexAppServerRequestError } from './app-server-client'
+import type { CodexWorkerConnection, CodexWorkerServer } from './codex-worker-server'
 
 interface CodexWorkerInput {
   instruction: string
@@ -15,7 +16,6 @@ interface CodexWorkerInput {
 
 type Fields = Record<string, unknown>
 const INTERRUPT_TIMEOUT_MS = 5_000
-const activeThreads = new Set<string>()
 
 function fields(value: unknown, name: string): Fields {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -186,54 +186,151 @@ class TurnOutput {
   }
 }
 
+function isTerminalStatus(value: unknown): value is 'completed' | 'failed' | 'interrupted' {
+  return value === 'completed' || value === 'failed' || value === 'interrupted'
+}
+
+// The reservation outlives the tool call when Codex may still have a turn or a
+// subscription with this session's environment. Drop the tool's handlers in that case.
+class ThreadSubscription {
+  readonly release: () => void
+  private lateResume?: boolean
+  private handleLateResume?: (accepted: boolean) => void
+
+  constructor(
+    private readonly connection: CodexWorkerConnection,
+    readonly id: string,
+    private readonly logger: ToolContext['logger'],
+    public notify: (method: string, params: Fields) => void,
+    private fail: (error: Error) => void,
+  ) {
+    this.release = connection.listen(
+      id,
+      (method, params) => this.notify(method, params),
+      (error) => this.fail(error),
+      (accepted) => {
+        this.lateResume = accepted
+        this.handleLateResume?.(accepted)
+      },
+    )
+  }
+
+  async unsubscribe(): Promise<void> {
+    this.handleLateResume = undefined
+    this.fail = this.release
+    this.notify = (method) => {
+      if (method === 'thread/closed') this.release()
+    }
+    await this.connection.unsubscribe(this.id)
+    this.release()
+  }
+
+  private detachAfterReturn(): void {
+    void this.unsubscribe().catch((error: unknown) => {
+      this.logger.warn('worker_thread_cleanup_failed', {
+        threadId: this.id,
+        error: toErrorMessage(error),
+      })
+    })
+  }
+
+  guardUnconfirmedResume(): void {
+    this.fail = this.release
+    this.notify = () => {}
+    this.handleLateResume = (accepted) => {
+      if (accepted) this.detachAfterReturn()
+      else this.release()
+    }
+    if (this.lateResume !== undefined) this.handleLateResume(this.lateResume)
+  }
+
+  guardUnconfirmedTurn(expectedTurnId: string | undefined, alreadyInterrupted: boolean): void {
+    let turnId = expectedTurnId
+    let interruptSent = alreadyInterrupted
+    const interrupt = () => {
+      if (!turnId || interruptSent) return
+      interruptSent = true
+      void this.connection
+        .request('turn/interrupt', { threadId: this.id, turnId })
+        .catch((error: unknown) => {
+          this.logger.warn('worker_turn_cleanup_failed', {
+            threadId: this.id,
+            turnId,
+            error: toErrorMessage(error),
+          })
+        })
+    }
+    this.fail = this.release
+    this.notify = (method, params) => {
+      if (method === 'thread/closed') {
+        this.release()
+        return
+      }
+      if (method !== 'turn/started' && method !== 'turn/completed') return
+      const turn = params.turn as Fields | undefined
+      if (!turn || typeof turn.id !== 'string' || !turn.id || (turnId && turn.id !== turnId)) return
+      turnId = turn.id
+      if (method === 'turn/started') interrupt()
+      else if (isTerminalStatus(turn.status)) this.detachAfterReturn()
+    }
+    interrupt()
+  }
+}
+
 export async function runCodexWorker(
   ctx: ToolContext,
   input: CodexWorkerInput,
-  codexPath?: string,
+  server: CodexWorkerServer,
 ): Promise<ToolResult> {
   const cwd = resolve(ctx.projectRoot ?? ctx.workDir, input.workingDirectory ?? '.')
   const handle = ctx.currentToolUseId
     ? ctx.runningToolRegistry?.get(ctx.currentToolUseId)
     : undefined
   const output = new TurnOutput(ctx)
+  const turnReady = Promise.withResolvers<void>()
   const completed = Promise.withResolvers<void>()
   const stopped = Promise.withResolvers<Error>()
-  let ownedThread: string | undefined
+  let connection: CodexWorkerConnection | undefined
+  let subscription: ThreadSubscription | undefined
+  let resumeUnconfirmed = false
   let threadId: string | undefined
   let turnId: string | undefined
+  let observedTurnId: string | undefined
   let submitting = false
   let closing = false
+  let unavailable = false
   let terminalStatus: string | undefined
   let abortReason: string | undefined
   let interruptFailure: string | undefined
   let abortTimer: ReturnType<typeof setTimeout> | undefined
-  let client: CodexAppServerClient | undefined
   const earlyEvents: Array<{ method: string; params: Fields }> = []
 
-  function claimThread(id: string): void {
-    if (activeThreads.has(id)) throw new Error(`Codex thread already has an active worker: ${id}`)
-    activeThreads.add(id)
-    ownedThread = id
-  }
-
   function onNotification(method: string, params: Fields): void {
-    if (closing || !submitting || terminalStatus || params.threadId !== threadId) return
-    // A server can send items or completion together with the turn/start response,
-    // before its awaiting continuation in this process has installed the turn ID.
-    if (!turnId) {
-      earlyEvents.push({ method, params })
+    if (method === 'thread/closed') {
+      // A resume is reserved before its RPC. A prior unload can still notify us here.
+      if (!threadId) return
+      unavailable = true
+      if (!terminalStatus)
+        stopped.resolve(new Error('Codex thread closed before the worker received its turn result'))
       return
     }
-    if (method === 'thread/closed') {
-      throw new Error('Codex thread closed before the worker received its turn result')
+    if (closing || !submitting || terminalStatus || params.threadId !== threadId) return
+    // Items and completion can arrive before the turn/start continuation installs the ID.
+    if (!turnId) {
+      if (method === 'turn/started') {
+        observedTurnId = idField(fields(params.turn, 'started turn'))
+        if (abortReason) interrupt()
+      }
+      earlyEvents.push({ method, params })
+      return
     }
     if (method === 'turn/completed') {
       const turn = fields(params.turn, 'completed turn')
       if (idField(turn) !== turnId) return
       const status = stringField(turn, 'status')
-      if (!['completed', 'failed', 'interrupted'].includes(status)) {
-        throw new Error(`Invalid Codex terminal status: ${status}`)
-      }
+      if (!isTerminalStatus(status)) throw new Error(`Invalid Codex terminal status: ${status}`)
+      // Even if the final items cannot be decoded, this turn no longer needs interrupting.
+      terminalStatus = status
       if (Array.isArray(turn.items)) {
         for (const item of turn.items) output.item(fields(item, 'turn item'))
       }
@@ -246,44 +343,122 @@ export async function runCodexWorker(
       } else if (status === 'interrupted') {
         output.errors.add(abortReason ?? 'Codex turn interrupted')
       }
-      terminalStatus = status
       completed.resolve()
     } else if (params.turnId === turnId) {
       output.notification(method, params)
     }
   }
 
+  function subscribe(connection: CodexWorkerConnection, id: string): ThreadSubscription {
+    return new ThreadSubscription(
+      connection,
+      id,
+      ctx.logger,
+      (method, params) => {
+        try {
+          onNotification(method, params)
+        } catch (error) {
+          output.errors.add(toErrorMessage(error))
+          stopped.resolve(error instanceof Error ? error : new Error(toErrorMessage(error)))
+        }
+      },
+      (error) => {
+        unavailable = true
+        stopped.resolve(error)
+      },
+    )
+  }
+
   function interrupt(): void {
-    if (client && threadId && turnId && !terminalStatus) {
-      void client.request('turn/interrupt', { threadId, turnId }).catch((error: unknown) => {
-        // Completion can race with interrupt. The turn's terminal notification wins.
-        interruptFailure = toErrorMessage(error)
+    const id = turnId ?? observedTurnId
+    if (!connection || !threadId || !id || terminalStatus || abortTimer) return
+    abortTimer = setTimeout(() => {
+      stopped.resolve(
+        new Error(`Codex interrupt was not confirmed: ${interruptFailure ?? abortReason}`),
+      )
+    }, INTERRUPT_TIMEOUT_MS)
+    void connection.request('turn/interrupt', { threadId, turnId: id }).catch((error: unknown) => {
+      // Completion can race with interrupt. The turn's terminal notification wins.
+      interruptFailure = toErrorMessage(error)
+    })
+  }
+
+  async function steer(instruction: string): Promise<void> {
+    await turnReady.promise
+    if (
+      !connection ||
+      !threadId ||
+      !turnId ||
+      closing ||
+      unavailable ||
+      terminalStatus ||
+      abortReason
+    ) {
+      throw new Error('This Codex worker turn is no longer available for new instructions.')
+    }
+    const reply = await connection
+      .request('turn/steer', {
+        threadId,
+        expectedTurnId: turnId,
+        input: [{ type: 'text', text: instruction, text_elements: [] }],
       })
+      .catch((error: unknown) => {
+        if (error instanceof CodexAppServerRequestError) throw error
+        throw new Error(`Codex adjustment delivery is unknown: ${toErrorMessage(error)}`)
+      })
+    if (reply.turnId !== turnId) {
+      throw new Error('Codex acknowledged a different turn; adjustment delivery is unknown.')
     }
   }
 
-  async function run(connection: CodexAppServerClient): Promise<void> {
-    await connection.request('initialize', { clientInfo: { name: 'zero_os_worker', version: '1' } })
-    connection.notify('initialized', {})
-    if (closing || abortReason) throw new Error(abortReason ?? 'Codex worker closed')
-    const thread = await connection.request(
-      input.resumeThreadId ? 'thread/resume' : 'thread/start',
-      {
+  try {
+    handle?.setSteerHandler?.(steer)
+    handle?.setAbortHandler((reason) => {
+      if (terminalStatus || abortReason) return
+      abortReason = reason?.trim() || 'Codex worker interrupted by user'
+      turnReady.resolve()
+      if (!submitting) stopped.resolve(new Error(abortReason))
+      interrupt()
+    })
+    if (abortReason) throw new Error(abortReason)
+    const acquired = await Promise.race([server.acquire(), stopped.promise])
+    if (acquired instanceof Error) throw acquired
+    connection = acquired
+    if (abortReason) throw new Error(abortReason)
+    if (input.resumeThreadId) {
+      subscription = subscribe(connection, input.resumeThreadId)
+      resumeUnconfirmed = true
+    }
+    const thread = await connection
+      .request(input.resumeThreadId ? 'thread/resume' : 'thread/start', {
         ...(input.resumeThreadId ? { threadId: input.resumeThreadId, excludeTurns: true } : {}),
         cwd,
         approvalPolicy: 'never',
         sandbox: 'workspace-write',
+        config: { shell_environment_policy: { set: buildToolContextEnv(ctx) } },
         ...(input.model ? { model: input.model } : {}),
-      },
-    )
-    if (closing) throw new Error('Codex worker closed')
-    const id = idField(fields(thread.thread, 'thread'))
+      })
+      .catch((error: unknown) => {
+        if (error instanceof CodexAppServerRequestError) resumeUnconfirmed = false
+        throw error
+      })
+    const state = fields(thread.thread, 'thread')
+    const id = idField(state)
     if (input.resumeThreadId && id !== input.resumeThreadId) {
       throw new Error('Codex resumed a different thread than requested')
     }
-    if (!ownedThread) claimThread(id)
+    resumeUnconfirmed = false
+    subscription ??= subscribe(connection, id)
     threadId = id
+    if (unavailable) throw await stopped.promise
     if (abortReason) throw new Error(abortReason)
+    if (
+      input.resumeThreadId &&
+      state.status &&
+      fields(state.status, 'thread status').type === 'active'
+    ) {
+      throw new Error(`Codex thread already has an active turn: ${threadId}`)
+    }
     const turnParams = {
       threadId,
       input: [{ type: 'text', text: input.instruction, text_elements: [] }],
@@ -292,11 +467,14 @@ export async function runCodexWorker(
         : {}),
     }
     submitting = true
-    const started = await connection.request('turn/start', turnParams).catch((error: unknown) => {
+    const started = await Promise.race([
+      connection.request('turn/start', turnParams),
+      stopped.promise,
+    ]).catch((error: unknown) => {
       if (error instanceof CodexAppServerRequestError) submitting = false
       throw error
     })
-    if (closing) return
+    if (started instanceof Error) throw started
     turnId = idField(fields(started.turn, 'started turn'))
     ctx.logger.info('worker_turn_started', {
       type: 'codex',
@@ -304,54 +482,40 @@ export async function runCodexWorker(
       threadId,
       turnId,
     })
-    for (const event of earlyEvents.splice(0)) onNotification(event.method, event.params)
-    if (abortReason) interrupt()
-    await completed.promise
-  }
-
-  try {
-    if (input.resumeThreadId) claimThread(input.resumeThreadId)
-    client = new CodexAppServerClient({
-      cwd,
-      env: buildToolProcessEnv(ctx),
-      codexPath,
-      onNotification,
-      filterDiagnostic: ctx.secretFilter?.filter.bind(ctx.secretFilter),
-    })
-    handle?.setAbortHandler((reason) => {
-      if (terminalStatus || abortReason) return
-      abortReason = reason?.trim() || 'Codex worker interrupted by user'
-      if (!submitting) {
-        stopped.resolve(new Error(abortReason))
-        return
-      }
-      interrupt()
-      abortTimer = setTimeout(() => {
-        stopped.resolve(
-          new Error(`Codex interrupt was not confirmed: ${interruptFailure ?? abortReason}`),
-        )
-      }, INTERRUPT_TIMEOUT_MS)
-    })
-    if (abortReason) throw new Error(abortReason)
-    const problem = await Promise.race([run(client), client.closed, stopped.promise])
+    for (const event of earlyEvents.splice(0)) subscription.notify(event.method, event.params)
+    turnReady.resolve()
+    if (abortReason && !unavailable) interrupt()
+    const problem = await Promise.race([completed.promise, stopped.promise])
     if (problem) throw problem
   } catch (error) {
     output.errors.add(toErrorMessage(error))
   } finally {
     closing = true
+    turnReady.resolve()
     clearTimeout(abortTimer)
-    // The session registry retains finished handles. Release this turn's process and output.
     handle?.setAbortHandler(() => {})
-    try {
-      await client?.close()
-    } catch (error) {
-      output.errors.add(`Codex app-server cleanup failed: ${toErrorMessage(error)}`)
-    } finally {
-      if (ownedThread) activeThreads.delete(ownedThread)
+    handle?.setSteerHandler?.(undefined)
+    if (subscription) {
+      if (unavailable) {
+        subscription.release()
+      } else if (resumeUnconfirmed) {
+        subscription.guardUnconfirmedResume()
+      } else if (submitting && !terminalStatus) {
+        subscription.guardUnconfirmedTurn(turnId ?? observedTurnId, !!abortTimer)
+        for (const event of earlyEvents) subscription.notify(event.method, event.params)
+      } else if (threadId) {
+        try {
+          await subscription.unsubscribe()
+        } catch (error) {
+          output.errors.add(`Codex thread cleanup failed: ${toErrorMessage(error)}`)
+        }
+      } else {
+        subscription.release()
+      }
     }
   }
 
-  const result = output.result(threadId, turnId, submitting && !terminalStatus)
+  const result = output.result(threadId, turnId ?? observedTurnId, submitting && !terminalStatus)
   if (terminalStatus === 'interrupted' || (abortReason && !submitting)) {
     handle?.markFinished({
       cause: 'abort',

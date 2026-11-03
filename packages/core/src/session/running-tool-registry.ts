@@ -7,7 +7,7 @@ import type {
   RunningToolTerminalMetadata,
 } from '@zero-os/shared'
 import { isAbortableTool } from '@zero-os/shared'
-import { findToolNameByUseId } from './session-messages'
+import { findToolUseById } from './session-messages'
 
 class SessionRunningToolHandle implements RunningToolHandle {
   readonly toolUseId: string
@@ -18,6 +18,7 @@ class SessionRunningToolHandle implements RunningToolHandle {
   private abortReason?: string
   private terminalMetadata?: RunningToolTerminalMetadata
   private abortHandler?: (reason?: string) => void
+  private steerHandler?: (instruction: string) => Promise<void>
 
   constructor(entry: { toolUseId: string; toolName: string; abortable: boolean }) {
     this.toolUseId = entry.toolUseId
@@ -55,12 +56,36 @@ class SessionRunningToolHandle implements RunningToolHandle {
     }
   }
 
+  setSteerHandler(handler: ((instruction: string) => Promise<void>) | undefined): void {
+    this.steerHandler = handler
+  }
+
+  async steer(instruction: string): Promise<void> {
+    if (this.state !== 'running' || !this.steerHandler) {
+      throw new Error('This Worker is not accepting instructions.')
+    }
+    await this.steerHandler(instruction)
+  }
+
   markFinished(metadata: RunningToolTerminalMetadata): boolean {
     if (this.state === 'finished') return false
     this.state = 'finished'
+    this.steerHandler = undefined
     this.terminalMetadata = metadata
     return true
   }
+}
+
+export async function steerRunningWorker(
+  registry: RunningToolRegistry | undefined,
+  toolUseId: string,
+  instruction: string,
+): Promise<void> {
+  const handle = registry?.get(toolUseId)
+  if (handle?.toolName !== 'worker' || !handle.steer) {
+    throw new Error('No matching Worker run in this session.')
+  }
+  await handle.steer(instruction)
 }
 
 export class SessionRunningToolRegistry implements RunningToolRegistry {
@@ -92,6 +117,8 @@ export function requestSessionRunningToolAbort(options: {
     return liveEntry.requestAbort(options.reason)
   }
 
-  const toolName = findToolNameByUseId(options.messages, options.toolUseId)
-  return isAbortableTool(toolName) ? 'already_finished' : 'not_abortable'
+  const call = findToolUseById(options.messages, options.toolUseId)
+  return isAbortableTool(call?.name.toLowerCase(), call?.input?.action)
+    ? 'already_finished'
+    : 'not_abortable'
 }

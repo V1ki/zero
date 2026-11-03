@@ -296,6 +296,43 @@ describe('buildTimeline', () => {
     }
   })
 
+  test('only marks a Worker as running after its tool starts and before its result', () => {
+    const ts = '2026-03-08T00:00:01.000Z'
+    const callId = 'call_worker'
+    const messages: Message[] = [
+      {
+        id: 'msg_worker',
+        role: 'assistant',
+        messageType: 'message',
+        createdAt: ts,
+        content: [{ type: 'tool_use', id: callId, name: 'worker', input: { type: 'codex' } }],
+      },
+    ]
+    const traces: TraceSpan[] = [
+      {
+        id: 'span_worker',
+        sessionId: 'sess_1',
+        name: 'tool:worker',
+        startTime: ts,
+        status: 'running',
+        data: { toolUseId: callId },
+        children: [],
+      },
+    ]
+    const status = (spans: TraceSpan[]) =>
+      buildTimeline(messages, spans).find((item) => item.type === 'tool-call')?.status
+    expect(status([])).toBeUndefined()
+    expect(status(traces)).toBe('running')
+    messages.push({
+      id: 'msg_worker_done',
+      role: 'user',
+      messageType: 'message',
+      createdAt: ts,
+      content: [{ type: 'tool_result', toolUseId: callId, content: 'Done' }],
+    })
+    expect(status(traces)).toBe('success')
+  })
+
   test('preserves structured image content items on read_image tool calls', () => {
     const messages: Message[] = [
       {

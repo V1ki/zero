@@ -27,18 +27,34 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
     skipProcessExit: options?.skipProcessExit,
   })
 
-  await options?.onCoreReady?.(runtime.zero)
-
-  await startStartupRuntimeChannels(runtime)
-
-  markStartupRuntimeReady(runtime)
+  try {
+    await options?.onCoreReady?.(runtime.zero)
+    await startStartupRuntimeChannels(runtime)
+    markStartupRuntimeReady(runtime)
+  } catch (error) {
+    // onCoreReady may already have exposed the Worker through the Web API.
+    try {
+      await runtime.core.worker.close()
+    } catch (closeError) {
+      console.warn(
+        '[ZeRo OS] Could not close the Codex app-server during startup cleanup:',
+        closeError,
+      )
+    }
+    throw error
+  }
 
   return runtime.zero
 }
 
 // Auto-start if run directly
 if (import.meta.main) {
-  startZeroOS().catch(console.error)
+  startZeroOS()
+    .then((zero) => {
+      process.on('SIGINT', zero.shutdown)
+      process.on('SIGTERM', zero.shutdown)
+    })
+    .catch(console.error)
 }
 
 function resolveZeroDataDir(options?: Pick<StartOptions, 'dataDir'>): string {

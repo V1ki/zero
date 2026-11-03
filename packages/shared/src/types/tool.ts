@@ -188,8 +188,8 @@ export interface AgentControlHandle {
 
 export type RunningToolState = 'running' | 'abort_requested' | 'finished'
 
-export function isAbortableTool(name: string | undefined): boolean {
-  return name === 'bash' || name === 'worker'
+export function isAbortableTool(name: string | undefined, action?: unknown): boolean {
+  return name === 'bash' || (name === 'worker' && (action === undefined || action === 'run'))
 }
 
 export type RunningToolAbortRequestStatus =
@@ -216,6 +216,8 @@ export interface RunningToolHandle {
   getTerminalMetadata(): RunningToolTerminalMetadata | undefined
   requestAbort(reason?: string): RunningToolAbortRequestStatus
   setAbortHandler(handler: (reason?: string) => void): void
+  setSteerHandler?(handler: ((instruction: string) => Promise<void>) | undefined): void
+  steer?(instruction: string): Promise<void>
   markFinished(metadata: RunningToolTerminalMetadata): boolean
 }
 

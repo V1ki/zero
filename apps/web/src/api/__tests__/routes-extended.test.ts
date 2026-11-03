@@ -268,6 +268,41 @@ describe('API Routes Extended', () => {
     expect(res.status).toBe(404)
   })
 
+  test('tool-calls/steer delivers instructions to the active Worker in the requested session', async () => {
+    const session = zero.sessionManager.create('web')
+    const handle = getRunningToolRegistry(session).register({
+      toolUseId: 'call_steer_1',
+      toolName: 'worker',
+      abortable: true,
+    })
+    const received: string[] = []
+    handle.setSteerHandler?.(async (instruction) => {
+      received.push(instruction)
+    })
+    const post = (sessionId: string, body: string) =>
+      app.request(`/api/sessions/${sessionId}/tool-calls/call_steer_1/steer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      })
+    const body = JSON.stringify({ instruction: '  focus on tests  ' })
+    expect((await post('nonexistent', body)).status).toBe(404)
+    expect((await post(zero.sessionManager.create('web').data.id, body)).status).toBe(409)
+    expect((await post(session.data.id, '{')).status).toBe(400)
+    expect((await post(session.data.id, JSON.stringify({ instruction: ' ' }))).status).toBe(400)
+    const accepted = await post(session.data.id, body)
+    expect(accepted.status).toBe(200)
+    expect(await accepted.json()).toEqual({ ok: true, status: 'accepted' })
+    expect(received).toEqual(['focus on tests'])
+
+    handle.setSteerHandler?.(async () => {
+      throw new Error('Turn has already ended')
+    })
+    const rejected = await post(session.data.id, body)
+    expect(rejected.status).toBe(409)
+    expect(await rejected.json()).toEqual({ error: 'Turn has already ended' })
+  })
+
   test.each(['bash', 'worker'])('tool-calls/abort is idempotent for live %s runs', async (name) => {
     const session = zero.sessionManager.create('web')
     pushSessionMessages(session, {

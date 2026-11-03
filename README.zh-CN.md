@@ -64,9 +64,26 @@ ZeRo OS 是一个基于 Bun + TypeScript 的 monorepo，用来运行一个具备
 
 主 Agent 和内置 Coder 可以调用 `worker` 委派编码任务。例如
 `{"type":"codex","instruction":"检查当前改动并运行相关测试"}`。
-每次调用会在本机启动随依赖安装的 Codex app-server，通过标准输入输出通信。默认工作目录
-为项目根，支持 `workingDirectory`、`model` 和 `additionalDirectories`。续跑时将上次
-返回的线程 ID 传入 `resumeThreadId`。`dsh` 为预留类型，当前调用会返回未实现错误。
+默认动作 `run` 首次使用时，ZeRo 在本机启动一个常驻的 Codex app-server。此后同一 ZeRo 实例里的
+Worker 共用这条连接，可在不同的 Codex 线程中并发执行。同一线程一次只运行一个 Worker。
+每个 Worker 单独指定工作目录（默认项目根）、`model` 和 `additionalDirectories`，并使用自己会话的渠道信息。
+Worker 结束后释放该线程的订阅，ZeRo 关闭时回收进程。若进程意外退出，在途任务会报告中断或结果未知，
+下一次调用会重新启动服务。恢复任务前可核对线程记录及工作区。`dsh` 为预留类型。
+
+运行中要调整任务，可在会话详情里展开该 Worker，填写 **Worker instruction** 并发送。主 Agent 也可以再次调用同一个工具，传入以下参数。
+
+```json
+{
+  "type": "codex",
+  "action": "steer",
+  "targetToolUseId": "<原调用的 tool_use_id>",
+  "instruction": "先定位失败的测试，等我确认后再改代码。"
+}
+```
+
+`targetToolUseId` 取同一 ZeRo 会话里原始 Worker 调用的 ID。任务转入后台后，通知中的
+`tool_use_id` 就是这个值。返回“已接收”表示 Codex 收到了针对当前轮次的指令。任务结束后，
+将上次返回的线程 ID 传入 `resumeThreadId` 即可继续下一轮。
 
 Worker 使用运行 ZeRo 的用户所配置的 Codex 登录或模型提供方。使用环境变量提供 API key
 时，在 Codex 自定义提供方配置中显式设置 `env_key`；仅设置 `CODEX_API_KEY` 不能为

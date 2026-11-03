@@ -19,6 +19,7 @@ import { useUIStore } from '../../stores/ui'
 import { TokenUsagePill } from './TokenUsagePill'
 import { ToolCallDetail, summarizeToolInput } from './ToolCallDetail'
 import type { ToolEvidencePointer, ToolResultContentItem } from './ToolCallDetail'
+import { WorkerSteerForm, isCodexWorkerRun } from './WorkerSteerForm'
 import type { TokenUsageSummary } from './context-panel/context-tokens'
 
 const toolIcons: Record<string, typeof Terminal> = {
@@ -173,6 +174,9 @@ export function ToolCallBlock({
         )}
       </button>
 
+      {selected && sessionId && isRunning && !abortPending && isCodexWorkerRun(name, input) && (
+        <WorkerSteerForm key={id} sessionId={sessionId} toolUseId={id} />
+      )}
       {selected && (
         <ToolCallDetail
           name={name}
@@ -186,7 +190,9 @@ export function ToolCallBlock({
           durationMs={durationMs}
           abortPending={abortPending}
           onAbort={
-            sessionId && isRunning && isAbortableTool(name.toLowerCase()) ? handleAbort : undefined
+            sessionId && isRunning && isAbortableTool(name.toLowerCase(), input.action)
+              ? handleAbort
+              : undefined
           }
         />
       )}

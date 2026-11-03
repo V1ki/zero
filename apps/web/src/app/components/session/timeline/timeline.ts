@@ -530,6 +530,8 @@ export function buildTimeline(
           ) {
             // Skip — already represented by the sub-agent block
           } else {
+            const traceStatus = toolStatuses.get(toolId)
+            const resultStatus = result && (result.isError ? 'error' : 'success')
             items.push({
               type: 'tool-call',
               id: toolId,
@@ -541,8 +543,9 @@ export function buildTimeline(
               evidence,
               isError: result?.isError,
               status:
-                toolStatuses.get(toolId) ??
-                (result ? (result.isError ? 'error' : 'success') : 'running'),
+                toolName === 'worker'
+                  ? (resultStatus ?? traceStatus)
+                  : (traceStatus ?? resultStatus ?? 'running'),
               durationMs: toolDurations.get(toolId),
               createdAt: msg.createdAt,
               tokenUsage: requestMatcher.claimToolCall(toolId),
@@ -1469,7 +1472,7 @@ function extractToolStatuses(traces: TraceSpan[]): Map<string, TraceSpan['status
 }
 
 function getTraceToolUseId(span: TraceSpan): string | null {
-  const toolUseId = span.metadata?.toolUseId
+  const toolUseId = span.metadata?.toolUseId ?? span.data?.toolUseId
   return typeof toolUseId === 'string' ? toolUseId : null
 }
 
