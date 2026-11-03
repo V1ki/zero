@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#f7f8f4">
+<title>主动监听与情境路由 · ZeRo 设计图册</title>
+<style>
+:root{--ink:#192e2a;--paper:#f7f8f4;--green:#1a5e49;--rule:#cbd4cd;--quiet:#4e625b;--mint:#b6e7cc;--link:#245c51;color-scheme:light}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:86px}body{margin:0;color:var(--ink);background:var(--paper);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased}a{color:inherit}button,input,select,textarea{font:inherit}button{cursor:pointer}button:disabled{cursor:default}:focus-visible{outline:3px solid #6652b7;outline-offset:4px}svg{max-width:100%}[hidden]{display:none!important}.wrap{width:min(1200px,calc(100% - 88px));margin-inline:auto}.skip{position:fixed;left:.7rem;top:-150px;padding:.7em 1em;background:white;z-index:100}.skip:focus{top:.6rem}
+.mast{position:sticky;top:0;z-index:20;background:#f7f8f4f5;border-bottom:1px solid var(--rule)}.mast-row{display:flex;min-height:65px;align-items:center;gap:28px}.wordmark{display:inline-flex;gap:10px;align-items:center;white-space:nowrap;text-decoration:none;font-size:22px;letter-spacing:-1.3px;font-weight:810}.wordmark svg{width:31px;height:31px;color:var(--ink)}.mast-edition{font-size:12px;white-space:nowrap;letter-spacing:.05em;padding-left:15px;border-left:1px solid #bccbc3;color:#4c6056}.mast nav{margin-left:auto;display:flex;align-items:center;gap:5px}.mast nav a{font-size:14px;text-decoration:none;white-space:nowrap;display:block;padding:8px 10px;border-radius:5px;color:#485a53}.mast nav a:hover,.mast nav a.active{background:#e4eee6;color:#123f30}
+.hero{padding:58px 0 45px;border-bottom:1px solid var(--rule)}.hero-grid{display:grid;grid-template-columns:.95fr 1.05fr;gap:clamp(25px,5vw,77px);align-items:center}.hero-meta{display:flex;gap:10px;align-items:center;font-size:13px;color:#476457;font-weight:570}.hero-meta .version{border:1px solid #aec3b4;padding:3px 9px;border-radius:99px;line-height:1.25}.hero h1{font-size:clamp(52px,5.8vw,88px);line-height:1.08;letter-spacing:-.075em;margin:20px 0 20px;font-weight:760}.hero .intro{font-size:clamp(16px,1.35vw,20px);line-height:1.72;max-width:32em;margin:0;color:#3d554b}.hero-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:26px}.hero-actions a{display:inline-flex;align-items:center;gap:11px;padding:10px 17px 11px;text-decoration:none;font-size:14px;font-weight:640;border-radius:6px;min-height:43px}.hero-primary{background:#184c39;color:#fff}.hero-primary:hover{background:#0c3c2a}.hero-secondary{border:1px solid #a9bdb0;color:#254c39}.hero-secondary:hover{background:#e8efe8}.hero-art{margin:0;min-width:0}.hero-art svg{display:block;width:100%;height:auto}.hero-art figcaption{padding-top:7px;font-size:12px;color:#53655d;text-align:center}
+#delivery{padding:70px 0 68px;border-top:1px solid var(--rule);background:#ecf1ea}#delivery h2{font-size:clamp(30px,3.25vw,49px);letter-spacing:-.045em;line-height:1.15;margin:0 0 12px}#delivery .dl-lead{font-size:16px;line-height:1.65;color:var(--quiet);margin:0 0 30px}.timeline{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0;margin:0;padding:0;list-style:none}.timeline li{padding:0 clamp(12px,2.3vw,35px) 4px 0;position:relative}.timeline li::before{content:"";display:block;border-top:2px solid #94aa97;position:absolute;left:20px;right:-3px;top:17px}.timeline li:last-child::before{right:25px;border-top-style:dashed}.timeline .step{position:relative;display:grid;place-items:center;width:36px;height:36px;border-radius:50%;background:#234c39;color:white;border:4px solid #ecf1ea;outline:1px solid #83a390;font-size:14px;font-weight:700}.timeline h3{font-size:22px;letter-spacing:-.025em;margin:18px 0 7px;color:var(--ink)}.timeline p{font-size:15px;line-height:1.65;margin:0 0 9px;color:#3b5144}.timeline .accept{font-size:13px;line-height:1.6;color:#465e50}.timeline .accept b{margin-right:7px;color:#224c34}.eng-title{border-top:1px solid #b9c8ba;padding-top:25px;margin:30px 0 6px;font-size:19px;letter-spacing:-.025em}.notes details{border-bottom:1px solid #cbd4cb;padding:0}.notes summary{padding:15px 2px;cursor:pointer;font-weight:630;color:#284c39}.notes details p{line-height:1.75;max-width:75ch;color:#425549;margin:0 0 15px}.foot{padding:22px 0 28px;background:#eef2eb;border-top:1px solid #c1cfc2}.foot>.wrap{display:flex;justify-content:space-between;gap:18px;align-items:center;flex-wrap:wrap}.foot strong{font-size:15px}.foot .links{display:flex;gap:18px;flex-wrap:wrap;font-size:13px}.foot a{text-decoration-thickness:1px;text-underline-offset:3px}
+@media(max-width:850px){.wrap{width:calc(100% - 42px)}.mast-row{gap:10px}.mast-edition{display:none}.mast nav a{padding:8px 7px;font-size:13px}.hero{padding:42px 0 36px}.hero-grid{gap:22px}.hero h1{font-size:clamp(44px,6vw,59px)}}
+@media(max-width:660px){html{scroll-padding-top:102px}.wrap{width:calc(100% - 32px)}.mast-row{display:block;padding:7px 0 3px}.wordmark{font-size:18px;gap:6px}.wordmark svg{width:25px;height:25px}.mast nav{margin-top:3px;overflow:auto;gap:3px;scrollbar-width:none}.mast nav a{padding:5px 9px;font-size:12px}.mast nav a:first-child{padding-left:3px}.hero{padding-top:29px}.hero-grid{grid-template-columns:1fr;gap:24px}.hero h1{font-size:clamp(42px,9vw,60px);margin:15px 0}.hero h1 br{display:none}.hero .intro{font-size:16px}.hero-actions{margin-top:16px}.hero-art{max-width:500px;width:100%;margin:auto}.hero-art figcaption{font-size:11px}#delivery{padding:46px 0 40px}.timeline{display:block}.timeline li{padding:0 0 24px 51px}.timeline .step{position:absolute;left:0;top:0}.timeline li::before{left:17px;right:auto;top:20px;bottom:-11px;border-left:2px solid #94aa97;border-top:0}.timeline li:last-child::before{display:none}.timeline h3{padding-top:4px;margin:0 0 5px}.eng-title{margin-top:0}.foot .links{gap:12px}}
+@media(prefers-reduced-motion:reduce){*,*::after,*::before{scroll-behavior:auto!important;animation-duration:.01ms!important;transition-duration:.01ms!important}}
+</style>
+<style>
+
+    #architecture{padding:clamp(48px,7vw,90px) 0 0;scroll-margin-top:30px;color:var(--ink,#1f322e)}
+    #architecture .arc-head{display:flex;gap:36px;align-items:flex-end;justify-content:space-between;margin-bottom:24px}
+    #architecture .arc-head h2{margin:0;font-size:clamp(29px,4vw,53px);letter-spacing:-.045em;line-height:1.14;font-weight:720}
+    #architecture .arc-head p{color:#53665c;font-size:15px;line-height:1.65;margin:0 0 2px;max-width:29em}
+    #architecture figure{margin:0}
+    #architecture .arc-board{overflow:hidden;color:#ecf5e9;border:1px solid #25453c;background-color:#19372f;background-image:linear-gradient(#adcab509 1px,transparent 1px),linear-gradient(90deg,#adcab509 1px,transparent 1px);background-size:24px 24px;border-radius:16px}
+    #architecture .arc-key{min-height:48px;display:flex;align-items:center;justify-content:space-between;gap:15px;padding:0 24px;border-bottom:1px solid #7f9b803c;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#c3d9c8;font-size:12px;letter-spacing:.02em}
+    #architecture .arc-figure-id,#architecture .arc-key-items,#architecture .arc-key-item{display:inline-flex;align-items:center;gap:8px}
+    #architecture .arc-figure-id{font-weight:650}
+    #architecture .arc-key-items{gap:20px}
+    #architecture .arc-key-item i{display:inline-block;width:23px;height:0;border-top:2px solid #abd8b5}
+    #architecture .arc-key-item:last-child i{border-top:2px dashed #a1c5dd}
+    #architecture .arc-desktop,#architecture .arc-phone{width:100%;height:auto;display:block}
+    #architecture .arc-phone{display:none}
+    #architecture svg text{font-family:system-ui,-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;fill:#edf4e9}
+    #architecture svg .arc-min{font:600 11px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#c5ddcb;letter-spacing:.035em}
+    #architecture svg .arc-col{font-weight:600;font-size:14px;fill:#cae2ce}
+    #architecture svg .arc-n{font-size:22px;font-weight:670;letter-spacing:-.025em}
+    #architecture svg .arc-copy{font-size:14px;fill:#d5e6d6}
+    #architecture svg .arc-wire{stroke:#abd8b5;fill:none;stroke-width:2.2;stroke-linejoin:round;stroke-linecap:round}
+    #architecture svg .arc-wirectx{stroke:#a1c5dd;fill:none;stroke-width:1.8;stroke-dasharray:4 5;stroke-linecap:round}
+    #architecture svg .arc-box{fill:#23453a;stroke:#71927c;stroke-width:1.3}
+    #architecture svg .arc-context{fill:#223f3a;stroke:#86a7ac;stroke-width:1;stroke-dasharray:4 4}
+    #architecture svg .arc-router{fill:#efd8aa;stroke:#f7e8c8;stroke-width:1.5}
+    #architecture svg .arc-rtext{fill:#233b30}
+    #architecture svg .arc-rsub{fill:#384739;font-size:14px;font-weight:540}
+    #architecture svg .arc-node{fill:#c7e5bd;stroke:#19372f;stroke-width:2}
+    #architecture .arc-caption{border-top:1px solid #7f9b803c;padding:13px 24px;font-size:13px;line-height:1.6;color:#d1e2d2}
+    #architecture .arc-caption b{color:#f4d7a7;margin-right:10px;font-weight:650}
+    @media(max-width:950px){
+      #architecture .arc-head{align-items:flex-start;flex-direction:column;gap:10px}
+    }
+    @media(max-width:800px){
+      #architecture .arc-desktop{display:none}#architecture .arc-phone{display:block;max-height:660px}
+      #architecture .arc-key{padding:0 16px}
+      #architecture .arc-caption{padding:12px 16px}
+    }
+    @media(max-width:450px){
+      #architecture .arc-key{font-size:11px;gap:7px;min-height:43px}
+      #architecture .arc-key-items{gap:9px}
+      #architecture .arc-key-item{gap:4px}
+      #architecture .arc-key-item i{width:14px}
+      #architecture .arc-board{border-radius:12px}
+    }
+
+
+#simulator { --sp-ink:#173d37; --sp-sub:#4f635d; --sp-rule:#cbd5c8; --sp-paper:#f7f8f1; --sp-indigo:#514183; --sp-orange:#bd674b; color:var(--ink,#193b35); padding-block:clamp(48px,6vw,90px); scroll-margin-top:70px }
+#simulator *,#simulator *::before,#simulator *::after{box-sizing:border-box}
+#simulator .sim-kicker{font:600 12px/1.5 ui-monospace,monospace;color:var(--sp-indigo);margin:0 0 8px}
+#simulator h2{font-size:clamp(30px,3.7vw,52px);line-height:1.16;letter-spacing:-.045em;margin:0}
+#simulator .sim-intro{color:var(--sp-sub);font-size:15px;line-height:1.8;margin:12px 0 23px}
+#simulator .sim-presets{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:0 0 14px}
+#simulator .sim-presets>span{color:var(--sp-sub);font-size:12px;font-weight:650;margin-right:3px}
+#simulator button,#simulator input{font:inherit}
+#simulator .sim-presets button{color:var(--sp-ink);background:transparent;border:1px solid var(--sp-rule);border-radius:6px;padding:6px 11px;font-size:13px;line-height:1.4;cursor:pointer}
+#simulator .sim-presets button[aria-pressed=true]{background:var(--sp-ink);border-color:var(--sp-ink);color:white}
+#simulator .sim-presets button:hover{border-color:var(--sp-ink)}
+#simulator .sim-presets button:focus-visible,#simulator input:focus-visible + span{outline:3px solid #7550ae;outline-offset:3px}
+#simulator .sim-panel{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);border:1px solid var(--sp-rule);border-radius:14px;overflow:hidden;background:#fffef9}
+#simulator .sim-form,#simulator .sim-decision{padding:clamp(19px,3vw,36px)}
+#simulator .sim-form{margin:0;min-width:0}
+#simulator .sim-panel h3{font-size:20px;font-weight:650;letter-spacing:-.03em;line-height:1.4;margin:0 0 17px}
+#simulator .sim-control{border:0;border-bottom:1px solid #e2e6dc;margin:0;padding:9px 0 11px;min-width:0;display:flex;flex-wrap:wrap;align-items:center;gap:5px 7px}
+#simulator .sim-control legend{float:left;width:5em;line-height:28px;font-weight:600;font-size:13px;color:var(--sp-sub);padding:0}
+#simulator .sim-choice{position:relative;cursor:pointer;display:inline-flex}
+#simulator .sim-choice input{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+#simulator .sim-choice span{font-size:13px;line-height:1.3;display:inline-block;padding:6px 9px;color:var(--sp-sub);border:1px solid transparent;border-radius:5px}
+#simulator .sim-choice input:checked + span{background:#e8eee4;color:#254b3d;border-color:#a6b7a6;font-weight:650}
+#simulator .sim-choice:hover span{border-color:var(--sp-rule)}
+#simulator .sim-permit{display:flex;align-items:center;gap:9px;padding:14px 0 0;color:var(--sp-sub);font-size:13px;cursor:pointer}
+#simulator .sim-permit input{accent-color:var(--sp-ink);width:16px;height:16px;flex:none}
+#simulator .sim-decision{background:var(--sp-paper);border-left:1px solid var(--sp-rule)}
+#simulator .sim-result-head{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+#simulator .sim-result-head span{font-size:12px;color:var(--sp-sub)}
+#simulator .sim-output{position:relative;display:grid;grid-template-columns:18px 1fr;column-gap:10px;margin:0}
+#simulator .sim-output:before{position:absolute;content:"";left:6px;top:17px;height:calc(100% - 54px);border-left:1px dashed #bac7b6}
+#simulator .sim-output dt,#simulator .sim-output dd{grid-column:2;margin:0}
+#simulator .sim-output dt{position:relative;font-size:12px;color:var(--sp-sub);line-height:20px}
+#simulator .sim-output dt:before{content:"";position:absolute;left:-27px;top:7px;width:10px;height:10px;border:2px solid var(--sp-indigo);background:var(--sp-paper);border-radius:50%}
+#simulator .sim-output dt:nth-of-type(2):before{border-color:var(--sp-orange)}
+#simulator .sim-output dd{font-size:clamp(19px,2.1vw,28px);font-weight:650;letter-spacing:-.025em;line-height:1.35;margin:3px 0 18px;color:var(--sp-ink)}
+#simulator .sim-output .sim-timing{font-size:16px;letter-spacing:0;color:var(--sp-sub);margin-bottom:10px}
+#simulator .sim-why{margin-top:9px;padding-top:13px;border-top:1px solid var(--sp-rule)}
+#simulator .sim-why strong{font-size:13px;color:var(--sp-indigo)}
+#simulator .sim-why p{font-size:13px;color:var(--sp-sub);line-height:1.75;margin:4px 0 0}
+#simulator .sim-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+@media (max-width:760px){#simulator .sim-panel{grid-template-columns:1fr}#simulator .sim-decision{border-left:0;border-top:1px solid var(--sp-rule)}#simulator .sim-presets>span{width:100%}}
+@media (max-width:440px){#simulator .sim-control{gap:5px 3px}#simulator .sim-control legend{width:4.5em}#simulator .sim-choice span{padding:5px 6px}}
+
+
+#sources{--src-ink:#183c36;--src-border:#cdd6cc;--src-light:#eff3ed;--src-purple:#524d90;padding-block:clamp(48px,7vw,92px);color:var(--src-ink)}
+#sources .src-heading{margin:0 0 22px}
+#sources .src-heading h2{font-size:clamp(29px,4vw,45px);line-height:1.14;letter-spacing:-.04em;margin:0 0 10px;font-weight:720}
+#sources .src-heading p{margin:0;color:#50655e;font-size:15px;line-height:1.7}
+#sources .src-shell{overflow:hidden;border:1px solid var(--src-border);border-radius:18px;background:#fffefa}
+#sources .src-toolbar{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 20px;background:#f0f2eb;border-bottom:1px solid var(--src-border)}
+#sources .src-tabs{display:flex;gap:3px}
+#sources button,#sources input,#sources select{font:inherit}
+#sources .src-tab{border:1px solid transparent;background:none;color:#435c55;font-size:14px;font-weight:650;border-radius:7px;padding:8px 15px;cursor:pointer}
+#sources .src-tab[aria-pressed="true"]{background:#1e4940;color:white}
+#sources .src-label{display:flex;align-items:center;gap:6px;color:#56665d;font-size:12px}
+#sources .src-label::before{content:"";background:#839a87;height:6px;width:6px;border-radius:50%}
+#sources .src-columns{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(235px,.9fr)}
+#sources .src-fields{padding:clamp(18px,3.4vw,36px);min-width:0}
+#sources fieldset{padding:0;margin:0;border:0;min-width:0}
+#sources legend,#sources .src-field-label{font-size:14px;font-weight:700;color:var(--src-ink);line-height:1.45}
+#sources .src-row{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin:8px 0 13px}
+#sources .src-choice{display:inline-flex;align-items:center;gap:6px;border:1px solid #d5dcd3;border-radius:6px;padding:5px 9px;line-height:1.4;min-height:32px;font-size:13px;cursor:pointer;background:#fafbf7;overflow-wrap:anywhere}
+#sources .src-choice:has(:checked){background:#e4f1e8;border-color:#9cbba7;color:#174732}
+#sources input[type="checkbox"]{accent-color:#2c684e;width:15px;height:15px;flex:0 0 auto;margin:0}
+#sources .src-add{display:flex;gap:8px;margin:0 0 18px}
+#sources input[type="text"],#sources select{border:1px solid #c8d2c7;border-radius:6px;background:#fff;color:var(--src-ink);font-size:14px;line-height:1.45;padding:8px 10px;min-width:0;width:100%;max-width:100%;box-sizing:border-box}
+#sources input::placeholder{color:#6c7771}
+#sources .src-add button,#sources .src-test{color:#25483e;border:1px solid #a4b8a7;border-radius:6px;padding:7px 13px;background:#f9fbf6;font-size:13px;font-weight:650;cursor:pointer;white-space:nowrap}
+#sources button:hover{filter:brightness(.94)}
+#sources :is(input,button,select):focus-visible{outline:3px solid #6d68bd;outline-offset:2px}
+#sources .src-settings{border-top:1px solid #e0e5dd;padding-top:14px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
+#sources .src-settings label{display:grid;gap:6px;align-content:start}
+#sources .src-settings .src-wide{grid-column:1/-1}
+#sources .src-note{font-size:13px;color:#53635a;line-height:1.65;margin:13px 0 0}
+#sources .src-error{font-size:13px;color:#873b2e;margin:-8px 0 13px}
+#sources [hidden]{display:none!important}
+#sources .src-receipt{align-self:stretch;background:#f2f0f8;border-left:1px solid #d8d5e2;padding:clamp(20px,3.4vw,36px);min-width:0}
+#sources .src-receipt h3{display:flex;align-items:center;gap:9px;margin:0 0 18px;color:#39395e;font-size:20px;line-height:1.4}
+#sources .src-receipt h3 svg{flex:0 0 auto;width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.6}
+#sources .src-receipt dl{display:grid;gap:14px;margin:0}
+#sources .src-receipt dl>div{border-top:1px solid #dcd9e6;padding-top:10px}
+#sources .src-receipt dt{font-size:12px;color:#615e76;line-height:1.5}
+#sources .src-receipt dd{color:#33334e;font-size:14px;line-height:1.6;margin:3px 0 0;overflow-wrap:anywhere;white-space:pre-line}
+#sources .src-test{color:#433d72;border-color:#bab5d2;background:#fefcff;margin-top:20px}
+#sources .src-test:disabled{opacity:.45;cursor:not-allowed}
+#sources .src-result{margin:12px 0 0;font-size:13px;color:#413d68;line-height:1.6}
+@media(max-width:690px){#sources .src-columns{grid-template-columns:1fr}#sources .src-receipt{border-left:0;border-top:1px solid #d8d5e2}#sources .src-toolbar{padding:9px 12px}#sources .src-fields{padding:20px 16px}#sources .src-receipt{padding:20px 16px}}
+@media(max-width:390px){#sources .src-tab{padding:7px 10px}#sources .src-settings{grid-template-columns:1fr}}
+
+
+#channels{background:#f7f6ef;color:#23372f;padding:clamp(40px,6.5vw,88px) 0;scroll-margin-top:76px}
+#channels *{box-sizing:border-box}
+#channels .ch-code,#channels .ch-mono{font:600 12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.04em}
+#channels .ch-code{display:flex;align-items:center;gap:9px;color:#46594b}
+#channels .ch-code:before{content:"";width:22px;height:2px;background:#44715b}
+#channels h2{font-size:clamp(29px,4vw,54px);line-height:1.19;letter-spacing:-.05em;margin:11px 0 12px;color:#213d31}
+#channels .ch-intro{margin:0;line-height:1.75;max-width:760px;color:#49594e;font-size:16px}
+#channels .ch-body{display:grid;grid-template-columns:minmax(219px,.38fr) minmax(0,1fr);gap:clamp(20px,3vw,42px);margin-top:28px;align-items:stretch}
+#channels .ch-platforms{display:flex;flex-direction:column;border-top:1px solid #bdc7ba}
+#channels .ch-tab{display:grid;grid-template-columns:31px 1fr 16px;align-items:center;gap:12px;text-align:left;min-height:71px;cursor:pointer;color:#435449;border:0;border-bottom:1px solid #cbd0c4;border-radius:0;padding:12px 12px;font:inherit;background:none;transition:background .15s}
+#channels .ch-tab:hover{background:#eeefe6}
+#channels .ch-tab[aria-selected=true]{background:#dfe8db;color:#204731;box-shadow:inset 3px 0 #356344}
+#channels .ch-icon{display:grid;place-items:center;width:30px;height:30px;border-radius:8px;background:var(--chip-bg);color:var(--chip-ink)}
+#channels .ch-icon svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+#channels .ch-tab-name{display:block;font-size:17px;font-weight:720;line-height:1.35}
+#channels .ch-tab-sub{display:block;font-size:12px;margin-top:2px;color:#546458;line-height:1.4}
+#channels .ch-go{opacity:0;font-size:19px;line-height:1}
+#channels .ch-tab[aria-selected=true] .ch-go{opacity:1}
+#channels .ch-panel{min-width:0;border:1px solid #c4cabb;border-radius:14px;background:#fffef9;overflow:hidden;align-self:start}
+#channels [hidden]{display:none!important}
+#channels button:focus-visible,#channels summary:focus-visible,#channels [role=tabpanel]:focus-visible{outline:3px solid #674f9b;outline-offset:2px}
+#channels .ch-panel-head{display:flex;gap:9px;align-items:center;padding:13px clamp(14px,2vw,25px);border-bottom:1px solid #ced2c9;font-weight:700;line-height:1.4;font-size:14px;background:var(--head-bg)}
+#channels .ch-panel-head .ch-mono{margin-left:auto;color:#516054;white-space:nowrap}
+#channels .ch-live{height:8px;width:8px;flex:none;border-radius:50%;background:var(--dot)}
+#channels .ch-in{padding:clamp(15px,2vw,25px);min-height:235px}
+#channels .ch-card-lead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:#48574d;font-size:12px;line-height:1.6}
+#channels .ch-tag{border-radius:4px;background:#f8ded0;color:#833d26;padding:2px 7px;font-size:12px;font-weight:720}
+#channels .ch-card-title{font-size:clamp(19px,2vw,24px);letter-spacing:-.025em;line-height:1.35;margin:9px 0 7px;color:#293a31}
+#channels .ch-copy{font-size:14px;line-height:1.7;color:#49534d;margin:0}
+#channels .ch-steps{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:11px 0;color:#536659;font-size:12px;font-weight:650}
+#channels .ch-steps .ch-fail{color:#96472c}
+#channels .ch-steps .ch-arrow{font-family:monospace;color:#7c867c}
+#channels .ch-act,#channels summary{display:inline-block;cursor:pointer;border:1px solid #aabcb0;background:white;color:#28543d;border-radius:5px;padding:6px 11px;font:650 13px/1.4 inherit;font-family:inherit;font-size:13px;font-weight:650;line-height:1.4}
+#channels summary{list-style:none}
+#channels summary::-webkit-details-marker{display:none}
+#channels .ch-log{background:#24382f;border-radius:6px;padding:10px 12px;color:#e2eadd;line-height:1.6;font-size:13px;overflow-wrap:anywhere;margin:8px 0 0}
+#channels .ch-caption{padding:10px clamp(14px,2vw,25px);border-top:1px solid #d7dacf;color:#536357;font-size:13px;line-height:1.6;background:#f2f3ea}
+#channels .ch-divider{display:block;height:1px;background:#e5e6df;margin:13px 0}
+#channels .ch-chat{background:#ecf1e9}
+#channels .ch-chatline{display:flex;align-items:flex-start;gap:9px;max-width:94%;margin:0}
+#channels .ch-avatar{background:#2b4f3e;color:#e5f4dc;flex:none;border-radius:7px;width:29px;height:29px;display:grid;place-items:center;font:bold 15px ui-monospace,monospace}
+#channels .ch-bubble{font-size:14px;line-height:1.65;background:white;border-radius:0 9px 9px 9px;padding:9px 13px;color:#273b2d}
+#channels .ch-chat details{margin:14px 0 0 38px}
+#channels .ch-chat details[open] summary{background:#c7e9ae;color:#26482c}
+#channels .ch-chat details .ch-bubble{margin-top:10px}
+#channels .ch-ding-card{border-left:3px solid #4c7ca4;padding-left:14px}
+#channels .ch-compare{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
+#channels .ch-compare div{background:#f1f1f7;border-radius:5px;padding:7px 9px;color:#424452;line-height:1.5;font-size:13px}
+#channels .ch-compare b{display:block;color:#56546b;font-size:11px;margin-bottom:1px}
+#channels .ch-receipt{margin-top:8px;color:#3c5f42;font-size:13px;line-height:1.5}
+@media(max-width:710px){
+ #channels .ch-body{grid-template-columns:1fr;gap:12px}#channels .ch-platforms{display:grid;grid-template-columns:1fr 1fr}#channels .ch-tab{min-height:52px;grid-template-columns:26px 1fr 12px;gap:7px;padding:8px}#channels .ch-icon{width:25px;height:25px}#channels .ch-icon svg{width:16px;height:16px}#channels .ch-tab-name{font-size:15px}#channels .ch-tab-sub{font-size:11px}#channels .ch-in{min-height:0}#channels .ch-panel-head .ch-mono{font-size:10px}
+}
+@media(prefers-reduced-motion:reduce){#channels .ch-tab{transition:none}}
+
+</style>
+<style>
+#architecture,#simulator,#sources,#channels,#delivery{scroll-margin-top:0}
+@media(max-width:660px){
+  .hero-art text[font-size="12.5"],.hero-art text[font-size="13"]{font-size:17px}
+  .hero-art text[font-size="16"]{font-size:21px}
+  .hero-art text[font-size="20"]{font-size:22px}
+}
+</style>
+</head>
+<body id="top">
+<a class="skip" href="#main">跳到正文</a>
+<header class="mast"><div class="wrap mast-row"><a class="wordmark" href="#top" aria-label="ZeRo OS 返回顶部"><svg viewBox="0 0 34 34" fill="none" aria-hidden="true"><rect x="1" y="1" width="32" height="32" rx="9" fill="#1b4333"/><path d="M7.5 10.5h18L10 23.5h16" stroke="#c5f4d7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="10.5" r="2.3" fill="#fcaa77"/><circle cx="26" cy="23.5" r="2.3" fill="#c5f4d7"/></svg>ZeRo OS</a><span class="mast-edition">设计图册</span><nav aria-label="页面目录"><a href="#architecture">系统架构</a><a href="#simulator">路由预演</a><a href="#sources">来源配置</a><a href="#channels">平台呈现</a><a href="#delivery">实施路径</a></nav></div></header>
+<main id="main">
+<section class="hero" aria-labelledby="page-title"><div class="wrap hero-grid"><div><div class="hero-meta"><span class="version">v0.1</span>离线设计演示 · 2026 年 11 月</div><h1 id="page-title">主动监听<br>与情境路由</h1><p class="intro">同一条发布失败，周一下午和周六晚上，该怎样提醒你？跟随一条事件，看 ZeRo 怎样选择受众、去向和时机。</p><div class="hero-actions"><a class="hero-primary" href="#simulator"><span aria-hidden="true">▷</span> 试一次路由</a><a class="hero-secondary" href="#architecture">查看系统架构</a></div></div>
+<figure class="hero-art"><svg viewBox="0 0 555 313" role="img" aria-labelledby="cover-svg-title cover-svg-desc"><title id="cover-svg-title">一条事件的两条可能路径</title><desc id="cover-svg-desc">GitHub 产生构建失败。工作日用户在电脑前时，可以在网页即时提醒。周末普通进展则可进入钉钉摘要。</desc>
+<defs><pattern id="cover-grid" patternUnits="userSpaceOnUse" width="16" height="16"><circle cx="1" cy="1" r=".75" fill="#bdcdbf"/></pattern></defs>
+<rect x="1" y="1" width="553" height="311" rx="18" fill="#e8eee5" stroke="#c1d1c2"/><rect x="2" y="2" width="551" height="309" rx="18" fill="url(#cover-grid)"/>
+<g fill="none" stroke="#92aa97" stroke-width="1.1"><path d="M18 33V18h15m490 0h14v15M18 280v15h15m490 0h14v-15"/></g>
+<path d="M118 109v28c0 19 12 26 30 26h37m-67-28v67c0 22 11 30 32 30h35" fill="none" stroke="#648b71" stroke-width="2.2"/>
+<g><rect x="56" y="37" width="374" height="70" rx="11" fill="#173c2f"/><rect x="76" y="54" width="37" height="37" rx="10" fill="#335b49"/><path d="M86 66a3 3 0 1 0 0-.2m11-1a3 3 0 1 0 0-.2m-11 13a3 3 0 1 0 0-.2m0-9v6m2-1 7-6" stroke="#c5f1d4" stroke-width="1.8" fill="none"/><text x="128" y="66" fill="#bcddc9" font-size="12.5" font-weight="550">GitHub Actions</text><text x="128" y="90" fill="#fff" font-size="20" font-weight="700">release / 构建失败</text><circle cx="403" cy="73" r="5" fill="#f3a983"/></g>
+<g><circle cx="185" cy="163" r="4" fill="#4b855f"/><rect x="196" y="137" width="296" height="53" rx="8" fill="#f7fbf5" stroke="#adc5b1"/><circle cx="220" cy="163" r="7" fill="#bfdb92"/><text x="236" y="158" font-size="13" fill="#49634e">工作日下午 · 网页活跃</text><text x="236" y="179" font-size="16" font-weight="640" fill="#204332">Web 即时提醒</text></g>
+<g><circle cx="185" cy="232" r="4" fill="#4b855f"/><rect x="196" y="207" width="296" height="53" rx="8" fill="#f5f4fa" stroke="#c0bad6"/><path d="M218 225a8 8 0 0 0 9 11 8 8 0 0 1-9-11z" fill="#796ba1" stroke="#796ba1" stroke-width="1.5"/><text x="236" y="228" font-size="13" fill="#625975">周六晚上 · 普通进展</text><text x="236" y="249" font-size="16" font-weight="640" fill="#43385a">进入工作摘要</text></g></svg><figcaption>同一订阅在两种情境下的示例决策</figcaption></figure>
+</div></section>
+<section id="architecture" aria-labelledby="arc-heading">
+  <div class="wrap">
+    <div class="arc-head">
+      <h2 id="arc-heading">事件如何抵达用户</h2>
+      <p>后台持续观察事件。命中订阅后，ZeRo 才决定是否调用 Agent、把成果放在哪里，以及何时提醒谁。</p>
+    </div>
+    <figure class="arc-board" aria-label="主动监听与情境路由架构图">
+      <div class="arc-key" aria-hidden="true">
+        <span class="arc-figure-id">ZeRo Server</span>
+        <span class="arc-key-items"><span class="arc-key-item"><i></i>事件与投递</span><span class="arc-key-item"><i></i>委托与情境</span></span>
+      </div>
+      <svg class="arc-desktop" viewBox="0 0 1100 366" role="img" aria-labelledby="arc-d-title arc-d-desc">
+        <title id="arc-d-title">ZeRo 从两个来源接收事件，按情境路由到归档和提醒目标</title>
+        <desc id="arc-d-desc">GitHub API 与 WXARC 本机文字流先经授权过滤并持久去重。四端的订阅委托、用户的时间和在场状态共同影响情境 Router，需要分析时才调用 Agent。成果归档和主动提醒各自选择目标。</desc>
+        <defs>
+          <marker id="arc-end" markerWidth="8" markerHeight="8" refX="6.8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 7 4 0 8 2 4Z" fill="#abd8b5"/></marker>
+          <marker id="arc-ctx-end" markerWidth="8" markerHeight="8" refX="6.8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 7 4 0 8 2 4Z" fill="#a1c5dd"/></marker>
+        </defs>
+        <g aria-hidden="true">
+          <text class="arc-col" x="35" y="62">事件来源</text>
+          <text class="arc-col" x="279" y="62">来源接入</text>
+          <text class="arc-col" x="856" y="62">两个独立决定</text>
+          <path class="arc-wire" d="M209 127H229Q238 127 238 136V178M209 227H229Q238 227 238 218V178M238 178H274" marker-end="url(#arc-end)"/>
+          <circle class="arc-node" cx="238" cy="178" r="4.4"/>
+          <path class="arc-wire" d="M474 178H527" marker-end="url(#arc-end)"/>
+          <path class="arc-wire" d="M755 178H805M805 178V136Q805 127 814 127H851" marker-end="url(#arc-end)"/>
+          <path class="arc-wire" d="M805 178V218Q805 227 814 227H851" marker-end="url(#arc-end)"/>
+          <circle class="arc-node" cx="805" cy="178" r="4.4"/>
+          <path class="arc-wirectx" d="M643 91V119" marker-end="url(#arc-ctx-end)"/>
+          <path class="arc-wirectx" d="M643 274V235" marker-end="url(#arc-ctx-end)"/>
+          <rect class="arc-box" x="35" y="90" width="174" height="74" rx="8"/>
+          <g transform="translate(52 106)" fill="none" stroke="#b6dec0" stroke-width="1.7"><path d="M5 4v13c0 5 12 4 12-2V9"/><circle cx="5" cy="3" r="2.7" fill="#23453a"/><circle cx="17" cy="7" r="2.7" fill="#23453a"/><circle cx="5" cy="20" r="2.7" fill="#23453a"/></g>
+          <text class="arc-n" x="82" y="127">GitHub</text><text class="arc-copy" x="51" y="149">构建状态 / PR 讨论</text>
+          <rect class="arc-box" x="35" y="190" width="174" height="74" rx="8"/>
+          <g transform="translate(52 206)" stroke="#b6dec0" stroke-width="1.75" fill="none" stroke-linecap="round"><path d="M1 4h19v12h-9l-5 4v-4H1z"/><path d="M5 8h11M5 12h7"/></g>
+          <text class="arc-n" x="82" y="227">WXARC</text><text class="arc-copy" x="51" y="249">本机微信文字事件</text>
+          <rect class="arc-box" x="279" y="130" width="195" height="96" rx="8"/>
+          <g transform="translate(295 147)" fill="none" stroke="#b6dec0" stroke-width="1.7" stroke-linejoin="round"><path d="M0 0h18l-6 8v5l-5 2V8z"/></g>
+          <text class="arc-n" x="295" y="190">事件收件箱</text><text class="arc-copy" x="295" y="212">授权匹配 · 持久化去重</text>
+          <rect class="arc-context" x="522" y="26" width="244" height="64" rx="8"/>
+          <text class="arc-col" x="540" y="52">用户委托与订阅</text><text class="arc-copy" x="540" y="73">Web、微信、飞书、钉钉入口</text>
+          <rect class="arc-router" x="532" y="123" width="223" height="108" rx="9"/>
+          <path d="M545 137h12m-12 0v12m198 69h-12m12 0v-12" stroke="#8f805e" fill="none"/>
+          <text class="arc-min arc-rtext" x="552" y="149">ZeRo</text>
+          <text class="arc-rtext" x="552" y="183" font-size="28" font-weight="740">情境 Router</text>
+          <text class="arc-rsub" x="552" y="209">按需调用 Agent 分析</text>
+          <rect class="arc-context" x="495" y="276" width="296" height="62" rx="8"/>
+          <text class="arc-col" x="512" y="299">当时的情境</text><text class="arc-copy" x="512" y="321">工作日 / 在场信号 / 紧急度 / 偏好</text>
+          <rect class="arc-box" x="856" y="90" width="211" height="74" rx="8"/>
+          <text class="arc-n" x="874" y="122">成果归档</text><text class="arc-copy" x="874" y="147">如指定飞书文档、项目记录</text>
+          <rect class="arc-box" x="856" y="190" width="211" height="74" rx="8"/>
+          <text class="arc-n" x="874" y="222">提醒用户</text><text class="arc-copy" x="874" y="247">选受众、渠道与投递时间</text>
+        </g>
+      </svg>
+      <svg class="arc-phone" viewBox="0 0 356 567" role="img" aria-labelledby="arc-m-title arc-m-desc">
+        <title id="arc-m-title">从事件来源到情境路由的纵向架构图</title>
+        <desc id="arc-m-desc">从 GitHub 或 WXARC 获取的事件，在本机授权匹配，命中后入库。四端委托与当前情境参与路由，分别决定任务归档与用户提醒。</desc>
+        <defs>
+          <marker id="arc-m-arr" markerWidth="8" markerHeight="8" refX="6.8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 7 4 0 8 2 4Z" fill="#abd8b5"/></marker>
+          <marker id="arc-m-ctx" markerWidth="8" markerHeight="8" refX="6.8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 7 4 0 8 2 4Z" fill="#a1c5dd"/></marker>
+        </defs>
+        <g aria-hidden="true">
+          <text class="arc-col" x="18" y="28">事件来源</text>
+          <rect class="arc-box" x="18" y="42" width="153" height="62" rx="7"/>
+          <text class="arc-n" x="30" y="68">GitHub</text><text class="arc-copy" x="30" y="90">构建状态 / PR 讨论</text>
+          <rect class="arc-box" x="185" y="42" width="153" height="62" rx="7"/>
+          <text class="arc-n" x="197" y="68">WXARC</text><text class="arc-copy" x="197" y="90">本机微信文字事件</text>
+          <path class="arc-wire" d="M94 104V120Q94 125 100 125H255Q261 125 261 119V104M178 125V145" marker-end="url(#arc-m-arr)"/>
+          <circle class="arc-node" cx="178" cy="125" r="4.5"/>
+          <rect class="arc-box" x="64" y="150" width="228" height="67" rx="7"/>
+          <text class="arc-n" x="178" y="177" text-anchor="middle">事件收件箱</text><text class="arc-copy" x="178" y="200" text-anchor="middle">授权匹配 · 持久化去重</text>
+          <path class="arc-wire" d="M178 217V338" marker-end="url(#arc-m-arr)"/>
+          <rect class="arc-context" x="18" y="244" width="141" height="59" rx="7"/><text class="arc-col" x="29" y="267">四端委托</text><text class="arc-copy" x="29" y="289">订阅、目标与权限</text>
+          <rect class="arc-context" x="197" y="244" width="141" height="59" rx="7"/><text class="arc-col" x="208" y="267">当时的情境</text><text class="arc-copy" x="208" y="289">时间、在场与偏好</text>
+          <path class="arc-wirectx" d="M88 303V319Q88 325 96 325H108V338" marker-end="url(#arc-m-ctx)"/>
+          <path class="arc-wirectx" d="M267 303V319Q267 325 259 325H248V338" marker-end="url(#arc-m-ctx)"/>
+          <rect class="arc-router" x="64" y="342" width="228" height="76" rx="8"/>
+          <text class="arc-rtext" x="178" y="374" text-anchor="middle" font-size="25" font-weight="740">ZeRo 情境 Router</text><text class="arc-rsub" x="178" y="399" text-anchor="middle">按需调用 Agent 分析</text>
+          <path class="arc-wire" d="M178 418V440M178 440H100Q94 440 94 446V465" marker-end="url(#arc-m-arr)"/>
+          <path class="arc-wire" d="M178 440H255Q261 440 261 446V465" marker-end="url(#arc-m-arr)"/>
+          <circle class="arc-node" cx="178" cy="440" r="4.5"/>
+          <rect class="arc-box" x="18" y="470" width="153" height="77" rx="7"/>
+          <text class="arc-n" x="30" y="499">成果归档</text><text class="arc-copy" x="30" y="524">飞书文档、项目记录</text>
+          <rect class="arc-box" x="185" y="470" width="153" height="77" rx="7"/>
+          <text class="arc-n" x="197" y="499">提醒用户</text><text class="arc-copy" x="197" y="524">渠道、受众与时机</text>
+        </g>
+      </svg>
+      <figcaption class="arc-caption"><b>读图</b>委托可以来自任一入口。成果可以归档到飞书，提醒则可选微信、钉钉、Web 或飞书，也可以延后。</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="simulator" aria-labelledby="sim-title">
+<div class="wrap">
+<p class="sim-kicker">Router / 情境预演</p>
+<h2 id="sim-title">这次该在哪里提醒？</h2>
+<p class="sim-intro">选一个场景，再改动一项条件，观察成果去向和提醒方式如何分别变化。这里使用模拟事件，仅在本页计算。</p>
+<div class="sim-presets" role="group" aria-label="选择预设情境"><span>载入情境</span>
+<button type="button" data-case="desk" aria-pressed="true">工作日在桌前</button>
+<button type="button" data-case="away" aria-pressed="false">工作日外出</button>
+<button type="button" data-case="evening" aria-pressed="false">晚间待决定</button>
+<button type="button" data-case="weekend" aria-pressed="false">周末发布进展</button>
+<button type="button" data-case="research" aria-pressed="false">研究资料更新</button></div>
+<div class="sim-panel"><form class="sim-form" id="sim-form">
+<h3>情境条件</h3>
+<fieldset class="sim-control"><legend>任务目的</legend>
+<label class="sim-choice"><input type="radio" name="task" value="release" checked><span>跟踪发布</span></label>
+<label class="sim-choice"><input type="radio" name="task" value="research"><span>整理研究</span></label></fieldset>
+<fieldset class="sim-control"><legend>日期</legend>
+<label class="sim-choice"><input type="radio" name="day" value="work" checked><span>工作日</span></label>
+<label class="sim-choice"><input type="radio" name="day" value="rest"><span>休息日</span></label></fieldset>
+<fieldset class="sim-control"><legend>时段</legend>
+<label class="sim-choice"><input type="radio" name="period" value="day" checked><span>日间</span></label>
+<label class="sim-choice"><input type="radio" name="period" value="night"><span>晚间</span></label></fieldset>
+<fieldset class="sim-control"><legend>电脑在场</legend>
+<label class="sim-choice"><input type="radio" name="presence" value="active" checked><span>在桌前</span></label>
+<label class="sim-choice"><input type="radio" name="presence" value="away"><span>已离开</span></label>
+<label class="sim-choice"><input type="radio" name="presence" value="unknown"><span>未知</span></label></fieldset>
+<fieldset class="sim-control"><legend>紧急程度</legend>
+<label class="sim-choice"><input type="radio" name="need" value="normal" checked><span>普通进展</span></label>
+<label class="sim-choice"><input type="radio" name="need" value="urgent"><span>需限时决定</span></label></fieldset>
+<label class="sim-permit"><input type="checkbox" name="wechat" checked>允许在非工作时段用微信提醒本人</label>
+</form>
+<div class="sim-decision" aria-labelledby="sim-result-title">
+<div class="sim-result-head"><h3 id="sim-result-title">路由决定</h3><span>模拟结果</span></div>
+<dl class="sim-output"><dt>成果归档</dt><dd id="sim-archive">Web 发布记录</dd><dt>提醒去向</dt><dd id="sim-destination">Web 收件箱</dd><dt>提醒时机</dt><dd class="sim-timing" id="sim-timing">现在展示</dd></dl>
+<div class="sim-why"><strong>为什么这样选</strong><p id="sim-reason">处于工作时段，近期有网页交互，直接在 Web 展示失败步骤和分析入口。</p></div>
+<p class="sim-sr" role="status" aria-live="polite" aria-atomic="true" id="sim-announcement"></p>
+</div></div></div>
+<script>
+(() => {
+ const root=document.getElementById('simulator');
+ const form=root.querySelector('#sim-form');
+ const defaults={task:'release',day:'work',period:'day',presence:'active',need:'normal',wechat:true};
+ const presets={
+   desk:{...defaults}, away:{...defaults,presence:'away'},
+   evening:{...defaults,period:'night',presence:'away',need:'urgent'},
+   weekend:{...defaults,day:'rest',period:'night',presence:'unknown'},
+   research:{...defaults,task:'research',day:'rest',presence:'unknown'}
+ };
+ const buttons=Array.from(root.querySelectorAll('[data-case]'));
+ function decide(s) {
+   const research=s.task==='research', urgent=s.need==='urgent';
+   const archive=research?'飞书研究文档':'Web 发布记录';
+   const result=(destination,timing,reason)=>({archive,destination,timing,reason});
+   if(research && !urgent) return result('静默归档','仅更新文档','订阅约定把新增资料写入指定的飞书文档。本次没有待决策事项，完成归档后无需另发提醒。');
+   if(s.day==='work' && s.period==='day') {
+     if(s.presence==='active') return result('Web 收件箱','现在展示',urgent?'现在是工作时段，且网页有近期交互。优先呈现待决定事项、截止时间与详情。':'处于工作时段，近期有网页交互，直接在 Web 展示失败步骤和分析入口。');
+     return result('钉钉项目会话','现在提醒',(s.presence==='away'?'用户已离开电脑':'网页在场状态未知')+'。使用已授权的钉钉项目会话，发送'+(urgent?'待决定事项和截止时间。':'本次发布影响及跟进入口。'));
+   }
+   if(urgent && s.wechat) return result('微信私聊','现在提醒','存在明确截止时间，订阅允许非工作时段联系本人。私聊只包含待决定事项和截止时间，详情留在授权位置。');
+   if(urgent) return result('钉钉项目会话','现在提醒','事项需要及时决定，微信私聊未获允许。按本例授权，在钉钉项目会话发送工作事项摘要。');
+   if(s.day==='rest') return result('钉钉工作摘要','下个工作日', '休息日的普通进展进入下个工作日摘要。休息日偏好优先于一般的晚间提醒规则。');
+   return result('钉钉工作摘要','下个工作时段','工作已结束，普通进展加入下一工作时段的摘要。微信权限仅用于需要及时决定的事项。');
+ }
+ function state() {
+   const data=new FormData(form);
+   return {task:data.get('task'),day:data.get('day'),period:data.get('period'),presence:data.get('presence'),need:data.get('need'),wechat:form.elements.wechat.checked};
+ }
+ function render(announce=true) {
+   const s=state(), r=decide(s);
+   ['archive','destination','timing','reason'].forEach(key=>{root.querySelector('#sim-'+key).textContent=r[key]});
+   buttons.forEach(btn=>{
+     const p=presets[btn.dataset.case];
+     btn.setAttribute('aria-pressed',String(Object.keys(p).every(key=>p[key]===s[key])));
+   });
+   if(announce) root.querySelector('#sim-announcement').textContent='模拟结果。成果归档至'+r.archive+'。提醒方式为'+r.destination+'。'+r.timing+'。'+r.reason;
+ }
+ buttons.forEach(btn=>btn.addEventListener('click',()=>{
+   Object.entries(presets[btn.dataset.case]).forEach(([key,v])=>{
+     if(key==='wechat') form.elements[key].checked=v; else form.elements[key].value=v;
+   });
+   render();
+ }));
+ form.addEventListener('change',()=>render());
+ form.addEventListener('submit',event=>event.preventDefault());
+ render(false);
+})();
+</script></section>
+
+<section id="sources" aria-labelledby="src-title">
+<div class="wrap">
+<header class="src-heading"><h2 id="src-title">选择监听来源</h2><p>选一个仓库或微信会话，再指定什么变化值得交给 Agent。</p></header>
+<div class="src-shell">
+<div class="src-toolbar"><div class="src-tabs" role="group" aria-label="选择事件来源"><button type="button" class="src-tab" data-src-mode="github" aria-controls="src-github" aria-pressed="true">GitHub</button><button type="button" class="src-tab" data-src-mode="wxarc" aria-controls="src-wxarc" aria-pressed="false">WXARC</button></div><span class="src-label">离线配置演示</span></div>
+<div class="src-columns">
+<div class="src-fields">
+<div id="src-github">
+<fieldset><legend>订阅仓库</legend><div class="src-row" id="src-repos"></div></fieldset>
+<form class="src-add" id="src-add"><input type="text" id="src-repo-input" aria-label="新仓库 owner/repo" placeholder="输入 owner/repo" maxlength="150" autocomplete="off" spellcheck="false"><button type="submit">添加仓库</button></form>
+<p id="src-error" class="src-error" role="status" hidden></p>
+<div class="src-settings" id="src-gh-settings"><label class="src-wide" id="src-edit-row"><span class="src-field-label">正在配置的仓库</span><select id="src-edit" aria-label="正在配置的仓库"></select></label>
+<label><span class="src-field-label">关注事件</span><select id="src-kind"><option value="ci">Actions 工作流失败</option><option value="pr">PR 普通评论中提及我</option></select></label>
+<label><span class="src-field-label" id="src-filter-label">分支</span><input type="text" id="src-filter" value="main" maxlength="100" autocomplete="off" spellcheck="false"></label></div>
+<p class="src-note">正式接入只保存只读凭证引用，服务端按仓库验证权限。此处使用虚构仓库，可自行添加样例。</p>
+</div>
+<div id="src-wxarc" hidden>
+<fieldset><legend>允许监听的会话</legend><div class="src-row"><label class="src-choice"><input type="checkbox" value="发布协调群" data-src-chat checked>发布协调群</label><label class="src-choice"><input type="checkbox" value="研究讨论组" data-src-chat>研究讨论组</label></div></fieldset>
+<div class="src-settings"><label class="src-wide"><span class="src-field-label">文字里包含</span><input type="text" id="src-keyword" value="发布失败" maxlength="60"></label></div>
+<p class="src-note">会话名称和消息均为合成示例。接入时按稳定会话标识筛选，首次从本机文字流尾部开始。未命中的正文留在本机，不写入 ZeRo、不交给模型。</p>
+</div>
+</div>
+<aside class="src-receipt" aria-label="订阅预览"><h3><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18l-2-1.5-2 1.5-2-1.5-2 1.5-2-1.5L6 21V3Z"/><path d="M9 8h6m-6 4h6"/></svg>订阅预览</h3>
+<dl><div><dt>监听范围</dt><dd id="src-scope"></dd></div><div><dt>进入收件箱的条件</dt><dd id="src-conditions"></dd></div><div><dt>起点与凭据</dt><dd id="src-boundary"></dd></div></dl>
+<button type="button" class="src-test" id="src-test">试跑一条合成事件</button><p id="src-result" class="src-result" role="status"></p></aside>
+</div></div></div>
+<script>
+(() => {
+  const root = document.getElementById('sources');
+  const find = selector => root.querySelector(selector);
+  const refs = Object.fromEntries(['github','wxarc','repos','repo-input','add','error','edit','edit-row','gh-settings','kind','filter','filter-label','keyword','scope','conditions','boundary','test','result'].map(id => [id, find('#src-' + id)]));
+  const repos = new Map([['sample/release-api', { enabled: true, kind: 'ci', ci: 'main', pr: '@zero' }], ['sample/web', { enabled: false, kind: 'ci', ci: 'main', pr: '@zero' }]]);
+  let mode = 'github', editing = 'sample/release-api';
+  const enabled = () => [...repos].filter(([, data]) => data.enabled);
+  const chats = () => [...root.querySelectorAll('[data-src-chat]:checked')].map(box => box.value);
+  const condition = data => data.kind === 'ci' ? data.ci + ' 分支上的工作流失败' : 'PR 普通评论提及 ' + data.pr;
+  const valid = data => data.kind === 'ci' ? Boolean(data.ci.trim()) : /^@[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(data.pr);
+  function repoList() {
+    refs.repos.replaceChildren();
+    for (const [name, data] of repos) {
+      const label = document.createElement('label');
+      label.className = 'src-choice';
+      const box = document.createElement('input');
+      box.type = 'checkbox'; box.checked = data.enabled;
+      label.append(box, document.createTextNode(name)); refs.repos.append(label);
+      box.addEventListener('change', () => {
+        data.enabled = box.checked;
+        if (data.enabled) editing = name;
+        editor(); receipt();
+      });
+    }
+  }
+  function editor() {
+    const picked = enabled();
+    if (!picked.some(([name]) => name === editing)) editing = picked[0]?.[0];
+    refs['gh-settings'].hidden = !picked.length;
+    refs['edit-row'].hidden = picked.length < 2;
+    refs.edit.replaceChildren(...picked.map(([name]) => new Option(name, name)));
+    if (!editing) return;
+    refs.edit.value = editing;
+    const data = repos.get(editing);
+    refs.kind.value = data.kind; refs.filter.value = data[data.kind];
+    refs['filter-label'].textContent = data.kind === 'ci' ? '分支' : '被提及的 GitHub 账号';
+  }
+  function receipt() {
+    refs.result.textContent = '';
+    if (mode === 'github') {
+      const picked = enabled();
+      refs.scope.textContent = picked.map(([name]) => name).join('、') || '尚未选择仓库';
+      refs.conditions.textContent = picked.map(([name, data]) => (picked.length > 1 ? name + ' · ' : '') + (valid(data) ? condition(data) : '请补全分支或有效的 @账号')).join('\n') || '勾选仓库后可预览条件';
+      refs.boundary.textContent = '从启用时起收取新事件，使用已授权的只读凭证引用。';
+      refs.test.disabled = !picked.length || picked.some(([, data]) => !valid(data));
+    } else {
+      const rooms = chats(), keyword = refs.keyword.value.trim();
+      refs.scope.textContent = rooms.join('、') || '尚未选择会话';
+      refs.conditions.textContent = keyword ? '所选会话的文字包含「' + keyword + '」' : '请填写要匹配的关键词';
+      refs.boundary.textContent = '从当前文字流尾部起读，重连后从已提交的位置继续。';
+      refs.test.disabled = !rooms.length || !keyword;
+    }
+  }
+  root.querySelectorAll('[data-src-mode]').forEach(button => button.addEventListener('click', () => {
+    mode = button.dataset.srcMode;
+    root.querySelectorAll('[data-src-mode]').forEach(b => b.setAttribute('aria-pressed', String(b === button)));
+    refs.github.hidden = mode !== 'github'; refs.wxarc.hidden = mode !== 'wxarc'; receipt();
+  }));
+  refs.add.addEventListener('submit', event => {
+    event.preventDefault();
+    const name = refs['repo-input'].value.trim();
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\/[a-zA-Z0-9_.-]+$/.test(name)) {
+      refs.error.hidden = false; refs.error.textContent = '请按 owner/repo 的格式填写仓库。'; refs['repo-input'].focus(); return;
+    }
+    const known = [...repos.keys()].find(key => key.toLowerCase() === name.toLowerCase()) || name;
+    if (!repos.has(known)) repos.set(known, {enabled:true, kind:'ci', ci:'main', pr:'@zero'});
+    repos.get(known).enabled = true; editing = known; refs['repo-input'].value = ''; refs.error.hidden = true;
+    repoList(); editor(); receipt();
+  });
+  refs.edit.addEventListener('change', () => { editing = refs.edit.value; editor(); receipt(); });
+  refs.kind.addEventListener('change', () => { repos.get(editing).kind = refs.kind.value; editor(); receipt(); });
+  refs.filter.addEventListener('input', () => { const data = repos.get(editing); data[data.kind] = refs.filter.value.trim(); receipt(); });
+  refs.keyword.addEventListener('input', receipt);
+  root.querySelectorAll('[data-src-chat]').forEach(box => box.addEventListener('change', receipt));
+  refs.test.addEventListener('click', () => {
+    const item = mode === 'wxarc' ? '「' + chats()[0] + '」的合成消息含有「' + refs.keyword.value.trim() + '」' : editing + ' · ' + condition(repos.get(editing));
+    refs.result.textContent = '模拟命中 1 条。' + item + '，将进入待处理收件箱。';
+  });
+  repoList(); editor(); receipt();
+})();
+</script>
+</section>
+
+<section id="channels" aria-labelledby="ch-title">
+<div class="wrap">
+<div class="ch-code">渠道呈现预览</div>
+<h2 id="ch-title">同一次发布失败，四种表达</h2>
+<p class="ch-intro">切换平台，查看同一条示例事件在不同受众面前的样子。实际投递由 Router 为每个受众选择已授权的目标。</p>
+<div class="ch-body">
+<div class="ch-platforms" role="tablist" aria-label="选择渠道样张">
+<button type="button" class="ch-tab" id="ch-tab-web" role="tab" aria-controls="ch-web" aria-selected="true" style="--chip-bg:#d4e1ce;--chip-ink:#37533d"><span class="ch-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="2" y="3.5" width="20" height="15" rx="2"/><path d="M3 8h18M9 21h6M12 18.5v2.5"/></svg></span><span><span class="ch-tab-name">Web</span><span class="ch-tab-sub">交互工作区</span></span><span class="ch-go" aria-hidden="true">→</span></button>
+<button type="button" class="ch-tab" id="ch-tab-weixin" role="tab" tabindex="-1" aria-controls="ch-weixin" aria-selected="false" style="--chip-bg:#d6e9d2;--chip-ink:#3d7248"><span class="ch-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M15.5 11.5C16 8 13.2 5 9.5 5c-3.8 0-6.9 2.6-6.9 5.8 0 1.6.8 3.1 2.4 4.3l-.5 2.3 2.6-1.2"/><path d="M20.3 17.1c.8-.7 1.4-1.7 1.4-3 0-2.3-2.5-4.4-5.6-4.4s-5.7 2.1-5.7 4.6 2.5 4.5 5.7 4.5c.7 0 1.3-.1 1.9-.3l2.4 1-.3-2.2"/></svg></span><span><span class="ch-tab-name">微信</span><span class="ch-tab-sub">个人决策</span></span><span class="ch-go" aria-hidden="true">→</span></button>
+<button type="button" class="ch-tab" id="ch-tab-ding" role="tab" tabindex="-1" aria-controls="ch-ding" aria-selected="false" style="--chip-bg:#dce7f0;--chip-ink:#37698b"><span class="ch-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m3.2 5 17.3 4.1-5.1 4.1 2.1.9-6.8 6.3 1.3-5.6-2.4-1.1-3.2-3.6 6.2 1.3-8.2-4.5Z"/></svg></span><span><span class="ch-tab-name">钉钉</span><span class="ch-tab-sub">项目群协同</span></span><span class="ch-go" aria-hidden="true">→</span></button>
+<button type="button" class="ch-tab" id="ch-tab-feishu" role="tab" tabindex="-1" aria-controls="ch-feishu" aria-selected="false" style="--chip-bg:#e4e1f0;--chip-ink:#5d5883"><span class="ch-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m3.2 13.7 7.4 2.8 10.2-9.8-7.6 13.8-7.5-2.9ZM3.9 4l9.6 9.6 2.2-2.3-6.4-5.7Z"/></svg></span><span><span class="ch-tab-name">飞书</span><span class="ch-tab-sub">话题与文档</span></span><span class="ch-go" aria-hidden="true">→</span></button>
+</div>
+<div>
+<section id="ch-web" class="ch-panel" role="tabpanel" aria-labelledby="ch-tab-web" tabindex="0" style="--head-bg:#eaf0e6;--dot:#4f775b">
+<div class="ch-panel-head"><span class="ch-live"></span>ZeRo Web · 发布观察<span class="ch-mono">A2UI</span></div>
+<div class="ch-in">
+<div class="ch-card-lead"><span class="ch-tag">发布受阻</span><span class="ch-mono">acme/api · release #128</span></div>
+<h3 class="ch-card-title">检查数据库迁移步骤</h3>
+<p class="ch-copy">构建和单元测试已通过，迁移检查失败，发布尚未进入生产环境。</p>
+<div class="ch-steps" aria-label="构建成功，测试成功，迁移失败，部署等待"><span>✓ 构建</span><span aria-hidden="true" class="ch-arrow">─</span><span>✓ 测试</span><span aria-hidden="true" class="ch-arrow">─</span><span class="ch-fail">× 迁移</span><span aria-hidden="true" class="ch-arrow">─</span><span>○ 部署</span></div>
+<details><summary>查看日志片段</summary><p class="ch-log"><code>migration-check · exit 1</code><br>迁移清单与仓库版本不匹配，部署步骤已跳过。</p></details>
+</div><div class="ch-caption">在电脑前时，可以展开证据、检查步骤，再决定下一步。</div>
+</section>
+<section hidden id="ch-weixin" class="ch-panel" role="tabpanel" aria-labelledby="ch-tab-weixin" tabindex="0" style="--head-bg:#e5eee1;--dot:#47854c">
+<div class="ch-panel-head"><span class="ch-live"></span>ZeRo · 微信私聊<span class="ch-mono">#128</span></div>
+<div class="ch-in ch-chat">
+<div class="ch-chatline"><span class="ch-avatar" aria-hidden="true">Z</span><div class="ch-bubble">你跟踪的 API 发布被迁移检查挡住了，生产版本还没变。如果今晚必须发版，需要你决定是否延长发布窗口。</div></div>
+<details><summary>试着追问「具体卡在哪里？」</summary><div class="ch-bubble">迁移清单和仓库里的版本对不上。构建、单元测试都过了，修复清单后再重跑检查。</div></details>
+</div><div class="ch-caption">个人提醒只保留判断所需的信息，文字追问继续同一任务。</div>
+</section>
+<section hidden id="ch-ding" class="ch-panel" role="tabpanel" aria-labelledby="ch-tab-ding" tabindex="0" style="--head-bg:#e7eff5;--dot:#4f799d">
+<div class="ch-panel-head"><span class="ch-live"></span>钉钉 · API 发布项目群<span class="ch-mono">#128</span></div>
+<div class="ch-in"><div class="ch-ding-card">
+<div class="ch-card-lead"><span class="ch-tag">待跟进</span><span>release · main</span></div>
+<h3 class="ch-card-title">本次发布暂缓，待修正迁移清单</h3>
+<p class="ch-copy">影响范围为本次 API 发布，线上版本保持不变。需要一位同事检查清单并同步修复进度。</p>
+<span class="ch-divider"></span><button type="button" class="ch-act" id="ch-claim">我来跟进</button>
+<div class="ch-receipt" id="ch-receipt" role="status" aria-live="polite"></div></div></div>
+<div class="ch-caption">群卡公开处理状态，让团队知道谁已接手。</div>
+</section>
+<section hidden id="ch-feishu" class="ch-panel" role="tabpanel" aria-labelledby="ch-tab-feishu" tabindex="0" style="--head-bg:#ecebf5;--dot:#746ba4">
+<div class="ch-panel-head"><span class="ch-live"></span>飞书 · 发布排障话题<span class="ch-mono">#128</span></div>
+<div class="ch-in">
+<div class="ch-card-lead"><span>排障记录</span><span aria-hidden="true">·</span><span>第 2 次跟踪</span></div>
+<h3 class="ch-card-title">同一迁移检查再次失败</h3>
+<div class="ch-compare"><div><b>上次运行 · #127</b>清单版本不匹配</div><div><b>本次运行 · #128</b>相同错误，仍待修复</div></div>
+<details><summary>预览排障文档增量</summary><p class="ch-copy" style="margin-top:9px">在获准写入的《API 发布记录》中追加第 128 次运行、对比结论和待验证项，供下一次运行对照。</p></details>
+</div><div class="ch-caption">话题承接协作上下文，文档积累证据。归档与提醒可分别选择。</div>
+</section></div></div></div>
+<script>
+(() => {
+  const section = document.getElementById('channels');
+  const tabs = Array.from(section.querySelectorAll('[role=tab]'));
+  const pick = (target) => tabs.forEach(tab => {
+    const active = tab === target;
+    tab.setAttribute('aria-selected', String(active));
+    tab.tabIndex = active ? 0 : -1;
+    document.getElementById(tab.getAttribute('aria-controls')).hidden = !active;
+  });
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => pick(tab));
+    tab.addEventListener('keydown', (event) => {
+      let next;
+      if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = tabs.length - 1;
+      else if (['ArrowDown','ArrowRight'].includes(event.key)) next = (index + 1) % tabs.length;
+      else if (['ArrowUp','ArrowLeft'].includes(event.key)) next = (index + tabs.length - 1) % tabs.length;
+      else return;
+      event.preventDefault(); pick(tabs[next]); tabs[next].focus();
+    });
+  });
+  const claim = section.querySelector('#ch-claim');
+  claim.addEventListener('click', () => {
+    claim.disabled = true;
+    claim.textContent = '已接手';
+    section.querySelector('#ch-ding .ch-tag').textContent = '跟进中';
+    section.querySelector('#ch-receipt').textContent = '样张已更新 · 负责人为当前用户。';
+  });
+})();
+</script>
+</section>
+<section id="delivery" aria-labelledby="delivery-title"><div class="wrap"><h2 id="delivery-title">从接入到实际投递</h2><p class="dl-lead">本页预演使用合成数据。真实事件与路由设置位于 <a href="http://localhost:3001/config?tab=listeners">本机 ZeRo 的「监听与收件箱」</a>。</p>
+<ol class="timeline">
+<li><span class="step" aria-hidden="true">1</span><h3>接通真实来源</h3><p>在 Web 添加多个 GitHub 仓库、WXARC 会话和匹配条件，结果进入授权收件箱。</p><div class="accept"><b>验收</b>服务重启后续读，超过 200 条积压能追完，同一条事件不重复建任务。</div></li>
+<li><span class="step" aria-hidden="true">2</span><h3>按情境选去向</h3><p>主动处理默认关闭。启用后，Agent 分析新事件，再按作息与在场状态选择 Web、指定微信私聊或延后。</p><div class="accept"><b>验收</b>可按编号查看事件的分析结果、路由理由与投递状态，历史收件记录可逐条手动处理。</div></li>
+<li><span class="step" aria-hidden="true">3</span><h3>后续 · 接入原生卡片</h3><p>钉钉主动发卡，飞书可写入授权文档。卡片上的接手、追问和文字回复回到原任务。</p><div class="accept"><b>验收</b>回复地址过期后仍可主动发钉钉卡。飞书回调校验身份，重复点击只生效一次。</div></li>
+</ol>
+<h3 class="eng-title">实现时需要守住的边界</h3>
+<div class="notes">
+<details><summary>当前能实际使用哪些能力？</summary><p>可选 GitHub 仓库和本机 WXARC 会话，持续接收命中的事件。在真实配置页，可先预演当前草稿，再启用 Agent 摘要和按作息、在场状态路由。已接入 Web 通知和指定 iLink 微信私聊。本页的 A2UI 操作、按编号追问、钉钉与飞书卡片和研究文档归档属于后续设计。具体操作见<a href="proactive-triggers.md">阶段使用说明</a>。</p></details>
+<details><summary>关掉网页，或者中途断线，会怎样？</summary><p>Server 持续运行，接入器把事件、订阅匹配和读取位置一起提交。发送前重新检查时间、在场和权限。一次提醒保留一个投递意图。平台可能已接收但回执丢失时，显示「微信投递待确认」并停止重发，可到所选私聊核对编号。</p></details>
+<details><summary>什么信息可以跨平台？</summary><p>先按任务受众和数据范围筛选目的地，再选展示深度。微信私聊可以只说「有一项发布决定」，项目日志留在已授权的工作空间。WXARC 未命中的文字在本机过滤，卡片被转发也不会赋予新用户执行权限。</p></details>
+<details><summary>何时考虑 Swift、蓝牙或 GitHub webhook？</summary><p>目前依据 Web 最近交互、手动状态、每周工作日和时段。需要系统锁屏、耳机连接等信号时，可由 Swift 原生端补充带时效的观测。GitHub 初版读取可观察到的状态变化，若要逐次捕获短暂出现又撤回的动作，再接签名 webhook。</p></details>
+</div></div></section></main>
+<footer class="foot"><div class="wrap"><strong>ZeRo OS · 主动监听与情境路由</strong><div class="links"><a href="proactive-triggers.md">完整设计文稿</a><a href="https://mp.weixin.qq.com/s/zoS7GlReWPhfCjENGxXCdg" rel="noreferrer">设计参考文章</a><a href="https://github.com/deepseek-ai/dsh-superagent-prototype" rel="noreferrer">DSH 原型</a><a href="#top">返回顶部 ↑</a></div></div></footer>
+<script>
+(() => {
+  const links = [...document.querySelectorAll('.mast nav a')];
+  const sections = links.map(link => document.querySelector(link.hash));
+  let scheduled = false;
+  function syncNavigation() {
+    const line = parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop) + 12;
+    let index = -1;
+    sections.forEach((section, i) => { if (section.getBoundingClientRect().top <= line) index = i; });
+    links.forEach((link, i) => {
+      link.classList.toggle('active', i === index);
+      if (i === index) link.setAttribute('aria-current', 'location');
+      else link.removeAttribute('aria-current');
+    });
+    scheduled = false;
+  }
+  function requestSync() {
+    if (!scheduled) { scheduled = true; requestAnimationFrame(syncNavigation); }
+  }
+  addEventListener('scroll', requestSync, { passive:true });
+  addEventListener('resize', requestSync);
+  syncNavigation();
+})();
+</script>
+</body></html>

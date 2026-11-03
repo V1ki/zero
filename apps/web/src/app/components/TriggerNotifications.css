@@ -1,0 +1,36 @@
+.trigger-web-notice {
+  position: fixed;
+  z-index: 90;
+  right: 16px;
+  bottom: max(18px, env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: calc(100vw - 32px);
+  padding: 12px 14px;
+  border: 1px solid var(--color-border-hover);
+  border-radius: 12px;
+  color: var(--color-text-primary);
+  background: var(--color-float);
+  box-shadow: 0 5px 20px rgb(0 0 0 / 25%);
+  font-size: 13px;
+}
+
+.trigger-web-notice > svg,
+.trigger-web-notice a {
+  color: var(--color-accent);
+}
+.trigger-web-notice a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.trigger-web-notice button {
+  padding: 4px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+@media (max-width: 767px) {
+  .trigger-web-notice {
+    bottom: calc(68px + env(safe-area-inset-bottom));
+  }
+}

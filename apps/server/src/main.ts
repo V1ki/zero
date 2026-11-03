@@ -32,6 +32,7 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
     await startStartupRuntimeChannels(runtime)
     markStartupRuntimeReady(runtime)
   } catch (error) {
+    await runtime.zero.listeners.close()
     // onCoreReady may already have exposed the Worker through the Web API.
     try {
       await runtime.core.worker.close()

@@ -14,7 +14,6 @@ import type {
   ChatGptUsageSnapshot,
   ClaudeUsageSnapshot,
   ConfigData,
-  ConfigTab,
   ModelPoolDraft,
   ModelPoolView,
   RuntimeModelPoolView,
@@ -26,7 +25,6 @@ export function useConfigPageState() {
   const [catalogRefreshing, setCatalogRefreshing] = useState<string | null>(null)
   const [channels, setChannels] = useState<ChannelConfig[]>([])
   const [loading, setLoading] = useState(true)
-  const [tab, setTab] = useState<ConfigTab>('models')
   const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set())
   const [showAddSecret, setShowAddSecret] = useState(false)
   const [newSecretKey, setNewSecretKey] = useState('')
@@ -261,7 +259,6 @@ export function useConfigPageState() {
     catalogRefreshing,
     channels,
     loading,
-    tab,
     revealedKeys,
     showAddSecret,
     newSecretKey,
@@ -273,7 +270,6 @@ export function useConfigPageState() {
     deleteSecretKey,
     showRollbackConfirm,
     ...oauthUsage,
-    setTab,
     setShowAddSecret,
     setNewSecretKey,
     setNewSecretValue,

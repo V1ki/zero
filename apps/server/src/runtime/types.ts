@@ -16,6 +16,7 @@ import type { Notification } from '@zero-os/shared'
 import type { HeartbeatWriter } from '@zero-os/supervisor'
 import type { RepairEngine } from '@zero-os/supervisor'
 import type { ChannelAdapter } from '../channels/adapter'
+import type { ListenerRuntime } from '../triggers/runtime'
 import type { EventBus } from './bus'
 import type { ChannelRecoveryController } from './channel-recovery'
 import type { ChannelRuntimeDefinition } from './channel-runtime/types'
@@ -48,6 +49,7 @@ export interface ZeroOS {
   repairEngine: RepairEngine
   heartbeat: HeartbeatWriter
   scheduler: CronScheduler
+  listeners: ListenerRuntime
   bus: EventBus
   channels: Map<string, Channel>
   channelAdapters: Map<string, ChannelAdapter>

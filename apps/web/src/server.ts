@@ -91,7 +91,7 @@ export function startWebServer(zero: ZeroOS): { port: number } {
       }
 
       // Everything else goes through Hono
-      return server.fetch(req)
+      return server.fetch(req, { remoteAddress: srv.requestIP(req)?.address })
     },
     websocket: {
       open(ws: WebSocketClient) {

@@ -1,4 +1,5 @@
 import { Outlet } from '@tanstack/react-router'
+import { TriggerNotifications } from './components/TriggerNotifications'
 import { ChatDrawer } from './components/layout/ChatDrawer'
 import { Sidebar } from './components/layout/Sidebar'
 import { TabBar } from './components/layout/TabBar'
@@ -39,6 +40,7 @@ export function RootLayout() {
 
       {/* Toast notifications */}
       <ToastContainer />
+      <TriggerNotifications />
     </>
   )
 }

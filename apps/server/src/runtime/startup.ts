@@ -7,7 +7,7 @@ import {
   type SessionManager,
   registerBuiltinCommands,
 } from '@zero-os/core'
-import type { MetricsDB, ObservabilityStore } from '@zero-os/observe'
+import { type MetricsDB, type ObservabilityStore, TriggerStore } from '@zero-os/observe'
 import type { Vault } from '@zero-os/secrets'
 import {
   type Notification,
@@ -20,6 +20,10 @@ import type { ChannelAdapter } from '../channels/adapter'
 import { createBackgroundToolCompletionDeliveryHandler } from '../message/background-delivery'
 import { writeRestartTrigger } from '../system/restart-trigger'
 import { rebuildWebBundleAsync } from '../system/runtime'
+import { createTriggerAgent } from '../triggers/event-agent'
+import { TriggerRoutingRuntime } from '../triggers/routing-runtime'
+import { ListenerRuntime } from '../triggers/runtime'
+import { createTriggerWeixin } from '../triggers/weixin-delivery'
 import type { BusPayload, EventBus } from './bus'
 import { type ChannelRecoveryController, createChannelRecoveryController } from './channel-recovery'
 import {
@@ -55,6 +59,7 @@ export interface StartupRuntime {
 }
 
 interface StartupRuntimeShell {
+  listeners: ListenerRuntime
   channels: Map<string, Channel>
   channelAdapters: Map<string, ChannelAdapter>
   channelDefinitions: Map<string, ChannelRuntimeDefinition>
@@ -96,6 +101,7 @@ export async function createStartupRuntime({
     bus,
     channels: shell.channels,
     channelRecovery: shell.channelRecovery,
+    listeners: shell.listeners,
     addNotification: shell.addNotification,
     skipProcessExit,
   })
@@ -138,6 +144,7 @@ export async function startStartupRuntimeChannels(runtime: StartupRuntime): Prom
     registerFeishuStreamingSessionSet: runtime.shutdownRuntime.registerFeishuStreamingSessionSet,
   })
   runtime.channelRecovery.start()
+  runtime.zero.listeners.start()
 }
 
 export function markStartupRuntimeReady(runtime: StartupRuntime): void {
@@ -203,7 +210,17 @@ async function createStartupRuntimeShell({
     heartbeat: core.heartbeat,
   })
 
+  const store = new TriggerStore(join(zeroDir, 'listeners', 'inbox.sqlite'))
+  const routing = new TriggerRoutingRuntime(store.routing, {
+    analyze: createTriggerAgent(core),
+    weixin: createTriggerWeixin({
+      channels,
+      channelDefinitions,
+      sessionManager: core.sessionManager,
+    }),
+  })
   return {
+    listeners: new ListenerRuntime(store, (ref) => core.vault.get(ref), routing),
     channels,
     channelAdapters,
     channelDefinitions,
@@ -220,6 +237,7 @@ function createStartupShutdownRuntime({
   bus,
   channels,
   channelRecovery,
+  listeners,
   addNotification,
   skipProcessExit,
 }: {
@@ -229,6 +247,7 @@ function createStartupShutdownRuntime({
   bus: EventBus
   channels: Map<string, Channel>
   channelRecovery: ChannelRecoveryController
+  listeners: ListenerRuntime
   addNotification(n: Omit<Notification, 'id' | 'createdAt'>): Notification
   skipProcessExit?: boolean
 }): ShutdownRuntime {
@@ -248,6 +267,7 @@ function createStartupShutdownRuntime({
     sessionManager: core.sessionManager,
     channels,
     stopChannelRecovery: () => channelRecovery.stop(),
+    closeListeners: () => listeners.close(),
     closeWorker: () => core.worker.close(),
     disposeRuntimeEventListeners,
     disposePricing: () => {
@@ -737,6 +757,7 @@ function createZeroOSHandle({
     repairEngine: core.repairEngine,
     heartbeat: core.heartbeat,
     scheduler: core.scheduler,
+    listeners: shell.listeners,
     channels: shell.channels,
     channelAdapters: shell.channelAdapters,
     channelDefinitions: shell.channelDefinitions,

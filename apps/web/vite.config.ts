@@ -14,7 +14,20 @@ export default defineConfig({
   },
   server: {
     port: 3000,
+    fs: {
+      // Vite replaces its default deny list when configured. Retain it alongside ZeRo data.
+      deny: [
+        '.env',
+        '.env.*',
+        '*.{crt,pem}',
+        '**/.git/**',
+        '**/.zero/**',
+        '**/listeners/inbox.sqlite*',
+      ],
+    },
     proxy: {
+      // Keep the browser Host and client address for the listener API’s local-only boundary.
+      '/api/listeners': { target: 'http://localhost:3001', changeOrigin: false, xfwd: true },
       '/api': 'http://localhost:3001',
       '/ws': {
         target: 'ws://localhost:3001',

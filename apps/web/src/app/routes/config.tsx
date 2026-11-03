@@ -1,6 +1,8 @@
 import { Eye, EyeSlash, Plus, Trash } from '@phosphor-icons/react'
+import { useLocation, useNavigate } from '@tanstack/react-router'
 import { ConfirmDialog } from '../components/shared/ConfirmDialog'
 import { SkeletonCard } from '../components/shared/Skeleton'
+import { ConfigListenersTab } from './config-listeners-tab'
 import { ConfigModelsTab } from './config-models-tab'
 import { useConfigPageState } from './config-page-state'
 import { CONFIG_TABS, type ChannelConfig, type ConfigData } from './config-shared'
@@ -17,7 +19,6 @@ export function ConfigPage() {
     catalogRefreshing,
     channels,
     loading,
-    tab,
     revealedKeys,
     showAddSecret,
     newSecretKey,
@@ -32,7 +33,6 @@ export function ConfigPage() {
     chatgptUsageStateByProvider,
     claudeUsageByProvider,
     claudeUsageStateByProvider,
-    setTab,
     setNewPoolName,
     setShowAddSecret,
     setNewSecretKey,
@@ -57,6 +57,10 @@ export function ConfigPage() {
     toggleReveal,
     handleCancelAddSecret,
   } = useConfigPageState()
+  const navigate = useNavigate({ from: '/config' })
+  const search = useLocation({ select: (location) => location.searchStr })
+  const requestedTab = new URLSearchParams(search).get('tab')
+  const tab = CONFIG_TABS.find((item) => item.key === requestedTab)?.key ?? 'models'
 
   return (
     <div className="p-6 max-w-[1400px] mx-auto">
@@ -68,7 +72,9 @@ export function ConfigPage() {
           <button
             key={t.key}
             type="button"
-            onClick={() => setTab(t.key)}
+            onClick={() =>
+              void navigate({ search: (prev) => ({ ...prev, tab: t.key }), replace: true })
+            }
             className={`px-4 py-1.5 rounded-md text-[13px] transition-colors ${
               tab === t.key
                 ? 'bg-[var(--color-accent-glow)] text-[var(--color-accent)]'
@@ -147,6 +153,7 @@ export function ConfigPage() {
 
           {/* Channels tab */}
           {tab === 'channels' && <ChannelsTab channels={channels} />}
+          {tab === 'listeners' && <ConfigListenersTab />}
 
           {/* Version tab */}
           {tab === 'version' && (

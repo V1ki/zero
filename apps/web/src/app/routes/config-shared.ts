@@ -156,7 +156,14 @@ export interface ChannelConfig {
   codePath: string
 }
 
-export type ConfigTab = 'models' | 'scheduler' | 'fuse' | 'secrets' | 'channels' | 'version'
+export type ConfigTab =
+  | 'models'
+  | 'scheduler'
+  | 'fuse'
+  | 'secrets'
+  | 'channels'
+  | 'listeners'
+  | 'version'
 
 export const MODEL_POOL_STRATEGIES: { value: ModelPoolStrategy; label: string }[] = [
   { value: 'sticky_quota_aware_failover', label: 'Sticky quota-aware' },
@@ -170,6 +177,7 @@ export const CONFIG_TABS: { key: ConfigTab; label: string }[] = [
   { key: 'fuse', label: 'Fuse List' },
   { key: 'secrets', label: 'Secrets' },
   { key: 'channels', label: 'Channels' },
+  { key: 'listeners', label: '监听与收件箱' },
   { key: 'version', label: 'Version' },
 ]
 

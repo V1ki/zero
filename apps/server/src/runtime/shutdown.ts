@@ -24,6 +24,7 @@ export interface ShutdownSequenceOptions {
   sessionManager: SessionManager
   channels: Map<string, Channel>
   activeStreamingSessionSets: Set<FeishuStreamingSession>[]
+  closeListeners?: () => Promise<void>
   stopChannelRecovery?: () => void
   closeWorker(): Promise<void>
   disposeRuntimeEventListeners(): void
@@ -76,6 +77,7 @@ export async function runShutdownSequence({
   channels,
   activeStreamingSessionSets,
   stopChannelRecovery,
+  closeListeners,
   closeWorker,
   disposeRuntimeEventListeners,
   disposePricing,
@@ -88,6 +90,7 @@ export async function runShutdownSequence({
   console.log('\n[ZeRo OS] Shutting down...')
   publishShuttingDownHeartbeat(heartbeat)
   stopChannelRecovery?.()
+  await closeListeners?.()
   scheduler.stop()
   console.log('[ZeRo OS] Scheduler stopped')
 

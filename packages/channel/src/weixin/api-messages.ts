@@ -1,4 +1,4 @@
-import { type ApiOptions, postJson } from './api-transport'
+import { type ApiOptions, ILinkError, postJson } from './api-transport'
 import {
   API_TIMEOUT_MS,
   EP_SEND_MESSAGE,
@@ -6,6 +6,20 @@ import {
   MSG_STATE_FINISH,
   MSG_TYPE_BOT,
 } from './constants'
+
+function checkSendReceipt(result: unknown, requireAck: boolean): void {
+  const receipt = result && typeof result === 'object' ? result : {}
+  const ret = 'ret' in receipt ? receipt.ret : undefined
+  const errcode = 'errcode' in receipt ? receipt.errcode : undefined
+  const rejection = [ret, errcode].find((code) => typeof code === 'number' && code !== 0)
+  if (rejection !== undefined) {
+    throw new ILinkError(`iLink 拒绝发送消息（业务码 ${rejection}）`, EP_SEND_MESSAGE, 200)
+  }
+  // iLink documents a top-level ret=0 for sendmessage; errcode alone is not an acknowledgement.
+  if (requireAck && (ret !== 0 || (errcode !== undefined && errcode !== 0))) {
+    throw new Error('iLink 没有返回可确认的发送回执')
+  }
+}
 
 export async function sendTextMessage(
   params: {
@@ -16,7 +30,7 @@ export async function sendTextMessage(
     contextToken?: string
     clientId: string
   },
-  opts: ApiOptions = {},
+  opts: ApiOptions & { requireAck?: boolean } = {},
 ): Promise<void> {
   if (!params.text || !params.text.trim()) {
     throw new Error('sendTextMessage: text must not be empty')
@@ -30,7 +44,7 @@ export async function sendTextMessage(
     item_list: [{ type: ITEM_TEXT, text_item: { text: params.text } }],
   }
   if (params.contextToken) msg.context_token = params.contextToken
-  await postJson(
+  const result = await postJson(
     opts.fetchImpl ?? globalThis.fetch,
     {
       baseUrl: params.baseUrl,
@@ -41,6 +55,7 @@ export async function sendTextMessage(
     },
     opts,
   )
+  checkSendReceipt(result, opts.requireAck === true)
 }
 
 export async function sendRawMessage(
@@ -51,7 +66,7 @@ export async function sendRawMessage(
   },
   opts: ApiOptions = {},
 ): Promise<void> {
-  await postJson(
+  const result = await postJson(
     opts.fetchImpl ?? globalThis.fetch,
     {
       baseUrl: params.baseUrl,
@@ -62,4 +77,5 @@ export async function sendRawMessage(
     },
     opts,
   )
+  checkSendReceipt(result, false)
 }

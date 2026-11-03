@@ -239,6 +239,7 @@ bun zero start
 - tool registry 可见性
 - logs 和 metrics
 - config 与 provider 状态
+- 配置页的「监听与收件箱」可选择 GitHub 仓库和本机 WXARC 微信会话。[设置与验证步骤](docs/proactive-triggers.md)
 - 基于 WebSocket 的实时更新
 
 前端技术栈包括 Vite、React 19、TanStack Router、TanStack Query、Zustand、Hono

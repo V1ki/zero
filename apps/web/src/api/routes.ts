@@ -2,6 +2,7 @@ import { MemoryGovernanceService } from '@zero-os/memory'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import type { ZeroOS } from '../../../server/src/main'
+import { createListenerRoutes } from './listener-routes'
 import { createMemoryRoutes } from './memory-routes'
 import { createMetricsRoutes } from './metrics-routes'
 import { createOperationalRoutes } from './operational-routes'
@@ -18,6 +19,8 @@ export function createRoutes(zero: ZeroOS) {
   const providerControl = new ProviderControlService(zero)
 
   const app = new Hono()
+    // Private listener endpoints must run before the legacy wildcard CORS middleware.
+    .route('/api/listeners', createListenerRoutes(zero.listeners))
     .use('*', cors())
 
     // System status

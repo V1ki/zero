@@ -136,6 +136,13 @@ export class WeixinInboundDispatcher {
     await this.getMessageHandler()?.(outbound)
   }
 
+  allowsDirectPeer(senderId: string): boolean {
+    return (
+      this.dmPolicy !== 'disabled' &&
+      (this.dmPolicy !== 'allowlist' || this.allowFrom.has(senderId))
+    )
+  }
+
   private isAllowedMessage(chatType: string, chatId: string, senderId: string): boolean {
     if (chatType === 'group') {
       if (this.groupPolicy === 'disabled') {
@@ -153,15 +160,10 @@ export class WeixinInboundDispatcher {
       return true
     }
 
-    if (this.dmPolicy === 'disabled') {
+    if (!this.allowsDirectPeer(senderId)) {
+      const reason = this.dmPolicy === 'disabled' ? 'dmPolicyDisabled' : 'dmNotAllowed'
       console.log(
-        `[WeixinChannel] ignored dm message channel=${this.channelName} sender=${safeId(senderId)} reason=dmPolicyDisabled`,
-      )
-      return false
-    }
-    if (this.dmPolicy === 'allowlist' && !this.allowFrom.has(senderId)) {
-      console.log(
-        `[WeixinChannel] ignored dm message channel=${this.channelName} sender=${safeId(senderId)} reason=dmNotAllowed`,
+        `[WeixinChannel] ignored dm message channel=${this.channelName} sender=${safeId(senderId)} reason=${reason}`,
       )
       return false
     }

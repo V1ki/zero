@@ -1,5 +1,6 @@
 import type { Channel, ChannelCapabilities, MessageHandler } from '../base'
-import { type ApiOptions, type FetchImpl, postJson } from './api-transport'
+import { sendTextMessage } from './api-messages'
+import { type ApiOptions, type FetchImpl, ILinkError, postJson } from './api-transport'
 import {
   CONFIG_TIMEOUT_MS,
   EP_NOTIFY_START,
@@ -356,6 +357,55 @@ export class WeixinChannel implements Channel {
   async sendToChat(chatId: string, content: string): Promise<void> {
     this.sessionPause.assertActive()
     await this.delivery.sendToChat(chatId, content)
+  }
+
+  canSendReminderTo(peerId: string): boolean {
+    return (
+      this.running &&
+      this.isConnected() &&
+      !this.sessionPause.isPaused() &&
+      !!peerId &&
+      peerId.trim() === peerId &&
+      !peerId.includes('*') &&
+      !peerId.endsWith('@chatroom') &&
+      peerId !== this.accountId &&
+      this.inboundDispatcher.allowsDirectPeer(peerId) &&
+      !!this.tokenStore.get(this.accountId, peerId)
+    )
+  }
+
+  /** One plain-text send. A lost response can mean the platform accepted the message. */
+  async sendReminderOnce(
+    peerId: string,
+    text: string,
+  ): Promise<'accepted' | 'unavailable' | 'rejected' | 'uncertain'> {
+    if (!this.canSendReminderTo(peerId) || !text.trim() || text.length > MAX_MESSAGE_LENGTH)
+      return 'unavailable'
+
+    try {
+      await sendTextMessage(
+        {
+          baseUrl: this.baseUrl,
+          token: this.token,
+          to: peerId,
+          text,
+          clientId: `zero-weixin-${crypto.randomUUID()}`,
+          contextToken: this.tokenStore.get(this.accountId, peerId),
+        },
+        { ...this.apiOpts(), requireAck: true },
+      )
+      return 'accepted'
+    } catch (error) {
+      if (
+        error instanceof ILinkError &&
+        error.status !== undefined &&
+        (error.status === 200 ||
+          (error.status >= 400 && error.status < 500 && error.status !== 408))
+      ) {
+        return 'rejected'
+      }
+      return 'uncertain'
+    }
   }
 
   async sendTypingIndicator(chatId: string): Promise<void> {
