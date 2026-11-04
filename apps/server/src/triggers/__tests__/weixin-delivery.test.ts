@@ -97,6 +97,7 @@ async function setup(sendResponse: () => Response, currentBindings = bindings) {
   return {
     sink: createTriggerWeixin(host),
     platforms: createMandatePlatforms(host),
+    channel,
     sent,
     disconnect,
     poll,
@@ -104,6 +105,61 @@ async function setup(sendResponse: () => Response, currentBindings = bindings) {
 }
 
 describe('directed iLink trigger reminders', () => {
+  test.each([
+    '{}',
+    '{"ret":0,"errmsg":"","trace_id":"unrelated metadata"}',
+    '{"ret":0,"message_id":18446744073709551615}',
+    '{"message_id":"18446744073709551615"}',
+  ])('accepts a Tencent success receipt without claiming a read confirmation: %s', async (raw) => {
+    const { platforms, sent } = await setup(() => new Response(raw), [])
+    const [dm] = platforms.listPersonalDirectTargets()
+    const result = await platforms.sendDirect(
+      dm,
+      '提醒',
+      'id',
+      new AbortController().signal,
+      () => true,
+    )
+    expect(result).toEqual({ status: 'accepted' })
+    expect(sent).toHaveLength(1)
+  })
+
+  test.each([
+    [
+      200,
+      '{"ret":-2,"errcode":-14,"errmsg":"private platform detail"}',
+      'rejected',
+      'ret=-2，errcode=-14',
+    ],
+    [403, 'private platform detail', 'rejected', 'HTTP 403'],
+    [429, 'private platform detail', 'rejected', 'HTTP 429'],
+    [408, 'private platform detail', 'unknown', 'HTTP 408'],
+    [503, 'private platform detail', 'unknown', 'HTTP 503'],
+    [200, 'private platform detail', 'unknown', '核对'],
+  ] as const)(
+    'forwards only safe receipt details to Router for HTTP %i',
+    async (code, raw, status, detail) => {
+      const { platforms, sent } = await setup(() => new Response(raw, { status: code }), [])
+      const [dm] = platforms.listPersonalDirectTargets()
+      const result = await platforms.sendDirect(
+        dm,
+        '提醒',
+        'id',
+        new AbortController().signal,
+        () => true,
+      )
+      expect(result).toMatchObject({ status, reason: expect.stringContaining(detail) })
+      expect(JSON.stringify(result)).not.toContain('private')
+      expect(sent).toHaveLength(1)
+    },
+  )
+
+  test('the existing one-shot channel method still returns the status without resending', async () => {
+    const { channel, sent } = await setup(() => Response.json({}))
+    expect(await channel.sendReminderOnce(peerId, '提醒')).toBe('accepted')
+    expect(sent).toHaveLength(1)
+  })
+
   test('manual private reminders send only the requested text and a stable, non-identifying client ID', async () => {
     const { platforms, sent } = await setup(() => Response.json({ ret: 0 }), [])
     const [dm] = platforms.listPersonalDirectTargets()
@@ -189,11 +245,21 @@ describe('directed iLink trigger reminders', () => {
   test.each([
     [() => Response.json({ ret: 0, errcode: -14, errmsg: 'sensitive response' }), false],
     [() => Response.json({ ret: -1 }), false],
-    [() => Response.json({}), true],
+    [() => new Response(''), true],
+    [() => Response.json(null), true],
+    [() => Response.json([]), true],
+    [() => Response.json(0), true],
+    [() => Response.json({ trace_id: 'arbitrary' }), true],
     [() => Response.json({ errcode: 0 }), true],
     [() => Response.json({ base_resp: { ret: 0 } }), true],
     [() => Response.json({ ret: '0' }), true],
     [() => Response.json({ ret: 0, errcode: null }), true],
+    [() => Response.json({ ret: 0, errmsg: 'sensitive error' }), true],
+    [() => Response.json({ ret: 0, base_resp: { ret: -1 } }), true],
+    [() => Response.json({ ret: 0, error: 'unknown delivery' }), true],
+    [() => Response.json({ message_id: '18446744073709551616' }), true],
+    [() => Response.json({ message_id: '0' }), true],
+    [() => Response.json({ message_id: {} }), true],
     [() => new Response('sensitive response'), true],
     [() => new Response('sensitive response', { status: 503 }), true],
     [

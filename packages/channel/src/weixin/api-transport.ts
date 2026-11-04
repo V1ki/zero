@@ -1,4 +1,10 @@
-import { CHANNEL_VERSION, ILINK_APP_CLIENT_VERSION, ILINK_APP_ID } from './constants'
+import {
+  CHANNEL_VERSION,
+  EP_GET_UPDATES,
+  EP_SEND_MESSAGE,
+  ILINK_APP_CLIENT_VERSION,
+  ILINK_APP_ID,
+} from './constants'
 import { randomWechatUin } from './crypto'
 
 export type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -106,6 +112,16 @@ function jsonStringify(payload: unknown): string {
   return JSON.stringify(payload)
 }
 
+const messageIdFields = new Set(['message_id', 'msg_id', 'svr_id'])
+
+// Use the JSON number's original digits before JavaScript rounds 64-bit message IDs.
+function preserveMessageId(key: string, value: unknown, context?: { source?: string }): unknown {
+  if (typeof value !== 'number' || !messageIdFields.has(key)) return value
+  if (context?.source !== undefined) return context.source
+  if (Number.isSafeInteger(value)) return String(value)
+  throw new Error('当前 JavaScript 运行时无法无损读取微信消息编号')
+}
+
 export async function postJson<T>(
   fetchImpl: FetchImpl,
   params: {
@@ -114,16 +130,18 @@ export async function postJson<T>(
     payload: Record<string, unknown>
     token: string | null
     timeoutMs: number
+    signal?: AbortSignal
   },
   opts: Pick<ApiOptions, 'botAgent'> = {},
 ): Promise<T> {
   const url = `${params.baseUrl.replace(/\/$/, '')}/${params.endpoint}`
   const body = jsonStringify({ ...params.payload, base_info: buildBaseInfo(opts.botAgent) })
+  const timeout = AbortSignal.timeout(params.timeoutMs)
   const response = await fetchImpl(url, {
     method: 'POST',
     headers: buildHeaders(params.token),
     body,
-    signal: AbortSignal.timeout(params.timeoutMs),
+    signal: params.signal ? AbortSignal.any([timeout, params.signal]) : timeout,
   })
   const raw = await response.text()
   if (!response.ok) {
@@ -133,7 +151,9 @@ export async function postJson<T>(
       response.status,
     )
   }
-  return JSON.parse(raw) as T
+  const isMessageResponse =
+    params.endpoint === EP_GET_UPDATES || params.endpoint === EP_SEND_MESSAGE
+  return JSON.parse(raw, isMessageResponse ? preserveMessageId : undefined) as T
 }
 
 export async function getJson<T>(

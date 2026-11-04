@@ -6,9 +6,9 @@ function weixinFixture(result: 'accepted' | 'uncertain') {
   const messages: string[] = []
   const channel = Object.assign(Object.create(WeixinChannel.prototype), {
     canSendReminderTo: (peer: string) => peer === 'self',
-    sendReminderOnce: async (_peer: string, text: string) => {
+    sendReminderWithReceipt: async (_peer: string, text: string) => {
       messages.push(text)
-      return result
+      return { status: result, reason: 'fixture' }
     },
   })
   const bindings = [

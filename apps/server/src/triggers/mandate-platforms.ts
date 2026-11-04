@@ -20,13 +20,9 @@ async function sendWeixinText(
   text: string,
   deliveryId?: string,
 ): Promise<MandateReceipt> {
-  const outcome = await channel.sendReminderOnce(peerId, text, deliveryId)
-  if (outcome === 'accepted') return { status: 'accepted' }
-  if (outcome === 'uncertain') return { status: 'unknown', reason: '微信发送结果待核对。' }
-  return {
-    status: 'rejected',
-    reason: outcome === 'rejected' ? '微信平台拒绝了此次提醒。' : '指定微信私聊已不可用。',
-  }
+  const receipt = await channel.sendReminderWithReceipt(peerId, text, deliveryId)
+  if (receipt.status === 'accepted') return receipt
+  return { status: receipt.status === 'uncertain' ? 'unknown' : 'rejected', reason: receipt.reason }
 }
 
 export function createMandatePlatforms(host: Host) {

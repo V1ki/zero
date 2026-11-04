@@ -7,18 +7,51 @@ import {
   MSG_TYPE_BOT,
 } from './constants'
 
+export class ILinkSendRejection extends ILinkError {
+  constructor(codes: string[]) {
+    super(`微信平台拒绝发送消息（${codes.join('，')}）。`, EP_SEND_MESSAGE, 200)
+  }
+}
+
+function validServerMessageId(value: unknown): boolean {
+  return (
+    typeof value === 'string' &&
+    /^[1-9]\d{0,19}$/.test(value) &&
+    BigInt(value) <= 0xffff_ffff_ffff_ffffn
+  )
+}
+
 function checkSendReceipt(result: unknown, requireAck: boolean): void {
-  const receipt = result && typeof result === 'object' ? result : {}
-  const ret = 'ret' in receipt ? receipt.ret : undefined
-  const errcode = 'errcode' in receipt ? receipt.errcode : undefined
-  const rejection = [ret, errcode].find((code) => typeof code === 'number' && code !== 0)
-  if (rejection !== undefined) {
-    throw new ILinkError(`iLink 拒绝发送消息（业务码 ${rejection}）`, EP_SEND_MESSAGE, 200)
+  if (result !== null && typeof result === 'object' && !Array.isArray(result)) {
+    const receipt = result as Record<string, unknown>
+    const codes = ['ret', 'errcode'].flatMap((key) => {
+      const value = receipt[key]
+      return typeof value === 'number' && Number.isSafeInteger(value) && value !== 0
+        ? [`${key}=${value}`]
+        : []
+    })
+    if (codes.length) throw new ILinkSendRejection(codes)
+    if (!requireAck) return
+
+    // Tencent's SDK accepts an empty JSON object and can return only the assigned uint64 ID.
+    if (Object.keys(receipt).length === 0) return
+    const validCodes =
+      (receipt.ret === undefined || receipt.ret === 0) &&
+      (receipt.errcode === undefined || receipt.errcode === 0)
+    const hasError =
+      (receipt.errmsg !== undefined && receipt.errmsg !== '' && receipt.errmsg !== 'ok') ||
+      receipt.error != null ||
+      receipt.base_resp != null
+    const validId = receipt.message_id === undefined || validServerMessageId(receipt.message_id)
+    if (
+      validCodes &&
+      !hasError &&
+      validId &&
+      (receipt.ret === 0 || receipt.message_id !== undefined)
+    )
+      return
   }
-  // iLink documents a top-level ret=0 for sendmessage; errcode alone is not an acknowledgement.
-  if (requireAck && (ret !== 0 || (errcode !== undefined && errcode !== 0))) {
-    throw new Error('iLink 没有返回可确认的发送回执')
-  }
+  if (requireAck) throw new Error('iLink 没有返回可确认的发送回执')
 }
 
 export async function sendTextMessage(

@@ -61,7 +61,7 @@ describe('sendTextMessage', () => {
       msg: { context_token?: string; item_list: unknown[] }
       base_info: { channel_version: string; bot_agent: string }
     }
-    expect(body.base_info.channel_version).toBe('2.4.3')
+    expect(body.base_info.channel_version).toBe('2.4.10')
     expect(body.base_info.bot_agent).toBe('OpenClaw')
     expect(body.msg.context_token).toBe('ctx')
     expect(Array.isArray(body.msg.item_list)).toBe(true)
@@ -133,14 +133,14 @@ describe('notifyStart / notifyStop', () => {
       '/ilink/bot/msg/notifystart',
       '/ilink/bot/msg/notifystop',
     ])
-    expect(calls.every((call) => call.body.base_info?.channel_version === '2.4.3')).toBe(true)
+    expect(calls.every((call) => call.body.base_info?.channel_version === '2.4.10')).toBe(true)
     expect(calls.every((call) => call.body.base_info?.bot_agent === 'OpenClaw')).toBe(true)
   })
 })
 
 describe('base_info bot_agent', () => {
   test('defaults and sanitizes bot_agent values', () => {
-    expect(buildBaseInfo()).toEqual({ channel_version: '2.4.3', bot_agent: 'OpenClaw' })
+    expect(buildBaseInfo()).toEqual({ channel_version: '2.4.10', bot_agent: 'OpenClaw' })
     expect(sanitizeBotAgent('Zero/1.0 (local test) Other/2.0')).toBe(
       'Zero/1.0 (local test) Other/2.0',
     )

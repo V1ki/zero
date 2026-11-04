@@ -70,17 +70,12 @@ export function createTriggerWeixin(zero: WeixinHost) {
     if (!channel?.canSendReminderTo(target.peerId)) {
       throw new TriggerWeixinDeliveryError('所选微信私聊当前不可用，请检查通道和会话绑定。', false)
     }
-    const outcome = await channel.sendReminderOnce(target.peerId, listenerReminderText(item, agent))
-    switch (outcome) {
-      case 'accepted':
-        return
-      case 'unavailable':
-        throw new TriggerWeixinDeliveryError('微信通道或私聊上下文不可用。', false)
-      case 'rejected':
-        throw new TriggerWeixinDeliveryError('微信平台已拒绝本次提醒。', false)
-      case 'uncertain':
-        throw new TriggerWeixinDeliveryError('微信发送回执不确定，请先核对会话。', true)
-    }
+    const receipt = await channel.sendReminderWithReceipt(
+      target.peerId,
+      listenerReminderText(item, agent),
+    )
+    if (receipt.status !== 'accepted')
+      throw new TriggerWeixinDeliveryError(receipt.reason, receipt.status === 'uncertain')
   }
   return { listTargets, listDirectTargets, send }
 }

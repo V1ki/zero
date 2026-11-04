@@ -263,6 +263,8 @@ channels:
 > 入站消息使用 `from_user_id` 作为会话 peer，`groupPolicy` 先保留为配置字段。
 > 回复处理期间会发送 Weixin typing 状态，处理完成或出错后发送 cancel typing。
 
+ZeRo 的收发协议对照腾讯微信插件 `2.4.10` 验证。微信把私聊的 `context_token` 随入站消息交给机器人。ZeRo 为该机器人和发件人保存最新值，供回复或主动提醒使用。机器人空闲时的收信轮询会更新读取进度，公开协议没有为机器人单独续签私聊凭据的接口。长时间未互动后遇到拒收，可以先给同一机器人发一条微信，再发起新的提醒。[腾讯微信插件协议](https://github.com/Tencent/openclaw-weixin/blob/v2.4.10/docs/protocol_zh_CN.md)
+
 ## macOS LaunchAgent
 
 这组命令只适用于 macOS。

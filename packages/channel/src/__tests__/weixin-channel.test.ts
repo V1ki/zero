@@ -84,7 +84,7 @@ describe('WeixinChannel.send', () => {
       base_info: { channel_version: string; bot_agent: string }
       msg: { item_list: Array<{ text_item?: { text?: string } }> }
     }
-    expect(body.base_info.channel_version).toBe('2.4.3')
+    expect(body.base_info.channel_version).toBe('2.4.10')
     expect(body.base_info.bot_agent).toBe('Zero/0.1 (channel test)')
     expect(body.msg.item_list[0].text_item?.text).toBe('hello')
   })
@@ -270,6 +270,59 @@ describe('WeixinChannel.send', () => {
 })
 
 describe('WeixinChannel lifecycle', () => {
+  test('deduplicates exact 64-bit IDs and cancels the pending request before resuming the cursor', async () => {
+    const cursors: string[] = []
+    const received: ZeroIncoming[] = []
+    const signals: AbortSignal[] = []
+    let pending = Promise.withResolvers<void>()
+    const ids = ['9007199254740992', '9007199254740993', '9007199254740992']
+    const text = 'verbatim "message_id": 18446744073709551615'
+    const messages = ids.map(
+      (id) =>
+        `{"message_id":${id},"from_user_id":"peer","seq":7,"item_list":[{"type":1,"text_item":{"text":${JSON.stringify(text)}}}]}`,
+    )
+    const { fetchImpl } = makeFetch(({ url, init }) => {
+      if (!url.includes('getupdates')) return Response.json({ ret: 0 })
+      cursors.push(JSON.parse(String(init?.body)).get_updates_buf)
+      if (cursors.length === 1) {
+        return new Response(`{"msgs":[${messages.join(',')}],"get_updates_buf":"seen"}`)
+      }
+      const signal = init?.signal
+      if (!signal) throw new Error('missing poll signal')
+      signals.push(signal)
+      pending.resolve()
+      // A late or already-buffered response must not advance the cursor on shutdown.
+      return new Promise<Response>((resolve) => {
+        signal.addEventListener(
+          'abort',
+          () => resolve(Response.json({ get_updates_buf: 'stale' })),
+          { once: true },
+        )
+      })
+    })
+    const channel = new WeixinChannel(
+      { accountId: 'a', token: 't', homeDir: tempDir },
+      { fetchImpl },
+    )
+    channel.setMessageHandler(async (message) => {
+      received.push(message)
+    })
+    try {
+      await channel.start()
+      await pending.promise
+      await channel.stop()
+      expect(signals[0].aborted).toBe(true)
+      pending = Promise.withResolvers<void>()
+      await channel.start()
+      await pending.promise
+      expect(cursors).toEqual(['', 'seen', 'seen'])
+      expect(received.map((m) => m.metadata?.messageId)).toEqual(ids.slice(0, 2))
+      expect(received.every((m) => m.content === text && m.metadata?.seq === 7)).toBe(true)
+    } finally {
+      await channel.stop()
+    }
+  })
+
   test('stop aborts a hanging poll fetch', async () => {
     let markFetchStarted: (() => void) | undefined
     const fetchStarted = new Promise<void>((resolve) => {

@@ -18,7 +18,7 @@ interface WeixinPollingLoopOptions {
   token: string
   channelName: string
   getApiOptions(): ApiOptions
-  isRunning(): boolean
+  signal: AbortSignal
   sleep(ms: number): Promise<void>
   now(): number
   setSessionPausedUntil(pausedUntilMs: number): void
@@ -26,7 +26,13 @@ interface WeixinPollingLoopOptions {
 }
 
 export async function getUpdates(
-  params: { baseUrl: string; token: string; syncBuf: string; timeoutMs?: number },
+  params: {
+    baseUrl: string
+    token: string
+    syncBuf: string
+    timeoutMs?: number
+    signal?: AbortSignal
+  },
   opts: ApiOptions = {},
 ): Promise<GetUpdatesResponse> {
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch
@@ -40,6 +46,7 @@ export async function getUpdates(
         payload: { get_updates_buf: params.syncBuf },
         token: params.token,
         timeoutMs,
+        signal: params.signal,
       },
       opts,
     )
@@ -56,7 +63,7 @@ export async function runWeixinPollingLoop(options: WeixinPollingLoopOptions): P
   let timeoutMs: number | undefined
   let consecutiveFailures = 0
 
-  while (options.isRunning()) {
+  while (!options.signal.aborted) {
     try {
       const response = await getUpdates(
         {
@@ -64,9 +71,11 @@ export async function runWeixinPollingLoop(options: WeixinPollingLoopOptions): P
           token: options.token,
           syncBuf,
           timeoutMs,
+          signal: options.signal,
         },
         options.getApiOptions(),
       )
+      if (options.signal.aborted) break
       const suggested = response.longpolling_timeout_ms
       if (typeof suggested === 'number' && suggested > 0) timeoutMs = suggested
 
@@ -100,7 +109,7 @@ export async function runWeixinPollingLoop(options: WeixinPollingLoopOptions): P
         void options.processMessage(msg)
       }
     } catch {
-      if (!options.isRunning()) break
+      if (options.signal.aborted) break
       consecutiveFailures = await sleepAfterPollingFailure(options, consecutiveFailures)
     }
   }

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { Channel, ChannelCapabilities, MessageHandler } from '../base'
-import { sendTextMessage } from './api-messages'
+import { ILinkSendRejection, sendTextMessage } from './api-messages'
 import { type ApiOptions, type FetchImpl, ILinkError, postJson } from './api-transport'
 import {
   CONFIG_TIMEOUT_MS,
@@ -19,6 +19,10 @@ import type { IncomingMessage as ILinkIncomingMessage, WeixinChannelConfig } fro
 import { WeixinTypingNotifier } from './typing'
 
 export { guessChatType } from './inbound'
+
+type WeixinReminderReceipt =
+  | { status: 'accepted' }
+  | { status: 'unavailable' | 'rejected' | 'uncertain'; reason: string }
 
 export interface WeixinChannelRuntimeOptions {
   /** Override fetch for tests */
@@ -249,6 +253,7 @@ export class WeixinChannel implements Channel {
     this.running = true
     this.connected = true
     this.pollAbort = new AbortController()
+    const signal = this.pollAbort.signal
     try {
       const response = await notifyStart(
         { baseUrl: this.baseUrl, token: this.token },
@@ -263,12 +268,13 @@ export class WeixinChannel implements Channel {
       const reason = err instanceof Error ? err.message : String(err)
       console.warn(`[WeixinChannel] notifyStart failed channel=${this.name}: ${reason}`)
     }
-    this.pollTask = this.pollLoop()
+    if (!signal.aborted) this.pollTask = this.pollLoop(signal)
   }
 
   async stop(): Promise<void> {
     this.running = false
-    this.pollAbort?.abort()
+    const controller = this.pollAbort
+    controller?.abort()
     const task = this.pollTask
     this.pollTask = null
     if (task) {
@@ -278,6 +284,7 @@ export class WeixinChannel implements Channel {
         // expected on abort
       }
     }
+    if (this.pollAbort !== controller) return
     this.pollAbort = null
     try {
       const response = await notifyStop(
@@ -291,7 +298,7 @@ export class WeixinChannel implements Channel {
       const reason = err instanceof Error ? err.message : String(err)
       console.warn(`[WeixinChannel] notifyStop failed channel=${this.name}: ${reason}`)
     }
-    this.connected = false
+    if (!this.running) this.connected = false
   }
 
   isConnected(): boolean {
@@ -321,7 +328,7 @@ export class WeixinChannel implements Channel {
     return { fetchImpl: this.fetchImpl, botAgent: this.botAgent }
   }
 
-  private async pollLoop(): Promise<void> {
+  private async pollLoop(signal: AbortSignal): Promise<void> {
     await runWeixinPollingLoop({
       homeDir: this.homeDir,
       accountId: this.accountId,
@@ -329,7 +336,7 @@ export class WeixinChannel implements Channel {
       token: this.token,
       channelName: this.name,
       getApiOptions: () => this.apiOpts(),
-      isRunning: () => this.running,
+      signal,
       sleep: this.sleep,
       now: this.now,
       setSessionPausedUntil: (pausedUntilMs) => {
@@ -386,9 +393,17 @@ export class WeixinChannel implements Channel {
     peerId: string,
     text: string,
     deliveryId?: string,
-  ): Promise<'accepted' | 'unavailable' | 'rejected' | 'uncertain'> {
+  ): Promise<WeixinReminderReceipt['status']> {
+    return (await this.sendReminderWithReceipt(peerId, text, deliveryId)).status
+  }
+
+  async sendReminderWithReceipt(
+    peerId: string,
+    text: string,
+    deliveryId?: string,
+  ): Promise<WeixinReminderReceipt> {
     if (!this.canSendReminderTo(peerId) || !text.trim() || text.length > MAX_MESSAGE_LENGTH)
-      return 'unavailable'
+      return { status: 'unavailable', reason: '微信通道或私聊上下文不可用。' }
 
     try {
       await sendTextMessage(
@@ -409,17 +424,16 @@ export class WeixinChannel implements Channel {
         },
         { ...this.apiOpts(), requireAck: true },
       )
-      return 'accepted'
+      return { status: 'accepted' }
     } catch (error) {
-      if (
-        error instanceof ILinkError &&
-        error.status !== undefined &&
-        (error.status === 200 ||
-          (error.status >= 400 && error.status < 500 && error.status !== 408))
-      ) {
-        return 'rejected'
+      if (error instanceof ILinkSendRejection) return { status: 'rejected', reason: error.message }
+      if (error instanceof ILinkError && error.status !== undefined) {
+        const code = error.status
+        if (code >= 400 && code < 500 && code !== 408)
+          return { status: 'rejected', reason: `微信平台拒绝了此次提醒（HTTP ${code}）。` }
+        return { status: 'uncertain', reason: `微信发送结果待核对（HTTP ${code}）。` }
       }
-      return 'uncertain'
+      return { status: 'uncertain', reason: '微信没有返回可确认的发送回执，请核对私聊。' }
     }
   }
 
