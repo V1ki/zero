@@ -53,6 +53,16 @@ test('only the selected live chat and bound operator can receive a Feishu task; 
   }
   const signal = new AbortController().signal
   expect(service.listTargets()).toEqual([expect.objectContaining(target)])
+  expect(service.listDirectTargets()).toEqual([])
+  channel.directPeers.recordVerifiedDirect('oc_private', 'ou_person')
+  expect(service.listDirectTargets()).toEqual([
+    expect.objectContaining({
+      platform: 'feishu',
+      channelId: 'office',
+      peerId: 'oc_private',
+      operatorId: 'ou_person',
+    }),
+  ])
   expect((await service.send({ ...target, operatorId: 'ou_other' }, payload, signal)).status).toBe(
     'rejected',
   )
@@ -72,6 +82,7 @@ test('only the selected live chat and bound operator can receive a Feishu task; 
   expect(probe).toHaveBeenCalledWith('docxTarget')
   connected.mockReturnValue(false)
   expect(service.listArchiveChannels()).toEqual([])
+  expect(service.listDirectTargets()).toEqual([])
   expect(
     await service.probeArchive({ channelId: 'office', documentId: 'docxTarget' }),
   ).toMatchObject({ ok: false })

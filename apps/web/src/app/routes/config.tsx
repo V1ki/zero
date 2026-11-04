@@ -1,5 +1,5 @@
 import { Eye, EyeSlash, Plus, Trash } from '@phosphor-icons/react'
-import { useLocation, useNavigate } from '@tanstack/react-router'
+import { Link, useLocation, useNavigate } from '@tanstack/react-router'
 import { ConfirmDialog } from '../components/shared/ConfirmDialog'
 import { SkeletonCard } from '../components/shared/Skeleton'
 import { ConfigListenersTab } from './config-listeners-tab'
@@ -423,9 +423,17 @@ function ConfigSecretsTab({
 function ChannelsTab({ channels }: { channels: ChannelConfig[] }) {
   return (
     <div className="card p-5 animate-fade-up">
-      <h3 className="text-[14px] font-semibold mb-3 text-[var(--color-text-secondary)]">
-        Channels
-      </h3>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-[14px] font-semibold text-[var(--color-text-secondary)]">Channels</h3>
+        <Link
+          to="/config"
+          search={{ tab: 'listeners' }}
+          hash="routing-settings"
+          className="text-[13px] underline"
+        >
+          选择 Router 使用的通知机器人
+        </Link>
+      </div>
       <div className="space-y-3">
         {channels.map((channel) => (
           <ChannelRow key={channel.name} channel={channel} />

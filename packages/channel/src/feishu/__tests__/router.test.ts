@@ -11,7 +11,7 @@ const payload = {
 const signal = () => new AbortController().signal
 const appId = 'cli_test'
 
-async function harness() {
+async function harness(botAppId = appId) {
   const create = mock(
     async (_input: unknown): Promise<unknown> => ({ code: 0, data: { message_id: 'om_native' } }),
   )
@@ -29,7 +29,7 @@ async function harness() {
     }),
   )
   let dispatcher: lark.EventDispatcher
-  const channel = new FeishuChannel({ name: 'office', appId, appSecret: 'fixture' }, {
+  const channel = new FeishuChannel({ name: 'office', appId: botAppId, appSecret: 'fixture' }, {
     createClient: () =>
       ({
         im: { message: { create } },
@@ -73,6 +73,58 @@ function actionEvent() {
 }
 
 describe('Feishu native Router', () => {
+  test('sends manual text without an inbox entry and namespaces the stable write key by bot and delivery', async () => {
+    const first = await harness()
+    const other = await harness('cli_other')
+    try {
+      const body = '处理 DeepSeek 的充值'
+      for (const h of [first, other]) {
+        const send = (id: string) =>
+          h.channel.router.sendDirectReminder('oc_private', id, body, signal(), () => true)
+        expect((await send('')).status).toBe('rejected')
+        expect(h.create).not.toHaveBeenCalled()
+        expect((await send('same-turn')).status).toBe('accepted')
+        expect((await send('same-turn')).status).toBe('accepted')
+        expect((await send('next-turn')).status).toBe('accepted')
+      }
+      const writes = (h: typeof first) =>
+        h.create.mock.calls.map(
+          ([request]) => (request as { data: { uuid: string; content: string } }).data,
+        )
+      const [a, again, next] = writes(first)
+      expect(JSON.parse(a.content)).toEqual({ text: body })
+      expect(a.uuid).toHaveLength(36)
+      expect(again.uuid).toBe(a.uuid)
+      expect(next.uuid).not.toBe(a.uuid)
+      expect(writes(other)[0].uuid).not.toBe(a.uuid)
+    } finally {
+      await first.channel.stop()
+      await other.channel.stop()
+    }
+  })
+
+  test('sends a personal inbox reminder as literal text, with a stable UUID and no task action', async () => {
+    const h = await harness()
+    const body = 'ZeRo 监听 #17\n<at user_id="all">有人吗</at>'
+    const send = (allowed: boolean) =>
+      h.channel.router.sendListenerReminder('oc_room', 17, body, signal(), () => allowed)
+    expect((await send(false)).status).toBe('rejected')
+    expect(h.create).not.toHaveBeenCalled()
+    expect(await send(true)).toEqual({ status: 'accepted', receipt: 'om_native' })
+    const request = h.create.mock.calls[0]?.[0] as { data: { content: string; uuid: string } }
+    expect(request).toMatchObject({
+      params: { receive_id_type: 'chat_id' },
+      data: { receive_id: 'oc_room', msg_type: 'text' },
+    })
+    expect(JSON.parse(request.data.content)).toEqual({ text: body.replace('<at', '＜at') })
+    expect(request.data.uuid).toHaveLength(36)
+    h.create.mockImplementationOnce(async () => ({ code: 0, data: {} }))
+    expect((await send(true)).status).toBe('unknown')
+    expect(h.create.mock.calls[1]?.[0]).toEqual(request)
+    expect(h.create).toHaveBeenCalledTimes(2)
+    await h.channel.stop()
+  })
+
   test('keeps overflow task references distinct from legacy inbox numbers in digests', async () => {
     const h = await harness()
     const entries = Array.from({ length: 10 }, (_, i) => ({
@@ -238,7 +290,8 @@ describe('Feishu native Router', () => {
     await h.channel.stop()
   })
 
-  test('the real SDK rechecks a delayed write after tenant token retrieval and leaves other writes independent', async () => {
+  const kinds = ['task card', 'personal reminder']
+  test.each(kinds)('rechecks delayed %s dispatch after SDK token retrieval', async (kind) => {
     let client: lark.Client
     const id = `test-router-dispatch-${crypto.randomUUID()}`
     const router = new FeishuRouterDelivery(() => client, id)
@@ -279,7 +332,10 @@ describe('Feishu native Router', () => {
         loggerLevel: lark.LoggerLevel.error,
         httpInstance: router.wrapTransport(http),
       })
-      const revoked = router.send('oc_revoked', payload, signal(), () => authorized)
+      const revoked =
+        kind === 'task card'
+          ? router.send('oc_revoked', payload, signal(), () => authorized)
+          : router.sendListenerReminder('oc_revoked', 3, 'ZeRo 监听 #3', signal(), () => authorized)
       await tokenStarted.promise
       authorized = false
       await client.im.message.create({
@@ -295,28 +351,40 @@ describe('Feishu native Router', () => {
     }
   })
 
-  test('a second transport attempt denied after a write is uncertain', async () => {
-    const h = await harness()
-    let authorized = true
-    let writes = 0
-    const http = lark.defaultHttpInstance.create({
-      adapter: async (config) => {
-        writes++
-        return { data: null, status: 200, statusText: 'OK', headers: {}, config }
-      },
-    })
-    const guarded = h.channel.router.wrapTransport(http)
-    h.create.mockImplementationOnce(async () => {
-      await guarded.request({ method: 'POST', url: 'http://fixture.invalid' })
-      authorized = false
-      return guarded.request({ method: 'POST', url: 'http://fixture.invalid' })
-    })
-    expect(
-      (await h.channel.router.send('oc_room', payload, signal(), () => authorized)).status,
-    ).toBe('unknown')
-    expect(writes).toBe(1)
-    await h.channel.stop()
-  })
+  test.each(kinds)(
+    'prevents a duplicate %s after a write and keeps its status uncertain',
+    async (kind) => {
+      const h = await harness()
+      let authorized = true
+      let writes = 0
+      const http = lark.defaultHttpInstance.create({
+        adapter: async (config) => {
+          writes++
+          return { data: null, status: 200, statusText: 'OK', headers: {}, config }
+        },
+      })
+      const guarded = h.channel.router.wrapTransport(http)
+      h.create.mockImplementationOnce(async () => {
+        await guarded.request({ method: 'POST', url: 'http://fixture.invalid' })
+        // A personal reminder permits only one transport attempt even when its grant stays active.
+        authorized = kind === 'personal reminder'
+        return guarded.request({ method: 'POST', url: 'http://fixture.invalid' })
+      })
+      const result =
+        kind === 'task card'
+          ? await h.channel.router.send('oc_room', payload, signal(), () => authorized)
+          : await h.channel.router.sendListenerReminder(
+              'oc_room',
+              19,
+              '#监听19',
+              signal(),
+              () => authorized,
+            )
+      expect(result.status).toBe('unknown')
+      expect(writes).toBe(1)
+      await h.channel.stop()
+    },
+  )
 
   test('a revocation after dispatch preserves the native receipt', async () => {
     const h = await harness()

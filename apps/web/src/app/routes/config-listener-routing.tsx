@@ -1,18 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import type {
-  TriggerRouteDestination,
-  TriggerRouteStatus,
-  TriggerRouteWork,
-  TriggerRoutingSettings,
-  TriggerRoutingSettingsSnapshot,
-  TriggerWeixinTarget,
+import {
+  type TriggerRouteDestination,
+  type TriggerRouteStatus,
+  type TriggerRouteWork,
+  type TriggerRoutingSettings,
+  type TriggerRoutingSettingsSnapshot,
+  getTriggerRouteBot,
+  triggerRoutePlatforms,
 } from '@zero-os/shared'
 import { useState } from 'react'
 import { apiFetch, apiPost, apiPut } from '../lib/api'
 import { RetentionField } from './config-retention-field'
 import { RoutingContextFields } from './config-routing-context'
 import { RoutingPreview } from './config-routing-preview'
+import { botDeliveryHints, useRoutingBots } from './routing-bots'
 
 const base = '/api/listeners/routing'
 const configKey = ['listeners', 'routing', 'config']
@@ -26,6 +28,8 @@ const periods = [
 const destinations: Record<TriggerRouteDestination, string> = {
   web: '网页',
   weixin: '微信',
+  dingtalk: '钉钉',
+  feishu: '飞书',
   defer: '延后提醒',
 }
 const statuses: Record<TriggerRouteStatus, string> = {
@@ -34,77 +38,87 @@ const statuses: Record<TriggerRouteStatus, string> = {
   ready: '等待路由',
   web: '已投递网页',
   deferred: '已延后',
-  sending: '正在发送微信',
-  sent: '微信平台已受理',
+  sending: '正在发送',
+  sent: '平台已受理',
   cancelled: '已撤销',
   failed: '处理失败',
-  uncertain: '微信投递待确认',
+  uncertain: '投递待确认',
 }
-type TargetOption = TriggerWeixinTarget & { label: string }
 
-export function useListenerRoutingConfig() {
+export function useListenerRoutingConfig(enabled = true) {
   return useQuery({
     queryKey: configKey,
-    queryFn: ({ signal }) => apiFetch<TriggerRoutingSettingsSnapshot>(`${base}/config`, { signal }),
+    enabled,
+    queryFn: ({ signal }) =>
+      apiFetch<TriggerRoutingSettingsSnapshot>(`${base}/preferences`, { signal }),
     retry: false,
   })
 }
 
-function targetKey(target: TriggerWeixinTarget) {
-  return JSON.stringify([target.channelId, target.peerId])
-}
-
-function WeixinTargetPicker({
-  value,
-  onChange,
-}: {
-  value: TriggerWeixinTarget | null
-  onChange: (target: TriggerWeixinTarget | null) => void
-}) {
-  const targets = useQuery({
-    queryKey: ['listeners', 'routing', 'targets'],
-    queryFn: ({ signal }) => apiFetch<{ targets: TargetOption[] }>(`${base}/targets`, { signal }),
-    enabled: false,
-    retry: false,
-  })
-  const options = targets.data?.targets ?? []
-  const key = value ? targetKey(value) : ''
+function PersonalDeliveryBots({
+  settings,
+  update,
+}: { settings: TriggerRoutingSettings; update: (patch: Partial<TriggerRoutingSettings>) => void }) {
+  const choices = useRoutingBots()
   return (
     <div className="listener-stack">
-      <div className="listener-row">
-        <label className="listener-field">
-          微信接收目标
-          <select
-            value={key}
-            onChange={(event) => {
-              const target = options.find((entry) => targetKey(entry) === event.target.value)
-              onChange(target ? { channelId: target.channelId, peerId: target.peerId } : null)
-            }}
-          >
-            <option value="">未绑定</option>
-            {value && !options.some((entry) => targetKey(entry) === key) && (
-              <option value={key}>
-                已绑定 · {value.channelId} / {value.peerId}
-              </option>
-            )}
-            {options.map((entry) => (
-              <option key={targetKey(entry)} value={targetKey(entry)}>
-                {entry.label} · {entry.channelId} / {entry.peerId}
-              </option>
-            ))}
-          </select>
-        </label>
-        <button type="button" disabled={targets.isFetching} onClick={() => void targets.refetch()}>
-          {targets.isFetching ? '正在读取目标…' : '选择微信接收目标'}
+      <div className="listener-actions">
+        <h3>通知机器人</h3>
+        <button type="button" disabled={choices.isFetching} onClick={() => void choices.refetch()}>
+          {choices.isFetching ? '正在读取机器人…' : '刷新机器人'}
         </button>
       </div>
-      <small>从 ZeRo 微信渠道选择接收通知的会话。WXARC 的监听会话单独配置。</small>
-      {targets.isSuccess && !options.length && (
-        <small>暂无可选目标，请先连接 ZeRo 微信渠道并与它通信。</small>
-      )}
-      {targets.error && (
+      <p className="listener-muted">
+        每个平台选一个已接入的机器人。你可以直接给它发消息，Router
+        会按下方规则决定何时由它主动提醒你。
+      </p>
+      <div className="listener-fields">
+        {triggerRoutePlatforms.map((platform) => {
+          const selected = getTriggerRouteBot(settings, platform)
+          const options = choices.data?.bots.filter((bot) => bot.platform === platform) ?? []
+          const current = options.find((bot) => bot.channelId === selected)
+          return (
+            <label className="listener-field" key={platform}>
+              {destinations[platform]}机器人
+              <select
+                aria-label={`${destinations[platform]}机器人`}
+                value={selected ?? ''}
+                onChange={(event) =>
+                  update({
+                    personalBots: {
+                      ...settings.personalBots,
+                      [platform]: event.target.value || null,
+                    },
+                  })
+                }
+              >
+                <option value="">未选择</option>
+                {selected && !current && (
+                  <option value={selected}>
+                    {selected} · {choices.data ? '已移除' : '已保存'}
+                  </option>
+                )}
+                {options.map((bot) => (
+                  <option key={bot.channelId} value={bot.channelId}>
+                    {bot.label}
+                    {bot.online ? ' · 在线' : ' · 离线'}
+                  </option>
+                ))}
+              </select>
+              {choices.data && !options.length && (
+                <small>暂无已接入的{destinations[platform]}机器人</small>
+              )}
+              {current && <small>{botDeliveryHints[current.deliveryState]}</small>}
+              {selected && !current && choices.data && (
+                <small>这个机器人已移除。请选择其他机器人。</small>
+              )}
+            </label>
+          )
+        })}
+      </div>
+      {choices.error && (
         <p className="listener-error" role="alert">
-          {targets.error.message}
+          {choices.error.message}
         </p>
       )}
     </div>
@@ -118,11 +132,12 @@ export function ListenerRoutingSettings({
   const [draft, setDraft] = useState<TriggerRoutingSettingsSnapshot | null>(null)
   const save = useMutation({
     mutationFn: (next: TriggerRoutingSettingsSnapshot) =>
-      apiPut<TriggerRoutingSettingsSnapshot>(`${base}/config`, next),
+      apiPut<TriggerRoutingSettingsSnapshot>(`${base}/preferences`, next),
     onSuccess: (saved) => {
       cache.setQueryData(configKey, saved)
       setDraft(null)
       void cache.invalidateQueries({ queryKey: resultsKey })
+      void cache.invalidateQueries({ queryKey: ['router-workspace'] })
     },
   })
   const current = draft ?? config.data
@@ -134,10 +149,13 @@ export function ListenerRoutingSettings({
   }
   const dirty = draft !== null && JSON.stringify(settings) !== JSON.stringify(config.data?.settings)
   const invalidTime = settings && settings.workStart === settings.workEnd
-  const needsTarget =
-    settings &&
-    [...periods.map(([key]) => settings[key]), settings.awayFallback].includes('weixin') &&
-    !settings.weixinTarget
+  const missingBots = settings
+    ? triggerRoutePlatforms.filter(
+        (platform) =>
+          [...periods.map(([key]) => settings[key]), settings.awayFallback].includes(platform) &&
+          !getTriggerRouteBot(settings, platform),
+      )
+    : []
   return (
     <section id="routing-settings" aria-label="Agent 与通知路由" className="card listener-stack">
       <div className="listener-actions">
@@ -234,6 +252,7 @@ export function ListenerRoutingSettings({
                 </label>
               ))}
             </fieldset>
+            <PersonalDeliveryBots settings={settings} update={update} />
             <div className="listener-fields">
               {periods.map(([key, label]) => (
                 <label key={key} className="listener-field">
@@ -273,17 +292,20 @@ export function ListenerRoutingSettings({
                   }
                 >
                   <option value="defer">延后提醒</option>
-                  <option value="weixin">转发到已选微信</option>
+                  {triggerRoutePlatforms.map((platform) => (
+                    <option key={platform} value={platform}>
+                      转到{destinations[platform]}机器人
+                    </option>
+                  ))}
                 </select>
               </label>
             </div>
             <RoutingContextFields settings={settings} update={update} />
-            <WeixinTargetPicker
-              value={settings.weixinTarget}
-              onChange={(weixinTarget) => update({ weixinTarget })}
-            />
-            {needsTarget && (
-              <small>当前有规则会投递微信。绑定可用的接收目标之前，这些通知会延后。</small>
+            {missingBots.length > 0 && (
+              <small>
+                当前规则会投递{missingBots.map((platform) => destinations[platform]).join('、')}
+                。选择可用的机器人之前，这些通知会延后。
+              </small>
             )}
             <div className="listener-row">
               <button className="listener-primary" type="submit" disabled={!dirty || !!invalidTime}>
@@ -362,6 +384,14 @@ function RoutingEntry({
   id,
 }: TriggerRouteWork & { routingEnabled: boolean; id?: string }) {
   const decision = route.decision
+  const target =
+    route.deliveryTarget ??
+    (route.weixinTarget && { ...route.weixinTarget, platform: 'weixin' as const })
+  const platform = target ? destinations[target.platform] : ''
+  const status =
+    platform && ['sending', 'sent', 'uncertain'].includes(route.status)
+      ? `${platform}${statuses[route.status]}`
+      : statuses[route.status]
   return (
     <article id={id} className="listener-stack listener-route-entry">
       <div className="listener-actions">
@@ -375,7 +405,7 @@ function RoutingEntry({
               : 'listener-route-status'
           }
         >
-          {statuses[route.status]}
+          {status}
         </span>
       </div>
       <h3>{event.title}</h3>
@@ -401,9 +431,9 @@ function RoutingEntry({
           · {route.firstDeferred.reason}
         </p>
       )}
-      {route.weixinTarget && (
+      {target && (
         <small>
-          微信目标 · {route.weixinTarget.channelId} / {route.weixinTarget.peerId}
+          {platform}机器人 · {target.channelId}
         </small>
       )}
       {decision?.destination === 'defer' && (
@@ -414,7 +444,7 @@ function RoutingEntry({
       )}
       {route.error && <p className="listener-error">{route.error}</p>}
       {route.status === 'uncertain' && (
-        <small>请到目标微信会话核对投递结果，系统已停止重发。</small>
+        <small>请在{platform}核对机器人的投递结果，系统已停止重发。</small>
       )}
       {route.status === 'cancelled' && (
         <small>来源监听已暂停或筛选已变更。如需处理这条历史事件，可以手动重新提交。</small>
@@ -482,7 +512,7 @@ export function ListenerRoutingResults({
             </Link>
           </>
         ) : (
-          '最近 50 条处理记录，含微信投递、延后复查和失败原因。'
+          '最近 50 条处理记录，含各平台的投递状态、延后复查和失败原因。'
         )}
       </p>
       {query.isLoading && <small>正在读取…</small>}

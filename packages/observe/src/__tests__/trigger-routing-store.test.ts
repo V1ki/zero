@@ -203,6 +203,365 @@ test('a definite send rejection can reroute without rerunning Agent; Web cursor 
   expect(store.routing.get(3)?.status).toBe('sent')
 })
 
+test('bound IM audiences survive older clients and the send claim records the actual recipient', () => {
+  const store = open()
+  store.saveSettings(source, 0)
+  const target = {
+    platform: 'dingtalk',
+    channelId: 'work',
+    peerId: 'project',
+    operatorId: 'member',
+  } as const
+  store.routing.saveBotBinding(
+    'dingtalk',
+    target.channelId,
+    target,
+    store.routing.getBotBindings().revision,
+  )
+  const revision = configure(store, { enabled: true, personalBots: { dingtalk: target.channelId } })
+  const { personalBots: omitted, ...olderClient } = store.routing.getSettings().settings
+  expect(omitted).toEqual({ dingtalk: target.channelId })
+  const latest = store.routing.saveSettings({ ...olderClient, presence: 'away' }, revision)
+  expect(store.routing.getSettings().settings.personalBots).toEqual({ dingtalk: target.channelId })
+  receive(store, 'first')
+  analyze(store, 1)
+  const sourceRev = store.getSettings().revision
+  const decision = { destination: 'dingtalk', reason: '已选钉钉会话' } as const
+  expect(store.routing.applyDecision(1, decision, latest, now)).toBe(true)
+  expect(store.routing.get(1)).toMatchObject({
+    status: 'sending',
+    deliveryTarget: target,
+    weixinTarget: null,
+  })
+  expect(store.routing.maySend(1, latest)).toBe(true)
+  // Updating a different subscription during token acquisition preserves this send.
+  const extraRoom = { id: 'another', name: 'another', keyword: '', enabled: true }
+  store.saveSettings(
+    { ...source, wxarc: { sessions: [...source.wxarc.sessions, extraRoom] } },
+    sourceRev,
+  )
+  expect(store.routing.maySend(1, latest)).toBe(true)
+  store.saveSettings({ ...source, wxarc: { sessions: [extraRoom] } }, sourceRev + 1)
+  store.saveSettings(source, sourceRev + 2)
+  expect(store.routing.maySend(1, latest)).toBe(false)
+  configure(store, { personalBots: { dingtalk: null } })
+  expect(store.routing.maySend(1, latest)).toBe(false)
+  expect(store.routing.getSettings().settings.personalBots?.dingtalk).toBe(null)
+  expect(store.routing.get(1)?.deliveryTarget).toEqual(target)
+  expect(store.routing.releaseUnsent(1)).toBe(true)
+  expect(store.routing.get(1)?.status).toBe('cancelled')
+})
+
+test('a confirmed unsent personal claim rechecks policy; explicit manual work survives removal of its source', () => {
+  const store = open()
+  store.saveSettings(source, 0)
+  const rev = configure(store, {
+    enabled: true,
+    weixinTarget: { channelId: 'bot', peerId: 'self' },
+  })
+  receive(store, 'first')
+  store.routing.enqueue(1)
+  analyze(store, 1)
+  const decision = { destination: 'weixin', reason: '已选微信' } as const
+  expect(store.routing.applyDecision(1, decision, rev, now)).toBe(true)
+  store.saveSettings({ ...source, wxarc: { sessions: [] } }, 1)
+  expect(store.routing.maySend(1, rev)).toBe(true)
+  const next = configure(store, { duringWork: 'defer' })
+  expect(store.routing.maySend(1, rev)).toBe(false)
+  expect(store.routing.maySend(1, next)).toBe(false)
+  expect(store.routing.releaseUnsent(1)).toBe(true)
+  expect(store.routing.get(1)).toMatchObject({
+    status: 'ready',
+    deliveryTarget: null,
+    agent: { summary: '摘要' },
+  })
+  expect(store.routing.releaseUnsent(1)).toBe(false)
+  expect(
+    store.routing.applyDecision(
+      1,
+      { destination: 'defer', reason: '偏好已变更', recheckAt: later },
+      next,
+      now,
+    ),
+  ).toBe(true)
+})
+
+test('migrates legacy private recipients once and preserves an explicit unbinding through old-client saves and restart', () => {
+  const path = tempPath()
+  const legacyPeer = { channelId: 'personal-weixin', peerId: 'legacy-peer' }
+  const { personalBots: _newPreference, ...legacyDefaults } = open().routing.getSettings().settings
+  const legacyConfig = { ...legacyDefaults, weixinTarget: legacyPeer }
+  const old = new Database(path, { create: true })
+  old.exec(
+    'CREATE TABLE trigger_route_settings (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL, json TEXT NOT NULL)',
+  )
+  old.run('INSERT INTO trigger_route_settings VALUES (1,4,?)', [JSON.stringify(legacyConfig)])
+  old.close()
+  const store = open(path)
+  const migrated = { ...legacyPeer, platform: 'weixin', operatorId: 'legacy-peer' } as const
+  expect(store.routing.getBotBindings().targets).toEqual([migrated])
+  expect(store.routing.resolveBotTarget(legacyConfig, 'weixin')).toEqual(migrated)
+  const cleared = store.routing.saveBotBinding(
+    'weixin',
+    legacyPeer.channelId,
+    null,
+    store.routing.getBotBindings().revision,
+  )
+  expect(cleared.targets).toEqual([])
+  expect(() => store.routing.saveSettings({ ...legacyConfig, presence: 'away' }, 4)).toThrow(
+    TriggerSettingsConflictError,
+  )
+  expect(store.routing.getSettings()).toMatchObject({
+    revision: 5,
+    settings: { weixinTarget: null, personalBots: { weixin: legacyPeer.channelId } },
+  })
+  configure(store, { presence: 'away' })
+  close(store)
+  const reopened = open(path)
+  expect(reopened.routing.getBotBindings().targets).toEqual([])
+  expect(
+    reopened.routing.resolveBotTarget(reopened.routing.getSettings().settings, 'weixin'),
+  ).toBeNull()
+
+  // An old client that explicitly selects a different recipient still updates this bot's binding.
+  configure(reopened, { weixinTarget: { ...legacyPeer, peerId: 'new-peer' } })
+  expect(
+    reopened.routing.resolveBotTarget(reopened.routing.getSettings().settings, 'weixin'),
+  ).toEqual({
+    ...migrated,
+    peerId: 'new-peer',
+    operatorId: 'new-peer',
+  })
+})
+
+test('changing a represented legacy Weixin address invalidates old editors without changing the selected bot', () => {
+  const store = open()
+  configure(store, {
+    weixinTarget: { channelId: 'legacy-bot', peerId: 'first' },
+    personalBots: { weixin: 'selected-bot' },
+  })
+  const previous = store.routing.getSettings()
+  const other = {
+    platform: 'weixin',
+    channelId: 'other',
+    peerId: 'unrelated',
+    operatorId: 'unrelated',
+  } as const
+  const unrelated = store.routing.saveBotBinding(
+    'weixin',
+    'other',
+    other,
+    store.routing.getBotBindings().revision,
+  )
+  expect(store.routing.getSettings().revision).toBe(previous.revision)
+  const changed = { ...other, channelId: 'legacy-bot', peerId: 'second', operatorId: 'second' }
+  const rebound = store.routing.saveBotBinding('weixin', 'legacy-bot', changed, unrelated.revision)
+  expect(store.routing.getSettings()).toMatchObject({
+    revision: previous.revision + 1,
+    settings: {
+      weixinTarget: { channelId: 'legacy-bot', peerId: 'second' },
+      personalBots: { weixin: 'selected-bot' },
+    },
+  })
+  expect(() =>
+    store.routing.saveSettings({ ...previous.settings, presence: 'away' }, previous.revision),
+  ).toThrow(TriggerSettingsConflictError)
+  store.routing.saveBotBinding('weixin', 'legacy-bot', null, rebound.revision)
+  expect(store.routing.getSettings().settings).toMatchObject({
+    weixinTarget: null,
+    personalBots: { weixin: 'selected-bot' },
+  })
+})
+
+test('send claims use only the selected bot binding and detect an address change even after restoring it', () => {
+  const store = open()
+  store.saveSettings(source, 0)
+  const a = {
+    platform: 'feishu',
+    channelId: 'selected-bot',
+    peerId: 'private',
+    operatorId: 'operator',
+  } as const
+  const b = { ...a, channelId: 'second-bot', peerId: 'other-private' }
+  const revision = configure(store, { enabled: true, personalBots: { feishu: a.channelId } })
+  const { settings } = store.routing.getSettings()
+  const initial = store.routing.getBotBindings().revision
+  expect(() => store.routing.saveBotBinding(a.platform, a.channelId, b, initial)).toThrow()
+  const onlySecond = store.routing.saveBotBinding(b.platform, b.channelId, b, initial)
+  expect(store.routing.resolveBotTarget(settings, 'feishu')).toBeNull()
+  expect(() => store.routing.saveBotBinding(a.platform, a.channelId, a, initial)).toThrow(
+    TriggerSettingsConflictError,
+  )
+  const bound = store.routing.saveBotBinding(a.platform, a.channelId, a, onlySecond.revision)
+  expect(store.routing.resolveBotTarget(settings, 'feishu')).toEqual(a)
+  receive(store, 'with-selected-bot')
+  analyze(store, 1)
+  expect(
+    store.routing.applyDecision(
+      1,
+      { destination: 'feishu', reason: '选用研究机器人' },
+      revision,
+      now,
+    ),
+  ).toBe(true)
+  expect(store.routing.get(1)?.deliveryTarget).toEqual(a)
+  expect(store.routing.maySend(1, revision)).toBe(true)
+  const removedOther = store.routing.saveBotBinding(b.platform, b.channelId, null, bound.revision)
+  expect(store.routing.maySend(1, revision)).toBe(true)
+  const changed = store.routing.saveBotBinding(
+    a.platform,
+    a.channelId,
+    { ...a, operatorId: 'new-operator' },
+    removedOther.revision,
+  )
+  expect(store.routing.maySend(1, revision)).toBe(false)
+  store.routing.saveBotBinding(a.platform, a.channelId, a, changed.revision)
+  expect(store.routing.maySend(1, revision)).toBe(false)
+  expect(store.routing.releaseUnsent(1)).toBe(true)
+  expect(store.routing.get(1)?.status).toBe('ready')
+  expect(
+    store.routing.applyDecision(1, { destination: 'feishu', reason: '重新核验' }, revision, now),
+  ).toBe(true)
+  expect(store.routing.maySend(1, revision)).toBe(true)
+})
+
+test('a partial bot map keeps other selections and an explicit Weixin opt-out', () => {
+  const store = open()
+  const weixinTarget = { channelId: 'old', peerId: 'peer' }
+  configure(store, { weixinTarget, personalBots: { weixin: null, dingtalk: 'work' } })
+  configure(store, { personalBots: { feishu: 'research' } })
+  expect(store.routing.getSettings().settings.personalBots).toEqual({
+    weixin: null,
+    dingtalk: 'work',
+    feishu: 'research',
+  })
+  // A legacy editor echoes unrecognized fields, but the edited Weixin recipient still selects its bot.
+  configure(store, { weixinTarget: { channelId: 'new', peerId: 'self' } })
+  expect(store.routing.getSettings().settings.personalBots).toEqual({
+    weixin: 'new',
+    dingtalk: 'work',
+    feishu: 'research',
+  })
+})
+
+test('a bot learns only its own address on a successful claim and keeps the original recipient through restart', () => {
+  const path = tempPath()
+  const store = open(path)
+  store.saveSettings(source, 0)
+  const target = {
+    platform: 'feishu',
+    channelId: 'research',
+    peerId: 'direct',
+    operatorId: 'person',
+  } as const
+  const lookup = { target: { ...target, label: 'private display metadata' }, bindingRevision: null }
+  const revision = configure(store, { enabled: true, personalBots: { feishu: target.channelId } })
+  const decision = { destination: 'feishu', reason: '已选择飞书' } as const
+  receive(store, 'first')
+  expect(store.routing.applyDecision(1, decision, revision, now, lookup)).toBe(false)
+  analyze(store, 1)
+  expect(store.routing.applyDecision(1, decision, revision - 1, now, lookup)).toBe(false)
+  expect(
+    store.routing.applyDecision(1, decision, revision, now, {
+      ...lookup,
+      target: { ...target, channelId: 'different-bot' },
+    }),
+  ).toBe(false)
+  expect(store.routing.getPersonalBotBinding(target.platform, target.channelId)).toBeNull()
+  expect(store.routing.applyDecision(1, decision, revision, now, lookup)).toBe(true)
+  expect(store.routing.get(1)?.deliveryTarget).toEqual(target)
+  expect(store.routing.maySend(1, revision)).toBe(true)
+  expect(store.routing.getSettings().revision).toBe(revision)
+  close(store)
+  const reopened = open(path)
+  const saved = reopened.routing.getPersonalBotBinding(target.platform, target.channelId)
+  expect(saved).toEqual({ target, revision: 1, automatic: true })
+  expect(reopened.routing.applyDecision(1, decision, revision, now, lookup)).toBe(false)
+  // Confirming the same recipient explicitly supersedes the inferred grant.
+  reopened.routing.saveBotBinding(target.platform, target.channelId, target, 1)
+  expect(reopened.routing.getPersonalBotBinding(target.platform, target.channelId)).toEqual({
+    target,
+    revision: 2,
+    automatic: false,
+  })
+  expect(reopened.routing.maySend(1, revision)).toBe(false)
+  expect(reopened.routing.releaseUnsent(1)).toBe(true)
+  expect(
+    reopened.routing.applyDecision(1, decision, revision, now, { target, bindingRevision: 1 }),
+  ).toBe(false)
+  expect(
+    reopened.routing.applyDecision(1, decision, revision, now, { target, bindingRevision: 2 }),
+  ).toBe(true)
+})
+
+test('an explicit revoke before first delivery survives restart and prevents stale discovery from learning an address', () => {
+  const path = tempPath()
+  const store = open(path)
+  store.saveSettings(source, 0)
+  const target = {
+    platform: 'dingtalk',
+    channelId: 'ops',
+    peerId: 'dm',
+    operatorId: 'staff',
+  } as const
+  const revision = configure(store, { enabled: true, personalBots: { dingtalk: target.channelId } })
+  const decision = { destination: 'dingtalk', reason: '运维提醒' } as const
+  receive(store, 'first')
+  analyze(store, 1)
+  const revoked = store.routing.saveBotBinding(target.platform, target.channelId, null, 0)
+  expect(revoked).toEqual({ revision: 1, targets: [] })
+  close(store)
+  const reopened = open(path)
+  const pin = reopened.routing.getPersonalBotBinding(target.platform, target.channelId)
+  expect(pin).toEqual({ target: null, automatic: false, revision: 1 })
+  for (const bindingRevision of [null, 1]) {
+    expect(
+      reopened.routing.applyDecision(1, decision, revision, now, { target, bindingRevision }),
+    ).toBe(false)
+  }
+  expect(reopened.routing.getBotBindings()).toEqual(revoked)
+  expect(reopened.routing.get(1)?.status).toBe('ready')
+})
+
+test('legacy Weixin receipts expose the original audience on schema upgrade', () => {
+  const path = tempPath()
+  const before = open(path)
+  before.saveSettings(source, 0)
+  const target = { channelId: 'bot', peerId: 'self' }
+  const revision = configure(before, { enabled: true, weixinTarget: target })
+  receive(before, 'old')
+  analyze(before, 1)
+  before.routing.applyDecision(1, { destination: 'weixin', reason: '已绑定' }, revision, now)
+  before.routing.finishSend(1)
+  close(before)
+  const old = new Database(path)
+  old.exec(`
+    DROP TRIGGER trigger_route_cancel_on_unsubscribe;
+    DROP TRIGGER trigger_route_cancel_on_new_filter;
+    ALTER TABLE trigger_routes DROP COLUMN send_source_revoked;
+    ALTER TABLE trigger_routes DROP COLUMN delivery_target;
+    ALTER TABLE trigger_route_bot_bindings DROP COLUMN automatic;
+    CREATE TRIGGER trigger_route_cancel_on_unsubscribe AFTER DELETE ON trigger_streams
+      BEGIN UPDATE trigger_routes SET status='cancelled' WHERE status='pending'; END;
+  `)
+  old.close()
+  const after = open(path)
+  expect(after.routing.getPersonalBotBinding('weixin', target.channelId)?.automatic).toBe(false)
+  expect(after.routing.get(1)).toMatchObject({
+    status: 'sent',
+    weixinTarget: target,
+    deliveryTarget: { platform: 'weixin', ...target, operatorId: 'self' },
+  })
+  receive(after, 'after-upgrade')
+  analyze(after, 2)
+  expect(
+    after.routing.applyDecision(2, { destination: 'weixin', reason: '已绑定' }, revision, now),
+  ).toBe(true)
+  after.saveSettings({ ...source, wxarc: { sessions: [] } }, 1)
+  after.saveSettings(source, 2)
+  expect(after.routing.maySend(2, revision)).toBe(false)
+})
+
 test('replacing a filter revokes outstanding automatic work, even if the prior filter is restored', () => {
   const store = open()
   store.saveSettings(source, 0)

@@ -161,6 +161,7 @@ async function fixture(conversationType: '1' | '2', interactive = true) {
   })
   // Only a corporate Stream callback can turn a saved session binding into a task destination.
   expect(adapter.listTargets()).toEqual([])
+  expect(adapter.listDirectTargets()).toEqual([])
   handlers.get(TOPIC_ROBOT)?.(
     frame(TOPIC_ROBOT, {
       conversationType,
@@ -240,6 +241,9 @@ for (const kind of ['1', '2'] as const) {
       'No active DingTalk sessionWebhook',
     )
     await f.restart()
+    expect(
+      f.adapter.listDirectTargets().map<MandateTarget>(({ label, ...target }) => target),
+    ).toEqual(kind === '1' ? [f.target] : [])
     const sent = await f.adapter.send(f.target, payload, signal())
     expect(sent).toMatchObject({ status: 'accepted' })
     if (sent.status !== 'accepted' || !sent.receipt) throw Error('Missing card receipt')

@@ -49,10 +49,17 @@ const initial: TriggerRoutingSettingsSnapshot = {
   },
 }
 
-test('binds an explicit recipient, saves routing preferences and keeps the agent result separate from the event', async ({
+test('selects a WeChat bot, saves routing preferences and keeps the agent result separate from the event', async ({
   page,
 }) => {
-  const target = { channelId: 'test-channel', peerId: 'test-peer', label: '测试接收人' }
+  const bot = {
+    platform: 'weixin',
+    channelId: 'test-channel',
+    label: '个人微信',
+    online: true,
+    ready: true,
+    deliveryState: 'ready',
+  }
   let saved = structuredClone(initial)
   let targetRequests = 0
   let processedId: number | null = null
@@ -61,16 +68,18 @@ test('binds an explicit recipient, saves routing preferences and keeps the agent
     const request = route.request()
     const path = new URL(request.url()).pathname
     switch (path) {
-      case '/api/listeners/routing/config':
+      case '/api/listeners/routing/preferences':
         if (request.method() === 'PUT') {
           const submitted = request.postDataJSON() as TriggerRoutingSettingsSnapshot
           expect(submitted.revision).toBe(saved.revision)
           saved = { revision: submitted.revision + 1, settings: submitted.settings }
         }
         return route.fulfill({ json: saved })
+      case '/api/listeners/routing/bots':
+        return route.fulfill({ json: { bots: [bot] } })
       case '/api/listeners/routing/targets':
         targetRequests++
-        return route.fulfill({ json: { targets: [target] } })
+        return route.fulfill({ json: { targets: [] } })
       case '/api/listeners/routing/presence':
         return route.fulfill({ json: { ok: true } })
       case '/api/listeners/routing/process':
@@ -99,16 +108,12 @@ test('binds an explicit recipient, saves routing preferences and keeps the agent
   await prefs.getByRole('combobox', { name: '工作时段', exact: true }).selectOption('web')
   await prefs.getByRole('combobox', { name: '下班时段', exact: true }).selectOption('weixin')
   await prefs.getByRole('combobox', { name: '休息日', exact: true }).selectOption('defer')
-  await expect(prefs.getByText(/绑定可用的接收目标之前，这些通知会延后/)).toBeVisible()
   await save.click()
   await expect.poll(() => saved.revision).toBe(2)
+  await expect(prefs.getByText('已保存路由设置', { exact: true })).toBeVisible()
   expect(saved.settings.weixinTarget).toBeNull()
   expect(targetRequests).toBe(0)
-  await prefs.getByRole('button', { name: '选择微信接收目标' }).click()
-  await expect.poll(() => targetRequests).toBe(1)
-  await prefs.getByRole('combobox', { name: '微信接收目标' }).selectOption({
-    label: `${target.label} · ${target.channelId} / ${target.peerId}`,
-  })
+  await prefs.getByRole('combobox', { name: '微信机器人', exact: true }).selectOption(bot.channelId)
   await save.click()
   await expect.poll(() => saved.revision).toBe(3)
   expect(saved.settings).toMatchObject({
@@ -116,7 +121,7 @@ test('binds an explicit recipient, saves routing preferences and keeps the agent
     duringWork: 'web',
     afterWork: 'weixin',
     offDay: 'defer',
-    weixinTarget: { channelId: target.channelId, peerId: target.peerId },
+    personalBots: { weixin: bot.channelId },
   })
 
   await page.reload()
@@ -133,7 +138,7 @@ test('binds an explicit recipient, saves routing preferences and keeps the agent
   await expect(preview.getByRole('status')).toContainText('延后提醒')
   await preview.getByLabel(/模拟时间/).fill('2026-11-03T19:30')
   await expect(preview.getByRole('status')).toContainText('发送微信')
-  await preview.getByRole('combobox', { name: '模拟微信会话' }).selectOption('unavailable')
+  await preview.getByRole('combobox', { name: '模拟微信机器人' }).selectOption('unavailable')
   await expect(preview.getByRole('status')).toContainText('延后提醒')
   expect(processedId).toBeNull()
   const inbox = page.getByRole('region', { name: '原始事件收件箱' })
@@ -147,6 +152,7 @@ test('binds an explicit recipient, saves routing preferences and keeps the agent
   await expect(history).toContainText(raw.title)
   await expect(history).toContainText(processed.decision.reason)
   await expect(history).toContainText(processed.firstDeferred.reason)
+  expect(targetRequests).toBe(0)
 })
 
 test('allows a second explicit retry after a fast failure and removes retry after delivery', async ({
@@ -162,11 +168,17 @@ test('allows a second explicit retry after a fast failure and removes retry afte
     error: '首次处理失败',
   }
   let attempts = 0
-  await page.route('**/api/listeners/routing/config', (route) =>
+  await page.route('**/api/listeners/routing/preferences', (route) =>
     route.fulfill({
       json: {
         revision: 1,
-        settings: { ...initial.settings, enabled: true, afterWork: 'weixin', weixinTarget: target },
+        settings: {
+          ...initial.settings,
+          enabled: true,
+          afterWork: 'weixin',
+          personalBots: { weixin: target.channelId },
+          weixinTarget: null,
+        },
       },
     }),
   )
@@ -204,6 +216,109 @@ test('allows a second explicit retry after a fast failure and removes retry afte
     history.getByRole('button', { name: '刷新路由记录' }).click(),
   ])
   expect(attempts).toBe(2)
+})
+
+test('routes with only a bot selection and distinguishes replies from proactive reminders', async ({
+  page,
+}) => {
+  const bots = [
+    { platform: 'dingtalk', channelId: 'ops', label: '运维机器人', deliveryState: 'ready' },
+    { platform: 'dingtalk', channelId: 'project', label: '项目机器人', deliveryState: 'ambiguous' },
+    { platform: 'dingtalk', channelId: 'paused', label: '离线机器人', deliveryState: 'offline' },
+    {
+      platform: 'feishu',
+      channelId: 'lab',
+      label: '研究机器人',
+      deliveryState: 'awaiting_private',
+    },
+    { platform: 'weixin', channelId: 'home', label: '个人微信', deliveryState: 'unavailable' },
+  ]
+  let saved: TriggerRoutingSettingsSnapshot = {
+    revision: 8,
+    settings: {
+      ...initial.settings,
+      enabled: true,
+      personalBots: { weixin: 'home' },
+    },
+  }
+  const unexpectedRequests: string[] = []
+  await page.route(
+    /\/api\/listeners\/(?:channels\/(?:personal-targets|bot-bindings)|routing\/(?:config|personal-targets|targets))$/,
+    (route) => {
+      unexpectedRequests.push(route.request().url())
+      return route.fulfill({ status: 404 })
+    },
+  )
+  await page.route('**/api/listeners/routing/bots', (route) =>
+    route.fulfill({
+      json: {
+        bots: bots.map((bot) => ({
+          ...bot,
+          online: bot.deliveryState !== 'offline',
+          ready: bot.deliveryState === 'ready',
+        })),
+      },
+    }),
+  )
+  await page.route('**/api/listeners/routing/preferences', (route) => {
+    const request = route.request()
+    if (request.method() === 'PUT') {
+      const submitted = request.postDataJSON() as TriggerRoutingSettingsSnapshot
+      expect(submitted.revision).toBe(saved.revision)
+      saved = { revision: submitted.revision + 1, settings: submitted.settings }
+    }
+    return route.fulfill({ json: saved })
+  })
+
+  await page.goto('/config?tab=channels')
+  await expect(page.getByRole('link', { name: '选择 Router 使用的通知机器人' })).toBeVisible()
+  await expect(page.getByRole('region', { name: '机器人默认接收会话' })).toHaveCount(0)
+
+  await page.goto('/router')
+  await page.getByRole('button', { name: '通知渠道与路由设置' }).click()
+  const prefs = page.getByRole('region', { name: 'Agent 与通知路由' })
+  const dingPicker = prefs.getByRole('combobox', { name: '钉钉机器人', exact: true })
+  const fsPicker = prefs.getByRole('combobox', { name: '飞书机器人', exact: true })
+  await expect(dingPicker.getByRole('option', { name: '项目机器人 · 在线' })).toHaveCount(1)
+  await dingPicker.selectOption('project')
+  await expect(prefs.getByText(/可以接收和回复消息。有多位私聊联系人/)).toBeVisible()
+  await dingPicker.selectOption('paused')
+  await expect(prefs.getByText(/机器人离线，主动提醒将延后/)).toBeVisible()
+  await dingPicker.selectOption('ops')
+  await expect(prefs.getByText('可接收消息、回复和发送主动提醒。')).toBeVisible()
+  await fsPicker.selectOption('lab')
+  await expect(prefs.getByText(/可以接收和回复消息。先私聊这个机器人/)).toBeVisible()
+  await expect(prefs.getByText(/原有的主动提醒通道当前不可用/)).toBeVisible()
+  await expect(prefs).not.toContainText('投递待配置')
+  await expect(prefs.getByRole('combobox', { name: /接收会话/ })).toHaveCount(0)
+  await prefs.getByRole('combobox', { name: '网页无人时', exact: true }).selectOption('dingtalk')
+  await prefs.getByRole('combobox', { name: '下班时段', exact: true }).selectOption('feishu')
+  await prefs.getByRole('button', { name: '保存路由设置' }).click()
+  await expect.poll(() => saved.revision).toBe(9)
+  expect(saved.settings.personalBots).toEqual({ weixin: 'home', dingtalk: 'ops', feishu: 'lab' })
+  expect(saved.settings.weixinTarget).toBeNull()
+
+  await page.goto('/config?tab=listeners')
+  await expect(dingPicker).toHaveValue('ops')
+  await expect(fsPicker).toHaveValue('lab')
+  const preview = prefs
+    .locator('details')
+    .filter({ has: page.getByText('情境预演', { exact: true }) })
+  await preview.locator('summary').click()
+  await preview.getByLabel(/模拟时间/).fill('2026-11-03T10:30')
+  await preview.getByRole('combobox', { name: '模拟在场状态' }).selectOption('away')
+  await preview.getByRole('combobox', { name: '模拟飞书机器人' }).selectOption('unavailable')
+  await expect(preview.getByRole('status').locator('strong')).toHaveText('发送钉钉')
+  await preview.getByLabel(/模拟时间/).fill('2026-11-03T19:30')
+  await expect(preview.getByRole('status').locator('strong')).toHaveText('延后提醒')
+  await preview.getByRole('combobox', { name: '模拟飞书机器人' }).selectOption('online')
+  await expect(preview.getByRole('status').locator('strong')).toHaveText('发送飞书')
+  await fsPicker.selectOption('')
+  await prefs.getByRole('button', { name: '保存路由设置' }).click()
+  await expect.poll(() => saved.revision).toBe(10)
+  expect(saved.settings.personalBots).toEqual({ weixin: 'home', dingtalk: 'ops', feishu: null })
+  await expect(preview.getByRole('status').locator('strong')).toHaveText('延后提醒')
+  expect(unexpectedRequests).toEqual([])
 })
 
 test('updates presence on trusted interaction and announces only new web deliveries', async ({
@@ -261,7 +376,7 @@ test('saves local calendar exceptions and previews a locked Mac without reading 
   page,
 }) => {
   let saved = structuredClone(initial)
-  await page.route('**/api/listeners/routing/config', async (route) => {
+  await page.route('**/api/listeners/routing/preferences', async (route) => {
     if (route.request().method() === 'PUT') {
       const submitted = route.request().postDataJSON() as TriggerRoutingSettingsSnapshot
       saved = { revision: submitted.revision + 1, settings: submitted.settings }

@@ -1,3 +1,4 @@
+import type { MandatePlatform, MandateTarget } from './types/trigger-mandate'
 import type {
   TriggerDateOverrides,
   TriggerNativePresence,
@@ -14,6 +15,41 @@ export function isTriggerCalendarDate(value: string): boolean {
   return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value
 }
 const periodLabels = { duringWork: '工作时段', afterWork: '工作日非工作时段', offDay: '休息日' }
+const platformLabels: Record<MandatePlatform, string> = {
+  weixin: '微信',
+  dingtalk: '钉钉',
+  feishu: '飞书',
+}
+
+export function sameTriggerRouteTarget(
+  left: MandateTarget | null | undefined,
+  right: MandateTarget | null | undefined,
+): boolean {
+  return (
+    left?.platform === right?.platform &&
+    left?.channelId === right?.channelId &&
+    left?.peerId === right?.peerId &&
+    left?.operatorId === right?.operatorId
+  )
+}
+
+export function getTriggerRouteBot(
+  settings: TriggerRoutingSettings,
+  platform: MandatePlatform,
+): string | null {
+  const selected = settings.personalBots?.[platform]
+  if (selected !== undefined) return selected
+  return platform === 'weixin' ? (settings.weixinTarget?.channelId ?? null) : null
+}
+
+/** The Router can select a bot without seeing its channel-side address. */
+export function botRoutingPreferences(settings: TriggerRoutingSettings): TriggerRoutingSettings {
+  return {
+    ...settings,
+    personalBots: { ...settings.personalBots, weixin: getTriggerRouteBot(settings, 'weixin') },
+    weixinTarget: null,
+  }
+}
 
 function wallMinute(time: string): number {
   const [hour, minute] = time.split(':').map(Number)
@@ -124,7 +160,7 @@ export function decideTriggerRoute(
   settings: TriggerRoutingSettings,
   now: Date,
   lastPresenceAt?: Date,
-  targetAvailable = false,
+  targetAvailable: boolean | Partial<Record<MandatePlatform, boolean>> = false,
   native?: TriggerNativePresence,
 ): TriggerRouteDecision {
   const { period, recheckAt } = getTriggerTimeContext(settings, now)
@@ -138,19 +174,22 @@ export function decideTriggerRoute(
   const preferred = settings[period]
   if (preferred === 'defer') return defer(`${label}的偏好为延后提醒`)
 
-  const canSendWeixin = settings.weixinTarget !== null && targetAvailable
-  if (preferred === 'weixin') {
-    return canSendWeixin
-      ? { destination: 'weixin', reason: `${label}首选微信，已选会话可用` }
-      : defer(`${label}首选微信，当前没有可用的已选会话`)
+  const canSend = (platform: MandatePlatform) =>
+    !!getTriggerRouteBot(settings, platform) &&
+    (typeof targetAvailable === 'boolean' ? targetAvailable : targetAvailable[platform] === true)
+  if (preferred !== 'web') {
+    const name = platformLabels[preferred]
+    return canSend(preferred)
+      ? { destination: preferred, reason: `${label}首选${name}，机器人可发送主动提醒` }
+      : defer(`${label}首选${name}，当前没有可发送主动提醒的机器人`)
   }
 
   const { present, reason: why } = getTriggerWebPresence(settings, now, lastPresenceAt, native)
   if (present) return { destination: 'web', reason: `${label}首选网页，${why}` }
-  if (settings.awayFallback === 'weixin') {
-    return canSendWeixin
-      ? { destination: 'weixin', reason: `${label}首选网页，${why}，按备用偏好转到已选微信` }
-      : defer(`${label}首选网页，${why}，备用微信会话不可用`)
-  }
-  return defer(`${label}首选网页，${why}，按偏好延后提醒`)
+  const fallback = settings.awayFallback
+  if (fallback === 'defer') return defer(`${label}首选网页，${why}，按偏好延后提醒`)
+  const name = platformLabels[fallback]
+  return canSend(fallback)
+    ? { destination: fallback, reason: `${label}首选网页，${why}，按备用偏好转到已选${name}机器人` }
+    : defer(`${label}首选网页，${why}，备用${name}机器人暂时无法主动提醒`)
 }

@@ -1,4 +1,5 @@
 import type { TriggerInboxItem } from './trigger'
+import type { MandatePlatform, MandateTarget } from './trigger-mandate'
 
 /** ISO wall-clock times use HH:mm. Workdays follow JavaScript's Sunday=0 convention. */
 export const triggerRetentionPeriods = [7, 30, 90, 365] as const
@@ -6,7 +7,11 @@ export type TriggerRetentionDays = (typeof triggerRetentionPeriods)[number]
 export function isTriggerRetentionDays(days: unknown): days is TriggerRetentionDays {
   return triggerRetentionPeriods.some((period) => period === days)
 }
-export type TriggerRouteDestination = 'web' | 'weixin' | 'defer'
+export type TriggerRouteDestination = 'web' | MandatePlatform | 'defer'
+export const triggerRoutePlatforms = ['weixin', 'dingtalk', 'feishu'] as const
+export function isTriggerRoutePlatform(value: unknown): value is MandatePlatform {
+  return triggerRoutePlatforms.some((platform) => platform === value)
+}
 export type TriggerPresence = 'auto' | 'present' | 'away'
 
 export type TriggerDateOverrides = Record<string, 'work' | 'off'>
@@ -31,6 +36,16 @@ export interface TriggerWeixinTarget {
   peerId: string
 }
 
+/** Public bot directory entry. The channel keeps the recipient identity private. */
+export interface TriggerRoutingBot {
+  platform: MandatePlatform
+  channelId: string
+  label: string
+  online: boolean
+  ready: boolean
+  deliveryState: 'ready' | 'offline' | 'awaiting_private' | 'ambiguous' | 'unavailable'
+}
+
 export interface TriggerRoutingSettings {
   retentionDays?: TriggerRetentionDays | null
   enabled: boolean
@@ -41,11 +56,19 @@ export interface TriggerRoutingSettings {
   dateOverrides?: TriggerDateOverrides
   nativePresence?: TriggerNativePresenceSettings
   presence: TriggerPresence
-  awayFallback: 'weixin' | 'defer'
+  awayFallback: MandatePlatform | 'defer'
   duringWork: TriggerRouteDestination
   afterWork: TriggerRouteDestination
   offDay: TriggerRouteDestination
+  /** Router preferences select only the bot. Its channel resolves the recipient. */
+  personalBots?: Partial<Record<MandatePlatform, string | null>>
+  /** Original Weixin API field retained for older configuration clients. */
   weixinTarget: TriggerWeixinTarget | null
+}
+
+export interface TriggerBotBindingsSnapshot {
+  revision: number
+  targets: MandateTarget[]
 }
 
 export interface TriggerRoutingSettingsSnapshot {
@@ -59,7 +82,7 @@ export interface TriggerAgentResult {
 }
 
 export type TriggerRouteDecision =
-  | { destination: 'web' | 'weixin'; reason: string }
+  | { destination: 'web' | MandatePlatform; reason: string }
   | { destination: 'defer'; reason: string; recheckAt: string }
 
 export type TriggerRouteStatus =
@@ -84,6 +107,8 @@ export interface TriggerRouteRecord {
   firstDeferred: { at: string; reason: string } | null
   settingsRevision: number | null
   weixinTarget: TriggerWeixinTarget | null
+  /** Recipient selected at dispatch, including for historical Weixin deliveries. */
+  deliveryTarget?: MandateTarget | null
   error: string | null
   updatedAt: string
 }

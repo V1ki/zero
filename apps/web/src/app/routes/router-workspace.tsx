@@ -27,22 +27,36 @@ import type {
 import { useLayoutEffect, useRef, useState } from 'react'
 import { RouterSurface } from '../components/RouterSurface'
 import { apiFetch, apiPost } from '../lib/api'
+import { ListenerRoutingSettings, useListenerRoutingConfig } from './config-listener-routing'
 import { RoutingPreview } from './config-routing-preview'
 import { EventMandateMatches, RouterMandateTasks } from './router-mandate-tasks'
 import { RouterWebNotifications } from './router-web-notifications'
+import './config-listeners-tab.css'
 import './router-workspace.css'
 
 const api = '/api/listeners'
 const pageSize = 25
 const eventsKey = ['router-workspace-events']
+const toolLabels: Record<string, string> = {
+  preview_current_route: '预演当前去向',
+  get_routing_context: '查看路由状态',
+  list_notification_bots: '查询通知机器人',
+  prepare_personal_reminder: '准备个人通知',
+  send_personal_reminder: '发送个人通知',
+  prepare_routing_preference: '准备通知偏好变更',
+  prepare_bot_selection: '准备更换机器人',
+  prepare_commission: '准备跟踪委托',
+  inspect_github: '检查 GitHub 事件',
+  unknown: '工具未识别',
+}
 const statuses: Record<TriggerRouteStatus, string> = {
   pending: '等待分析',
   analyzing: '分析中',
   ready: '等待路由',
   web: '网页通知',
   deferred: '已延后',
-  sending: '微信发送中',
-  sent: '微信已受理',
+  sending: '投递中',
+  sent: '平台已受理',
   uncertain: '等待核对',
   failed: '处理失败',
   cancelled: '已撤销',
@@ -178,8 +192,9 @@ function Conversation({
     refetchInterval: (q) => {
       const data = q.state.data
       if (sending || q.state.status === 'error' || !data) return false
-      return data.turns.some((t) => t.status === 'pending') ||
-        ['pending', 'analyzing', 'ready', 'sending'].includes(data.route?.status ?? '')
+      return data.turns.some(
+        (t) => t.status === 'pending' || t.answer?.reminder?.status === 'sending',
+      ) || ['pending', 'analyzing', 'ready', 'sending'].includes(data.route?.status ?? '')
         ? 2000
         : 30_000
     },
@@ -314,7 +329,7 @@ function Conversation({
                 ? `持续任务 #${data.task.id} · ${data.task.eventCount} 条命中`
                 : data.event
                   ? `${data.event.source === 'github' ? 'GitHub' : 'WXARC'} 事件 #${data.event.id}`
-                  : '讨论工作时段、在场状态与通知偏好。'}
+                  : '查询提醒会发到哪里，给自己发消息，或安排跟踪委托。'}
             </p>
             {data.task && <p>{data.task.purpose}</p>}
           </div>
@@ -416,6 +431,18 @@ function Conversation({
                   </div>
                 )}
                 {turn.answer && <p className="rw-answer">{turn.answer.text}</p>}
+                {!!turn.answer?.toolSteps?.length && (
+                  <details className="rw-tool-steps">
+                    <summary>本轮调用了 {turn.answer.toolSteps.length} 次工具</summary>
+                    <ol>
+                      {turn.answer.toolSteps.map((step, index) => (
+                        <li key={`${index}-${step.name}`}>
+                          {toolLabels[step.name] ?? step.name} · {step.ok ? '已返回' : '未完成'}
+                        </li>
+                      ))}
+                    </ol>
+                  </details>
+                )}
                 {turn.answer?.investigation && repositoryUrl && (
                   <nav className="rw-evidence-links" aria-label="GitHub 调查来源">
                     {[
@@ -482,13 +509,15 @@ function Conversation({
             </div>
           )}
           <label htmlFor="router-message">
-            {data.task ? '继续跟进这项任务' : data.event ? '追问这条事件' : '给 Router 留个问题'}
+            {data.task ? '继续跟进这项任务' : data.event ? '追问这条事件' : '给 Router 发消息'}
           </label>
           <textarea
             rows={2}
             id="router-message"
             aria-label="给 Router 发消息"
-            placeholder={data.event ? '你想进一步了解什么？' : '输入问题，或告诉我「替我跟踪…」'}
+            placeholder={
+              data.event ? '你想进一步了解什么？' : '例如「发送微信通知：处理充值」或「替我跟踪…」'
+            }
             maxLength={2000}
             value={draft}
             onChange={(e) => changeDraft(e.target.value)}
@@ -517,6 +546,8 @@ export function RouterWorkspacePage() {
   const showWebNotices = view === 'notifications' && task === undefined
   const showTasks = view === 'tasks' || task !== undefined
   const scope = event ?? 'general'
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const routingConfig = useListenerRoutingConfig(settingsOpen)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   function conversation(scope: TriggerConversationScope) {
     return (
@@ -540,11 +571,27 @@ export function RouterWorkspacePage() {
           <GitBranch size={32} weight="duotone" aria-hidden="true" />
           <h1>Router 工作台</h1>
         </div>
-        <a className="rw-settings" href="/config?tab=listeners#routing-settings">
-          <GearSix size={16} />
-          监听与通知设置
-        </a>
+        <button
+          type="button"
+          className="rw-settings"
+          aria-expanded={settingsOpen}
+          aria-controls="rw-routing-settings"
+          onClick={() => setSettingsOpen(!settingsOpen)}
+        >
+          <GearSix size={16} aria-hidden="true" />
+          通知渠道与路由设置
+        </button>
       </header>
+      <div id="rw-routing-settings" hidden={!settingsOpen}>
+        {(settingsOpen || routingConfig.data) && (
+          <div className="listeners-panel rw-settings-panel">
+            <ListenerRoutingSettings config={routingConfig} />
+            <a className="rw-inline-button" href="/config?tab=listeners">
+              管理监听来源与委托
+            </a>
+          </div>
+        )}
+      </div>
       <nav aria-label="工作台视图" className="mt-views">
         <Link
           to="/router"

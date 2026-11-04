@@ -126,12 +126,24 @@ test('Web A2UI owns a named preview and atomically saves its mandate and receipt
     analyze: unavailable,
     weixin: { listTargets: () => [], send: unavailable },
   })
-  const workspace = new RouterWorkspaceService(f.store, routing, unavailable, {
-    commission: f.commission,
-  })
+  const workspace = new RouterWorkspaceService(
+    f.store,
+    routing,
+    async ({ actions }, signal) => {
+      if (!actions?.prepareCommission || !signal) throw Error('Missing Web commission tool')
+      await actions.prepareCommission('create', signal)
+      return { text: '请核对委托草案。' }
+    },
+    { commission: f.commission },
+  )
   workspace.start()
   try {
-    const view = await workspace.message('general', 'r1', '替我跟踪 room-a 的构建失败')
+    const question = 'room-a 的发布流水线麻烦帮我盯着，一有构建失败就记下来。'
+    expect(commissionIntent(question)).toBeNull()
+    const view = await workspace.message('general', 'r1', question)
+    expect(f.plan.mock.calls[0]?.slice(0, 2)).toEqual([question, 'create'])
+    expect((await workspace.message('general', 'r1', question)).turns).toHaveLength(1)
+    expect(f.plan).toHaveBeenCalledTimes(1)
     const card = view.turns[0].surface
     if (!card) throw Error('missing card')
     const action: RouterSurfaceAction = {
@@ -156,6 +168,16 @@ test('Web A2UI owns a named preview and atomically saves its mandate and receipt
     await workspace.close()
     await routing.close()
   }
+})
+
+test('concurrent web tool calls plan once from the original wording without publishing a mandate', async () => {
+  const f = fixture()
+  const question = 'room-a 里再出现构建失败就帮我记下来。'
+  const prepare = () => f.commission.prepareFromIntent('draft', question, 'create')
+  const [first, second] = await Promise.all([prepare(), prepare()])
+  expect(draftCode(first)).toBe(draftCode(second))
+  expect(f.plan.mock.calls.map(([text, intent]) => [text, intent])).toEqual([[question, 'create']])
+  expect(f.registry.getConfig().settings.mandates).toHaveLength(0)
 })
 
 test('IM drafts use only granted sources and addresses, bind the confirmation to the verified actor and chat, support pause/resume', async () => {

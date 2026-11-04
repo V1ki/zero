@@ -1,6 +1,12 @@
 import { AgentLoop } from '@zero-os/core'
 import type { ProviderAdapter } from '@zero-os/model'
-import type { Message, SecretFilter, TriggerAgentResult, TriggerInboxItem } from '@zero-os/shared'
+import type {
+  Message,
+  SecretFilter,
+  ToolDefinition,
+  TriggerAgentResult,
+  TriggerInboxItem,
+} from '@zero-os/shared'
 
 const instructions = [
   '你是 ZeRo 的收件箱摘要 Agent。用一到两句中文概括事件，便于用户判断要不要打开原文。',
@@ -62,12 +68,20 @@ interface TriggerModelRequest {
   prompt: string
   history?: Message[]
   signal?: AbortSignal
+  toolset?: {
+    definitions: ToolDefinition[]
+    execute(name: string, input: Record<string, unknown>, signal: AbortSignal): Promise<string>
+    onToolStep?(name: string, ok: boolean): void
+  }
 }
 
-/** Both automatic summaries and explicit Router questions use an isolated, tool-free AgentLoop. */
+const maxModelSteps = 6
+const maxToolCalls = 8
+
+/** An isolated AgentLoop. Only an explicitly supplied toolset enables multi-step execution. */
 export async function runTriggerModel(
   modelRouter: AgentDependencies['modelRouter'],
-  { sessionId, label, system, prompt, history = [], signal }: TriggerModelRequest,
+  { sessionId, label, system, prompt, history = [], signal, toolset }: TriggerModelRequest,
 ): Promise<string> {
   const model = modelRouter.getDefaultModel() ?? modelRouter.getCurrentModel()
   if (!model) throw new TriggerAgentError('没有可用的模型，请先配置 ZeRo 模型。')
@@ -76,6 +90,9 @@ export async function runTriggerModel(
   const cancellation = () =>
     new TriggerAgentError(timeout.aborted ? `${label}超过 90 秒，请稍后重试。` : `${label}已取消。`)
   if (stop.aborted) throw cancellation()
+  const names = new Set(toolset?.definitions.map((definition) => definition.name))
+  const seen = new Set<string>()
+  const dispatchErrors = new Set<string>()
 
   const loop = new AgentLoop(
     {
@@ -83,14 +100,23 @@ export async function runTriggerModel(
       sessionId,
       meta: { sessionId, purpose: 'agent_loop' },
       system,
-      tools: [],
+      tools: toolset?.definitions ?? [],
       toolExecutor: {
-        has: () => false,
-        async execute() {
-          throw new TriggerAgentError(`${label}不支持工具操作。`)
+        has: (name) => names.has(name),
+        async execute(name, id, input) {
+          if (!toolset || stop.aborted) throw cancellation()
+          try {
+            const output = await toolset.execute(name, input, stop)
+            return { success: true, output, outputSummary: '操作已完成。' }
+          } catch (error) {
+            const output =
+              error instanceof TriggerAgentError ? error.message : '无法完成该工具操作。'
+            dispatchErrors.add(id)
+            return { success: false, output, outputSummary: output }
+          }
         },
       },
-      maxIterations: 1,
+      maxIterations: toolset ? maxModelSteps : 1,
       maxOutputTokens: 2048,
       reasoningEffort: 'low',
       stream: false,
@@ -99,15 +125,48 @@ export async function runTriggerModel(
     {
       shouldAbort: () => stop.aborted,
       onEmptyResponse: () => 'break',
-      onCompletionEnd(_request, response) {
+      onCompletionEnd(_request, response, _duration, ctx) {
+        if (stop.aborted) throw cancellation()
         if (response.stopReason === 'max_tokens') {
           throw new TriggerAgentError(`${label}达到输出上限，请重试。`)
         }
-        if (
-          response.stopReason === 'tool_use' ||
-          response.content.some((block) => block.type === 'tool_use')
-        ) {
+        const calls = response.content.filter((block) => block.type === 'tool_use')
+        if (!toolset && (response.stopReason === 'tool_use' || calls.length > 0)) {
           throw new TriggerAgentError('模型返回了工具请求，请重试获取文字答复。')
+        }
+        if ((response.stopReason === 'tool_use') !== calls.length > 0)
+          throw new TriggerAgentError('模型返回了不完整的工具调用，请重试。')
+        if (!calls.length) return
+        // Reject the entire batch before the first call when the model cannot finish within budget.
+        if (ctx.iteration >= maxModelSteps || seen.size + calls.length > maxToolCalls)
+          throw new TriggerAgentError(`${label}达到工具调用上限，请缩小问题范围后重试。`)
+        for (const call of calls) {
+          if (
+            !call.id ||
+            seen.has(call.id) ||
+            !call.input ||
+            typeof call.input !== 'object' ||
+            Array.isArray(call.input)
+          )
+            throw new TriggerAgentError('模型返回了无效或重复的工具调用，请重试。')
+          seen.add(call.id)
+        }
+      },
+      onToolCallStart() {
+        if (stop.aborted) throw cancellation()
+      },
+      onToolCallEnd(name, _id, _input, result) {
+        if (!stop.aborted) toolset?.onToolStep?.(names.has(name) ? name : 'unknown', result.success)
+      },
+      async processToolResults(blocks) {
+        // Native diagnostics for unknown tools and malformed JSON may contain raw provider text.
+        const diagnostic = '工具名或参数无效，请按当前提供的工具定义重试。'
+        return {
+          toolResultBlocks: blocks.map((block) =>
+            block.type === 'tool_result' && block.isError && !dispatchErrors.has(block.toolUseId)
+              ? { ...block, content: diagnostic, outputSummary: diagnostic }
+              : block,
+          ),
         }
       },
       onCompletionError(_request, error) {
@@ -122,12 +181,14 @@ export async function runTriggerModel(
   try {
     // Adapters own their transport. A late completion must never release an expired job for delivery.
     const messages = await Promise.race([loop.run(prompt, history), cancelled.promise])
-    const output = messages
-      .find((msg) => msg.role === 'assistant')
-      ?.content.filter((block) => block.type === 'text')
-      .map((block) => block.text)
-      .join('\n')
-      .trim()
+    const final = messages.at(-1)
+    const output =
+      final?.role === 'assistant' &&
+      final.content
+        .filter((block) => block.type === 'text')
+        .map((block) => block.text)
+        .join('\n')
+        .trim()
     if (!output) throw new TriggerAgentError('模型没有返回可展示的文字，请重试。')
     return output
   } finally {

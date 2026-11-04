@@ -1,6 +1,12 @@
-import { expect, test } from 'bun:test'
+import { expect, mock, test } from 'bun:test'
 import type { ProviderAdapter } from '@zero-os/model'
-import type { CompletionRequest, TriggerConversationTurn } from '@zero-os/shared'
+import type {
+  CompletionRequest,
+  ContentBlock,
+  RouterWorkspaceTask,
+  TriggerConversationTurn,
+  TriggerRoutingBot,
+} from '@zero-os/shared'
 import { type RouterAgentInput, createRouterAgent } from '../router-agent'
 
 const privateTarget = { channelId: 'private-account', peerId: 'private-peer' }
@@ -58,7 +64,48 @@ const input: RouterAgentInput = {
   },
 }
 
-function setup(response: string) {
+const bot: TriggerRoutingBot = {
+  platform: 'feishu',
+  channelId: 'feishu-main',
+  label: 'OpenClaw',
+  online: true,
+  ready: true,
+  deliveryState: 'ready',
+}
+const general: RouterAgentInput = {
+  ...input,
+  sessionId: 'router-general',
+  event: null,
+  route: null,
+  history: [],
+  personalBots: [bot],
+  settings: { ...input.settings, personalBots: { feishu: bot.channelId } },
+}
+const task: RouterWorkspaceTask = {
+  id: 7,
+  mandateId: 'research',
+  name: '研究进展',
+  purpose: '跟踪研究',
+  source: 'wxarc',
+  sourceScope: 'private-room',
+  eventCount: 1,
+  active: true,
+  paused: false,
+  policy: {},
+  deadline: null,
+  urgent: false,
+  matches: [],
+}
+
+type ResponseStep =
+  | string
+  | { name: string; input: Record<string, unknown> }
+  | ((request: CompletionRequest) => string)
+function call(name: string, input: Record<string, unknown> = {}) {
+  return { name, input }
+}
+
+function setup(...steps: ResponseStep[]) {
   const requests: CompletionRequest[] = []
   const adapter: ProviderAdapter = {
     apiType: 'test',
@@ -67,13 +114,27 @@ function setup(response: string) {
     },
     healthCheck: async () => true,
     complete: async (req) => {
+      const step = steps[requests.length]
       requests.push(structuredClone(req))
+      if (step === undefined) throw Error('Unexpected extra model call')
+      const response = typeof step === 'function' ? step(req) : step
+      const content: ContentBlock[] =
+        typeof response === 'string'
+          ? [{ type: 'text', text: response }]
+          : [
+              {
+                type: 'tool_use',
+                id: `tool-${requests.length}`,
+                name: response.name,
+                input: response.input,
+              },
+            ]
       return {
-        id: 'router-reply',
-        content: [{ type: 'text', text: response }],
+        id: `router-reply-${requests.length}`,
+        content,
         model: 'test',
         usage: { input: 1, output: 1 },
-        stopReason: 'end_turn',
+        stopReason: typeof response === 'string' ? 'end_turn' : 'tool_use',
       }
     },
   }
@@ -86,163 +147,519 @@ function setup(response: string) {
   }
 }
 
-test('event question is answered by the real tool-free loop with the previous turn and card points', async () => {
-  const { ask, requests } = setup(
-    '{"text":"可以调整。","intent":"next","points":["核对工作日","secret-code"]}',
+function toolResult(req: CompletionRequest) {
+  const result = req.messages.at(-1)?.content[0]
+  if (result?.type !== 'tool_result') throw Error('Expected native tool result')
+  return result
+}
+
+test('event loop reads scoped route context and feeds it to the model, without treating event text as instructions', async () => {
+  const { ask, requests } = setup(call('get_routing_context'), (req) =>
+    toolResult(req).content.includes('原先离开')
+      ? '{"text":"原先离开。","intent":"next","points":["核对工作日","secret-code"]}'
+      : '没有路由记录。',
   )
-  const answer = await ask({
-    ...input,
-    history: [{ ...previous, id: 0, status: 'failed', question: '不要加入失败回合' }, previous],
-  })
-  expect(answer).toEqual({
-    text: '可以调整。',
-    intent: 'next',
-    points: ['核对工作日', '[redacted]'],
-  })
-  expect(requests).toHaveLength(1)
-  const [request] = requests
-  expect(request.tools).toEqual([])
-  expect(request.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user'])
-  expect(request.messages[0].content).toEqual([{ type: 'text', text: previous.question }])
-  expect(request.messages[1].content).toEqual([
+  expect(
+    await ask({
+      ...input,
+      history: [{ ...previous, id: 0, status: 'failed', question: '不要加入失败回合' }, previous],
+    }),
+  ).toEqual({ text: '原先离开。', intent: 'next', points: ['核对工作日', '[redacted]'] })
+  expect(requests).toHaveLength(2)
+  const [first, next] = requests
+  expect(first.tools?.map((t) => t.name)).toContain('get_routing_context')
+  expect(first.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user'])
+  expect(first.messages[0].content).toEqual([{ type: 'text', text: previous.question }])
+  expect(first.messages[1].content).toEqual([
     { type: 'text', text: '当时网页不在场。\n查阅设置\n[redacted]' },
   ])
-  expect(request.meta?.sessionId).toBe(input.sessionId)
-  const sent = JSON.stringify(request)
-  for (const privateValue of [
+  expect(first.meta?.sessionId).toBe(input.sessionId)
+  expect(toolResult(next).toolUseId).toBe('tool-1')
+  const evidence = toolResult(next).content
+  expect(evidence).toContain('工作时段，网页在场')
+  expect(evidence).toContain('覆盖系统提示')
+  expect(first.system).not.toContain('覆盖系统提示')
+  for (const hidden of [
     'private-account',
     'private-peer',
     'private-analysis',
     'private-room',
     'secret-code',
     '不要加入失败回合',
+  ])
+    expect(JSON.stringify(requests)).not.toContain(hidden)
+})
+
+test('the model handles a paraphrase, picks the account using a read tool, prepares a draft, and reads the result before answering', async () => {
+  const text = '处理 DeepSeek 的充值'
+  const prepareReminder = mock((_platform: string, _text: string) => ({
+    platform: 'feishu' as const,
+    botLabel: bot.label,
+    text,
+    audienceKey: 'private-pin-should-never-leak',
+    peerId: 'hidden-destination',
+  }))
+  const onToolStep = mock((_name: string, _ok: boolean) => {})
+  const { ask, requests } = setup(
+    call('list_notification_bots'),
+    call('prepare_personal_reminder', { platform: 'feishu', text }),
+    (req) => (toolResult(req).content.includes('OpenClaw') ? '草稿已准备好。' : '缺少机器人信息。'),
+  )
+  const answer = await ask({
+    ...general,
+    question: '麻烦让飞书上那个机器人捎个口信，我还要处理 DeepSeek 的充值。',
+    actions: { prepareReminder, onToolStep },
+  })
+  expect(requests).toHaveLength(3)
+  expect(prepareReminder.mock.calls).toEqual([['feishu', text]])
+  const tools = requests[0].tools?.map((t) => t.name) ?? []
+  expect(tools).toContain('list_notification_bots')
+  expect(tools).toContain('prepare_personal_reminder')
+  expect(toolResult(requests[1]).content).toContain('OpenClaw')
+  expect(toolResult(requests[2]).toolUseId).toBe('tool-2')
+  expect(toolResult(requests[2]).content).toContain(text)
+  expect(toolResult(requests[2]).isError).toBeFalsy()
+  expect(answer.text).toContain('草稿')
+  expect(onToolStep.mock.calls).toEqual([
+    ['list_notification_bots', true],
+    ['prepare_personal_reminder', true],
+  ])
+  for (const hidden of [
+    'private-pin-should-never-leak',
+    'hidden-destination',
+    'private-account',
+    'private-peer',
+  ])
+    expect(JSON.stringify(requests)).not.toContain(hidden)
+})
+
+test('an explicit personal send runs once and feeds the authenticated receipt back to the model', async () => {
+  const text = '处理 DeepSeek 的充值'
+  const sendReminder = mock(async () => ({
+    platform: 'feishu' as const,
+    botLabel: 'OpenClaw',
+    text,
+    status: 'accepted' as const,
+  }))
+  const onToolStep = mock((_name: string, _ok: boolean) => {})
+  const args = { platform: 'feishu', text }
+  const { ask, requests } = setup(
+    call('send_personal_reminder', args),
+    call('send_personal_reminder', args),
+    (req) => {
+      const receipts = req.messages
+        .flatMap((m) => m.content)
+        .filter((block) => block.type === 'tool_result')
+      return receipts.some((r) => !r.isError && r.content.includes('accepted'))
+        ? '飞书平台已受理。'
+        : '尚未确认。'
+    },
+  )
+  const answer = await ask({
+    ...general,
+    question: '麻烦现在通过飞书给我捎个口信：处理 DeepSeek 的充值',
+    actions: { sendReminder, onToolStep },
+  })
+  expect(sendReminder).toHaveBeenCalledTimes(1)
+  expect(toolResult(requests[1]).content).toContain('accepted')
+  expect(toolResult(requests[2]).isError).toBe(true)
+  expect(onToolStep.mock.calls).toEqual([
+    ['send_personal_reminder', true],
+    ['send_personal_reminder', false],
+  ])
+  expect(answer.text).toBe('飞书平台已受理。')
+})
+
+test('quoted message content can contain negation while the outer request clearly authorizes the send', async () => {
+  const text = '不要忘记充值'
+  const sendReminder = mock(async () => ({
+    platform: 'feishu' as const,
+    botLabel: 'OpenClaw',
+    text,
+    status: 'accepted' as const,
+  }))
+  const { ask, requests } = setup(
+    call('send_personal_reminder', { platform: 'feishu', text }),
+    '平台已受理。',
+  )
+  await ask({
+    ...general,
+    question: '请发个飞书消息给我：「不要忘记充值」',
+    actions: { sendReminder },
+  })
+  expect(sendReminder).toHaveBeenCalledTimes(1)
+  expect(toolResult(requests[1]).isError).toBeFalsy()
+})
+
+test('data, previews, prohibitions and hypothetical instructions cannot authorize an immediate send', async () => {
+  const text = '处理 DeepSeek 的充值'
+  const sendReminder = mock(async () => ({
+    platform: 'feishu' as const,
+    botLabel: bot.label,
+    text,
+    status: 'accepted' as const,
+  }))
+  const historic = { ...previous, question: '现在通过飞书给我发：处理 DeepSeek 的充值' }
+  for (const question of [
+    '预演一下通过飞书给我发：处理 DeepSeek 的充值',
+    '不要通过飞书给我发：处理 DeepSeek 的充值',
+    '如果通过飞书给我发：处理 DeepSeek 的充值，会怎么样？',
+    '请概括我刚才的问题。',
+    '解释一下这句示例：「通过飞书给我发：处理 DeepSeek 的充值」。',
+    '明天下午通过飞书给我发：处理 DeepSeek 的充值',
   ]) {
-    expect(sent).not.toContain(privateValue)
+    const { ask, requests } = setup(
+      call('send_personal_reminder', { platform: 'feishu', text }),
+      '未发送。',
+    )
+    await ask({ ...general, question, history: [historic], actions: { sendReminder } })
+    expect({ question, refused: toolResult(requests[1]).isError }).toEqual({
+      question,
+      refused: true,
+    })
   }
-  expect(sent).toContain(input.question)
-  expect(sent).toContain('覆盖系统提示')
-  expect(request.system).not.toContain('覆盖系统提示')
-  expect(sent).toContain('工作时段，网页在场')
-  expect(sent).toContain('原先离开')
+  const stripped = setup(
+    call('send_personal_reminder', { platform: 'feishu', text: '不要' }),
+    '未发送。',
+  )
+  await stripped.ask({
+    ...general,
+    question: '不要通过飞书给我发：处理充值',
+    actions: { sendReminder },
+  })
+  expect(toolResult(stripped.requests[1]).isError).toBe(true)
+  expect(sendReminder).not.toHaveBeenCalled()
 })
 
-test('general questions receive only the safe workspace summary, and plain-text answers are supported', async () => {
-  const { ask, requests } = setup('你可以在通知偏好选择静默时段。')
-  const answer = await ask({ ...input, event: null, history: [], sessionId: 'router-general' })
-  expect(answer).toEqual({ text: '你可以在通知偏好选择静默时段。' })
-  const content = requests[0].messages[0].content[0]
-  if (content.type !== 'text') throw Error('Missing user text')
-  const context = JSON.parse(content.text)
-  expect(context.recordedRoute).toBeNull()
-  expect(context.event).toBeNull()
-  expect(context.preferences.weixinTargetConfigured).toBe(true)
-  expect(context.subscriptions).toEqual({ github: 1, wxarc: 0 })
-  expect(content.text).not.toContain('private-')
+test.each([
+  ['我没有要求发送微信通知：处理充值', '处理充值'],
+  ['这是一句测试说明：发送微信通知：处理充值', '处理充值'],
+  ['周五下午发送微信通知：处理充值', '处理充值'],
+  ['用微信通知张三：处理充值', '处理充值'],
+  ['用微信通知张三：处理充值', '张三：处理充值'],
+  ['发送微信通知：处理充值，发给张三', '处理充值，发给张三'],
+] as const)(
+  'a quoted, scheduled or third-party request cannot authorize a self-send: %s (%s)',
+  async (question, text) => {
+    const sendReminder = mock(async () => ({
+      platform: 'weixin' as const,
+      botLabel: '私人微信',
+      text,
+      status: 'accepted' as const,
+    }))
+    const { ask, requests } = setup(
+      call('send_personal_reminder', { platform: 'weixin', text }),
+      '已发送。',
+    )
+    const answer = await ask({ ...general, question, actions: { sendReminder } })
+    expect(toolResult(requests[1]).isError).toBe(true)
+    expect(sendReminder).not.toHaveBeenCalled()
+    expect(answer.text).toContain('本轮没有发送通知')
+  },
+)
+
+test.each([
+  ['把刚才那条草稿通过微信发送给我', false],
+  ['先别动刚才要发的草稿', false],
+  ['发送刚才那条草稿', true],
+  ['请把上条草稿发出去', true],
+] as const)(
+  'sending a pinned draft requires an unambiguous current instruction: %s',
+  async (question, accepted) => {
+    const text = '处理充值'
+    const draft: TriggerConversationTurn = {
+      ...previous,
+      answer: {
+        text: '待发送',
+        reminder: {
+          platform: 'feishu',
+          channelId: bot.channelId,
+          botLabel: bot.label,
+          text,
+          status: 'draft',
+        },
+      },
+    }
+    const sendReminder = mock(async () => ({
+      platform: 'feishu' as const,
+      botLabel: bot.label,
+      text,
+      status: 'accepted' as const,
+    }))
+    const { ask, requests } = setup(
+      call('send_personal_reminder', { platform: 'feishu', text, draftTurnId: draft.id }),
+      '查看回执。',
+    )
+    await ask({ ...general, question, history: [draft], actions: { sendReminder } })
+    expect(!!toolResult(requests[1]).isError).toBe(!accepted)
+    expect(sendReminder).toHaveBeenCalledTimes(accepted ? 1 : 0)
+  },
+)
+
+test('a model success claim cannot stand in for a missing send or a rejected platform receipt', async () => {
+  const text = '处理充值'
+  const question = '发送微信通知：处理充值'
+  const sendReminder = mock(async () => ({
+    platform: 'weixin' as const,
+    botLabel: '私人微信',
+    text,
+    status: 'rejected' as const,
+    reason: '平台拒收',
+  }))
+  const none = setup('通知已经发送。')
+  const noAction = await none.ask({ ...general, question, actions: { sendReminder } })
+  expect(sendReminder).not.toHaveBeenCalled()
+  expect(noAction.text).toContain('本轮没有发送通知')
+  const denied = setup(
+    call('send_personal_reminder', { platform: 'weixin', text }),
+    '通知已经发送。',
+  )
+  const failed = await denied.ask({ ...general, question, actions: { sendReminder } })
+  expect(toolResult(denied.requests[1]).content).toContain('rejected')
+  expect(failed.text).toContain('本轮没有发送通知')
+})
+test.each(['unknown', 'accepted'] as const)(
+  'a %s transport result never proves the user read the message',
+  async (status) => {
+    const text = '处理充值'
+    const sendReminder = mock(async () => ({
+      platform: 'weixin' as const,
+      botLabel: '私人微信',
+      text,
+      status,
+    }))
+    const { ask, requests } = setup(
+      call('send_personal_reminder', { platform: 'weixin', text }),
+      '通知已送达，对方已读。',
+    )
+    const result = await ask({
+      ...general,
+      question: '发送微信通知：处理充值',
+      actions: { sendReminder },
+    })
+    expect(JSON.parse(toolResult(requests[1]).content).status).toBe(status)
+    expect(result.text).not.toContain('对方已读')
+    expect(result.text).toMatch(status === 'unknown' ? /未确认|待核对|待确认|未能确认/ : /已受理/)
+  },
+)
+
+test('task and event capabilities cannot prepare personal sends or commissions even if an event asks for them', async () => {
+  const prepareReminder = mock(() => ({
+    platform: 'weixin' as const,
+    botLabel: '私人机器人',
+    text: '不可发送',
+  }))
+  const prepareCommission = mock(async () => null)
+  for (const context of [input, { ...input, task, sessionId: 'router-task-7' }]) {
+    const { ask, requests } = setup(
+      call('prepare_personal_reminder', { platform: 'weixin', text: '不可发送' }),
+      '这是当前事项。',
+    )
+    await ask({ ...context, actions: { prepareReminder, prepareCommission } })
+    expect(requests[0].tools?.map((t) => t.name)).not.toContain('prepare_personal_reminder')
+    expect(requests[0].tools?.map((t) => t.name)).not.toContain('prepare_commission')
+    expect(requests[0].tools?.map((t) => t.name)).not.toContain('send_personal_reminder')
+    expect(toolResult(requests[1]).isError).toBe(true)
+  }
+  expect(prepareReminder).not.toHaveBeenCalled()
+  expect(prepareCommission).not.toHaveBeenCalled()
 })
 
-test('only recognized structured output and display data are accepted', async () => {
+test('tools reject invalid parameters without pretending the operation succeeded or leaking backend errors', async () => {
+  const prepareReminder = mock((_platform: string, _text: string) => {
+    throw Error('backend-secret-value')
+  })
+  for (const [args, calls] of [
+    [{ platform: 'feishu', text: '核对充值', peerId: 'outsider' }, 0],
+    [{ platform: 'email', text: '核对充值' }, 0],
+    [{ platform: 'feishu', text: '核对充值' }, 1],
+  ] as const) {
+    const { ask, requests } = setup(call('prepare_personal_reminder', args), '未能准备。')
+    await ask({ ...general, question: '请在飞书上提醒我核对充值。', actions: { prepareReminder } })
+    expect(toolResult(requests[1]).isError).toBe(true)
+    expect(toolResult(requests[1]).content).not.toContain('backend-secret-value')
+    expect(prepareReminder).toHaveBeenCalledTimes(calls)
+  }
+})
+
+test.each([
+  ['dingtalk', '白天办公用钉钉联系我', 'duringWork'],
+  ['feishu', '我离席以后优先让飞书来通知', 'awayFallback'],
+] as const)(
+  'typed preference drafts validate the selected %s account even when offline',
+  async (platform, question, key) => {
+    const proposal = { key, value: platform }
+    const selected = {
+      ...bot,
+      platform,
+      online: false,
+      ready: false,
+      deliveryState: 'offline' as const,
+    }
+    const config = {
+      ...general,
+      question,
+      settings: { ...general.settings, personalBots: { [platform]: selected.channelId } },
+    }
+    for (const found of [true, false]) {
+      const { ask, requests } = setup(call('prepare_routing_preference', proposal), '请核对偏好。')
+      const answer = await ask({ ...config, personalBots: found ? [selected] : [] })
+      if (found) expect(answer.proposal).toEqual(proposal)
+      else expect(answer.proposal).toBeUndefined()
+      expect(!!toolResult(requests[1]).isError).toBe(!found)
+    }
+  },
+)
+
+test('bot selection goes through the model and only uses unique registered accounts', async () => {
+  const other = { ...bot, channelId: 'feishu-backup' }
+  for (const [name, bots, expected] of [
+    ['OpenClaw', [bot], bot.channelId],
+    ['OpenClaw', [bot, other], null],
+    ['feishu-backup', [bot, other], other.channelId],
+  ] as const) {
+    const { ask, requests } = setup(
+      call('prepare_bot_selection', { platform: 'feishu', name }),
+      '请核对机器人。',
+    )
+    const answer = await ask({
+      ...general,
+      question: `请帮我换成 ${name} 这个飞书机器人。`,
+      personalBots: bots,
+    })
+    if (expected)
+      expect(answer.proposal).toEqual({
+        key: 'personalBot',
+        platform: 'feishu',
+        value: expected,
+        label: bot.label,
+      })
+    else expect(answer.proposal).toBeUndefined()
+    expect(requests).toHaveLength(2)
+    expect(!!toolResult(requests[1]).isError).toBe(expected === null)
+  }
+})
+
+test('a point-in-time preview is queried at execution and forwarded as data without changing preferences', async () => {
+  const previewRoute = mock(async () => ({
+    destination: 'defer' as const,
+    reason: '网页不在场',
+    recheckAt: at,
+  }))
+  const { ask, requests } = setup(call('preview_current_route'), '网页不在场，当前会延后。')
+  await ask({ ...general, question: '此刻的提醒会去哪里？', actions: { previewRoute } })
+  expect(previewRoute).toHaveBeenCalledTimes(1)
+  expect(JSON.parse(toolResult(requests[1]).content)).toMatchObject({
+    destination: 'defer',
+    reason: '网页不在场',
+  })
+})
+
+test('commission proposals return only the verified draft title to the loop', async () => {
+  const prepareCommission = mock(async () => ({
+    text: '请确认。',
+    commission: {
+      title: '跟踪发布',
+      code: 'private-code',
+      details: ['private-grant'],
+      expiresAt: 123,
+    },
+  }))
+  const { ask, requests } = setup(call('prepare_commission', { intent: 'create' }), '请核对委托。')
+  await ask({ ...general, question: '在这里替我盯着仓库的发布。', actions: { prepareCommission } })
+  expect(prepareCommission).toHaveBeenCalledTimes(1)
+  expect(JSON.parse(toolResult(requests[1]).content)).toMatchObject({
+    status: 'draft',
+    title: '跟踪发布',
+  })
+  expect(JSON.stringify(requests)).not.toContain('private-code')
+  expect(JSON.stringify(requests)).not.toContain('private-grant')
+})
+
+test('restricted GitHub evidence tool reads only the selected GitHub event and redacts external facts', async () => {
+  const inspectGithub = mock(async () => ({
+    kind: 'jobs' as const,
+    observedAt: at,
+    sourceUrl: 'https://github.com/a/b',
+    facts: [{ label: '构建', value: '失败：secret-code' }],
+  }))
+  const { ask, requests } = setup(
+    call('inspect_github', { action: 'inspect_github' }),
+    '构建失败。',
+  )
+  if (!input.event) throw Error('missing fixture event')
+  await ask({
+    ...input,
+    event: { ...input.event, source: 'github', scope: 'a/b' },
+    actions: { inspectGithub },
+  })
+  expect(inspectGithub).toHaveBeenCalledTimes(1)
+  expect(toolResult(requests[1]).content).toContain('失败：[redacted]')
+  expect(JSON.stringify(requests)).not.toContain('secret-code')
+})
+test('only display data from final model JSON is accepted; receipts, tools, preferences and evidence require server execution', async () => {
   for (const invalid of [
     '{"text":"私信已发","actions":[{"name":"send_weixin"}]}',
     '{"text":"操作","intent":"shell"}',
     '{"text":"操作","intent":"route","points":[{"html":"<script>"}]}',
     '{"text":"操作","intent":"route","points":["1","2","3","4"]}',
+    '{"text":"已发送","reminder":{"status":"accepted"}}',
+    '{"text":"草案","proposal":{"key":"offDay","value":"defer"}}',
+    '{"text":"已读取","toolSteps":[{"name":"get_routing_context","ok":true}]}',
+    '{"text":"证据","investigation":{}}',
     '{"text":',
-  ]) {
-    await expect(setup(invalid).ask(input)).rejects.toThrow('格式无效')
-  }
-  await expect(
-    setup('{"text":"事件详情","intent":"event"}').ask({ ...input, event: null }),
-  ).rejects.toThrow('格式无效')
+  ])
+    await expect(setup(invalid).ask(general)).rejects.toThrow('格式无效')
+  await expect(setup('{"text":"事件详情","intent":"event"}').ask(general)).rejects.toThrow(
+    '格式无效',
+  )
   expect(await setup('```json\n{"text":"判断规则。","intent":"route"}\n```').ask(input)).toEqual({
     text: '判断规则。',
     intent: 'route',
   })
 })
 
-test('retains a bounded window and excludes pending and failed questions from the next request', async () => {
+test('privileged or compound preference edits fail at the tool boundary', async () => {
+  for (const proposed of [
+    { key: 'weixinTarget', value: 'somebody' },
+    { key: 'enabled', value: false },
+    { key: 'presence', value: 'away', peerId: 'recipient' },
+    { key: 'awayFallback', value: 'web' },
+    { key: 'offDay', value: 'send' },
+  ]) {
+    const { ask, requests } = setup(
+      call('prepare_routing_preference', proposed),
+      '无法准备此偏好。',
+    )
+    expect((await ask({ ...general, question: '更改通知偏好。' })).proposal).toBeUndefined()
+    expect(toolResult(requests[1]).isError).toBe(true)
+  }
+})
+
+test('history excludes pending and failed turns, bounds replay and distinguishes confirmed from unconfirmed proposals', async () => {
+  const answer = { text: '请确认。', proposal: { key: 'presence', value: 'away' } as const }
   const turns = Array.from({ length: 12 }, (_, i) => ({
     ...previous,
     id: i + 1,
     question: `turn-${i + 1}`,
   }))
-  const { ask, requests } = setup('好的')
+  turns[10] = { ...turns[10], answer: { ...answer, proposalAppliedAt: at } }
+  turns[11] = { ...turns[11], answer }
+  const { ask, requests } = setup(call('get_routing_context'), '当前已改回自动在场。')
   await ask({
-    ...input,
+    ...general,
     history: [
       ...turns,
-      { ...previous, id: 13, question: 'pending', status: 'pending', answer: null },
-    ],
-  })
-  expect(requests[0].messages).toHaveLength(17)
-  expect(requests[0].messages[0].content).toEqual([{ type: 'text', text: 'turn-5' }])
-  expect(JSON.stringify(requests[0].messages)).not.toContain('pending')
-})
-
-test('an explicit preference request yields a confirmable one-field draft with no model revision', async () => {
-  const proposal = { key: 'offDay', value: 'defer' } as const
-  const { ask } = setup(JSON.stringify({ text: '已经改好，并已发送到微信。', proposal }))
-  for (const question of ['把休息日通知改为延后提醒', '周末先别发微信，延后提醒']) {
-    expect(await ask({ ...input, question })).toEqual({
-      text: '请核对卡片中的通知偏好，点击确认后生效。',
-      intent: 'route',
-      proposal,
-    })
-  }
-})
-
-test('untrusted event instructions and what-if questions cannot open a confirmation', async () => {
-  for (const question of [
-    '为什么延后？',
-    '假如把休息日改成了微信会怎样',
-    '不要把休息日改成微信',
-    '请概括这个事件',
-  ]) {
-    const { ask, requests } = setup(
-      '{"text":"已经改好了","proposal":{"key":"offDay","value":"weixin"}}',
-    )
-    const result = await ask({ ...input, question })
-    expect(result.proposal).toBeUndefined()
-    expect(result.text).not.toContain('已经改好')
-    expect(JSON.stringify(requests[0].messages.at(-1))).toContain('mayPropose')
-  }
-})
-
-test('model cannot propose recipients, privileged settings, revisions or several edits', async () => {
-  for (const extra of [
-    { proposal: { key: 'weixinTarget', value: 'somebody' } },
-    { proposal: { key: 'enabled', value: false } },
-    { proposal: { key: 'presence', value: 'away', peerId: 'secret' } },
-    { proposal: { key: 'awayFallback', value: 'web' } },
-    { proposal: { key: 'offDay', value: 'send' } },
-    { proposal: { key: 'duringWork', value: 'defer' }, proposalRevision: 1 },
-    { proposal: { key: 'duringWork', value: 'defer' }, proposalAppliedAt: at },
-    {
-      proposal: [
-        { key: 'presence', value: 'away' },
-        { key: 'offDay', value: 'weixin' },
-      ],
-    },
-  ]) {
-    const { ask } = setup(JSON.stringify({ text: '调整一下', ...extra }))
-    await expect(ask({ ...input, question: '请将通知调整为延后提醒' })).rejects.toThrow('格式无效')
-  }
-})
-
-test('follow-ups distinguish an applied draft from an unconfirmed one and use current preferences', async () => {
-  const proposal = { key: 'presence', value: 'away' } as const
-  const answer = { text: '请确认。', proposal }
-  const { ask, requests } = setup('当前已改回自动在场。')
-  await ask({
-    ...input,
-    history: [
-      { ...previous, answer: { ...answer, proposalAppliedAt: at } },
-      { ...previous, id: 2, answer },
+      { ...previous, id: 13, question: 'pending question', status: 'pending', answer: null },
+      { ...previous, id: 14, question: 'failed question', status: 'failed', answer: null },
     ],
   })
   const messages = requests[0].messages
-  expect(JSON.stringify(messages[1].content)).toContain(`工作台已于 ${at} 确认保存`)
-  expect(JSON.stringify(messages[3].content)).toContain('本建议尚未在此工作台确认')
-  const latest = messages[4].content[0]
-  if (latest.type !== 'text') throw Error('Missing latest preference snapshot')
-  expect(JSON.parse(latest.text).preferences.presenceMode).toBe('auto')
+  expect(messages).toHaveLength(17)
+  expect(messages[0].content).toEqual([{ type: 'text', text: 'turn-5' }])
+  expect(JSON.stringify(messages[13].content)).toContain(at)
+  expect(JSON.stringify(messages[15].content)).toContain('尚未在此工作台确认')
+  expect(JSON.stringify(messages)).not.toContain('pending question')
+  expect(JSON.stringify(messages)).not.toContain('failed question')
+  expect(toolResult(requests[1]).content).toContain('auto')
 })

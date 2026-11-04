@@ -161,7 +161,7 @@ function policy(value: unknown): MandatePolicy {
   return result
 }
 
-function target(value: unknown): MandateTarget {
+export function parseMandateTarget(value: unknown): MandateTarget {
   const data = object(value, ['platform', 'channelId', 'peerId', 'operatorId'])
   return {
     platform: oneOf(data.platform, ['weixin', 'dingtalk', 'feishu'], '提醒平台'),
@@ -196,7 +196,7 @@ function mandate(value: unknown): TriggerMandate {
     'deadline',
     'urgent',
   ])
-  const targets = list(data.targets, 3, target, '提醒目标列表')
+  const targets = list(data.targets, 3, parseMandateTarget, '提醒目标列表')
   if (new Set(targets.map((row) => row.platform)).size !== targets.length)
     throw new MandateInputError(400, '每个平台只能选择一个接收目标。')
   return {

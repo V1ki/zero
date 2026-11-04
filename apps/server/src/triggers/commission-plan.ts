@@ -13,7 +13,8 @@ import type {
 import { type AgentDependencies, TriggerAgentError, runTriggerModel } from './event-agent'
 import { mandateSnapshot } from './mandate-input'
 
-export type CommissionIntent = 'create' | 'edit' | 'pause' | 'resume' | 'policy'
+export const commissionIntents = ['create', 'edit', 'pause', 'resume', 'policy'] as const
+export type CommissionIntent = (typeof commissionIntents)[number]
 export function commissionIntent(input: string): CommissionIntent | null {
   const text = input
     .trim()

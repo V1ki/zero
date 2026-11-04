@@ -1,6 +1,6 @@
 import { afterEach, expect, mock, test } from 'bun:test'
 import { TriggerStore } from '@zero-os/observe'
-import type { MandateTarget, TriggerMandate } from '@zero-os/shared'
+import { type MandateTarget, type TriggerMandate, sameTriggerRouteTarget } from '@zero-os/shared'
 import { dispatchRouterCommand } from '../../runtime/channel-runtime/runtime-common'
 import { type TaskMessage, createTaskBridge } from '../task-bridge'
 
@@ -85,7 +85,16 @@ function setup(target = ding, withSibling = false) {
     async (_context: Parameters<Parameters<typeof createTaskBridge>[0]['agent']>[0]) =>
       '已收到你的问题。',
   )
-  const options = { store, agent, isLiveTarget: () => true }
+  const options = {
+    store,
+    agent,
+    isLiveTarget: () => true,
+    isPersonalTarget: (target: MandateTarget) =>
+      sameTriggerRouteTarget(
+        store.routing.resolveBotTarget(store.routing.getSettings().settings, target.platform),
+        target,
+      ),
+  }
   const bridge = createTaskBridge(options)
   return {
     store,
@@ -163,8 +172,22 @@ test('card acknowledgement requires the recorded native receipt even in the righ
   expect(await bridge.card(action)).toBe(false)
 })
 
-test('iLink bare inbox IDs require a confirmed delivery to this direct peer and ongoing local authorization', async () => {
-  const { store, input, agent, bridge, settings } = setup(wx)
+function setupPersonalInbox(target = wx) {
+  const fixture = setup(target)
+  const { store, settings } = fixture
+  if (target.platform !== 'weixin') {
+    const current = store.routing.getSettings()
+    store.routing.saveSettings(
+      { ...current.settings, personalBots: { [target.platform]: target.channelId } },
+      current.revision,
+    )
+    store.routing.saveBotBinding(
+      target.platform,
+      target.channelId,
+      target,
+      store.routing.getBotBindings().revision,
+    )
+  }
   store.saveSettings(
     {
       ...settings,
@@ -177,25 +200,86 @@ test('iLink bare inbox IDs require a confirmed delivery to this direct peer and 
     },
     1,
   )
-  store.commitPush({
-    source: 'wxarc',
-    stream: 'wxarc:legacy',
-    events: [{ ...event, scope: 'legacy' }],
-    revision: 2,
+  function receive(eventId: string) {
+    store.commitPush({
+      source: 'wxarc',
+      stream: 'wxarc:legacy',
+      events: [{ ...event, scope: 'legacy', eventId }],
+      revision: 2,
+    })
+    const item = store
+      .listInbox()
+      .find((item) => item.eventId === eventId && item.scope === 'legacy')
+    if (!item) throw new Error('expected legacy inbox fixture')
+    return item.id
+  }
+  function claim(inboxId: number) {
+    const { revision } = store.routing.getSettings()
+    store.routing.enqueue(inboxId)
+    expect(store.routing.claimAgent(inboxId, 'agent')).toBe(true)
+    expect(store.routing.finishAgent(inboxId, 'agent', { summary: 'private WXARC analysis' })).toBe(
+      true,
+    )
+    expect(
+      store.routing.applyDecision(
+        inboxId,
+        { destination: target.platform, reason: 'test' },
+        revision,
+        now,
+      ),
+    ).toBe(true)
+  }
+  return { ...fixture, receive, claim }
+}
+
+for (const platform of ['feishu', 'dingtalk'] as const) {
+  test(`${platform} personal listener follow-up uses its text delivery receipt and selected bot independently of task cards`, async () => {
+    const target = { platform, channelId: 'bot', peerId: 'original-dm', operatorId: 'owner' }
+    const { store, options, agent, input, receive, claim } = setupPersonalInbox(target)
+    // Plain text reminders and follow-ups do not require a task-card template.
+    const bridge = createTaskBridge({ ...options, isLiveTarget: () => false })
+    const id = receive('personal-listener')
+    const query = { ...input, isDirect: true, text: `#监听${id} 现在有什么进展？` }
+    claim(id)
+    const denial = await bridge.handle({ ...query, messageId: 'not-accepted' })
+    store.routing.finishSend(id)
+    for (const patch of [
+      { actorId: 'another-person' },
+      { peerId: 'another-dm' },
+      { channelId: 'another-bot' },
+    ]) {
+      expect(await bridge.handle({ ...query, ...patch })).toEqual(denial)
+    }
+    expect(agent).not.toHaveBeenCalled()
+    expect((await bridge.handle(query)).reply).toBe('已收到你的问题。')
+    expect(JSON.stringify(agent.mock.calls)).not.toContain('private')
+    expect(await bridge.handle(query)).toEqual({ handled: true })
+    const replacement = { ...target, peerId: 'new-dm', operatorId: 'new-owner' }
+    store.routing.saveBotBinding(
+      platform,
+      target.channelId,
+      replacement,
+      store.routing.getBotBindings().revision,
+    )
+    expect(await bridge.handle({ ...query, messageId: 'old-recipient' })).toEqual(denial)
+    expect(
+      await bridge.handle({
+        ...query,
+        peerId: replacement.peerId,
+        actorId: replacement.operatorId,
+      }),
+    ).toEqual(denial)
+    expect(agent).toHaveBeenCalledTimes(1)
   })
-  const inboxId = store.listInbox().find((item) => item.scope === 'legacy')?.id
-  if (!inboxId) throw new Error('expected legacy inbox fixture')
+}
+
+test('iLink bare inbox IDs require a confirmed delivery to this direct peer and ongoing local authorization', async () => {
+  const { store, input, agent, bridge, receive, claim } = setupPersonalInbox()
+  const inboxId = receive('before-binding')
   const query = { ...input, text: `ZeRo 监听 #${inboxId} 上一条说了什么？` }
   const denied = await bridge.handle({ ...query, messageId: 'before-delivery' })
   expect(agent).not.toHaveBeenCalled()
-  store.routing.enqueue(inboxId)
-  expect(store.routing.claimAgent(inboxId, 'agent')).toBe(true)
-  expect(store.routing.finishAgent(inboxId, 'agent', { summary: 'private WXARC analysis' })).toBe(
-    true,
-  )
-  expect(
-    store.routing.applyDecision(inboxId, { destination: 'weixin', reason: 'test' }, 1, now),
-  ).toBe(true)
+  claim(inboxId)
   expect(await bridge.handle({ ...query, messageId: 'before-receipt' })).toEqual(denied)
   expect(store.routing.finishSend(inboxId)).toBe(true)
   for (const patch of [
@@ -213,6 +297,51 @@ test('iLink bare inbox IDs require a confirmed delivery to this direct peer and 
   expect(await bridge.handle({ ...query, messageId: 'new' })).toEqual(denied)
 })
 
+test('iLink follow-up requires the selected bot and its current channel-side default as well as the original recipient', async () => {
+  const { store, bridge, input, receive, claim } = setupPersonalInbox()
+  const routing = store.routing
+  const replacement = { ...wx, peerId: 'new-peer', operatorId: 'new-peer' }
+  const otherBot = { ...replacement, channelId: 'another-account' }
+  function bind(bot: MandateTarget, target: MandateTarget | null) {
+    routing.saveBotBinding('weixin', bot.channelId, target, routing.getBotBindings().revision)
+  }
+  const ask = (inboxId: number, who: MandateTarget, messageId: string) =>
+    bridge.handle({
+      ...input,
+      channelId: who.channelId,
+      peerId: who.peerId,
+      actorId: who.peerId,
+      messageId,
+      text: `#监听${inboxId} 进展？`,
+    })
+  const legacyId = receive('legacy-recipient')
+  claim(legacyId)
+  routing.finishSend(legacyId)
+  const allowed = await ask(legacyId, wx, 'legacy')
+  const denied = await ask(legacyId, replacement, 'wrong-peer')
+  expect(allowed.reply).toBe('已收到你的问题。')
+  expect(denied).not.toEqual(allowed)
+
+  bind(wx, replacement)
+  expect(await ask(legacyId, wx, 'replaced')).toEqual(denied)
+  expect(await ask(legacyId, replacement, 'previous-receipt')).toEqual(denied)
+  const newId = receive('new-recipient')
+  claim(newId)
+  routing.finishSend(newId)
+  expect(await ask(newId, replacement, 'current')).toEqual(allowed)
+  bind(wx, null)
+  expect(await ask(newId, replacement, 'unbound')).toEqual(denied)
+  bind(wx, replacement)
+  bind(otherBot, otherBot)
+  const current = routing.getSettings()
+  routing.saveSettings(
+    { ...current.settings, personalBots: { weixin: otherBot.channelId } },
+    current.revision,
+  )
+  expect(await ask(newId, replacement, 'old-bot')).toEqual(denied)
+  expect(await ask(newId, otherBot, 'different-bot-same-peer')).toEqual(denied)
+})
+
 test('revoking a receiver during a model turn prevents the outbound reply', async () => {
   const { store, input, matchId, taskId, options } = setup()
   store.mandates.finishEffect(matchId, 'notify', 'done', 'original-card')
@@ -224,6 +353,30 @@ test('revoking a receiver during a model turn prevents the outbound reply', asyn
   result.resolve('must not leave')
   expect(await pending).toEqual({ handled: true })
   expect(store.conversations.list(`task-${taskId}`).at(-1)?.status).toBe('failed')
+})
+
+test('a personal reply is withheld if the selected bot loses its recipient during the question', async () => {
+  const { options, store, input, receive, claim } = setupPersonalInbox({
+    platform: 'feishu',
+    channelId: 'bot',
+    peerId: 'original-dm',
+    operatorId: 'owner',
+  })
+  const id = receive('recipient-changes')
+  claim(id)
+  store.routing.finishSend(id)
+  const result = Promise.withResolvers<string>()
+  let available = true
+  const bridge = createTaskBridge({
+    ...options,
+    agent: () => result.promise,
+    isPersonalTarget: (target) => available && options.isPersonalTarget(target),
+  })
+  const response = bridge.handle({ ...input, isDirect: true, text: `#监听${id} 进展？` })
+  available = false
+  result.resolve('obsolete private answer')
+  expect(await response).toEqual({ handled: true })
+  expect(store.conversations.list(id).at(-1)?.status).toBe('failed')
 })
 
 test('Feishu commission commands receive the authenticated identity and repeated ingress replies only once', async () => {

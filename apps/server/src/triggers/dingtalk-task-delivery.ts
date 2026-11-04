@@ -8,22 +8,31 @@ type Host = Pick<ZeroOS, 'channels' | 'channelDefinitions'> & {
 }
 
 export function createDingtalkTaskDelivery(zero: Host) {
-  function listTargets() {
+  function connectedChannel(channelId: string) {
+    const channel = zero.channels.get(channelId)
+    const definition = zero.channelDefinitions.get(channelId)
+    return !channelId.includes('*') &&
+      definition?.type === 'dingtalk' &&
+      definition.configured &&
+      channel instanceof DingtalkChannel &&
+      channel.isConnected()
+      ? channel
+      : undefined
+  }
+
+  function listTargets(personal = false) {
     const targets: Array<MandateTarget & { label: string; operatorId: string }> = []
     for (const binding of zero.sessionManager.listCurrentBindings()) {
       if (binding.source !== 'dingtalk' || !binding.participantId) continue
       const channelId = binding.channelName ?? 'dingtalk'
-      const channel = zero.channels.get(channelId)
+      const channel = connectedChannel(channelId)
       const peerId = binding.channelId
       const operatorId = binding.participantId
-      const definition = zero.channelDefinitions.get(channelId)
       if (
-        channelId.includes('*') ||
-        definition?.type !== 'dingtalk' ||
-        !definition.configured ||
-        !(channel instanceof DingtalkChannel) ||
-        !channel.isConnected() ||
-        !channel.taskCards.canSend(peerId, operatorId)
+        !channel ||
+        !(personal
+          ? channel.taskCards.hasBoundPeer(peerId, operatorId)
+          : channel.taskCards.canSend(peerId, operatorId))
       )
         continue
       targets.push({
@@ -31,10 +40,24 @@ export function createDingtalkTaskDelivery(zero: Host) {
         channelId,
         peerId,
         operatorId,
-        label: `${channelId} · ${peerId} · ${operatorId} · ${channel.taskCards.modeLabel}`,
+        label: `${channelId} · ${peerId} · ${operatorId}${personal ? '' : ` · ${channel.taskCards.modeLabel}`}`,
       })
     }
     return targets
+  }
+
+  function listDirectTargets() {
+    return Array.from(zero.channelDefinitions.keys()).flatMap((channelId) =>
+      (connectedChannel(channelId)?.taskCards.listDirectPeers() ?? []).map(
+        ({ peerId, actorId: operatorId }) => ({
+          platform: 'dingtalk' as const,
+          channelId,
+          peerId,
+          operatorId,
+          label: `${channelId} · ${peerId} · ${operatorId}`,
+        }),
+      ),
+    )
   }
 
   async function send(
@@ -75,5 +98,5 @@ export function createDingtalkTaskDelivery(zero: Host) {
       throw error
     }
   }
-  return { listTargets, send }
+  return { listTargets, listDirectTargets, send }
 }

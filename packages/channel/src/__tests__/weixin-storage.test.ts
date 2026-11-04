@@ -54,4 +54,17 @@ describe('ContextTokenStore', () => {
     expect(store.get('accA', 'c1')).toBe('a')
     expect(store.get('accB', 'c1')).toBe('b')
   })
+
+  test('enumerates peers for the exact account before and after restart', () => {
+    const store = new ContextTokenStore(tempDir)
+    store.set('acc', 'branch:user', 'a')
+    store.set('acc:branch', 'user', 'b')
+    for (const instance of [store, new ContextTokenStore(tempDir)]) {
+      instance.restore('acc')
+      instance.restore('acc:branch')
+      expect(instance.listPeers('acc')).toEqual(['branch:user'])
+      expect(instance.listPeers('acc:branch')).toEqual(['user'])
+      expect(instance.get('acc', 'branch:user')).toBe('a')
+    }
+  })
 })

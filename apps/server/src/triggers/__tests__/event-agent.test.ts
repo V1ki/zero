@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import type { ProviderAdapter } from '@zero-os/model'
-import type { CompletionResponse, TriggerInboxItem } from '@zero-os/shared'
-import { createTriggerAgent } from '../event-agent'
+import type { CompletionResponse, ToolUseBlock, TriggerInboxItem } from '@zero-os/shared'
+import { TriggerAgentError, createTriggerAgent, runTriggerModel } from '../event-agent'
 
 const item: TriggerInboxItem = {
   id: 1,
@@ -22,7 +22,7 @@ const answer: CompletionResponse = {
   usage: { input: 12, output: 3 },
 }
 
-function withAdapter(complete: ProviderAdapter['complete']) {
+function modelRouter(complete: ProviderAdapter['complete']) {
   const adapter: ProviderAdapter = {
     complete,
     apiType: 'test',
@@ -31,10 +31,11 @@ function withAdapter(complete: ProviderAdapter['complete']) {
     },
     healthCheck: async () => true,
   }
-  return createTriggerAgent({
-    modelRouter: { getDefaultModel: () => undefined, getCurrentModel: () => ({ adapter }) },
-    secretFilter: filter,
-  })
+  return { getDefaultModel: () => undefined, getCurrentModel: () => ({ adapter }) }
+}
+
+function withAdapter(complete: ProviderAdapter['complete']) {
+  return createTriggerAgent({ modelRouter: modelRouter(complete), secretFilter: filter })
 }
 
 test('runs the configured model on one event without tools, private peer IDs, or history', async () => {
@@ -122,4 +123,137 @@ test('mandate-aware analysis separates saved purpose, previous summaries and the
     purpose: '归纳 example-secret',
     previousSummaries: ['之前已处理 example-secret'],
   })
+})
+
+const lookup = { name: 'lookup', description: 'Find a bot', parameters: { type: 'object' } }
+const command = { sessionId: 'chat', label: 'Router', system: 'test', prompt: 'question' }
+const use = (id: string, name = 'lookup', input = {}): ToolUseBlock => ({
+  type: 'tool_use',
+  id,
+  name,
+  input,
+})
+const requestsTools = (...calls: ToolUseBlock[]): CompletionResponse => ({
+  ...answer,
+  stopReason: 'tool_use',
+  content: [{ type: 'text', text: 'intermediate only' }, ...calls],
+})
+
+test('feeds scoped tool results and recoverable errors back to the model and returns only the final answer', async () => {
+  const steps: [string, boolean][] = []
+  let step = 0
+  const models = modelRouter(async (req) => {
+    expect(req.tools).toEqual([lookup])
+    if (++step === 1)
+      return requestsTools(
+        use('a', 'made_up'),
+        use('b', 'lookup', { __parse_error: 'raw input' }),
+        use('c', 'lookup', { fail: true }),
+        use('d'),
+      )
+    expect(req.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user'])
+    const results = req.messages.at(-1)?.content
+    expect(
+      results?.map((b) => (b.type === 'tool_result' ? [b.toolUseId, !!b.isError] : null)),
+    ).toEqual([
+      ['a', true],
+      ['b', true],
+      ['c', true],
+      ['d', false],
+    ])
+    const encoded = JSON.stringify(results)
+    expect(encoded).not.toContain('raw input')
+    expect(encoded).not.toContain('made_up')
+    expect(encoded).toContain('需要选择平台')
+    expect(encoded).toContain('ready')
+    return answer
+  })
+  expect(
+    await runTriggerModel(models, {
+      ...command,
+      toolset: {
+        definitions: [lookup],
+        async execute(_name, input) {
+          if (input.fail) throw new TriggerAgentError('需要选择平台')
+          return 'ready'
+        },
+        onToolStep(name, ok) {
+          steps.push([name, ok])
+        },
+      },
+    }),
+  ).toBe('会话中提到了 example-secret。')
+  expect(steps).toEqual([
+    ['unknown', false],
+    ['lookup', false],
+    ['lookup', false],
+    ['lookup', true],
+  ])
+})
+
+test('rejects an oversized or duplicate batch before the first call and reserves the last step for a final answer', async () => {
+  let executions = 0
+  const toolset = {
+    definitions: [lookup],
+    async execute() {
+      executions++
+      return 'ok'
+    },
+  }
+  for (const [batch, error] of [
+    [Array.from({ length: 9 }, (_, i) => use(`id-${i}`, 'missing')), '上限'],
+    [[use('same'), use('same')], '重复'],
+  ] as const) {
+    await expect(
+      runTriggerModel(
+        modelRouter(async () => requestsTools(...batch)),
+        { ...command, toolset },
+      ),
+    ).rejects.toThrow(error)
+  }
+  expect(executions).toBe(0)
+  let requests = 0
+  await expect(
+    runTriggerModel(
+      modelRouter(async () => requestsTools(use(`step-${++requests}`))),
+      { ...command, toolset },
+    ),
+  ).rejects.toThrow('上限')
+  expect(requests).toBe(6)
+  expect(executions).toBe(5)
+})
+
+test('cancelling a tool round prevents the rest of its batch and further model requests', async () => {
+  const entered = Promise.withResolvers<void>()
+  const released = Promise.withResolvers<string>()
+  const controller = new AbortController()
+  let calls = 0
+  let requests = 0
+  let toolSignal: AbortSignal | undefined
+  const running = runTriggerModel(
+    modelRouter(async () => {
+      requests++
+      return requestsTools(use('a'), use('b'))
+    }),
+    {
+      ...command,
+      signal: controller.signal,
+      toolset: {
+        definitions: [lookup],
+        async execute(_name, _input, signal) {
+          calls++
+          toolSignal = signal
+          entered.resolve()
+          return released.promise
+        },
+      },
+    },
+  )
+  await entered.promise
+  controller.abort()
+  await expect(running).rejects.toThrow('取消')
+  expect(toolSignal?.aborted).toBe(true)
+  released.resolve('late result')
+  await Bun.sleep(0)
+  expect([calls, requests]).toEqual([1, 1])
 })

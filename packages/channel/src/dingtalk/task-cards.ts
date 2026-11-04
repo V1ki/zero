@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite'
 import { createHash } from 'node:crypto'
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { DWClientDownStream } from 'dingtalk-stream'
 import type { DingtalkRobotMessage } from './incoming-message'
@@ -153,7 +153,22 @@ export class DingtalkTaskCards {
   }
 
   canSend(peerId: string, actorId: string): boolean {
-    return (!this.options.templateId || !!this.options.onAction) && !!this.peer(peerId, actorId)
+    return (
+      (!this.options.templateId || !!this.options.onAction) && this.hasBoundPeer(peerId, actorId)
+    )
+  }
+
+  hasBoundPeer(peerId: string, actorId: string): boolean {
+    return !!this.peer(peerId, actorId)
+  }
+
+  listDirectPeers(): Pick<Peer, 'peerId' | 'actorId'>[] {
+    if (!this.db && !existsSync(this.options.dbPath)) return []
+    return this.database()
+      .query<Pick<Peer, 'peerId' | 'actorId'>, []>(
+        "SELECT peerId, actorId FROM peers WHERE spaceType='IM_ROBOT' AND spaceId=actorId ORDER BY peerId, actorId",
+      )
+      .all()
   }
 
   get modeLabel(): string {
@@ -306,13 +321,94 @@ export class DingtalkTaskCards {
       ),
       followup,
     ].join('\n\n')
+    return this.sendRobotMessage(peer, 'sampleMarkdown', { title, text }, token, signal)
+  }
+
+  sendListenerReminder(
+    peerId: string,
+    actorId: string,
+    body: string,
+    signal: AbortSignal,
+    maySend: () => boolean,
+  ) {
+    return this.sendTextReminder(this.peer(peerId, actorId), body, signal, maySend)
+  }
+
+  async sendDirectReminder(
+    peerId: string,
+    actorId: string,
+    body: string,
+    signal: AbortSignal,
+    maySend: () => boolean,
+  ) {
+    const peer = this.peer(peerId, actorId)
+    if (peer?.spaceType !== 'IM_ROBOT' || peer.spaceId !== actorId)
+      return { status: 'rejected' as const, reason: '钉钉机器人尚未确认这个私聊联系人。' }
+    return this.sendTextReminder(peer, body, signal, maySend)
+  }
+
+  private async sendTextReminder(
+    peer: Peer | null,
+    body: string,
+    signal: AbortSignal,
+    maySend: () => boolean,
+  ): Promise<
+    { status: 'accepted'; receipt: string } | { status: 'unknown' | 'rejected'; reason: string }
+  > {
+    if (!peer || !body.trim() || signal.aborted || !maySend())
+      return { status: 'rejected', reason: '所选钉钉会话不可用或授权已取消。' }
+    const preparation = AbortSignal.any([signal, AbortSignal.timeout(15_000)])
+    const interrupted = Promise.withResolvers<undefined>()
+    const cancel = () => interrupted.resolve(undefined)
+    preparation.addEventListener('abort', cancel, { once: true })
+    let token: string | undefined
+    try {
+      token = await Promise.race([this.options.getToken(), interrupted.promise])
+    } catch {
+      return { status: 'rejected', reason: '钉钉提醒发送前未能获取凭据。' }
+    } finally {
+      preparation.removeEventListener('abort', cancel)
+    }
+    if (!token || preparation.aborted || !maySend())
+      return { status: 'rejected', reason: '钉钉提醒发送前凭据不可用或授权已取消。' }
+    const current = this.peer(peer.peerId, peer.actorId)
+    if (
+      current?.corpId !== peer.corpId ||
+      current.spaceType !== peer.spaceType ||
+      current.spaceId !== peer.spaceId
+    )
+      return { status: 'rejected', reason: '钉钉提醒的私聊或群聊绑定已变更。' }
+    try {
+      const receipt = await this.sendRobotMessage(
+        peer,
+        'sampleText',
+        { content: body },
+        token,
+        signal,
+      )
+      return { status: 'accepted', receipt }
+    } catch (error) {
+      if (error instanceof DingtalkCardError)
+        return { status: error.uncertain ? 'unknown' : 'rejected', reason: error.message }
+      throw error
+    }
+  }
+
+  private async sendRobotMessage(
+    peer: Peer,
+    msgKey: 'sampleMarkdown' | 'sampleText',
+    msgParam: { title: string; text: string } | { content: string },
+    token: string,
+    signal: AbortSignal,
+  ) {
+    const direct = peer.spaceType === 'IM_ROBOT'
     const result = await this.request(
       'POST',
       direct ? '/v1.0/robot/oToMessages/batchSend' : '/v1.0/robot/groupMessages/send',
       {
         robotCode: this.options.robotCode,
-        msgKey: 'sampleMarkdown',
-        msgParam: JSON.stringify({ title, text }),
+        msgKey,
+        msgParam: JSON.stringify(msgParam),
         ...(direct ? { userIds: [peer.actorId] } : { openConversationId: peer.peerId }),
       },
       token,
@@ -323,8 +419,12 @@ export class DingtalkTaskCards {
       result.filteredStaffIdList,
       result.flowControlledStaffIdList,
     ]
-    if (failures.some((list) => Array.isArray(list) && list.includes(peer.actorId))) {
-      throw new DingtalkCardError('钉钉未接受所选用户的任务提醒。')
+    if (
+      result.success === false ||
+      (typeof result.errcode === 'number' && result.errcode !== 0) ||
+      failures.some((list) => Array.isArray(list) && list.includes(peer.actorId))
+    ) {
+      throw new DingtalkCardError('钉钉未接受所选用户的提醒。')
     }
     if (!identity(result.processQueryKey))
       throw new DingtalkCardError('钉钉提醒返回结果缺少查询凭据。', true)

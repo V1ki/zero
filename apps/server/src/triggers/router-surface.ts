@@ -11,8 +11,12 @@ import {
   type TriggerRouteRecord,
   type TriggerRouteStatus,
   type TriggerRoutingSettings,
+  getTriggerRouteBot,
+  isTriggerRoutePlatform,
+  triggerRoutePlatforms,
   ROUTER_A2UI_VERSION as version,
 } from '@zero-os/shared'
+import type { RouterBot } from './router-agent'
 
 export { isRouterSurfaceAction, matchesRouterSurfaceAction } from '@zero-os/shared'
 
@@ -22,6 +26,8 @@ const labels: Record<RouterActionName, string> = {
   process_event: '交给 Agent 处理',
   apply_preference: '确认应用偏好',
   confirm_mandate: '确认此委托变更',
+  prepare_reminder: '准备这条通知',
+  send_reminder: '发送通知',
   inspect_github: '查看 GitHub 事件详情',
   compare_runs: '对比此前的运行',
 }
@@ -31,13 +37,19 @@ const statuses: Record<TriggerRouteStatus, string> = {
   ready: '等待路由',
   web: '已投递到网页',
   deferred: '等待复核',
-  sending: '正在发送微信',
-  sent: '微信平台已受理',
+  sending: '正在发送提醒',
+  sent: '接收平台已受理',
   failed: '处理失败',
-  uncertain: '微信投递待确认',
+  uncertain: '投递结果待确认',
   cancelled: '来源规则已撤销',
 }
-const destination = { web: '网页', weixin: '微信私聊', defer: '延后提醒' }
+const destination = {
+  web: '网页',
+  weixin: '微信机器人',
+  dingtalk: '钉钉机器人',
+  feishu: '飞书机器人',
+  defer: '延后提醒',
+}
 const presence = {
   auto: '按网页最近两分钟的活动判断',
   present: '手动标记在场',
@@ -88,7 +100,7 @@ function buildSurface(
       {
         id: `btn-${name}`,
         component: 'Button',
-        ...(name === 'apply_preference' || name === 'confirm_mandate'
+        ...(name === 'apply_preference' || name === 'confirm_mandate' || name === 'send_reminder'
           ? { variant: 'primary' as const }
           : {}),
         child: `label-${name}`,
@@ -114,9 +126,23 @@ export function buildRouterSurface(
   settings: TriggerRoutingSettings,
   investigationActions: GithubInvestigationAction[] = [],
   task?: RouterWorkspaceTask,
+  bots?: readonly RouterBot[],
 ): RouterSurfaceMessages {
   const actions: RouterActionName[] = ['explain_route', 'suggest_next']
   if (scope === 'general') {
+    const selectedBots = triggerRoutePlatforms.flatMap((platform) => {
+      const channelId = getTriggerRouteBot(settings, platform)
+      if (!channelId) return []
+      const bot = bots?.find((item) => item.platform === platform && item.channelId === channelId)
+      const state = !bot
+        ? '账号已移除'
+        : !bot.online
+          ? '离线'
+          : bot.ready
+            ? '可投递'
+            : '投递尚未就绪'
+      return [`${destination[platform]} · ${bot?.label || channelId}（${state}）`]
+    })
     const days = [1, 2, 3, 4, 5, 6, 0]
       .filter((d) => settings.workdays.includes(d))
       .map((d) => ['日', '一', '二', '三', '四', '五', '六'][d])
@@ -141,8 +167,18 @@ export function buildRouterSurface(
         },
         {
           label: '在场判断',
-          value: `${presence[settings.presence]}。${settings.nativePresence?.enabled ? '投递前复核 Mac 锁屏与空闲状态。' : ''}网页无人时${settings.awayFallback === 'weixin' ? '尝试已选微信私聊' : '延后提醒'}。`,
+          value: `${presence[settings.presence]}。${settings.nativePresence?.enabled ? '投递前复核 Mac 锁屏与空闲状态。' : ''}网页无人时${settings.awayFallback === 'defer' ? '延后提醒' : `尝试已选${destination[settings.awayFallback]}`}。`,
         },
+        ...(bots
+          ? [
+              {
+                label: '已选机器人',
+                value: selectedBots.length
+                  ? selectedBots.join('；')
+                  : '可在通知设置中选择微信、钉钉或飞书机器人。',
+              },
+            ]
+          : []),
       ],
       actions,
     )
@@ -212,12 +248,21 @@ const preferenceLabels = {
 }
 
 function describeProposal(change: TriggerConversationAnswer['proposal']) {
+  if (change?.key === 'personalBot')
+    return isTriggerRoutePlatform(change.platform)
+      ? `${destination[change.platform]}改为「${change.label}」（${change.value}）`
+      : null
   if (!change || !Object.hasOwn(preferenceLabels, change.key)) return null
   const choices: Record<string, string> =
     change.key === 'presence'
       ? presence
       : change.key === 'awayFallback'
-        ? { weixin: '尝试已选微信私聊', defer: '延后提醒' }
+        ? {
+            weixin: '使用已选微信机器人',
+            dingtalk: '使用已选钉钉机器人',
+            feishu: '使用已选飞书机器人',
+            defer: '延后提醒',
+          }
         : destination
   return Object.hasOwn(choices, change.value)
     ? `${preferenceLabels[change.key]}改为「${choices[change.value]}」`
@@ -229,9 +274,38 @@ export function buildRouterReplySurface(
   turnId: number,
   answer: TriggerConversationAnswer,
   currentRevision?: number,
-  weixinAvailable = false,
+  proposalTargetAvailable = false,
   commissionStatus: 'pending' | 'expired' | 'applied' = 'expired',
+  canPrepareReminder = false,
 ): RouterSurfaceMessages | null {
+  const id = `${surfaceId(scope)}-turn-${turnId}`
+  if (scope === 'general' && answer.reminder) {
+    const reminder = answer.reminder
+    const status = {
+      draft: '待发送',
+      sending: '正在发送，等待平台回执',
+      accepted: '平台已受理',
+      rejected: '未能发送',
+      unknown: '发送结果待核实，请查看机器人私聊',
+    }[reminder.status]
+    return buildSurface(
+      id,
+      '一次性通知',
+      [
+        {
+          label: destination[reminder.platform],
+          value:
+            reminder.botLabel === reminder.channelId
+              ? reminder.botLabel
+              : `${reminder.botLabel}（${reminder.channelId}）`,
+        },
+        { label: '通知内容', value: reminder.text },
+        { label: '发送状态', value: status },
+        ...(reminder.reason ? [{ label: '详情', value: reminder.reason }] : []),
+      ],
+      reminder.status === 'draft' ? ['send_reminder'] : [],
+    )
+  }
   if (answer.commission) {
     const { title, details } = answer.commission
     const notice = {
@@ -240,7 +314,7 @@ export function buildRouterReplySurface(
       applied: '已确认并保存。',
     }[commissionStatus]
     return buildSurface(
-      `${surfaceId(scope)}-turn-${turnId}`,
+      id,
       title,
       [...details.map((value) => ({ value })), { value: notice }],
       commissionStatus === 'pending' ? ['confirm_mandate'] : [],
@@ -255,9 +329,17 @@ export function buildRouterReplySurface(
       ...evidence.facts,
       { label: '获取时间 · GitHub REST', value: evidence.observedAt },
     ]
-    return buildSurface(`${surfaceId(scope)}-turn-${turnId}`, heading, facts, ['suggest_next'])
+    return buildSurface(id, heading, facts, ['suggest_next'])
   }
   const proposal = describeProposal(answer.proposal)
+  if (scope === 'general' && canPrepareReminder && !answer.proposal) {
+    return buildSurface(
+      id,
+      '一次性通知',
+      [{ value: '可根据原请求准备通知，核对机器人和正文后发送。' }],
+      ['prepare_reminder'],
+    )
+  }
   if (!answer.intent && !proposal) return null
   const title = proposal
     ? '通知偏好变更'
@@ -273,8 +355,13 @@ export function buildRouterReplySurface(
       facts.push({ value: '已确认并保存此偏好。' })
     } else if (currentRevision === undefined || currentRevision !== answer.proposalRevision) {
       facts.push({ value: '设置版本已更新。如需这项更改，请重新提出。' })
-    } else if (answer.proposal?.value === 'weixin' && !weixinAvailable) {
-      facts.push({ value: '请先在监听与通知设置中绑定并连接可用的微信私聊，然后再确认。' })
+    } else if (
+      (answer.proposal?.key === 'personalBot' || isTriggerRoutePlatform(answer.proposal?.value)) &&
+      !proposalTargetAvailable
+    ) {
+      facts.push({
+        value: '请在渠道配置中核对机器人账号，并在 Router 通知设置中选定机器人。',
+      })
     } else {
       facts.push({ value: '确认后会保存新偏好，并按新规则复核等待提醒的事件。' })
       actions.push('apply_preference')
@@ -283,5 +370,5 @@ export function buildRouterReplySurface(
   for (const [i, value] of (answer.points ?? []).slice(0, 3).entries())
     facts.push({ label: answer.intent === 'next' ? `步骤 ${i + 1}` : undefined, value })
   actions.push(answer.intent === 'next' ? 'explain_route' : 'suggest_next')
-  return buildSurface(`${surfaceId(scope)}-turn-${turnId}`, title, facts, actions)
+  return buildSurface(id, title, facts, actions)
 }

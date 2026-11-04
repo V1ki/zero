@@ -27,7 +27,7 @@
 }
 .router-surface-column > span {
   line-height: 1.55;
-  white-space: pre-line;
+  white-space: pre-wrap;
 }
 .router-surface-row {
   display: flex;

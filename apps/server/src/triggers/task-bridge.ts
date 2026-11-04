@@ -6,6 +6,7 @@ import type {
   MandateTaskDetail,
   TriggerConversationTurn,
 } from '@zero-os/shared'
+import { sameTriggerRouteTarget } from '@zero-os/shared'
 import { type AgentDependencies, TriggerAgentError, runTriggerModel } from './event-agent'
 import { isCommissionCommand } from './router-commission'
 
@@ -63,6 +64,7 @@ interface TaskBridgeOptions {
   >
   agent: ReturnType<typeof createChannelTaskAgent>
   isLiveTarget(target: MandateTarget): boolean
+  isPersonalTarget(target: MandateTarget): boolean
   commission?: {
     handleIm(
       principal: MandateTarget & { operatorId: string; isDirect?: boolean },
@@ -124,13 +126,19 @@ function deliveredTo(task: MandateTaskDetail, target: MandateTarget, cardId?: st
 }
 
 /** Handles only explicit references. Ordinary chat retains the channel's usual Agent/session. */
-export function createTaskBridge({ store, agent, isLiveTarget, commission }: TaskBridgeOptions) {
+export function createTaskBridge({
+  store,
+  agent,
+  isLiveTarget,
+  isPersonalTarget,
+  commission,
+}: TaskBridgeOptions) {
   const stop = new AbortController()
   const jobs = new Set<Promise<unknown>>()
 
   function context(target: MandateTarget, id: number, isTask: boolean) {
-    if (!isLiveTarget(target)) return null
     if (isTask) {
+      if (!isLiveTarget(target)) return null
       const task = store.mandates.authorizedTask(id, target)
       if (!task) return null
       const delivered = deliveredTo(task, target)[0]
@@ -145,19 +153,15 @@ export function createTaskBridge({ store, agent, isLiveTarget, commission }: Tas
             : (delivered.summary?.slice(0, 300) ?? '已收到任务更新。'),
       }
     }
-    // The original iLink notification format uses bare inbox IDs. Require both the historical
-    // accepted delivery and the currently enabled channel, receiver and source subscription.
-    if (target.platform !== 'weixin') return null
+    // A personal inbox reference grants access only to the recipient of the accepted
+    // delivery, while the selected bot, its recipient and the subscription remain active.
     const route = store.routing.get(id)
-    const config = store.routing.getSettings().settings
     if (
-      !config.enabled ||
-      config.weixinTarget?.channelId !== target.channelId ||
-      config.weixinTarget.peerId !== target.peerId ||
       route?.status !== 'sent' ||
-      route.decision?.destination !== 'weixin' ||
-      route.weixinTarget?.channelId !== target.channelId ||
-      route.weixinTarget.peerId !== target.peerId
+      route.decision?.destination !== target.platform ||
+      !sameTriggerRouteTarget(route.deliveryTarget, target) ||
+      !store.routing.getSettings().settings.enabled ||
+      !isPersonalTarget(target)
     )
       return null
     const event = store.getInboxItem(id)

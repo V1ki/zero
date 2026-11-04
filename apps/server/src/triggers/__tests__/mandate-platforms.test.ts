@@ -1,5 +1,5 @@
-import { expect, test } from 'bun:test'
-import { WeixinChannel } from '@zero-os/channel'
+import { expect, spyOn, test } from 'bun:test'
+import { FeishuChannel, WeixinChannel } from '@zero-os/channel'
 import { createMandatePlatforms } from '../mandate-platforms'
 
 function weixinFixture(result: 'accepted' | 'uncertain') {
@@ -90,4 +90,115 @@ test('bounds a digest while retaining every task reference and propagates unknow
   )
   expect(messages[0].length).toBeLessThan(4000)
   for (const entry of entries) expect(messages[0]).toContain(`#任务${entry.taskId} `)
+})
+
+test('the personal bot directory includes configured accounts before they have any conversations', () => {
+  const account = {
+    type: 'feishu' as const,
+    configured: true,
+    receiveNotifications: false,
+    secretRefs: [],
+  }
+  const channel = new FeishuChannel({ name: 'connected', appId: 'fixture', appSecret: 'fixture' })
+  spyOn(channel, 'isConnected').mockReturnValue(true)
+  const platforms = createMandatePlatforms({
+    channels: new Map([['connected', channel]]),
+    channelDefinitions: new Map([
+      ['connected', { ...account, name: '办公机器人' }],
+      ['offline', { ...account, name: '第二个机器人' }],
+      ['unfinished', { ...account, configured: false, name: '未配置' }],
+    ]),
+    sessionManager: { listCurrentBindings: () => [] },
+  })
+  expect(platforms.listPersonalBots()).toEqual([
+    { platform: 'feishu', channelId: 'connected', label: '办公机器人', online: true },
+    { platform: 'feishu', channelId: 'offline', label: '第二个机器人', online: false },
+  ])
+  expect(platforms.listPersonalTargets()).toEqual([])
+  expect(platforms.listPersonalDirectTargets()).toEqual([])
+})
+
+test('personal notifications keep WXARC material local and identify the listener in its chosen chat', async () => {
+  const channel = new FeishuChannel({ name: 'office', appId: 'fixture', appSecret: 'fixture' })
+  spyOn(channel, 'isConnected').mockReturnValue(true)
+  spyOn(channel.directPeers, 'list').mockReturnValue([
+    { chatId: 'oc_chat', actorId: 'ou_selected' },
+  ])
+  const send = spyOn(channel.router, 'sendListenerReminder').mockResolvedValue({
+    status: 'accepted',
+    receipt: 'receipt',
+  })
+  const host = {
+    channels: new Map([['office', channel]]),
+    channelDefinitions: new Map([
+      [
+        'office',
+        {
+          type: 'feishu',
+          configured: true,
+          name: 'office',
+          receiveNotifications: false,
+          secretRefs: [],
+        },
+      ],
+    ]),
+    sessionManager: {
+      listCurrentBindings: () => [
+        {
+          source: 'feishu' as const,
+          channelName: 'office',
+          channelId: 'oc_legacy',
+          participantId: 'ou_selected',
+          sessionId: 'session',
+          updatedAt: '',
+        },
+      ],
+    },
+  } satisfies Parameters<typeof createMandatePlatforms>[0]
+  const platforms = createMandatePlatforms(host)
+  const [target] = platforms.listPersonalDirectTargets()
+  expect(target.peerId).toBe('oc_chat')
+  expect(platforms.listPersonalTargets().map((entry) => entry.peerId)).toEqual([
+    'oc_legacy',
+    'oc_chat',
+  ])
+  expect(platforms.isLiveTarget(target)).toBe(false)
+  expect(platforms.isLiveTarget(target, true)).toBe(true)
+  const event = {
+    id: 24,
+    eventId: 'private-event-id',
+    source: 'wxarc' as const,
+    scope: 'private-room',
+    summary: 'private-text',
+    title: 'private-title',
+    occurredAt: '',
+    receivedAt: '',
+  }
+  const agent = { summary: 'private-analysis' }
+  const signal = new AbortController().signal
+  expect(
+    (
+      await platforms.sendPersonal(
+        { ...target, operatorId: 'ou_other' },
+        event,
+        agent,
+        signal,
+        () => true,
+      )
+    ).status,
+  ).toBe('rejected')
+  expect((await platforms.sendPersonal(target, event, agent, signal, () => false)).status).toBe(
+    'rejected',
+  )
+  expect(send).not.toHaveBeenCalled()
+  expect((await platforms.sendPersonal(target, event, agent, signal, () => true)).status).toBe(
+    'accepted',
+  )
+  const [chat, id, text, , maySend] = send.mock.calls[0]
+  expect([chat, id]).toEqual(['oc_chat', 24])
+  expect(text).toContain('#24')
+  expect(text).not.toMatch(/private-|#任务/)
+  expect(maySend()).toBe(true)
+  host.channels.delete('office')
+  expect(maySend()).toBe(false)
 })

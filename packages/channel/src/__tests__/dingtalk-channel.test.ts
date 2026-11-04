@@ -323,6 +323,91 @@ describe('DingtalkChannel', () => {
 })
 
 describe('DingTalk final delivery authorization', () => {
+  test.each(['1', '2'])(
+    'sends one plain inbox reminder to the bound peer of type %s',
+    async (conversationType) => {
+      const calls: Array<{ url: string; body: Record<string, unknown> }> = []
+      let response: Record<string, unknown> = { processQueryKey: 'receipt-3' }
+      const cards = new DingtalkTaskCards({
+        dbPath: ':memory:',
+        account: 'app',
+        robotCode: 'robot',
+        apiBaseUrl: 'https://fixture.invalid',
+        templateId: 'optional.schema',
+        getToken: async () => 'isolated',
+        fetch: Object.assign(
+          async (url: RequestInfo | URL, init?: RequestInit) => {
+            calls.push({ url: String(url), body: JSON.parse(String(init?.body)) })
+            return Response.json(response)
+          },
+          { preconnect() {} },
+        ),
+      })
+      try {
+        const source = robotPayload({
+          conversationType,
+          chatbotCorpId: 'corp',
+          senderCorpId: 'corp',
+        })
+        cards.remember(source)
+        expect(cards.listDirectPeers()).toEqual(
+          conversationType === '1' ? [{ peerId: 'cid_1', actorId: 'staff_1' }] : [],
+        )
+        const content = 'ZeRo 监听 #4\n发布失败'
+        const send = (operator: string, maySend = () => true) =>
+          cards.sendListenerReminder(
+            'cid_1',
+            operator,
+            content,
+            new AbortController().signal,
+            maySend,
+          )
+        expect((await send('wrong-staff')).status).toBe('rejected')
+        let grantChecks = 0
+        expect((await send('staff_1', () => ++grantChecks === 1)).status).toBe('rejected')
+        expect(calls).toHaveLength(0)
+        expect(await send('staff_1')).toEqual({ status: 'accepted', receipt: 'receipt-3' })
+        const direct = conversationType === '1'
+        expect(calls[0]).toEqual({
+          url: `https://fixture.invalid/v1.0/robot/${direct ? 'oToMessages/batchSend' : 'groupMessages/send'}`,
+          body: {
+            robotCode: 'robot',
+            msgKey: 'sampleText',
+            msgParam: JSON.stringify({ content }),
+            ...(direct ? { userIds: ['staff_1'] } : { openConversationId: 'cid_1' }),
+          },
+        })
+        response = {}
+        expect((await send('staff_1')).status).toBe('unknown')
+        response = { processQueryKey: 'receipt', filteredStaffIdList: ['staff_1'] }
+        expect((await send('staff_1')).status).toBe('rejected')
+        expect(calls).toHaveLength(3)
+        response = { processQueryKey: 'direct-receipt' }
+        const manual = await cards.sendDirectReminder(
+          'cid_1',
+          'staff_1',
+          '处理 DeepSeek 的充值',
+          new AbortController().signal,
+          () => true,
+        )
+        if (direct) {
+          expect(manual).toEqual({ status: 'accepted', receipt: 'direct-receipt' })
+          expect(calls[3]?.body).toEqual({
+            robotCode: 'robot',
+            msgKey: 'sampleText',
+            msgParam: JSON.stringify({ content: '处理 DeepSeek 的充值' }),
+            userIds: ['staff_1'],
+          })
+        } else {
+          expect(manual.status).toBe('rejected')
+          expect(calls).toHaveLength(3)
+        }
+      } finally {
+        cards.close()
+      }
+    },
+  )
+
   for (const templateId of [undefined, 'fixture.schema']) {
     test(`does not post a ${templateId ? 'native card' : 'Markdown reminder'} after revocation during token acquisition`, async () => {
       const token = Promise.withResolvers<string>()

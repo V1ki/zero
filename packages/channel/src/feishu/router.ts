@@ -168,6 +168,7 @@ export class FeishuRouterDelivery {
     signal: AbortSignal,
     maySend: (() => boolean) | undefined,
     send: () => Promise<T>,
+    singleAttempt = false,
   ): Promise<T> {
     let open = true
     let dispatched = false
@@ -181,10 +182,19 @@ export class FeishuRouterDelivery {
       return await this.beforeWrite.run(
         () => {
           check()
+          if (singleAttempt && dispatched) throw new WriteNotAuthorized(true)
           dispatched = true
         },
         () => awaitResponse(send, signal),
       )
+    } catch (error) {
+      if (
+        singleAttempt &&
+        !dispatched &&
+        (signal.aborted || (error instanceof DOMException && error.name === 'TimeoutError'))
+      )
+        throw new WriteNotAuthorized(false)
+      throw error
     } finally {
       // If token resolution outlives awaitResponse, its eventual write is fenced out.
       open = false
@@ -285,26 +295,104 @@ export class FeishuRouterDelivery {
       !payload.entries.length
     )
       return rejected('飞书提醒没有可用的目标或已取消。')
+    return this.sendMessage(
+      client,
+      chatId,
+      'interactive',
+      JSON.stringify(taskCard(payload)),
+      nativeUuid('card', chatId, payload.id),
+      signal,
+      maySend,
+    )
+  }
+
+  sendListenerReminder(
+    chatId: string,
+    inboxId: number,
+    body: string,
+    signal: AbortSignal,
+    maySend: () => boolean,
+  ): Promise<Receipt> {
+    if (!Number.isSafeInteger(inboxId) || inboxId < 1)
+      return Promise.resolve(rejected('飞书监听提醒缺少有效编号。'))
+    return this.sendText(
+      chatId,
+      nativeUuid('listener', chatId, String(inboxId)),
+      body,
+      signal,
+      maySend,
+    )
+  }
+
+  sendDirectReminder(
+    chatId: string,
+    deliveryId: string,
+    body: string,
+    signal: AbortSignal,
+    maySend: () => boolean,
+  ): Promise<Receipt> {
+    if (!deliveryId.trim()) return Promise.resolve(rejected('飞书提醒缺少请求编号。'))
+    const uuid = nativeUuid('direct-reminder', chatId, JSON.stringify([this.appId, deliveryId]))
+    return this.sendText(chatId, uuid, body, signal, maySend)
+  }
+
+  private async sendText(
+    chatId: string,
+    uuid: string,
+    body: string,
+    signal: AbortSignal,
+    maySend: () => boolean,
+  ): Promise<Receipt> {
+    const client = this.client()
+    if (!client || signal.aborted || !nativeChat.test(chatId) || !body.trim())
+      return rejected('飞书提醒没有可用的目标或已取消。')
+    // Feishu interprets <at> tags even inside text messages. Keep reminders literal.
+    return this.sendMessage(
+      client,
+      chatId,
+      'text',
+      JSON.stringify({ text: body.replace(/<(?=at\b)/gi, '＜') }),
+      uuid,
+      signal,
+      maySend,
+    )
+  }
+
+  private async sendMessage(
+    client: Client,
+    chatId: string,
+    type: 'interactive' | 'text',
+    content: string,
+    uuid: string,
+    signal: AbortSignal,
+    maySend?: () => boolean,
+  ): Promise<Receipt> {
+    const operation = type === 'text' ? '发送提醒' : '发送卡片'
     try {
-      const response = await this.write(client, signal, maySend, () =>
-        client.im.message.create({
-          params: { receive_id_type: 'chat_id' },
-          data: {
-            receive_id: chatId,
-            msg_type: 'interactive',
-            content: JSON.stringify(taskCard(payload)),
-            uuid: nativeUuid('card', chatId, payload.id),
-          },
-        }),
+      const response = await this.write(
+        client,
+        signal,
+        maySend,
+        () =>
+          client.im.message.create({
+            params: { receive_id_type: 'chat_id' },
+            data: {
+              receive_id: chatId,
+              msg_type: type,
+              content,
+              uuid,
+            },
+          }),
+        type === 'text',
       )
       if (typeof response.code === 'number' && response.code !== 0)
-        return rejected(`飞书拒绝发送卡片（${response.code}）。`)
+        return rejected(`飞书拒绝${operation}（${response.code}）。`)
       const id = response.data?.message_id
       if (response.code === 0 && id && nativeMessage.test(id))
         return { status: 'accepted', receipt: id }
-      return { status: 'unknown', reason: '飞书卡片缺少可核对的消息回执。' }
+      return { status: 'unknown', reason: '飞书缺少可核对的消息回执。' }
     } catch (error) {
-      return apiFailure(error, '发送卡片')
+      return apiFailure(error, operation)
     }
   }
 

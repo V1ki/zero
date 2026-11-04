@@ -10,6 +10,8 @@ export type RouterActionName =
   | 'compare_runs'
   | 'confirm_mandate'
   | 'apply_preference'
+  | 'prepare_reminder'
+  | 'send_reminder'
 export type RouterSurfaceComponent =
   | { id: string; component: 'Column' | 'Row'; children: string[] }
   | {
@@ -68,6 +70,8 @@ function name(value: unknown): value is RouterActionName {
     value === 'inspect_github' ||
     value === 'compare_runs' ||
     value === 'confirm_mandate' ||
+    value === 'prepare_reminder' ||
+    value === 'send_reminder' ||
     value === 'apply_preference'
   )
 }

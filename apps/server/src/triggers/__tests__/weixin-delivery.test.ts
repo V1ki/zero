@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ContextTokenStore, WeixinChannel } from '@zero-os/channel'
 import type { ChannelSessionBinding, TriggerInboxItem } from '@zero-os/shared'
+import { createMandatePlatforms } from '../mandate-platforms'
 import { decideTriggerRoute } from '../routing-policy'
 import { createTriggerWeixin } from '../weixin-delivery'
 
@@ -38,7 +39,7 @@ afterEach(async () => {
   for (const close of cleanups.splice(0)) await close()
 })
 
-async function setup(sendResponse: () => Response) {
+async function setup(sendResponse: () => Response, currentBindings = bindings) {
   const dir = mkdtempSync(join(tmpdir(), 'zero-trigger-weixin-'))
   const contexts = new ContextTokenStore(dir)
   for (const peer of [peerId, 'blocked-peer', '*', 'group@chatroom'])
@@ -77,7 +78,7 @@ async function setup(sendResponse: () => Response) {
     rmSync(dir, { recursive: true, force: true })
   })
   await channel.start()
-  const sink = createTriggerWeixin({
+  const host = {
     channels: new Map([[channelId, channel]]),
     channelDefinitions: new Map([
       [
@@ -91,12 +92,45 @@ async function setup(sendResponse: () => Response) {
         },
       ],
     ]),
-    sessionManager: { listCurrentBindings: () => bindings },
-  })
-  return { sink, sent, disconnect, poll }
+    sessionManager: { listCurrentBindings: () => currentBindings },
+  } satisfies Parameters<typeof createTriggerWeixin>[0]
+  return {
+    sink: createTriggerWeixin(host),
+    platforms: createMandatePlatforms(host),
+    sent,
+    disconnect,
+    poll,
+  }
 }
 
 describe('directed iLink trigger reminders', () => {
+  test('manual private reminders send only the requested text and a stable, non-identifying client ID', async () => {
+    const { platforms, sent } = await setup(() => Response.json({ ret: 0 }), [])
+    const [dm] = platforms.listPersonalDirectTargets()
+    const signal = new AbortController().signal
+    for (const id of ['first-request', 'first-request', 'a-separate-request']) {
+      expect(
+        (await platforms.sendDirect(dm, '处理 DeepSeek 的充值', id, signal, () => true)).status,
+      ).toBe('accepted')
+    }
+    const messages = sent.map((body) => JSON.parse(body).msg)
+    expect(messages[0].item_list[0].text_item.text).toBe('处理 DeepSeek 的充值')
+    expect(messages[0].client_id).not.toContain('first-request')
+    expect(messages[0].client_id).toBe(messages[1].client_id)
+    expect(messages[0].client_id).not.toBe(messages[2].client_id)
+    expect(
+      (await platforms.sendDirect(dm, '已撤销', 'fourth-request', signal, () => false)).status,
+    ).toBe('rejected')
+    expect(sent).toHaveLength(3)
+  })
+  test('a verified direct peer can receive a personal reminder without an Agent session', async () => {
+    const { sink, sent } = await setup(() => Response.json({ ret: 0 }), [])
+    expect(sink.listTargets()).toEqual([])
+    expect(sink.listDirectTargets()).toEqual([{ ...target, label: `${channelId} · ${peerId}` }])
+    await sink.send(target, item, { summary: '摘要' })
+    expect(JSON.parse(sent[0]).msg.to_user_id).toBe(peerId)
+  })
+
   test('only a current allowed DM can receive a single text item without private WXARC content', async () => {
     const { sink, sent } = await setup(() => Response.json({ ret: 0 }))
     expect(sink.listTargets()).toEqual([{ ...target, label: `${channelId} · ${peerId}` }])

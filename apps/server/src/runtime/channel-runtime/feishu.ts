@@ -1,5 +1,9 @@
 import { join } from 'node:path'
-import { FeishuChannel, type FeishuStreamingSession } from '@zero-os/channel'
+import {
+  FeishuChannel,
+  type FeishuStreamingSession,
+  feishuDirectPeerStorePath,
+} from '@zero-os/channel'
 import type { Vault } from '@zero-os/secrets'
 import type { ChannelInstanceConfig } from '@zero-os/shared'
 import { FeishuAdapter } from '../../channels/feishu'
@@ -56,6 +60,9 @@ export async function registerFeishuRuntimeChannel(
     encryptKey: definition.credentials?.encryptKey,
     verificationToken: definition.credentials?.verificationToken,
     downloadsDir: join(options.zeroDir, 'workspace', agentName, 'uploads'),
+    directPeerStorePath:
+      definition.credentials &&
+      feishuDirectPeerStorePath(options.zeroDir, definition.name, definition.credentials.appId),
   })
 
   let activeStreamingSessions: Set<FeishuStreamingSession> | undefined

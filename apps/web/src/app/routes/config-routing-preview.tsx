@@ -1,14 +1,27 @@
 import {
+  type MandatePlatform,
   TRIGGER_NATIVE_PRESENCE_TTL_MS,
   type TriggerPresence,
   type TriggerRoutingSettings,
   decideTriggerRoute,
+  getTriggerRouteBot,
   getTriggerTimeContext,
+  isTriggerRoutePlatform,
+  triggerRoutePlatforms,
 } from '@zero-os/shared'
 import { useState } from 'react'
+import { useRoutingBots } from './routing-bots'
 
-const destinationNames = { web: '网页展示', weixin: '发送微信', defer: '延后提醒' }
+const names = { weixin: '微信', dingtalk: '钉钉', feishu: '飞书' }
+const destinationNames = {
+  web: '网页展示',
+  weixin: '发送微信',
+  dingtalk: '发送钉钉',
+  feishu: '发送飞书',
+  defer: '延后提醒',
+}
 type PresenceScenario = 'draft' | 'present' | 'away' | 'inactive'
+type BotScenario = 'current' | 'online' | 'unavailable'
 
 type NativeScenario = 'active' | 'locked' | 'idle' | 'bluetooth' | 'unknown' | 'stale'
 
@@ -20,8 +33,9 @@ function outcome(
   draft: TriggerRoutingSettings,
   instant: string,
   scenario: PresenceScenario,
-  assumeAvailable: boolean,
+  available: Partial<Record<MandatePlatform, boolean>>,
   native: NativeScenario,
+  botLabels: Partial<Record<MandatePlatform, string>>,
 ) {
   const at = new Date(instant)
   if (!Number.isFinite(at.getTime()) || asLocalInput(at) !== instant)
@@ -56,7 +70,7 @@ function outcome(
     { ...draft, enabled: true, presence },
     at,
     scenario === 'inactive' ? undefined : at,
-    assumeAvailable,
+    available,
     {
       observedAt: new Date(
         at.getTime() - (native === 'stale' ? TRIGGER_NATIVE_PRESENCE_TTL_MS : 0),
@@ -75,6 +89,9 @@ function outcome(
   return (
     <>
       <strong>{destinationNames[decision.destination]}</strong>
+      {isTriggerRoutePlatform(decision.destination) && (
+        <span>机器人 · {botLabels[decision.destination]}</span>
+      )}
       <span>{decision.reason}</span>
       <small>
         {draft.timeZone} · {dateFormat.format(at)}
@@ -93,9 +110,26 @@ export function RoutingPreview({
   const [instant, setInstant] = useState(() => asLocalInput(new Date()))
   const [scenario, setScenario] = useState<PresenceScenario>('draft')
   const [native, setNative] = useState<NativeScenario>('active')
-  const [assumeAvailable, setAssumeAvailable] = useState(true)
+  const [open, setOpen] = useState(false)
+  const [scenarios, setScenarios] = useState<Partial<Record<MandatePlatform, BotScenario>>>({})
+  const bots = useRoutingBots(open)
+  const selectedBots = triggerRoutePlatforms.flatMap((platform) => {
+    const id = getTriggerRouteBot(settings, platform)
+    if (!id) return []
+    const bot = bots.data?.bots.find(
+      (entry) => entry.channelId === id && entry.platform === platform,
+    )
+    return [{ platform, label: bot?.label ?? id, ready: !!bot?.online && bot.ready }]
+  })
+  const available: Partial<Record<MandatePlatform, boolean>> = {}
+  const botLabels: Partial<Record<MandatePlatform, string>> = {}
+  for (const { platform, label, ready } of selectedBots) {
+    const mode = scenarios[platform] ?? 'current'
+    available[platform] = mode === 'current' ? ready : mode === 'online'
+    botLabels[platform] = label
+  }
   return (
-    <details className="listener-item">
+    <details className="listener-item" onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary>情境预演</summary>
       <p className="listener-muted">
         假设已启用{saved ? '已保存的规则' : '当前草稿'}
@@ -139,26 +173,27 @@ export function RoutingPreview({
             </select>
           </label>
         )}
-        <label className="listener-field">
-          模拟微信会话
-          <select
-            disabled={!settings.weixinTarget}
-            value={settings.weixinTarget && assumeAvailable ? 'online' : 'unavailable'}
-            onChange={(e) => setAssumeAvailable(e.target.value === 'online')}
-          >
-            <option value="online">假设已选会话可用</option>
-            <option value="unavailable">
-              {settings.weixinTarget
-                ? '假设已选会话不可用'
-                : saved
-                  ? '尚未选择接收会话'
-                  : '草稿尚未选择接收会话'}
-            </option>
-          </select>
-        </label>
+        {selectedBots.map(({ platform, label, ready }) => (
+          <label className="listener-field" key={platform}>
+            模拟{names[platform]}机器人 · {label}
+            <select
+              aria-label={`模拟${names[platform]}机器人`}
+              value={scenarios[platform] ?? 'current'}
+              onChange={(e) =>
+                setScenarios({ ...scenarios, [platform]: e.target.value as BotScenario })
+              }
+            >
+              <option value="current">
+                沿用当前状态 · {bots.data ? (ready ? '可主动提醒' : '主动提醒将延后') : '尚未确认'}
+              </option>
+              <option value="online">假设可以主动提醒</option>
+              <option value="unavailable">假设主动提醒暂不可用</option>
+            </select>
+          </label>
+        ))}
       </div>
       <output className="listener-stack" aria-live="polite">
-        {outcome(settings, instant, scenario, assumeAvailable, native)}
+        {outcome(settings, instant, scenario, available, native, botLabels)}
       </output>
     </details>
   )

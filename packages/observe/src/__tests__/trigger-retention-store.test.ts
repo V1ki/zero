@@ -220,6 +220,36 @@ test('suspending retention cancels the old deadline, confirmation proposals surv
   ).toEqual({ id: 'draft', draft: '' })
 })
 
+test('retention expires stale reminder drafts without replaying them and protects in-flight sends', () => {
+  const { store } = fixture()
+  config(store, { retentionDays: 7 })
+  for (const id of ['draft', 'sending']) {
+    const claim = store.conversations.begin('general', id, '发通知')
+    if (claim.kind !== 'started') throw Error('Expected to start a reminder turn')
+    store.conversations.finish('general', id, claim.attempt, {
+      text: '准备发送',
+      reminder: {
+        platform: 'weixin',
+        channelId: 'bot',
+        botLabel: '测试',
+        audienceKey: 'user-hash',
+        text: '待办事项',
+        status: 'draft',
+      },
+    })
+  }
+  expect(store.conversations.claimReminder('general', 'sending')).toBe(true)
+  expect(store.retention.sweep(future()).turns).toBe(1)
+  expect(store.conversations.claimReminder('general', 'draft')).toBe(false)
+  expect(store.conversations.begin('general', 'draft', '发通知', true).kind).toBe('conflict')
+  expect(store.conversations.get('general', 'sending')?.answer?.reminder?.status).toBe('sending')
+  expect(store.conversations.finishReminder('general', 'sending', { status: 'accepted' })).toBe(
+    true,
+  )
+  expect(store.retention.sweep(future()).turns).toBe(1)
+  expect(store.conversations.claimReminder('general', 'sending')).toBe(false)
+})
+
 test('a retired task expires independently of its active sibling and their shared event', () => {
   const { store, sql, receive } = fixture()
   config(store, { enabled: true, retentionDays: 7 })

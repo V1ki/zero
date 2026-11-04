@@ -1,12 +1,14 @@
 import { afterEach, expect, mock, test } from 'bun:test'
+import type { ProviderAdapter } from '@zero-os/model'
 import { TriggerStore } from '@zero-os/observe'
 import type {
+  ContentBlock,
   RouterActionName,
   RouterSurfaceAction,
   RouterSurfaceMessages,
   TriggerConversationAnswer,
 } from '@zero-os/shared'
-import type { RouterAgentInput } from '../router-agent'
+import { type RouterAgentInput, createRouterAgent } from '../router-agent'
 import { RouterWorkspaceService } from '../router-workspace'
 import { TriggerRoutingRuntime } from '../routing-runtime'
 
@@ -62,12 +64,17 @@ function setup(
   })
   const ask = mock(reply)
   const process = mock((id: number) => routing.process(id))
+  const catalog = mock(() => routing.listPersonalBots())
+  const prepareReminder = mock(routing.prepareDirectReminder.bind(routing))
+  const sendReminder = mock(routing.sendDirectReminder.bind(routing))
   const service = new RouterWorkspaceService(
     store,
     {
       getConfig: () => routing.getConfig(),
       saveConfig: routing.saveConfig.bind(routing),
-      listTargets: () => routing.listTargets(),
+      listPersonalBots: catalog,
+      prepareDirectReminder: prepareReminder,
+      sendDirectReminder: sendReminder,
       process,
     },
     ask,
@@ -78,7 +85,18 @@ function setup(
     await routing.close()
     store.close()
   })
-  return { store, routing, process, ask, service, first, second }
+  return {
+    store,
+    routing,
+    process,
+    catalog,
+    prepareReminder,
+    sendReminder,
+    ask,
+    service,
+    first,
+    second,
+  }
 }
 
 function actionFor(surface: RouterSurfaceMessages, name: RouterActionName): RouterSurfaceAction {
@@ -299,4 +317,388 @@ test('a model proposal only changes a saved preference after a current, explicit
   })
   expect(routing.getConfig().settings.afterWork).toBe('web')
   expect(ask).toHaveBeenCalledTimes(3)
+})
+
+test.each(['dingtalk', 'feishu'] as const)(
+  '%s drafts require the configured sender on confirmation',
+  async (platform) => {
+    const other = platform === 'feishu' ? 'dingtalk' : 'feishu'
+    const { routing, service, catalog, ask } = setup(async () => ({
+      text: '请核对离席选项。',
+      intent: 'route',
+      proposal: { key: 'awayFallback', value: platform },
+    }))
+    const initial = routing.getConfig()
+    const target = {
+      platform,
+      channelId: 'selected-account',
+      label: 'selected bot',
+      online: false,
+      ready: false,
+      deliveryState: 'offline' as const,
+    }
+    const saved = routing.saveConfig(
+      {
+        ...initial.settings,
+        personalBots: { [platform]: target.channelId },
+      },
+      initial.revision,
+    )
+    catalog.mockImplementation(() => [target])
+    const result = await service.message('general', crypto.randomUUID(), '请更改离席通知去向')
+    const surface = result.turns[0].surface
+    if (!surface) throw Error('Expected preference draft')
+    const action = actionFor(surface, 'apply_preference')
+    expect(ask.mock.calls[0][0].personalBots).toEqual([target])
+    expect(routing.getConfig()).toEqual(saved)
+    catalog.mockImplementation(() => [{ ...target, platform: other }])
+    await expect(service.action('general', crypto.randomUUID(), action)).rejects.toMatchObject({
+      status: 409,
+    })
+    expect(routing.getConfig()).toEqual(saved)
+    catalog.mockImplementation(() => [target])
+    await service.action('general', crypto.randomUUID(), action)
+    expect(routing.getConfig()).toEqual({
+      revision: saved.revision + 1,
+      settings: { ...saved.settings, awayFallback: platform },
+    })
+  },
+)
+
+test('a named bot choice is revision guarded and saves only the bot while the Router hides legacy addresses', async () => {
+  const bot = {
+    platform: 'feishu' as const,
+    channelId: 'feishu-main',
+    label: 'OpenClaw',
+    online: false,
+    ready: false,
+    deliveryState: 'offline' as const,
+  }
+  const { routing, service, catalog } = setup(async () => ({
+    text: '请确认',
+    intent: 'route',
+    proposal: {
+      key: 'personalBot',
+      platform: bot.platform,
+      value: bot.channelId,
+      label: bot.label,
+    },
+  }))
+  const initial = routing.getConfig()
+  const weixinTarget = { channelId: 'wx-bot', peerId: 'private-recipient' }
+  const before = routing.saveConfig({ ...initial.settings, weixinTarget }, initial.revision)
+  catalog.mockReturnValue([bot])
+  const snapshot = await service.message(
+    'general',
+    crypto.randomUUID(),
+    '把飞书机器人改为 OpenClaw',
+  )
+  expect(snapshot.settings.settings.personalBots?.weixin).toBe('wx-bot')
+  expect(JSON.stringify(snapshot)).not.toContain('private-recipient')
+  const surface = snapshot.turns.at(-1)?.surface
+  if (!surface) throw Error('missing confirmation')
+  expect(JSON.stringify(surface)).toContain('OpenClaw')
+  const action = actionFor(surface, 'apply_preference')
+  catalog.mockReturnValue([])
+  await expect(service.action('general', crypto.randomUUID(), action)).rejects.toMatchObject({
+    status: 409,
+  })
+  expect(routing.getConfig()).toEqual(before)
+  catalog.mockReturnValue([bot])
+  const result = await service.action('general', crypto.randomUUID(), action)
+  expect(result.settings.settings.personalBots).toMatchObject({
+    feishu: bot.channelId,
+    weixin: 'wx-bot',
+  })
+  expect(result.settings.settings.weixinTarget).toBeNull()
+  expect(routing.getConfig().settings.weixinTarget).toEqual(weixinTarget)
+  expect(JSON.stringify(result.surface)).toContain('离线')
+})
+
+const reminderRequest = '发送微信通知，通知我处理 DeepSeek 的充值'
+const reminderRecipient = {
+  channelId: 'v1ki-bot',
+  label: '我的微信',
+  audienceKey: 'private-audience-fixture',
+}
+
+test('a personal reminder in general chat needs no event, has a private pinned audience and sends only on its card click', async () => {
+  const initial = '劳驾把这件事记作一条给我自己的微信草稿吧：处理 DeepSeek 的充值'
+  const { service, routing, store, ask, prepareReminder, sendReminder } = setup(async (input) => {
+    if (input.question === initial) {
+      input.actions?.prepareReminder?.('weixin', '处理 DeepSeek 的充值')
+      input.actions?.onToolStep?.('prepare_personal_reminder', true)
+    }
+    return { text: '已核对', toolSteps: [{ name: 'forged', ok: true }] }
+  })
+  const source = store.getSettings()
+  store.saveSettings(
+    { github: { credentialRef: '', repositories: [] }, wxarc: { sessions: [] } },
+    source.revision,
+  )
+  const prefs = routing.getConfig()
+  const key = crypto.randomUUID()
+  prepareReminder.mockReturnValue(reminderRecipient)
+  const draft = await service.message('general', key, initial)
+  expect(draft.event).toBeNull()
+  expect(draft.turns[0].answer?.reminder).toMatchObject({
+    platform: 'weixin',
+    channelId: 'v1ki-bot',
+    status: 'draft',
+    text: '处理 DeepSeek 的充值',
+  })
+  expect(JSON.stringify(draft)).not.toContain(reminderRecipient.audienceKey)
+  expect(ask).toHaveBeenCalledTimes(1)
+  expect(draft.turns[0].answer?.toolSteps).toEqual([
+    { name: 'prepare_personal_reminder', ok: true },
+  ])
+  expect(sendReminder).not.toHaveBeenCalled()
+  expect(store.conversations.get('general', key)?.answer?.reminder?.audienceKey).toBe(
+    reminderRecipient.audienceKey,
+  )
+  const surface = draft.turns[0].surface
+  if (!surface) throw Error('Missing reminder card')
+  const click = actionFor(surface, 'send_reminder')
+  const clickId = crypto.randomUUID()
+  const gate = Promise.withResolvers<{ status: 'accepted' }>()
+  sendReminder.mockImplementation(async () => gate.promise)
+  const delivery = service.action('general', clickId, click)
+  try {
+    const repeated = await service.action('general', clickId, click)
+    expect(repeated.turns[0].answer?.reminder?.status).toBe('sending')
+    await expect(service.action('general', crypto.randomUUID(), click)).rejects.toMatchObject({
+      status: 409,
+    })
+    expect(sendReminder).toHaveBeenCalledTimes(1)
+    expect(sendReminder.mock.calls[0].slice(0, 4)).toEqual([
+      'weixin',
+      { channelId: 'v1ki-bot', audienceKey: reminderRecipient.audienceKey },
+      '处理 DeepSeek 的充值',
+      key,
+    ])
+  } finally {
+    gate.resolve({ status: 'accepted' })
+  }
+  const accepted = await delivery
+  expect(accepted.turns[0].answer?.text).toContain('已受理')
+  expect(accepted.turns[0].answer?.reminder?.status).toBe('accepted')
+  expect((await service.action('general', clickId, click)).turns[0].answer?.reminder?.status).toBe(
+    'accepted',
+  )
+  expect(routing.getConfig()).toEqual(prefs)
+  expect(sendReminder).toHaveBeenCalledTimes(1)
+  await service.message('general', crypto.randomUUID(), '刚才的提醒怎么样了？')
+  expect(JSON.stringify(ask.mock.calls[1][0].history)).not.toContain(reminderRecipient.audienceKey)
+  expect(ask.mock.calls[1][0].history[0].answer?.text).toContain('已受理')
+})
+
+test('a previous unsupported request can prepare its own card without rewriting other turns or replaying an external request', async () => {
+  const { service, store, first, ask, prepareReminder, sendReminder } = setup()
+  const key = crypto.randomUUID()
+  expect(store.conversations.begin('general', key, reminderRequest).kind).toBe('started')
+  expect(
+    store.conversations.finish('general', key, 1, { text: '目前没有这个动作。', intent: 'next' }),
+  ).toBe(true)
+  const historical = service.get('general').turns[0]
+  if (!historical.surface) throw Error('Missing historical prepare card')
+  expect(prepareReminder).not.toHaveBeenCalled()
+  expect(sendReminder).not.toHaveBeenCalled()
+  const click = actionFor(historical.surface, 'prepare_reminder')
+  await expect(service.action(first, crypto.randomUUID(), click)).rejects.toMatchObject({
+    status: 409,
+  })
+  prepareReminder.mockReturnValue(reminderRecipient)
+  const clickId = crypto.randomUUID()
+  const prepared = await service.action('general', clickId, click)
+  expect(prepared.turns).toHaveLength(1)
+  expect(prepared.turns[0].id).toBe(historical.id)
+  expect(prepared.turns[0].answer?.reminder?.status).toBe('draft')
+  expect(prepared.turns[0].answer?.text).not.toContain('没有这个动作')
+  await service.action('general', clickId, click)
+  expect(prepareReminder).toHaveBeenCalledTimes(1)
+  expect(sendReminder).not.toHaveBeenCalled()
+  expect(ask).not.toHaveBeenCalled()
+  if (!prepared.turns[0].surface) throw Error('Missing reminder card')
+  const send = actionFor(prepared.turns[0].surface, 'send_reminder')
+  sendReminder.mockRejectedValue(new Error('private downstream response'))
+  const attempted = await service.action('general', crypto.randomUUID(), send)
+  expect(attempted.turns[0].answer?.reminder?.status).toBe('unknown')
+  expect(JSON.stringify(attempted)).not.toContain('private downstream')
+  await expect(service.action('general', crypto.randomUUID(), send)).rejects.toMatchObject({
+    status: 409,
+  })
+  expect(sendReminder).toHaveBeenCalledTimes(1)
+})
+
+test('model output and text inside event discussions cannot authorize a reminder', async () => {
+  const { service, first, ask, prepareReminder, sendReminder } = setup(async () => ({
+    text: '模型回答',
+    reminder: {
+      platform: 'weixin',
+      channelId: 'injected',
+      botLabel: 'injected',
+      text: 'injected',
+      audienceKey: 'injected',
+      status: 'draft',
+    },
+  }))
+  for (const [scope, text] of [
+    ['general', '如何配置通知？'],
+    [first, reminderRequest],
+  ] as const) {
+    const snap = await service.message(scope, crypto.randomUUID(), text)
+    const turn = snap.turns.at(-1)
+    expect(turn?.answer?.reminder).toBeUndefined()
+    expect(JSON.stringify(turn?.surface)).not.toContain('send_reminder')
+  }
+  expect(ask).toHaveBeenCalledTimes(2)
+  expect(prepareReminder).not.toHaveBeenCalled()
+  expect(sendReminder).not.toHaveBeenCalled()
+})
+
+test('a natural-language send tool reserves the current turn before sending and preserves its receipt if the next model step fails', async () => {
+  const key = crypto.randomUUID()
+  const gate = Promise.withResolvers<{ status: 'accepted' }>()
+  const submitted = Promise.withResolvers<void>()
+  const q = '这笔 DeepSeek 充值得现在处理，微信给我发一句「记得充值」吧'
+  const { service, ask, prepareReminder, sendReminder } = setup(async (input) => {
+    const send = input.actions?.sendReminder
+    if (!send) throw Error('Missing send tool')
+    const receipt = await send('weixin', '记得充值', new AbortController().signal)
+    expect(receipt.status).toBe('accepted')
+    throw new Error('final provider call timed out')
+  })
+  prepareReminder.mockReturnValue(reminderRecipient)
+  sendReminder.mockImplementation(async () => {
+    submitted.resolve()
+    return gate.promise
+  })
+  const job = service.message('general', key, q)
+  await submitted.promise
+  try {
+    expect(service.get('general').turns[0].answer?.reminder?.status).toBe('sending')
+    const replay = await service.message('general', key, q, true)
+    expect(replay.turns[0].status).toBe('pending')
+    expect(sendReminder).toHaveBeenCalledTimes(1)
+  } finally {
+    gate.resolve({ status: 'accepted' })
+  }
+  const finished = await job
+  expect(finished.turns[0]).toMatchObject({
+    status: 'completed',
+    answer: { reminder: { platform: 'weixin', text: '记得充值', status: 'accepted' } },
+  })
+  expect((await service.message('general', key, q, true)).turns[0].answer?.reminder?.status).toBe(
+    'accepted',
+  )
+  expect(ask).toHaveBeenCalledTimes(1)
+  expect(JSON.stringify(finished)).not.toContain(reminderRecipient.audienceKey)
+})
+
+test('when the current user asks to send an existing draft its original card and the new turn share one outcome', async () => {
+  const { service, prepareReminder, sendReminder } = setup(async (input) => {
+    const text = '处理充值'
+    if (!input.history.length) input.actions?.prepareReminder?.('weixin', text)
+    else {
+      const send = input.actions?.sendReminder
+      if (!send) throw Error('Missing send tool')
+      await send('weixin', text, new AbortController().signal, input.history[0].id)
+    }
+    return { text: '已处理' }
+  })
+  prepareReminder.mockReturnValue(reminderRecipient)
+  sendReminder.mockResolvedValue({ status: 'accepted' })
+  const key = crypto.randomUUID()
+  const before = await service.message('general', key, '整理成微信草稿：处理充值')
+  const surface = before.turns[0].surface
+  if (!surface) throw Error('Missing draft card')
+  const original = actionFor(surface, 'send_reminder')
+  const done = await service.message('general', crypto.randomUUID(), '现在把上一条草稿发出去')
+  expect(done.turns.map((t) => t.answer?.reminder?.status)).toEqual(['accepted', 'accepted'])
+  expect(sendReminder).toHaveBeenCalledTimes(1)
+  expect(sendReminder.mock.calls[0][3]).toBe(key)
+  await expect(service.action('general', crypto.randomUUID(), original)).rejects.toMatchObject({
+    status: 409,
+  })
+  expect(sendReminder).toHaveBeenCalledTimes(1)
+})
+
+test('the normal workspace entry point runs successive model tool calls, feeds a real transport outcome back and persists the verified result', async () => {
+  const channel = 'weixin'
+  const body = '处理 DeepSeek 充值'
+  const question = '我要你现在通过微信给我发这句话：「处理 DeepSeek 充值」'
+  let calls = 0
+  const adapter: ProviderAdapter = {
+    apiType: 'test',
+    healthCheck: async () => true,
+    stream() {
+      throw Error('Unexpected streaming')
+    },
+    async complete(request) {
+      calls++
+      const content: ContentBlock[] = []
+      if (calls === 1) {
+        expect(request.tools?.map((t) => t.name)).toContain('send_personal_reminder')
+        content.push({
+          type: 'tool_use',
+          name: 'list_notification_bots',
+          input: {},
+          id: 'bot-directory',
+        })
+      } else if (calls === 2) {
+        const tool = request.messages.at(-1)?.content[0]
+        expect(tool?.type === 'tool_result' && tool.content).toContain('我的微信')
+        content.push({
+          type: 'tool_use',
+          name: 'send_personal_reminder',
+          input: { platform: channel, text: body },
+          id: 'send-tool',
+        })
+      } else {
+        const tool = request.messages.at(-1)?.content[0]
+        expect(tool?.type === 'tool_result' && tool.content).toContain('accepted')
+        expect(JSON.stringify(request.messages)).not.toContain(reminderRecipient.audienceKey)
+        content.push({ type: 'text', text: '{"text":"微信平台已受理。"}' })
+      }
+      return {
+        id: `test-${calls}`,
+        model: 'fake',
+        content,
+        usage: { input: 1, output: 1 },
+        stopReason: calls < 3 ? 'tool_use' : 'end_turn',
+      }
+    },
+  }
+  const ask = createRouterAgent({
+    modelRouter: { getDefaultModel: () => ({ adapter }), getCurrentModel: () => undefined },
+    secretFilter: { filter: (v) => v },
+  })
+  const { service, routing, catalog, prepareReminder, sendReminder } = setup(ask)
+  const settings = routing.getConfig()
+  routing.saveConfig(
+    { ...settings.settings, personalBots: { weixin: reminderRecipient.channelId } },
+    settings.revision,
+  )
+  catalog.mockReturnValue([
+    {
+      platform: channel,
+      channelId: reminderRecipient.channelId,
+      label: reminderRecipient.label,
+      online: true,
+      ready: true,
+      deliveryState: 'ready',
+    },
+  ])
+  prepareReminder.mockReturnValue(reminderRecipient)
+  sendReminder.mockResolvedValue({ status: 'accepted' })
+  const id = crypto.randomUUID()
+  const answer = (await service.message('general', id, question)).turns[0].answer
+  expect(answer?.reminder).toMatchObject({ platform: channel, text: body, status: 'accepted' })
+  expect(answer?.toolSteps).toEqual([
+    { name: 'list_notification_bots', ok: true },
+    { name: 'send_personal_reminder', ok: true },
+  ])
+  await service.message('general', id, question)
+  expect(sendReminder).toHaveBeenCalledTimes(1)
+  expect(calls).toBe(3)
 })

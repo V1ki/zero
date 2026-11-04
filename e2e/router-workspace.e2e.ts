@@ -131,6 +131,16 @@ async function mockWorkspace(
     if (operation === 'actions') expect(submission.action).toBeTruthy()
     submissions.push(submission)
     const result = await reply(submission)
+    if (submission.action?.action.name === 'send_reminder' && !('error' in result)) {
+      const confirmed = snapshot(scope).turns.find(
+        (turn) => turn.surface?.[0].createSurface.surfaceId === submission.action?.action.surfaceId,
+      )
+      const original = history.get(scope)?.find((turn) => turn.id === confirmed?.id)
+      if (!original?.answer?.reminder || original.answer.reminder.status !== 'draft')
+        return route.fulfill({ status: 409, json: { error: '通知草稿已失效。' } })
+      original.answer = result
+      return route.fulfill({ json: snapshot(scope) })
+    }
     if (
       (submission.action?.action.name === 'apply_preference' ||
         submission.action?.action.name === 'confirm_mandate') &&
@@ -284,6 +294,104 @@ test('applies a conversational preference only after the user confirms the speci
     surfaceId: 'router-general-turn-1',
     context: {},
   })
+  expect(submissions).toHaveLength(2)
+})
+
+test('an explicit send-now command shows the accepted notification and the public tool trace', async ({
+  page,
+}) => {
+  const question = '现在发送微信通知，通知我处理 DeepSeek 的充值'
+  const body = '处理 DeepSeek 的充值'
+  const recipient = 'private-recipient-for-trace-test'
+  const toolSteps = [
+    { name: 'list_notification_bots', ok: true },
+    {
+      name: 'send_personal_reminder',
+      ok: true,
+      arguments: { recipient, text: body },
+    },
+  ]
+  const submissions = await mockWorkspace(page, async (submitted) => {
+    expect(submitted.text).toBe(question)
+    expect(submitted.action).toBeUndefined()
+    return {
+      text: '微信平台已受理这条通知。',
+      reminder: {
+        platform: 'weixin',
+        channelId: 'weixin-personal',
+        botLabel: '个人微信机器人',
+        status: 'accepted',
+        text: body,
+      },
+      toolSteps,
+    }
+  })
+  await page.goto('/router')
+  await page.getByRole('textbox', { name: '给 Router 发消息' }).fill(question)
+  await page.getByRole('button', { name: '发送', exact: true }).click()
+  const chat = page.getByRole('region', { name: '对话记录' })
+  const card = chat.locator('[data-surface-id="router-general-turn-1"]')
+  await expect(card).toContainText('平台已受理')
+  await expect(card).toContainText('个人微信机器人')
+  await expect(card.getByText(body, { exact: true })).toBeVisible()
+  await expect(card.getByRole('button', { name: '发送通知', exact: true })).toHaveCount(0)
+  const trace = chat.locator('details').filter({ hasText: '本轮调用了 2 次工具' })
+  await trace.locator('summary').click()
+  await expect(trace.getByRole('listitem')).toHaveText([
+    '查询通知机器人 · 已返回',
+    '发送个人通知 · 已返回',
+  ])
+  await expect(trace).not.toContainText(body)
+  await expect(chat).not.toContainText(recipient)
+  await page.reload()
+  await expect(card).toContainText('平台已受理')
+  await expect(card.getByRole('button', { name: '发送通知', exact: true })).toHaveCount(0)
+  expect(submissions).toHaveLength(1)
+})
+
+test('an explicit Weixin draft shows the exact text and sends once after confirmation', async ({
+  page,
+}) => {
+  const reminder = {
+    platform: 'weixin' as const,
+    channelId: 'weixin-personal',
+    botLabel: '个人微信机器人',
+    text: '处理 DeepSeek 的充值',
+  }
+  const question = '先帮我拟一条微信通知，内容是「处理 DeepSeek 的充值」'
+  let deliveries = 0
+  const submissions = await mockWorkspace(page, async (submitted) => {
+    if (submitted.action) {
+      expect(submitted.action.action).toMatchObject({
+        name: 'send_reminder',
+        surfaceId: 'router-general-turn-1',
+        sourceComponentId: 'btn-send_reminder',
+        context: {},
+      })
+      deliveries++
+      return { text: '收到平台回执。', reminder: { ...reminder, status: 'accepted' } }
+    }
+    expect(submitted).toMatchObject({ text: question, scope: 'general' })
+    return { text: '请核对提醒。', reminder: { ...reminder, status: 'draft' } }
+  })
+  await page.goto('/router')
+  await page.getByRole('textbox', { name: '给 Router 发消息' }).fill(question)
+  await page.getByRole('button', { name: '发送', exact: true }).click()
+  const card = page.locator('[data-surface-id="router-general-turn-1"]')
+  const confirm = card.getByRole('button', { name: '发送通知', exact: true })
+  await expect(card).toContainText(reminder.botLabel)
+  await expect(card.getByText(reminder.text, { exact: true })).toBeVisible()
+  await expect(confirm).toBeVisible()
+  await page.reload()
+  await expect(confirm).toBeVisible()
+  expect(deliveries).toBe(0)
+  await confirm.click()
+  await expect(card).toContainText('已受理')
+  await expect(confirm).toHaveCount(0)
+  await page.reload()
+  await expect(card).toContainText('已受理')
+  await expect(confirm).toHaveCount(0)
+  expect(deliveries).toBe(1)
   expect(submissions).toHaveLength(2)
 })
 

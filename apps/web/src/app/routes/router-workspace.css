@@ -50,6 +50,9 @@
 .rw-settings {
   color: var(--color-text-secondary);
 }
+.rw-settings-panel {
+  margin-bottom: 22px;
+}
 .rw-settings:hover,
 .rw-inline-button:hover {
   color: var(--color-text-primary);
@@ -272,6 +275,17 @@
 }
 .rw-question {
   margin-top: 4px;
+}
+.rw-tool-steps {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+.rw-tool-steps summary {
+  cursor: pointer;
+}
+.rw-tool-steps ol {
+  padding-inline-start: 20px;
+  margin-block: 5px;
 }
 .rw-reply {
   margin-top: 12px;

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import type { Channel, ChannelCapabilities, MessageHandler } from '../base'
 import { sendTextMessage } from './api-messages'
 import { type ApiOptions, type FetchImpl, ILinkError, postJson } from './api-transport'
@@ -359,6 +360,12 @@ export class WeixinChannel implements Channel {
     await this.delivery.sendToChat(chatId, content)
   }
 
+  listReminderPeers(): string[] {
+    return this.tokenStore
+      .listPeers(this.accountId)
+      .filter((peerId) => this.canSendReminderTo(peerId))
+  }
+
   canSendReminderTo(peerId: string): boolean {
     return (
       this.running &&
@@ -378,6 +385,7 @@ export class WeixinChannel implements Channel {
   async sendReminderOnce(
     peerId: string,
     text: string,
+    deliveryId?: string,
   ): Promise<'accepted' | 'unavailable' | 'rejected' | 'uncertain'> {
     if (!this.canSendReminderTo(peerId) || !text.trim() || text.length > MAX_MESSAGE_LENGTH)
       return 'unavailable'
@@ -389,7 +397,14 @@ export class WeixinChannel implements Channel {
           token: this.token,
           to: peerId,
           text,
-          clientId: `zero-weixin-${crypto.randomUUID()}`,
+          clientId: `zero-weixin-${
+            deliveryId
+              ? createHash('sha256')
+                  .update(JSON.stringify([this.accountId, peerId, deliveryId]))
+                  .digest('hex')
+                  .slice(0, 32)
+              : crypto.randomUUID()
+          }`,
           contextToken: this.tokenStore.get(this.accountId, peerId),
         },
         { ...this.apiOpts(), requireAck: true },

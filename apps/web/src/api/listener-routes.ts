@@ -1,8 +1,16 @@
 import { isIP } from 'node:net'
-import { isTriggerCalendarDate, isTriggerRetentionDays } from '@zero-os/shared'
+import {
+  botRoutingPreferences,
+  getTriggerRouteBot,
+  isTriggerCalendarDate,
+  isTriggerRetentionDays,
+  sameTriggerRouteTarget,
+  triggerRoutePlatforms,
+} from '@zero-os/shared'
 import { TriggerSettingsConflictError, triggerWebhookSecretPatterns } from '@zero-os/shared'
 import type {
   TriggerGithubRepository,
+  TriggerRoutingSettings,
   TriggerRoutingSettingsSnapshot,
   TriggerSettingsSnapshot,
   TriggerWxarcSession,
@@ -16,7 +24,7 @@ import {
   type RouterWorkspaceService,
 } from '../../../server/src/triggers/router-workspace'
 
-import { MandateInputError } from '../../../server/src/triggers/mandate-input'
+import { MandateInputError, parseMandateTarget } from '../../../server/src/triggers/mandate-input'
 import type { MandateService } from '../../../server/src/triggers/mandate-service'
 import {
   type ListenerEnv,
@@ -50,6 +58,10 @@ type ListenerService = Pick<
     | 'getConfig'
     | 'saveConfig'
     | 'listTargets'
+    | 'listPersonalTargets'
+    | 'listPersonalBots'
+    | 'getBotBindings'
+    | 'saveBotBinding'
     | 'listRoutes'
     | 'listWeb'
     | 'latestWebDeliveryId'
@@ -224,7 +236,18 @@ function parseNativePresence(value: unknown) {
   }
 }
 
-function parseRouting(raw: unknown): TriggerRoutingSettingsSnapshot {
+function parsePersonalBots(raw: unknown) {
+  const input = fields(raw, [...triggerRoutePlatforms])
+  const result: NonNullable<TriggerRoutingSettings['personalBots']> = {}
+  for (const platform of triggerRoutePlatforms) {
+    if (platform in input)
+      result[platform] =
+        input[platform] === null ? null : fieldText(input[platform], '机器人账号', 256, true)
+  }
+  return result
+}
+
+function parseRouting(raw: unknown, botOnly: boolean): TriggerRoutingSettingsSnapshot {
   const data = fields(raw, ['revision', 'settings'])
   const settings = fields(data.settings, [
     'enabled',
@@ -241,6 +264,7 @@ function parseRouting(raw: unknown): TriggerRoutingSettingsSnapshot {
     'afterWork',
     'offDay',
     'weixinTarget',
+    'personalBots',
   ])
   const retentionDays = settings.retentionDays
   if (
@@ -270,9 +294,12 @@ function parseRouting(raw: unknown): TriggerRoutingSettingsSnapshot {
   const clock = /^(?:[01]\d|2[0-3]):[0-5]\d$/
   if (!clock.test(workStart) || !clock.test(workEnd) || workStart === workEnd)
     badInput('请输入两个不同的有效时间（HH:mm）。')
+  if (botOnly && settings.weixinTarget != null) badInput('请在渠道配置中设置投递地址。')
   const target =
-    settings.weixinTarget === null ? null : fields(settings.weixinTarget, ['channelId', 'peerId'])
-  const destinations = ['web', 'weixin', 'defer'] as const
+    botOnly || settings.weixinTarget === null
+      ? null
+      : fields(settings.weixinTarget, ['channelId', 'peerId'])
+  const destinations = ['web', ...triggerRoutePlatforms, 'defer'] as const
   return {
     revision: version(data.revision),
     settings: {
@@ -289,7 +316,11 @@ function parseRouting(raw: unknown): TriggerRoutingSettingsSnapshot {
         nativePresence: parseNativePresence(settings.nativePresence),
       }),
       presence: choice(settings.presence, ['auto', 'present', 'away'], '在场模式'),
-      awayFallback: choice(settings.awayFallback, ['weixin', 'defer'], '离席处理方式'),
+      awayFallback: choice(
+        settings.awayFallback,
+        [...triggerRoutePlatforms, 'defer'],
+        '离席处理方式',
+      ),
       duringWork: choice(settings.duringWork, destinations, '工作时段目的地'),
       afterWork: choice(settings.afterWork, destinations, '下班时段目的地'),
       offDay: choice(settings.offDay, destinations, '非工作日目的地'),
@@ -297,6 +328,7 @@ function parseRouting(raw: unknown): TriggerRoutingSettingsSnapshot {
         channelId: fieldText(target.channelId, '微信通道', 256, true),
         peerId: fieldText(target.peerId, '微信目标', 256, true),
       },
+      ...('personalBots' in settings && { personalBots: parsePersonalBots(settings.personalBots) }),
     },
   }
 }
@@ -325,6 +357,49 @@ function workspaceRequest(value: Record<string, unknown>) {
 
 export function createListenerRoutes(service: ListenerService) {
   const app = new Hono<ListenerEnv>()
+  const preferences = ({ revision, settings }: TriggerRoutingSettingsSnapshot) => ({
+    revision,
+    settings: botRoutingPreferences(settings),
+  })
+  async function saveRouting(c: Context<ListenerEnv>, botOnly: boolean) {
+    const { settings, revision } = parseRouting(await requestJson(c), botOnly)
+    const { settings: previous, revision: currentRevision } = service.routing.getConfig()
+    if (revision !== currentRevision) throw new TriggerSettingsConflictError()
+    if (botOnly) settings.weixinTarget = previous.weixinTarget
+    const legacy = settings.weixinTarget
+    if (
+      legacy &&
+      (legacy.channelId !== previous.weixinTarget?.channelId ||
+        legacy.peerId !== previous.weixinTarget?.peerId)
+    ) {
+      const available = await service.routing.listTargets()
+      if (
+        !available.some(
+          (item) => item.channelId === legacy.channelId && item.peerId === legacy.peerId,
+        )
+      )
+        badInput('请选择已绑定且可用的微信目标。')
+    }
+    const changed = triggerRoutePlatforms.filter(
+      (platform) =>
+        settings.personalBots?.[platform] != null &&
+        settings.personalBots[platform] !== getTriggerRouteBot(previous, platform),
+    )
+    if (changed.length) {
+      const bots = service.routing.listPersonalBots()
+      for (const platform of changed) {
+        if (
+          !bots.some(
+            (bot) =>
+              bot.platform === platform && bot.channelId === settings.personalBots?.[platform],
+          )
+        )
+          badInput('请选择已接入该平台的机器人。')
+      }
+    }
+    const saved = await service.routing.saveConfig(settings, revision)
+    return c.json(botOnly ? preferences(saved) : saved)
+  }
   app.onError((err, c) => {
     if (err instanceof HTTPException) return c.json({ error: err.message }, err.status)
     if (err instanceof MandateInputError) return c.json({ error: err.message }, err.status)
@@ -416,30 +491,59 @@ export function createListenerRoutes(service: ListenerService) {
       return c.json(await service.workspace.action(scope, requestId, body.action, retry))
     })
     .get('/routing/config', (c) => c.json(service.routing.getConfig()))
-    .put('/routing/config', async (c) => {
-      const { settings, revision } = parseRouting(await requestJson(c))
-      const { settings: previous, revision: currentRevision } = service.routing.getConfig()
-      if (revision !== currentRevision) throw new TriggerSettingsConflictError()
-      const target = settings.weixinTarget
+    .put('/routing/config', (c) => saveRouting(c, false))
+    .get('/routing/preferences', (c) => c.json(preferences(service.routing.getConfig())))
+    .put('/routing/preferences', (c) => saveRouting(c, true))
+    .get('/routing/bots', (c) =>
+      c.json({
+        bots: service.routing
+          .listPersonalBots()
+          .map(({ platform, channelId, label, online, ready, deliveryState }) => ({
+            platform,
+            channelId,
+            label,
+            online,
+            ready,
+            deliveryState,
+          })),
+      }),
+    )
+    .get('/channels/bot-bindings', (c) => c.json(service.routing.getBotBindings()))
+    .put('/channels/bot-bindings', async (c) => {
+      const body = fields(await requestJson(c), ['revision', 'platform', 'channelId', 'target'])
+      const revision = version(body.revision)
+      const platform = choice(body.platform, triggerRoutePlatforms, '平台')
+      const channelId = fieldText(body.channelId, '机器人账号', 256, true)
+      const target = body.target === null ? null : parseMandateTarget(body.target)
+      if (revision !== service.routing.getBotBindings().revision)
+        throw new TriggerSettingsConflictError()
       if (
         target &&
-        (target.channelId !== previous.weixinTarget?.channelId ||
-          target.peerId !== previous.weixinTarget?.peerId)
-      ) {
-        const available = await service.routing.listTargets()
-        if (
-          !available.some(
-            ({ channelId, peerId }) => channelId === target.channelId && peerId === target.peerId,
-          )
-        )
-          badInput('请选择已绑定且可用的微信目标。')
-      }
-      return c.json(await service.routing.saveConfig(settings, revision))
+        (target.platform !== platform ||
+          target.channelId !== channelId ||
+          !service.routing
+            .listPersonalTargets()
+            .some((candidate) => sameTriggerRouteTarget(candidate, target)))
+      )
+        badInput('请选择该机器人已绑定的接收地址。')
+      return c.json(service.routing.saveBotBinding(platform, channelId, target, revision))
     })
     .get('/routing/targets', async (c) => {
       const targets = await service.routing.listTargets()
       return c.json({
         targets: targets.map(({ channelId, peerId, label }) => ({ channelId, peerId, label })),
+      })
+    })
+    .get('/channels/personal-targets', async (c) => {
+      const targets = await service.routing.listPersonalTargets()
+      return c.json({
+        targets: targets.map(({ platform, channelId, peerId, operatorId, label }) => ({
+          platform,
+          channelId,
+          peerId,
+          operatorId,
+          label,
+        })),
       })
     })
     .get('/routing/records', (c) =>

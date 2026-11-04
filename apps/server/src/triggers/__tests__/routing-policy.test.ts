@@ -2,6 +2,8 @@ import { expect, test } from 'bun:test'
 import {
   type TriggerNativePresence,
   type TriggerRoutingSettings,
+  botRoutingPreferences,
+  getTriggerRouteBot,
   getTriggerTimeContext,
 } from '@zero-os/shared'
 import { decideTriggerRoute } from '../routing-policy'
@@ -76,6 +78,77 @@ test('Weixin requires explicit preference and a currently available selected tar
     decideTriggerRoute({ ...fallback, duringWork: 'defer' }, mondayNoon, undefined, true)
       .destination,
   ).toBe('defer')
+})
+
+test('personal IM choices independently require a selected and available bot for direct and fallback routes', () => {
+  for (const platform of ['feishu', 'dingtalk'] as const) {
+    const direct = { ...settings, personalBots: { [platform]: 'work-bot' }, duringWork: platform }
+    const fallback = {
+      ...direct,
+      duringWork: 'web',
+      awayFallback: platform,
+      presence: 'away',
+    } as const
+    for (const config of [direct, fallback]) {
+      const available = { [platform]: true }
+      expect(decideTriggerRoute(config, mondayNoon, undefined, available).destination).toBe(
+        platform,
+      )
+      expect(decideTriggerRoute(config, mondayNoon, undefined, { weixin: true }).destination).toBe(
+        'defer',
+      )
+      expect(
+        decideTriggerRoute(
+          { ...config, personalBots: { [platform]: null } },
+          mondayNoon,
+          undefined,
+          available,
+        ).destination,
+      ).toBe('defer')
+    }
+  }
+})
+
+test('personal routing selects a bot per platform without embedding any conversation in the preference', () => {
+  const config: TriggerRoutingSettings = {
+    ...settings,
+    personalBots: { feishu: 'research-bot', dingtalk: 'work-bot' },
+    duringWork: 'feishu',
+    awayFallback: 'dingtalk',
+  }
+  expect(getTriggerRouteBot(config, 'weixin')).toBe('test-bot')
+  expect(botRoutingPreferences(config)).toMatchObject({
+    weixinTarget: null,
+    personalBots: { weixin: 'test-bot', feishu: 'research-bot', dingtalk: 'work-bot' },
+  })
+  expect(
+    getTriggerRouteBot({ ...config, personalBots: { weixin: 'second-weixin' } }, 'weixin'),
+  ).toBe('second-weixin')
+  expect(getTriggerRouteBot(config, 'feishu')).toBe('research-bot')
+  expect(getTriggerRouteBot(config, 'dingtalk')).toBe('work-bot')
+  expect(decideTriggerRoute(config, mondayNoon, undefined, { feishu: true }).destination).toBe(
+    'feishu',
+  )
+  expect(decideTriggerRoute(config, mondayNoon, undefined, { dingtalk: true }).destination).toBe(
+    'defer',
+  )
+  const away = { ...config, duringWork: 'web', presence: 'away' } as const
+  expect(decideTriggerRoute(away, mondayNoon, undefined, { dingtalk: true }).destination).toBe(
+    'dingtalk',
+  )
+  const cleared: TriggerRoutingSettings = {
+    ...config,
+    duringWork: 'weixin',
+    personalBots: { weixin: null },
+  }
+  expect(getTriggerRouteBot(cleared, 'weixin')).toBeNull()
+  expect(botRoutingPreferences(cleared)).toMatchObject({
+    weixinTarget: null,
+    personalBots: { weixin: null },
+  })
+  expect(decideTriggerRoute(cleared, mondayNoon, undefined, { weixin: true }).destination).toBe(
+    'defer',
+  )
 })
 
 test('deferred delivery has a future check and wakes at a near work or date boundary', () => {

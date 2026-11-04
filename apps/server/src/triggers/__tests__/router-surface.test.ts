@@ -140,7 +140,7 @@ test('model facts become bound text; preference changes require their original v
   ).toBe(false)
 })
 
-test('a proposed Weixin preference requires the bound conversation to be currently reachable', () => {
+test('a proposed Weixin preference requires the selected bot to exist', () => {
   const answer = {
     text: '',
     proposal: { key: 'afterWork', value: 'weixin' },
@@ -150,9 +150,48 @@ test('a proposed Weixin preference requires the bound conversation to be current
   const available = buildRouterReplySurface('general', 7, answer, 4, true)
   if (!absent || !available) throw Error('Missing preference surface')
   const action = click(available, 'apply_preference')
-  expect(JSON.stringify(absent)).toContain('绑定并连接可用的微信私聊')
+  expect(JSON.stringify(absent)).toContain('在渠道配置中核对机器人账号')
   expect(matchesRouterSurfaceAction(absent, action)).toBe(false)
   expect(matchesRouterSurfaceAction(available, action)).toBe(true)
+})
+
+test('a personal reminder card shows the exact message and offers send only while it is a draft', () => {
+  const reminder = {
+    platform: 'weixin',
+    channelId: 'v1ki-bot',
+    botLabel: '我的微信',
+    audienceKey: 'private-fingerprint',
+    text: '处理 DeepSeek 的充值\n明细 <https://example.test>',
+  } as const
+  for (const [status, label] of [
+    ['draft', '待发送'],
+    ['sending', '正在发送，等待平台回执'],
+    ['accepted', '平台已受理'],
+    ['rejected', '未能发送'],
+    ['unknown', '发送结果待核实，请查看机器人私聊'],
+  ] as const) {
+    const answer = { text: '一次性通知', reminder: { ...reminder, status } }
+    const card = buildRouterReplySurface('general', 5, answer)
+    if (!card) throw Error('Missing reminder surface')
+    const values = card[2].updateDataModel.value
+    expect(values).toContainValue('我的微信（v1ki-bot）')
+    expect(values).toContainValue(reminder.text)
+    expect(values).toContainValue(label)
+    expect(JSON.stringify(card)).not.toContain(reminder.audienceKey)
+    expect(matchesRouterSurfaceAction(card, click(card, 'send_reminder'))).toBe(status === 'draft')
+    expect(matchesRouterSurfaceAction(card, click(card, 'prepare_reminder'))).toBe(false)
+    expect(buildRouterReplySurface(7, 5, answer)).toBeNull()
+  }
+})
+
+test('a legacy one-time request can prepare a new preview but cannot send from the old answer', () => {
+  const legacy = { text: '之前未发送。' }
+  expect(buildRouterReplySurface('general', 4, legacy)).toBeNull()
+  const card = buildRouterReplySurface('general', 4, legacy, 1, false, undefined, true)
+  if (!card) throw Error('Missing legacy prepare surface')
+  expect(matchesRouterSurfaceAction(card, click(card, 'prepare_reminder'))).toBe(true)
+  expect(matchesRouterSurfaceAction(card, click(card, 'send_reminder'))).toBe(false)
+  expect(buildRouterReplySurface('task-5', 4, legacy, 1, false, undefined, true)).toBeNull()
 })
 
 test('rejects unsupported catalogs, mixed surfaces, missing data, unknown components and cyclic trees', () => {

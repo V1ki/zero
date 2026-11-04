@@ -9,6 +9,7 @@ const taskStillOpen = `(t.active=1 OR t.updated_at > ?1 OR (t.acknowledged_at IS
     OR EXISTS(SELECT 1 FROM mandate_audit a WHERE a.match_id=s.id AND a.at > ?1))))`
 // Failed turns can still be retried. Pending proposals need their original confirmation card.
 const openTurn = `(c.status != 'completed' OR
+  json_extract(c.answer,'$.reminder.status') IS 'sending' OR
   (json_type(c.answer,'$.proposal') IS 'object' AND json_extract(c.answer,'$.proposalAppliedAt') IS NULL)
   OR (json_type(c.answer,'$.commission') IS 'object' AND NOT EXISTS (
     SELECT 1 FROM trigger_commission_drafts draft WHERE draft.code=json_extract(c.answer,'$.commission.code')
@@ -116,7 +117,7 @@ export class TriggerRetentionStore {
             OR thread IN (SELECT 'task-' || id FROM retention_tasks);
           UPDATE trigger_inbox SET title='',summary='',url=NULL WHERE id IN retention_events;
           UPDATE trigger_routes SET agent=NULL,session_id=NULL,decision=NULL,first_deferred=NULL,
-            weixin_target=NULL,error=NULL WHERE inbox_id IN retention_events;
+            weixin_target=NULL,delivery_target=NULL,error=NULL WHERE inbox_id IN retention_events;
           UPDATE mandate_tasks SET title='正文已到期',session_id=NULL WHERE id IN retention_tasks;
           UPDATE mandate_matches SET summary=NULL,error=NULL WHERE task_id IN retention_tasks;
           UPDATE mandate_effects SET target=NULL,reason=NULL,receipt=NULL WHERE match_id IN

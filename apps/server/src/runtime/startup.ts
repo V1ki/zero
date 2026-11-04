@@ -230,6 +230,7 @@ async function createStartupRuntimeShell({
   const routing: TriggerRoutingRuntime = new TriggerRoutingRuntime(store.routing, {
     analyze,
     weixin: createTriggerWeixin(host),
+    personal: platforms,
     onPolicyChange: () => taskRuntime.wakeDeferred(),
     onPresence: () => taskRuntime.heartbeat(),
     onWebDelivery: () => store.webNotifications.changed(),
@@ -251,6 +252,7 @@ async function createStartupRuntimeShell({
     store,
     agent: createChannelTaskAgent(core),
     isLiveTarget: platforms.isLiveTarget,
+    isPersonalTarget: (target) => routing.isPersonalTarget(target),
     commission,
   })
   const resolveSecret = (ref: string) => core.vault.get(ref)

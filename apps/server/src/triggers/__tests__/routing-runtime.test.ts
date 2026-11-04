@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'bun:test'
 import { TriggerStore } from '@zero-os/observe'
 import type {
+  MandateTarget,
   TriggerAgentResult,
   TriggerInboxItem,
   TriggerRoutingSettings,
@@ -21,6 +22,7 @@ function fixture(
     analyze?: () => Promise<void>
     send?: () => Promise<void>
     nativePresence?: NativePresenceProbe
+    personal?: NonNullable<ConstructorParameters<typeof TriggerRoutingRuntime>[1]['personal']>
   } = {},
 ) {
   const store = new TriggerStore(':memory:')
@@ -60,12 +62,21 @@ function fixture(
       nativePresence: options.nativePresence,
       onWebDelivery: () => store.webNotifications.changed(),
       weixin: { listTargets: () => [{ ...target, label: '测试会话' }], send },
+      personal: options.personal,
     },
     () => clock,
   )
   function configure(patch: Partial<TriggerRoutingSettings>) {
     const { revision, settings } = runtime.getConfig()
     return runtime.saveConfig({ ...settings, ...patch }, revision)
+  }
+  function bind(target: MandateTarget) {
+    runtime.saveBotBinding(
+      target.platform,
+      target.channelId,
+      target,
+      runtime.getBotBindings().revision,
+    )
   }
   function receive(eventId: string) {
     const previousCursor = store.readCursor(stream)
@@ -116,6 +127,7 @@ function fixture(
     store,
     analyze,
     send,
+    bind,
     configure,
     receive,
     enableSource,
@@ -126,7 +138,407 @@ function fixture(
   }
 }
 
+test('the Router tool previews the current time and presence without delivering an event', async () => {
+  const f = fixture()
+  try {
+    f.configure({ enabled: true, presence: 'auto', awayFallback: 'defer', duringWork: 'web' })
+    expect((await f.runtime.previewCurrentRoute()).destination).toBe('defer')
+    f.runtime.heartbeat()
+    expect((await f.runtime.previewCurrentRoute()).destination).toBe('web')
+    f.setTime('2030-01-07T20:00:00Z')
+    expect((await f.runtime.previewCurrentRoute()).destination).toBe('defer')
+    expect(f.runtime.listRoutes()).toEqual([])
+    expect(f.send).not.toHaveBeenCalled()
+  } finally {
+    await f.close()
+  }
+})
+
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve))
+
+for (const platform of ['dingtalk', 'feishu'] as const) {
+  test(`personal ${platform} uses the exact selected chat and never resends an uncertain or accepted delivery`, async () => {
+    const chosen: MandateTarget = {
+      platform,
+      channelId: 'bot',
+      peerId: 'chat',
+      operatorId: 'actor',
+    }
+    const selected = { ...chosen, label: '接收会话' }
+    const otherBot = { ...chosen, channelId: 'other-bot', label: '另一账户的会话' }
+    const sendPersonal = mock(async () =>
+      platform === 'dingtalk'
+        ? { status: 'unknown' as const, reason: '模拟回执丢失' }
+        : { status: 'accepted' as const },
+    )
+    const f = fixture({
+      personal: {
+        listPersonalBots: () => [
+          { platform, channelId: chosen.channelId, label: '提醒机器人', online: true },
+          { platform, channelId: otherBot.channelId, label: '另一机器人', online: true },
+        ],
+        listPersonalDirectTargets: () => [],
+        listPersonalTargets: () =>
+          platform === 'feishu'
+            ? [selected, otherBot]
+            : [selected, { ...selected, peerId: 'another-chat' }, otherBot],
+        sendPersonal,
+      },
+    })
+    try {
+      f.bind({ ...chosen, channelId: otherBot.channelId })
+      f.configure({
+        enabled: true,
+        duringWork: platform,
+        personalBots: { [platform]: chosen.channelId },
+      })
+      f.runtime.start()
+      const first = f.receive('unavailable')
+      f.runtime.notify()
+      await flush()
+      expect(f.store.routing.get(first)?.status).toBe('deferred')
+      expect(sendPersonal).not.toHaveBeenCalled()
+      expect(f.runtime.listPersonalBots()).toEqual([
+        {
+          platform,
+          channelId: 'bot',
+          label: '提醒机器人',
+          online: true,
+          ready: false,
+          deliveryState: 'awaiting_private',
+        },
+        {
+          platform,
+          channelId: 'other-bot',
+          label: '另一机器人',
+          online: true,
+          ready: true,
+          deliveryState: 'ready',
+        },
+      ])
+      f.bind(chosen)
+      expect(f.runtime.listPersonalBots()[0].ready).toBe(true)
+      const id = f.receive('selected')
+      f.runtime.notify()
+      await flush()
+      const route = f.store.routing.get(id)
+      expect(route).toMatchObject({
+        status: platform === 'feishu' ? 'sent' : 'uncertain',
+        deliveryTarget: chosen,
+      })
+      expect(sendPersonal).toHaveBeenCalledWith(
+        chosen,
+        expect.objectContaining({ id }),
+        expect.any(Object),
+        expect.any(AbortSignal),
+        expect.any(Function),
+      )
+      const sent = sendPersonal.mock.calls.length
+      expect(f.runtime.process(id)).toBe('already_processed')
+      f.runtime.notify()
+      await flush()
+      expect(sendPersonal).toHaveBeenCalledTimes(sent)
+      expect(f.send).not.toHaveBeenCalled()
+    } finally {
+      await f.close()
+    }
+  })
+}
+
+test.each(['weixin', 'feishu', 'dingtalk'] as const)(
+  '%s learns only the selected bot’s unique private endpoint on an actual send',
+  async (platform) => {
+    const address = {
+      platform,
+      channelId: 'auto-bot',
+      peerId: 'p1',
+      operatorId: platform === 'weixin' ? 'p1' : 'actor',
+    }
+    const group = { ...address, peerId: 'group' }
+    const other = { ...address, channelId: 'other-bot' }
+    const targets = [group, other, address].map((t) => ({ ...t, label: 'bound peer' }))
+    let direct = [other]
+    let online = true
+    const sendPersonal = mock(async () => ({ status: 'accepted' as const }))
+    const f = fixture({
+      personal: {
+        listPersonalBots: () =>
+          [address, other].map(({ channelId }) => ({
+            platform,
+            channelId,
+            label: channelId,
+            online,
+          })),
+        listPersonalTargets: () => targets,
+        listPersonalDirectTargets: () => direct,
+        sendPersonal,
+      },
+    })
+    try {
+      f.configure({
+        enabled: true,
+        duringWork: platform,
+        personalBots: { [platform]: address.channelId },
+      })
+      const before = f.runtime.getBotBindings()
+      const status = () => f.runtime.listPersonalBots()[0].deliveryState
+      expect(status()).toBe('awaiting_private')
+      direct = [other, address]
+      online = false
+      expect(status()).toBe('offline')
+      online = true
+      expect(status()).toBe('ready')
+      expect(f.runtime.getBotBindings()).toEqual(before)
+      f.runtime.start()
+      const id = f.receive('bot-only')
+      f.runtime.notify()
+      await flush()
+      expect(f.store.routing.get(id)).toMatchObject({ status: 'sent', deliveryTarget: address })
+      expect(f.store.routing.getPersonalBotBinding(platform, address.channelId)).toMatchObject({
+        automatic: true,
+        target: address,
+      })
+      expect(f.store.routing.getPersonalBotBinding(platform, other.channelId)).toBeNull()
+      expect(f.runtime.isPersonalTarget(address)).toBe(true)
+      expect(f.runtime.isPersonalTarget(group)).toBe(false)
+      expect(f.runtime.isPersonalTarget(other)).toBe(false)
+      if (platform === 'weixin') expect(f.send).toHaveBeenCalledTimes(1)
+      else expect(sendPersonal).toHaveBeenCalledTimes(1)
+      f.runtime.saveBotBinding(
+        platform,
+        address.channelId,
+        null,
+        f.runtime.getBotBindings().revision,
+      )
+      expect(status()).toBe('unavailable')
+      expect(f.runtime.isPersonalTarget(address)).toBe(false)
+    } finally {
+      await f.close()
+    }
+  },
+)
+
+test('a second direct correspondent during token lookup defers before external delivery; the first pin cannot drift', async () => {
+  const reached = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  const address = { platform: 'feishu' as const, channelId: 'bot', peerId: 'p1', operatorId: 'u1' }
+  const second = { ...address, peerId: 'p2', operatorId: 'u2' }
+  let direct = [address]
+  const sent = mock((_target: MandateTarget) => {})
+  const f = fixture({
+    personal: {
+      listPersonalBots: () => [
+        { platform: address.platform, channelId: address.channelId, label: 'bot', online: true },
+      ],
+      listPersonalTargets: () => direct.map((t) => ({ ...t, label: 'private' })),
+      listPersonalDirectTargets: () => direct,
+      sendPersonal: async (target, _event, _agent, _signal, maySend) => {
+        reached.resolve()
+        await release.promise
+        if (!maySend()) return { status: 'rejected', reason: 'changed' }
+        sent(target)
+        return { status: 'accepted' }
+      },
+    },
+  })
+  try {
+    f.configure({
+      enabled: true,
+      duringWork: 'feishu',
+      personalBots: { feishu: address.channelId },
+    })
+    f.runtime.start()
+    const id = f.receive('remains-private')
+    f.runtime.notify()
+    await reached.promise
+    direct = [address, second]
+    expect(f.runtime.listPersonalBots()[0].deliveryState).toBe('ambiguous')
+    expect(f.runtime.isPersonalTarget(address)).toBe(false)
+    release.resolve()
+    await flush()
+    expect(sent).not.toHaveBeenCalled()
+    expect(f.store.routing.get(id)?.status).toBe('deferred')
+    direct = [second]
+    expect(f.runtime.listPersonalBots()[0].deliveryState).toBe('unavailable')
+    expect(f.runtime.isPersonalTarget(second)).toBe(false)
+    direct = [address]
+    expect(f.runtime.isPersonalTarget(address)).toBe(true)
+  } finally {
+    release.resolve()
+    await f.close()
+  }
+})
+
+test.each([
+  ['revoke-and-rebind-source', 'cancelled', 0],
+  ['clear-bot-address', 'deferred', 0],
+  ['replace-bot-address', 'sent', 1],
+  ['change-route', 'web', 0],
+  ['edit-other-repo', 'sent', 1],
+] as const)('personal IM rechecks %s at the write boundary', async (change, status, sent) => {
+  const reached = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  const selected = {
+    platform: 'feishu' as const,
+    channelId: 'bot',
+    peerId: 'chat',
+    operatorId: 'actor',
+  }
+  const newAddress = { ...selected, peerId: 'new-chat' }
+  const externalWrite = mock((_peerId: string) => {})
+  const f = fixture({
+    personal: {
+      listPersonalBots: () => [
+        { platform: 'feishu', channelId: selected.channelId, label: '提醒机器人', online: true },
+      ],
+      listPersonalDirectTargets: () => [],
+      listPersonalTargets: () =>
+        [selected, newAddress].map((address) => ({ ...address, label: address.peerId })),
+      sendPersonal: async (target, _item, _agent, _signal, maySend) => {
+        reached.resolve()
+        await release.promise
+        if (!maySend()) return { status: 'rejected', reason: '授权已撤销' }
+        externalWrite(target.peerId)
+        return { status: 'accepted' }
+      },
+    },
+  })
+  try {
+    f.bind(selected)
+    f.configure({
+      enabled: true,
+      duringWork: 'feishu',
+      personalBots: { feishu: selected.channelId },
+    })
+    f.runtime.start()
+    const id = f.receive('revoked')
+    f.runtime.notify()
+    await reached.promise
+    if (change === 'revoke-and-rebind-source') {
+      f.enableSource(false)
+      f.enableSource(true)
+    } else if (change === 'change-route') {
+      f.configure({ duringWork: 'web' })
+    } else if (change === 'clear-bot-address') {
+      f.runtime.saveBotBinding(
+        'feishu',
+        selected.channelId,
+        null,
+        f.runtime.getBotBindings().revision,
+      )
+    } else if (change === 'replace-bot-address') {
+      f.bind(newAddress)
+    } else {
+      const snapshot = f.store.getSettings()
+      const repo = snapshot.settings.github.repositories[0]
+      snapshot.settings.github.repositories.push({ ...repo, name: 'another/repo' })
+      f.store.saveSettings(snapshot.settings, snapshot.revision)
+    }
+    release.resolve()
+    await flush()
+    expect(externalWrite).toHaveBeenCalledTimes(sent)
+    if (change === 'replace-bot-address')
+      expect(externalWrite).toHaveBeenCalledWith(newAddress.peerId)
+    expect(f.store.routing.get(id)?.status).toBe(status)
+  } finally {
+    release.resolve()
+    await f.close()
+  }
+})
+
+test('a selected Weixin bot uses its own mapped recipient even with a different legacy address', async () => {
+  const address = {
+    platform: 'weixin' as const,
+    channelId: 'new-weixin',
+    peerId: 'new-peer',
+    operatorId: 'new-peer',
+  }
+  const f = fixture({
+    personal: {
+      listPersonalBots: () => [
+        { platform: 'weixin', channelId: address.channelId, label: '新机器人', online: true },
+      ],
+      listPersonalDirectTargets: () => [],
+      listPersonalTargets: () => [{ ...address, label: '接收会话' }],
+      sendPersonal: async () => {
+        throw new Error('Weixin uses iLink')
+      },
+    },
+  })
+  try {
+    f.bind(address)
+    f.configure({
+      enabled: true,
+      duringWork: 'weixin',
+      personalBots: { weixin: address.channelId },
+    })
+    f.runtime.start()
+    const id = f.receive('new-weixin')
+    f.runtime.notify()
+    await flush()
+    expect(f.store.routing.get(id)).toMatchObject({ status: 'sent', deliveryTarget: address })
+    expect(f.send.mock.calls[0][0]).toEqual({
+      channelId: address.channelId,
+      peerId: address.peerId,
+    })
+  } finally {
+    await f.close()
+  }
+})
+
+test.each(['accepted', 'unknown'] as const)(
+  'a late %s receipt stays with its original IM after a policy change',
+  async (receipt) => {
+    const sent = Promise.withResolvers<void>()
+    const reply = Promise.withResolvers<void>()
+    const target = {
+      platform: 'feishu' as const,
+      channelId: 'bot',
+      peerId: 'chat',
+      operatorId: 'actor',
+    }
+    const f = fixture({
+      personal: {
+        listPersonalBots: () => [
+          { platform: 'feishu', channelId: target.channelId, label: '提醒机器人', online: true },
+        ],
+        listPersonalDirectTargets: () => [],
+        listPersonalTargets: () => [{ ...target, label: '接收会话' }],
+        sendPersonal: async (_target, _item, _agent, _signal, maySend) => {
+          expect(maySend()).toBe(true)
+          sent.resolve()
+          await reply.promise
+          return receipt === 'accepted'
+            ? { status: 'accepted' }
+            : { status: 'unknown', reason: '回执不明' }
+        },
+      },
+    })
+    try {
+      f.bind(target)
+      f.configure({
+        enabled: true,
+        duringWork: 'feishu',
+        personalBots: { feishu: target.channelId },
+      })
+      f.runtime.start()
+      const id = f.receive('after-dispatch')
+      f.runtime.notify()
+      await sent.promise
+      f.configure({ duringWork: 'web', personalBots: { feishu: null } })
+      reply.resolve()
+      await flush()
+      expect(f.store.routing.get(id)).toMatchObject({
+        status: receipt === 'accepted' ? 'sent' : 'uncertain',
+        deliveryTarget: target,
+      })
+      expect(f.runtime.listWeb()).toEqual([])
+    } finally {
+      reply.resolve()
+      await f.close()
+    }
+  },
+)
 
 test('a committed event enters routing once and a returning reader releases its deferred Web result', async () => {
   const f = fixture()
@@ -341,6 +753,102 @@ test('after a slow Mac check, a changed policy is reread before a route can deli
     expect(probe).toHaveBeenCalledTimes(1)
   } finally {
     gate.resolve()
+    await f.close()
+  }
+})
+
+test('explicit private reminders use a pinned selected bot without an event, automatic routing or a work period', async () => {
+  const bot = {
+    platform: 'feishu' as const,
+    channelId: 'chosen',
+    label: '选择的机器人',
+    online: true,
+  }
+  const dm = {
+    platform: bot.platform,
+    channelId: bot.channelId,
+    peerId: 'private-peer',
+    operatorId: 'confirmed-actor',
+    label: 'selected private chat',
+  }
+  const another = { ...dm, peerId: 'new-peer', operatorId: 'someone-else' }
+  const group = { ...dm, peerId: 'a-group' }
+  const direct = [dm]
+  const signal = new AbortController().signal
+  let beforeWrite: (() => void) | undefined
+  const writes: string[] = []
+  const sendDirect: NonNullable<
+    NonNullable<ConstructorParameters<typeof TriggerRoutingRuntime>[1]['personal']>['sendDirect']
+  > = async (target, text, id, _signal, authorized) => {
+    await Promise.resolve()
+    beforeWrite?.()
+    if (!authorized()) return { status: 'rejected', reason: '已撤销' }
+    expect(target).toMatchObject(dm)
+    writes.push(`${id} ${text}`)
+    return { status: 'accepted' }
+  }
+  const f = fixture({
+    personal: {
+      listPersonalBots: () => [bot],
+      listPersonalTargets: () => [...direct, group],
+      listPersonalDirectTargets: () => direct,
+      sendPersonal: async () => {
+        throw Error('event path must not run')
+      },
+      sendDirect,
+    },
+  })
+  try {
+    const config = f.configure({
+      enabled: false,
+      duringWork: 'defer',
+      personalBots: { feishu: bot.channelId },
+    })
+    const prepared = f.runtime.prepareDirectReminder('feishu')
+    const otherDraft = f.runtime.prepareDirectReminder('feishu')
+    expect(JSON.stringify(prepared)).not.toContain(dm.peerId)
+    expect(f.runtime.getBotBindings().targets.some((t) => t.platform === 'feishu')).toBe(false)
+    expect(
+      await f.runtime.sendDirectReminder(
+        'feishu',
+        prepared,
+        '处理 DeepSeek 的充值',
+        'manual-1',
+        signal,
+      ),
+    ).toEqual({ status: 'accepted' })
+    expect(writes).toEqual(['manual-1 处理 DeepSeek 的充值'])
+    expect(
+      (await f.runtime.sendDirectReminder('feishu', otherDraft, '第二条', 'other-manual', signal))
+        .status,
+    ).toBe('accepted')
+    expect(f.store.listInbox()).toEqual([])
+    expect(f.store.webNotifications.list().items).toEqual([])
+    expect(f.runtime.getConfig()).toEqual(config)
+    expect(f.store.routing.getPersonalBotBinding('feishu', bot.channelId)).toMatchObject({
+      automatic: true,
+      target: { peerId: dm.peerId },
+    })
+    const next = f.runtime.prepareDirectReminder('feishu')
+    beforeWrite = () => {
+      direct.push(another)
+    }
+    expect(
+      (await f.runtime.sendDirectReminder('feishu', next, '不要发送', 'manual-2', signal)).status,
+    ).toBe('rejected')
+    expect(() => f.runtime.prepareDirectReminder('feishu')).toThrow('多个私聊')
+    direct.pop()
+    beforeWrite = () => {
+      f.bind(group)
+      f.bind(dm)
+    }
+    expect(
+      (await f.runtime.sendDirectReminder('feishu', next, '不要发送', 'manual-3', signal)).status,
+    ).toBe('rejected')
+    f.bind(group)
+    expect(() => f.runtime.prepareDirectReminder('feishu')).toThrow('个人私聊')
+    expect(writes).toHaveLength(2)
+  } finally {
     await f.close()
   }
 })

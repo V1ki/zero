@@ -55,7 +55,13 @@ function fixture(
     store,
     {
       getConfig: () => store.routing.getSettings(),
-      listTargets: () => [],
+      listPersonalBots: () => [],
+      prepareDirectReminder: () => {
+        throw new Error('Unexpected personal reminder')
+      },
+      sendDirectReminder: async () => {
+        throw new Error('Unexpected personal delivery')
+      },
       saveConfig: () => {
         throw new Error('Unexpected preference mutation')
       },

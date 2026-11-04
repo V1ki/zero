@@ -41,12 +41,17 @@ export function saveSyncBuf(homeDir: string, accountId: string, syncBuf: string)
  * from_user_id and is echoed as to_user_id for replies.
  */
 export class ContextTokenStore {
-  private readonly cache = new Map<string, string>()
+  private readonly accounts = new Map<string, Map<string, string>>()
 
   constructor(private readonly homeDir: string) {}
 
-  private key(accountId: string, chatId: string): string {
-    return `${accountId}:${chatId}`
+  private account(accountId: string) {
+    let chats = this.accounts.get(accountId)
+    if (!chats) {
+      chats = new Map()
+      this.accounts.set(accountId, chats)
+    }
+    return chats
   }
 
   private tokensPath(accountId: string): string {
@@ -60,7 +65,7 @@ export class ContextTokenStore {
       const data = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>
       for (const [chatId, token] of Object.entries(data)) {
         if (typeof token === 'string' && token) {
-          this.cache.set(this.key(accountId, chatId), token)
+          this.account(accountId).set(chatId, token)
         }
       }
     } catch {
@@ -69,22 +74,16 @@ export class ContextTokenStore {
   }
 
   get(accountId: string, chatId: string): string | undefined {
-    return this.cache.get(this.key(accountId, chatId))
+    return this.accounts.get(accountId)?.get(chatId)
+  }
+
+  listPeers(accountId: string): string[] {
+    return Array.from(this.accounts.get(accountId)?.keys() ?? [])
   }
 
   set(accountId: string, chatId: string, token: string): void {
-    this.cache.set(this.key(accountId, chatId), token)
-    this.persist(accountId)
-  }
-
-  private persist(accountId: string): void {
-    const prefix = `${accountId}:`
-    const payload: Record<string, string> = {}
-    for (const [key, value] of this.cache.entries()) {
-      if (key.startsWith(prefix)) {
-        payload[key.slice(prefix.length)] = value
-      }
-    }
-    atomicWriteJson(this.tokensPath(accountId), payload)
+    const chats = this.account(accountId)
+    chats.set(chatId, token)
+    atomicWriteJson(this.tokensPath(accountId), Object.fromEntries(chats))
   }
 }

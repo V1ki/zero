@@ -6,31 +6,29 @@ import type {
   TriggerMandate,
 } from '@zero-os/shared'
 import { apiFetch, apiPost } from '../lib/api'
+import { type BoundOption, BoundTargetSelect } from './config-bound-target'
 import { mandateDestinations } from './mandate-policy-fields'
 
 const base = '/api/listeners/mandates'
 const platforms: MandatePlatform[] = ['weixin', 'feishu', 'dingtalk']
-const targetKey = (target: MandateTarget) =>
-  JSON.stringify([target.channelId, target.peerId, target.operatorId])
-interface TargetsResponse {
-  targets: Array<MandateTarget & { label: string }>
-  archiveChannels: Array<{ channelId: string; label: string }>
-}
-
 export function MandateTargets({
   value,
   onChange,
 }: { value: TriggerMandate; onChange: (patch: Partial<TriggerMandate>) => void }) {
   const choices = useQuery({
     queryKey: ['listeners', 'mandates', 'targets'],
-    queryFn: ({ signal }) => apiFetch<TargetsResponse>(`${base}/targets`, { signal }),
+    queryFn: ({ signal }) =>
+      apiFetch<{
+        targets: BoundOption[]
+        archiveChannels: Array<{ channelId: string; label: string }>
+      }>(`${base}/targets`, { signal }),
     retry: false,
   })
   const verify = useMutation({
     mutationFn: (archive: MandateArchive) =>
       apiPost<{ writable: boolean }>(`${base}/documents/verify`, archive),
   })
-  function updateTarget(platform: MandatePlatform, target?: MandateTarget) {
+  function updateTarget(platform: MandatePlatform, target: MandateTarget | null) {
     const rest = value.targets.filter((entry) => entry.platform !== platform)
     onChange({ targets: target ? [...rest, target] : rest })
   }
@@ -56,53 +54,17 @@ export function MandateTargets({
         </p>
       )}
       <div className="listener-fields">
-        {platforms.map((platform) => {
-          const current = value.targets.find((target) => target.platform === platform)
-          const bindings =
-            choices.data?.targets.filter((target) => target.platform === platform) ?? []
-          const options = [
-            ...new Map(bindings.map((target) => [targetKey(target), target])).values(),
-          ]
-          return (
-            <div key={platform} className="listener-stack">
-              <label className="listener-field">
-                {mandateDestinations[platform]}接收会话
-                <select
-                  value={current ? targetKey(current) : ''}
-                  onChange={(e) => {
-                    const entry = options.find((target) => targetKey(target) === e.target.value)
-                    updateTarget(
-                      platform,
-                      entry && {
-                        platform,
-                        channelId: entry.channelId,
-                        peerId: entry.peerId,
-                        ...(entry.operatorId ? { operatorId: entry.operatorId } : {}),
-                      },
-                    )
-                  }}
-                >
-                  <option value="">未授权</option>
-                  {current &&
-                    !options.some((target) => targetKey(target) === targetKey(current)) && (
-                      <option value={targetKey(current)}>
-                        已保存 · {current.channelId} / {current.peerId}
-                        {current.operatorId && ` · ${current.operatorId}`}
-                      </option>
-                    )}
-                  {options.map((entry) => (
-                    <option key={targetKey(entry)} value={targetKey(entry)}>
-                      {entry.label} · {entry.peerId}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {current && platform !== 'weixin' && (
-                <small>授权操作人 · {current.operatorId ?? '仅投递'}</small>
-              )}
-            </div>
-          )
-        })}
+        {platforms.map((platform) => (
+          <BoundTargetSelect
+            key={platform}
+            platform={platform}
+            label={`${mandateDestinations[platform]}接收会话`}
+            emptyLabel="未授权"
+            selected={value.targets.find((target) => target.platform === platform)}
+            targets={choices.data?.targets}
+            onChange={(target) => updateTarget(platform, target)}
+          />
+        ))}
       </div>
       <label className="listener-row">
         <input

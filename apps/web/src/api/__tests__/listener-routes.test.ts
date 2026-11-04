@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { TriggerSettingsConflictError } from '@zero-os/shared'
 import type {
+  MandateTarget,
   TriggerGithubPermissionSelection,
   TriggerRoutingSettings,
   TriggerSettings,
@@ -54,8 +55,10 @@ function fixture(mandates?: MandateService) {
   }
   let routeRevision = 0
   let heartbeatCount = 0
+  let bindings: { revision: number; targets: MandateTarget[] } = { revision: 0, targets: [] }
   let targetsAvailable = true
   const target = { channelId: 'account-1', peerId: 'peer-1' }
+  const group = { channelId: 'agent', peerId: 'project', operatorId: 'maintainer' }
   const processCalls: number[] = []
   const workspaceCalls: unknown[][] = []
   const noticeListeners = new Set<() => void>()
@@ -154,6 +157,50 @@ function fixture(mandates?: MandateService) {
           },
           listTargets: () =>
             targetsAvailable ? [{ ...target, label: 'Test', sessionSecret: 'private' }] : [],
+          getBotBindings: () => bindings,
+          saveBotBinding: (platform, channelId, target, revision) => {
+            if (revision !== bindings.revision) throw new TriggerSettingsConflictError()
+            const targets = bindings.targets.filter(
+              (t) => t.platform !== platform || t.channelId !== channelId,
+            )
+            if (target) targets.push(target)
+            bindings = { revision: revision + 1, targets }
+            return bindings
+          },
+          listPersonalBots: () => [
+            {
+              platform: 'weixin',
+              channelId: target.channelId,
+              label: 'iLink',
+              online: true,
+              ready: true,
+              deliveryState: 'ready',
+            },
+            {
+              platform: 'dingtalk',
+              channelId: 'agent',
+              label: '运维',
+              online: true,
+              ready: false,
+              deliveryState: 'awaiting_private',
+            },
+            {
+              platform: 'feishu',
+              channelId: 'bot-only',
+              label: '研究',
+              online: false,
+              ready: false,
+              deliveryState: 'offline',
+            },
+          ],
+          listPersonalTargets: () =>
+            targetsAvailable
+              ? [
+                  { platform: 'weixin', ...target, operatorId: target.peerId, label: 'Test' },
+                  { platform: 'dingtalk', ...group, label: '运维', sessionSecret: 'private' },
+                  { platform: 'feishu', ...group, label: '研究' },
+                ]
+              : [],
           listRoutes: () => [],
           listWeb: () => [],
           latestWebDeliveryId: () => 7,
@@ -180,8 +227,8 @@ function fixture(mandates?: MandateService) {
       body: JSON.stringify(payload),
     })
   const routingWrite = (path: string, payload: unknown) =>
-    req(`routing/${path}`, {
-      method: path === 'config' ? 'PUT' : 'POST',
+    req(path === 'bot-bindings' ? 'channels/bot-bindings' : `routing/${path}`, {
+      method: ['config', 'preferences', 'bot-bindings'].includes(path) ? 'PUT' : 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     })
@@ -482,7 +529,7 @@ describe('listener control plane', () => {
       { presence: 'unknown' },
       { retentionDays: 0 },
       { retentionDays: '30' },
-      { duringWork: 'dingtalk' },
+      { duringWork: 'email' },
       { awayFallback: 'web' },
       { workStart: '9:00' },
       { workEnd: '24:00' },
@@ -520,10 +567,103 @@ describe('listener control plane', () => {
     expect((await save({ weixinTarget: null }, 2)).status).toBe(200)
   })
 
+  test('Router can choose an attached robot without a delivery address and never returns a legacy peer', async () => {
+    const { req, routingWrite, routingSettings, target } = fixture()
+    expect(
+      (
+        await routingWrite('config', {
+          revision: 0,
+          settings: { ...routingSettings, weixinTarget: target },
+        })
+      ).status,
+    ).toBe(200)
+    const original = await (await req('routing/preferences')).json()
+    expect(original.settings.weixinTarget).toBeNull()
+    expect(original.settings.personalBots.weixin).toBe(target.channelId)
+    const save = (patch: Record<string, unknown>, revision = 1) =>
+      routingWrite('preferences', {
+        revision,
+        settings: { ...original.settings, ...patch },
+      })
+    for (const patch of [
+      { dingtalkTarget: { platform: 'dingtalk', ...target } },
+      { weixinTarget: target },
+      { personalBots: { feishu: 'agent' } },
+      { personalBots: { email: 'anything' } },
+      { personalBots: { dingtalk: { peerId: 'unwanted' } } },
+    ])
+      expect((await save(patch)).status).toBe(400)
+    const directory = await (await req('routing/bots')).json()
+    expect(directory.bots.map((bot: { label: string }) => bot.label)).toEqual([
+      'iLink',
+      '运维',
+      '研究',
+    ])
+    expect(JSON.stringify(directory)).not.toContain('peerId')
+    expect(directory.bots.map((bot: { deliveryState: string }) => bot.deliveryState)).toEqual([
+      'ready',
+      'awaiting_private',
+      'offline',
+    ])
+    const personalBots = { weixin: target.channelId, feishu: 'bot-only', dingtalk: 'agent' }
+    const saved = await save({ personalBots, duringWork: 'dingtalk', awayFallback: 'feishu' })
+    expect(saved.status).toBe(200)
+    expect((await saved.json()).settings.personalBots).toEqual(personalBots)
+    expect((await save({ personalBots })).status).toBe(409)
+    expect((await (await req('channels/bot-bindings')).json()).targets).toEqual([])
+    expect((await (await req('routing/config')).json()).settings.weixinTarget).toEqual(target)
+  })
+
+  test('channel address configuration verifies the exact account, chat and operator and cannot change router preferences', async () => {
+    const { req, routingWrite, unbindTarget } = fixture()
+    const { targets } = await (await req('channels/personal-targets')).json()
+    expect(targets[1]).not.toHaveProperty('sessionSecret')
+    const target = {
+      platform: 'dingtalk',
+      channelId: 'agent',
+      peerId: 'project',
+      operatorId: 'maintainer',
+    }
+    const save = (to: unknown, revision = 0) =>
+      routingWrite('bot-bindings', {
+        revision,
+        platform: 'dingtalk',
+        channelId: 'agent',
+        target: to,
+      })
+    for (const invalid of [
+      { ...target, platform: 'feishu' },
+      { ...target, channelId: 'another' },
+      { ...target, peerId: 'stranger' },
+      { ...target, operatorId: 'different' },
+      { ...target, token: 'bad' },
+    ])
+      expect((await save(invalid)).status).toBe(400)
+    expect((await save(target)).status).toBe(200)
+    expect(await (await req('channels/bot-bindings')).json()).toEqual({
+      revision: 1,
+      targets: [target],
+    })
+    expect((await save(null)).status).toBe(409)
+    unbindTarget()
+    expect((await save(null, 1)).status).toBe(200)
+    expect((await (await req('routing/preferences')).json()).revision).toBe(0)
+  })
+
   test('routing endpoints share the local guard and only process an explicitly requested row', async () => {
     const { req, routingWrite, routingSettings, target, processCalls, getHeartbeats } = fixture()
-    for (const path of ['targets', 'records', 'web', 'web/latest', 'config']) {
-      const denied = await req(`routing/${path}`, {
+    for (const path of [
+      'routing/targets',
+      'routing/preferences',
+      'routing/bots',
+      'channels/bot-bindings',
+      'channels/personal-targets',
+      'routing/records',
+      'routing/web',
+      'routing/web/latest',
+      'routing/config',
+    ]) {
+      const denied = await req(path, {
         headers: { Origin: 'https://another.example' },
       })
       expect(denied.status).toBe(403)

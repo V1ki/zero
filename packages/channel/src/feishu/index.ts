@@ -16,6 +16,7 @@ import {
   detectFeishuCardJson,
   splitByLinePreserveLimit,
 } from './card'
+import { FeishuDirectPeers } from './direct-peers'
 import { type FeishuImageReference, FeishuImageResolver } from './image-resolver'
 import { readFeishuImageReferenceBuffer } from './image-source'
 import { type FeishuIncomingEventPayload, FeishuIncomingMessageBuilder } from './incoming-message'
@@ -35,6 +36,7 @@ export interface FeishuChannelConfig {
   verificationToken?: string
   /** Directory for saving downloaded file attachments. */
   downloadsDir?: string
+  directPeerStorePath?: string
 }
 
 export type { FeishuStreamingSession }
@@ -387,6 +389,7 @@ export class FeishuChannel implements Channel {
   readonly name: string
   readonly type = 'feishu'
   readonly router: FeishuRouterDelivery
+  readonly directPeers: FeishuDirectPeers
 
   private client: lark.Client | null = null
   private eventDispatcher: lark.EventDispatcher | null = null
@@ -407,6 +410,7 @@ export class FeishuChannel implements Channel {
     private readonly factories: FeishuChannelFactories = defaultFeishuChannelFactories,
   ) {
     this.router = new FeishuRouterDelivery(() => this.client, config.appId)
+    this.directPeers = new FeishuDirectPeers(config.directPeerStorePath)
     this.config = config
     this.name = config.name ?? 'feishu'
     this.connectionState = new FeishuConnectionState(this.name)
@@ -417,6 +421,7 @@ export class FeishuChannel implements Channel {
     this.incomingReceiver = new FeishuIncomingEventReceiver({
       channelName: this.name,
       incomingBuilder,
+      directPeers: this.directPeers,
     })
     this.mediaDelivery = new FeishuMediaDelivery({
       getClient: () => this.client,
@@ -463,6 +468,7 @@ export class FeishuChannel implements Channel {
     const wsClient = this.detachClients()
     this.connectionState.reset()
     this.incomingReceiver.reset()
+    this.directPeers.close()
     wsClient?.close()
   }
 
@@ -784,6 +790,7 @@ interface FeishuIncomingEventReceiverOptions {
   incomingBuilder: Pick<FeishuIncomingMessageBuilder, 'build' | 'buildRecalled'>
   processedMessages?: RecentMessageTracker
   recalledMessages?: RecentMessageTracker
+  directPeers?: FeishuDirectPeers
 }
 
 export class FeishuIncomingEventReceiver {
@@ -837,6 +844,20 @@ export class FeishuIncomingEventReceiver {
       if (!this.processedMessages.shouldProcess(messageId ? `receive:${messageId}` : undefined)) {
         console.log('[FeishuChannel] Skipping duplicate message:', messageId)
         return
+      }
+
+      if (messageId && msg.chat_id && this.options.directPeers) {
+        const actor = event?.sender?.sender_id?.open_id
+        try {
+          if (msg.chat_type === 'p2p' && event?.sender?.sender_type === 'user' && actor)
+            this.options.directPeers.recordVerifiedDirect(msg.chat_id, actor)
+          else if (msg.chat_type === 'group') this.options.directPeers.forgetGroup(msg.chat_id)
+        } catch (error) {
+          console.error(
+            '[FeishuChannel] Could not update private contact evidence:',
+            describeError(error),
+          )
+        }
       }
 
       console.log(

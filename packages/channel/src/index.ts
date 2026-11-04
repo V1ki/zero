@@ -8,6 +8,7 @@ export type {
 export { WebChannel, WebMessageHandler } from './web'
 export type { WebSocketMessage, WebSocketResponse } from './web'
 export { FeishuChannel } from './feishu/index'
+export { feishuDirectPeerStorePath } from './feishu/direct-peers'
 export type { FeishuChannelConfig, FeishuChannelFactories } from './feishu/index'
 export type { FeishuStreamingSession } from './feishu/index'
 export { FeishuImageResolver } from './feishu/image-resolver'

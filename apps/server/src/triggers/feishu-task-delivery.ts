@@ -50,6 +50,18 @@ export function createFeishuTaskDelivery(host: FeishuHost) {
     return [...host.channels.keys()].filter((id) => connectedChannel(id))
   }
 
+  function listDirectTargets(): MandateTargetOption[] {
+    return listArchiveChannels().flatMap((channelId) =>
+      (connectedChannel(channelId)?.directPeers.list() ?? []).map(({ chatId, actorId }) => ({
+        platform: 'feishu' as const,
+        channelId,
+        peerId: chatId,
+        operatorId: actorId,
+        label: `飞书 · ${channelId} · 会话 ${chatId.slice(-8)} · 操作人 ${actorId.slice(-8)}`,
+      })),
+    )
+  }
+
   async function probeArchive(target: MandateArchive) {
     const channel = connectedChannel(target.channelId)
     if (!channel) return { ok: false, reason: '所选飞书通道未连接。' }
@@ -96,5 +108,5 @@ export function createFeishuTaskDelivery(host: FeishuHost) {
     )
   }
 
-  return { listTargets, listArchiveChannels, probeArchive, send, archive }
+  return { listTargets, listDirectTargets, listArchiveChannels, probeArchive, send, archive }
 }
