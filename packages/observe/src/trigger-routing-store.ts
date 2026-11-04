@@ -41,7 +41,7 @@ const routeFields = `inbox_id AS inboxId, origin, status, session_id AS sessionI
   error, updated_at AS updatedAt`
 const workQuery = `SELECT ${routeFields}, i.id, i.source, i.event_id AS eventId, i.scope,
   i.title, i.summary, i.occurred_at AS occurredAt, i.received_at AS receivedAt, i.url
-  FROM trigger_routes JOIN trigger_inbox i ON i.id = trigger_routes.inbox_id`
+  FROM trigger_routes JOIN trigger_visible_inbox i ON i.id = trigger_routes.inbox_id`
 
 // Check eligibility again in the write that claims work, since another connection can pause a source.
 const enabled =
@@ -104,12 +104,6 @@ export class TriggerRoutingStore {
       CREATE INDEX IF NOT EXISTS trigger_routes_due ON trigger_routes(status, due_at);
       CREATE UNIQUE INDEX IF NOT EXISTS trigger_routes_web ON trigger_routes(web_id)
         WHERE web_id IS NOT NULL;
-      CREATE TRIGGER IF NOT EXISTS trigger_inbox_enqueue_route AFTER INSERT ON trigger_inbox
-      WHEN ${enabled}
-      BEGIN
-        INSERT INTO trigger_routes(inbox_id, origin, updated_at)
-        VALUES(NEW.id, 'subscription', NEW.received_at);
-      END;
       CREATE TRIGGER IF NOT EXISTS trigger_route_cancel_on_unsubscribe AFTER DELETE ON trigger_streams
         BEGIN ${cancelSubscription} END;
       CREATE TRIGGER IF NOT EXISTS trigger_route_cancel_on_new_filter AFTER UPDATE OF started_at ON trigger_streams
@@ -141,7 +135,11 @@ export class TriggerRoutingStore {
       .transaction(() => {
         const current = this.getSettings()
         if (current.revision !== expectedRevision) throw new TriggerSettingsConflictError()
-        const json = JSON.stringify(settings)
+        const json = JSON.stringify(
+          settings.retentionDays === undefined && current.settings.retentionDays !== undefined
+            ? { ...settings, retentionDays: current.settings.retentionDays }
+            : settings,
+        )
         if (JSON.stringify(current.settings) === json) return current.revision
         const revision = expectedRevision + 1
         this.db.run('UPDATE trigger_route_settings SET revision = ?, json = ? WHERE id = 1', [
@@ -158,10 +156,20 @@ export class TriggerRoutingStore {
   enqueue(inboxId: number): boolean {
     return this.db
       .transaction(() => {
+        // An event covered by an explicit mandate must retain that mandate's audience even on replay.
+        if (
+          this.db
+            .query(`SELECT 1 FROM trigger_inbox i WHERE i.id=? AND (
+            EXISTS(SELECT 1 FROM mandate_matches m WHERE m.inbox_id=i.id) OR
+            EXISTS(SELECT 1 FROM mandates d WHERE d.stream=i.stream AND json_extract(d.definition,'$.enabled')=1)
+          )`)
+            .get(inboxId)
+        )
+          return false
         const now = nowIso()
         const added = this.db.run(
           `INSERT INTO trigger_routes(inbox_id, origin, updated_at)
-           SELECT id, 'manual', ? FROM trigger_inbox WHERE id = ? ON CONFLICT(inbox_id) DO NOTHING`,
+           SELECT id, 'manual', ? FROM trigger_visible_inbox WHERE id = ? ON CONFLICT(inbox_id) DO NOTHING`,
           [now, inboxId],
         )
         if (added.changes === 1) return true
@@ -180,7 +188,9 @@ export class TriggerRoutingStore {
 
   get(inboxId: number): TriggerRouteRecord | null {
     const row = this.db
-      .query<RouteRow, [number]>(`SELECT ${routeFields} FROM trigger_routes WHERE inbox_id = ?`)
+      .query<RouteRow, [number]>(
+        `SELECT ${routeFields} FROM trigger_routes WHERE inbox_id = ? AND inbox_id NOT IN (SELECT id FROM trigger_retired_inbox)`,
+      )
       .get(inboxId)
     return row ? decodeRoute(row) : null
   }
@@ -316,7 +326,7 @@ export class TriggerRoutingStore {
               inboxId,
               now,
             ],
-          ).changes === 1
+          ).changes > 0
         )
       })
       .immediate()

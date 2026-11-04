@@ -21,6 +21,7 @@ import { buildConfiguredWeixinDefinition, registerWeixinRuntimeChannel } from '.
 export { createFeishuStreamingStarter } from './runtime-common'
 
 interface RegisterExternalRuntimeChannelsOptions {
+  getTaskBridge?: ExternalChannelRegistrarOptions['getTaskBridge']
   zeroDir: string
   config: SystemConfig
   vault: Vault
@@ -51,6 +52,7 @@ export async function registerExternalRuntimeChannels({
   agentInstruction,
   sessionStallTimeoutMs,
   isShuttingDown,
+  getTaskBridge,
   registerFeishuStreamingSessionSet,
 }: RegisterExternalRuntimeChannelsOptions): Promise<void> {
   const externalChannelDefinitions = buildExternalChannelDefinitions(config.channels, vault)
@@ -65,6 +67,7 @@ export async function registerExternalRuntimeChannels({
     agentInstruction,
     sessionStallTimeoutMs,
     isShuttingDown,
+    getTaskBridge,
     registerFeishuStreamingSessionSet,
   }
 

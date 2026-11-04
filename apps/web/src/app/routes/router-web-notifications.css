@@ -1,0 +1,49 @@
+.wn-history {
+  padding: clamp(16px, 3vw, 30px);
+  border: 1px solid var(--rw-line);
+  border-radius: 14px;
+  background: var(--color-main-bg);
+}
+.wn-history > header,
+.wn-entry-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+}
+.wn-history > header {
+  margin-bottom: 18px;
+}
+.wn-history h2 {
+  font-size: 20px;
+  font-weight: 620;
+}
+.wn-history > header p,
+.wn-entry-meta {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+.wn-history ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.wn-history li {
+  padding: 14px 0;
+  border-top: 1px solid var(--rw-line);
+  overflow-wrap: anywhere;
+}
+.wn-history li h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 4px 0;
+}
+.wn-history li a {
+  color: var(--color-accent);
+  text-underline-offset: 3px;
+}
+.wn-history li p {
+  font-size: 14px;
+  white-space: pre-wrap;
+}

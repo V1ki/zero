@@ -6,7 +6,14 @@ import type { FileAttachment, ImageAttachment } from '../base'
 import type { MessageHandler, IncomingMessage as ZeroIncomingMessage } from '../base'
 import { RecentMessageTracker } from '../message-tracker'
 import type { ApiOptions } from './api-transport'
-import { ITEM_FILE, ITEM_IMAGE, ITEM_VIDEO, ITEM_VOICE, MESSAGE_DEDUP_TTL_MS } from './constants'
+import {
+  ITEM_FILE,
+  ITEM_IMAGE,
+  ITEM_TEXT,
+  ITEM_VIDEO,
+  ITEM_VOICE,
+  MESSAGE_DEDUP_TTL_MS,
+} from './constants'
 import { aesDecrypt, parseAesKey } from './crypto'
 import { extractText, guessChatType, safeId } from './inbound'
 import { buildCdnDownloadUrl, downloadBytes } from './media-api'
@@ -118,6 +125,7 @@ export class WeixinInboundDispatcher {
       channelType: 'weixin',
       senderId,
       content: text,
+      commandText: items.find((item) => item.type === ITEM_TEXT)?.text_item?.text ?? '',
       timestamp:
         typeof message.create_time_ms === 'number'
           ? new Date(message.create_time_ms).toISOString()

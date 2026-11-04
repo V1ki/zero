@@ -2,6 +2,7 @@ import type { TriggerEvent, TriggerWxarcSession } from '@zero-os/shared'
 
 const WXARC_ORIGIN = 'http://127.0.0.1:8765'
 const PAGE_SIZE = 200
+const LONG_POLL_SECONDS = 60
 const EXCERPT_LENGTH = 240
 type WxarcFetch = (url: string, init: RequestInit) => Promise<Response>
 
@@ -13,9 +14,14 @@ function isWatermark(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
 
-async function readJson(path: string, signal: AbortSignal, fetcher: WxarcFetch): Promise<unknown> {
+async function readJson(
+  path: string,
+  signal: AbortSignal,
+  fetcher: WxarcFetch,
+  waitSeconds = 0,
+): Promise<unknown> {
   const response = await fetcher(WXARC_ORIGIN + path, {
-    signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+    signal: AbortSignal.any([signal, AbortSignal.timeout((waitSeconds + 15) * 1000)]),
     redirect: 'error',
     headers: { Accept: 'application/json' },
   })
@@ -80,7 +86,12 @@ export async function pollWxarc(
   const allowed = new Map(sessions.filter((s) => s.enabled).map((s) => [s.id, s]))
   if (!allowed.size) return { cursor: previousCursor, events: [] }
 
-  const rows = await readJson(`/text/events?since_id=${start}&wait=0`, signal, fetcher)
+  const rows = await readJson(
+    `/text/events?since_id=${start}&wait=${LONG_POLL_SECONDS}`,
+    signal,
+    fetcher,
+    LONG_POLL_SECONDS,
+  )
   if (!Array.isArray(rows) || rows.length > PAGE_SIZE) throw new Error('WXARC 文字事件批次无效')
   if (!rows.length) {
     const tail = await readTail(signal, fetcher, start)

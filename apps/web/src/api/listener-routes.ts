@@ -1,5 +1,6 @@
 import { isIP } from 'node:net'
-import { TriggerSettingsConflictError } from '@zero-os/shared'
+import { isTriggerCalendarDate, isTriggerRetentionDays } from '@zero-os/shared'
+import { TriggerSettingsConflictError, triggerWebhookSecretPatterns } from '@zero-os/shared'
 import type {
   TriggerGithubRepository,
   TriggerRoutingSettingsSnapshot,
@@ -10,8 +11,25 @@ import { type Context, Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { HTTPException } from 'hono/http-exception'
 import type { ZeroOS } from '../../../server/src/main'
+import {
+  RouterWorkspaceError,
+  type RouterWorkspaceService,
+} from '../../../server/src/triggers/router-workspace'
 
-type ListenerEnv = { Bindings: { remoteAddress?: string } }
+import { MandateInputError } from '../../../server/src/triggers/mandate-input'
+import type { MandateService } from '../../../server/src/triggers/mandate-service'
+import {
+  type ListenerEnv,
+  badInput,
+  checked,
+  choice,
+  fieldText,
+  fields,
+  pageNumber,
+  requestJson,
+  version,
+} from './listener-input'
+import { createMandateRoutes } from './mandate-routes'
 type ListenerService = Pick<
   ZeroOS['listeners'],
   | 'getSettings'
@@ -19,9 +37,14 @@ type ListenerService = Pick<
   | 'getStatus'
   | 'listInbox'
   | 'listGithubRepositories'
+  | 'checkGithubPermissions'
   | 'listWxarcSessions'
   | 'scan'
 > & {
+  webNotifications: Pick<ZeroOS['listeners']['webNotifications'], 'list' | 'latestId' | 'subscribe'>
+  mandates?: MandateService
+  workspace: Pick<RouterWorkspaceService, 'get' | 'message' | 'action' | 'listEvents'> &
+    Partial<Pick<RouterWorkspaceService, 'commission'>>
   routing: Pick<
     ZeroOS['listeners']['routing'],
     | 'getConfig'
@@ -59,48 +82,6 @@ function isLocalRequest(c: Context<ListenerEnv>) {
   return (!origin || origin === url.origin) && (!site || site === 'same-origin' || site === 'none')
 }
 
-function badInput(message: string): never {
-  throw new HTTPException(400, { message })
-}
-
-function fields(value: unknown, keys: string[]): Record<string, unknown> {
-  if (
-    !value ||
-    typeof value !== 'object' ||
-    Array.isArray(value) ||
-    Object.keys(value).some((key) => !keys.includes(key))
-  ) {
-    badInput('配置包含未知字段或对象格式无效。')
-  }
-  return value as Record<string, unknown>
-}
-
-function fieldText(value: unknown, label: string, maxLength: number, required = false): string {
-  if (
-    typeof value !== 'string' ||
-    value.length > maxLength ||
-    /\p{Cc}/u.test(value) ||
-    (required && !value.trim())
-  )
-    badInput(`${label}无效。`)
-  return value.trim()
-}
-
-function checked(value: unknown): boolean {
-  if (typeof value !== 'boolean') badInput('开关值无效。')
-  return value
-}
-
-function version(value: unknown) {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)
-    badInput('配置版本无效。')
-  return value
-}
-
-function choice<T extends string>(value: unknown, choices: readonly T[], label: string): T {
-  return choices.find((option) => value === option) ?? badInput(`${label}无效。`)
-}
-
 function credentialRef(value: unknown): string {
   const ref = fieldText(value, '凭证引用', 80)
   if (ref && !credentialPattern.test(ref)) badInput('请选择专用于 GitHub 监听的凭证引用。')
@@ -114,13 +95,40 @@ function repositoryName(value: unknown): string {
   return name
 }
 
+function webhookRef(value: unknown, provider: keyof typeof triggerWebhookSecretPatterns) {
+  if (value === undefined) return undefined
+  const ref = fieldText(value, '推送密钥引用', 80)
+  if (ref && !triggerWebhookSecretPatterns[provider].test(ref)) {
+    badInput(`请选择专用于 ${provider === 'ci' ? 'CI' : 'GitHub'} 推送的密钥引用。`)
+  }
+  return ref || undefined
+}
+
 function parseRepository(raw: unknown): TriggerGithubRepository {
-  const repo = fields(raw, ['name', 'enabled', 'workflowFailures', 'branch', 'workflow', 'mention'])
+  const repo = fields(raw, [
+    'name',
+    'enabled',
+    'workflowFailures',
+    'branch',
+    'workflow',
+    'mention',
+    'deliveryMode',
+    'webhookSecretRef',
+    'ciWebhookSecretRef',
+  ])
   const enteredMention = fieldText(repo.mention, '提及账号', 64)
   const mention = enteredMention.replace(/^@/, '')
   if (enteredMention && !mentionPattern.test(mention)) badInput('GitHub 提及账号无效。')
   const workflowFailures = checked(repo.workflowFailures)
   if (!workflowFailures && !mention) badInput('每个仓库至少需要一种监听条件。')
+  const mode =
+    repo.deliveryMode === undefined
+      ? undefined
+      : choice(repo.deliveryMode, ['poll', 'webhook'], 'GitHub 接收方式')
+  const webhookSecretRef = webhookRef(repo.webhookSecretRef, 'github')
+  const ciWebhookSecretRef = webhookRef(repo.ciWebhookSecretRef, 'ci')
+  if (mode === 'webhook' && !webhookSecretRef) badInput('GitHub 推送需要配置签名密钥名称。')
+  if (ciWebhookSecretRef && !workflowFailures) badInput('接收 CI 推送需要启用工作流失败监听。')
   return {
     name: repositoryName(repo.name),
     enabled: checked(repo.enabled),
@@ -128,6 +136,9 @@ function parseRepository(raw: unknown): TriggerGithubRepository {
     branch: fieldText(repo.branch, '分支', 255),
     workflow: fieldText(repo.workflow, '工作流', 255),
     mention,
+    ...(mode && { deliveryMode: mode }),
+    ...(mode === 'webhook' && { webhookSecretRef }),
+    ...(ciWebhookSecretRef && { ciWebhookSecretRef }),
   }
 }
 
@@ -141,8 +152,15 @@ function parseSession(raw: unknown): TriggerWxarcSession {
   }
 }
 
-function parseSettings(raw: unknown): TriggerSettingsSnapshot & { githubLookbackHours?: 1 | 24 } {
-  const data = fields(raw, ['revision', 'settings', 'githubLookbackHours'])
+function parseSettings(
+  raw: unknown,
+): TriggerSettingsSnapshot & { githubLookbackHours?: 1 | 24; expectedMandateRevision?: number } {
+  const data = fields(raw, [
+    'revision',
+    'settings',
+    'githubLookbackHours',
+    'expectedMandateRevision',
+  ])
   const revision = version(data.revision)
   if (
     data.githubLookbackHours !== undefined &&
@@ -170,10 +188,39 @@ function parseSettings(raw: unknown): TriggerSettingsSnapshot & { githubLookback
   return {
     revision,
     githubLookbackHours: data.githubLookbackHours,
+    expectedMandateRevision:
+      data.expectedMandateRevision === undefined
+        ? undefined
+        : version(data.expectedMandateRevision),
     settings: {
       github: { credentialRef: credentialRef(github.credentialRef), repositories },
       wxarc: { sessions },
     },
+  }
+}
+
+function parseCalendarDates(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    badInput('工作日历例外格式无效。')
+  const entries = Object.entries(value)
+  if (entries.length > 366) badInput('最多可配置 366 个日期例外。')
+  const dates: Record<string, 'work' | 'off'> = {}
+  for (const [date, kind] of entries) {
+    if (!isTriggerCalendarDate(date)) badInput('请输入有效的日历日期。')
+    dates[date] = choice(kind, ['work', 'off'], '日历例外类型')
+  }
+  return dates
+}
+
+function parseNativePresence(value: unknown) {
+  const values = fields(value, ['enabled', 'idleMinutes', 'bluetooth'])
+  const minutes = values.idleMinutes
+  if (typeof minutes !== 'number' || !Number.isInteger(minutes) || minutes < 1 || minutes > 120)
+    badInput('Mac 空闲时长须为 1 到 120 分钟。')
+  return {
+    enabled: checked(values.enabled),
+    idleMinutes: minutes,
+    bluetooth: checked(values.bluetooth),
   }
 }
 
@@ -183,6 +230,9 @@ function parseRouting(raw: unknown): TriggerRoutingSettingsSnapshot {
     'enabled',
     'timeZone',
     'workdays',
+    'dateOverrides',
+    'nativePresence',
+    'retentionDays',
     'workStart',
     'workEnd',
     'presence',
@@ -192,6 +242,13 @@ function parseRouting(raw: unknown): TriggerRoutingSettingsSnapshot {
     'offDay',
     'weixinTarget',
   ])
+  const retentionDays = settings.retentionDays
+  if (
+    retentionDays !== undefined &&
+    retentionDays !== null &&
+    !isTriggerRetentionDays(retentionDays)
+  )
+    badInput('正文保留期限可选 7、30、90 或 365 天。')
   const timeZone = fieldText(settings.timeZone, '时区', 100, true)
   if (!/^[A-Za-z][A-Za-z0-9_+\-/]*$/.test(timeZone)) badInput('时区无效。')
   try {
@@ -220,10 +277,17 @@ function parseRouting(raw: unknown): TriggerRoutingSettingsSnapshot {
     revision: version(data.revision),
     settings: {
       enabled: checked(settings.enabled),
+      ...(retentionDays !== undefined && { retentionDays }),
       timeZone,
       workdays,
       workStart,
       workEnd,
+      ...(settings.dateOverrides !== undefined && {
+        dateOverrides: parseCalendarDates(settings.dateOverrides),
+      }),
+      ...(settings.nativePresence !== undefined && {
+        nativePresence: parseNativePresence(settings.nativePresence),
+      }),
       presence: choice(settings.presence, ['auto', 'present', 'away'], '在场模式'),
       awayFallback: choice(settings.awayFallback, ['weixin', 'defer'], '离席处理方式'),
       duringWork: choice(settings.duringWork, destinations, '工作时段目的地'),
@@ -237,30 +301,34 @@ function parseRouting(raw: unknown): TriggerRoutingSettingsSnapshot {
   }
 }
 
-async function requestJson(c: Context<ListenerEnv>): Promise<unknown> {
-  if (c.req.header('Content-Type')?.split(';')[0]?.trim().toLowerCase() !== 'application/json') {
-    throw new HTTPException(415, { message: '此操作需要 application/json。' })
-  }
-  try {
-    return await c.req.json()
-  } catch (err) {
-    if (err instanceof SyntaxError) badInput('JSON 格式无效。')
-    throw err
-  }
+function workspaceScope(raw: string) {
+  if (raw === 'general') return raw
+  if (/^task-[1-9]\d*$/.test(raw) && Number.isSafeInteger(Number(raw.slice(5))))
+    return raw as `task-${number}`
+  const id = Number(raw)
+  if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(id))
+    badInput('请选择有效的 Router 对话或收件箱事件。')
+  return id
 }
 
-function pageNumber(raw: string | undefined, max: number): number | undefined {
-  if (raw === undefined) return undefined
-  const value = Number(raw)
-  if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(value) || value > max)
-    badInput('分页参数无效。')
-  return value
+function workspaceRequest(value: Record<string, unknown>) {
+  if (
+    typeof value.requestId !== 'string' ||
+    !/^[\da-f]{8}-[\da-f]{4}-[1-8][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i.test(value.requestId)
+  )
+    badInput('请求标识无效。')
+  return {
+    requestId: value.requestId.toLowerCase(),
+    retry: value.retry === undefined ? false : checked(value.retry),
+  }
 }
 
 export function createListenerRoutes(service: ListenerService) {
   const app = new Hono<ListenerEnv>()
   app.onError((err, c) => {
     if (err instanceof HTTPException) return c.json({ error: err.message }, err.status)
+    if (err instanceof MandateInputError) return c.json({ error: err.message }, err.status)
+    if (err instanceof RouterWorkspaceError) return c.json({ error: err.message }, err.status)
     if (err instanceof TriggerSettingsConflictError)
       return c.json({ error: '配置已被更新，请重新加载。' }, 409)
     // Discovery may fail with raw provider errors or chat metadata. Only expose a safe diagnostic.
@@ -269,6 +337,9 @@ export function createListenerRoutes(service: ListenerService) {
         { error: '无法读取 GitHub 仓库，请检查仓库名称、网络及监听凭证的读取权限。' },
         502,
       )
+    }
+    if (c.req.path.endsWith('/github/permissions')) {
+      return c.json({ error: '无法检查读取权限，请核对已保存的 GitHub 监听凭证及网络连接。' }, 502)
     }
     if (c.req.path.endsWith('/wxarc/sessions')) {
       return c.json({ error: '无法读取微信会话，请确认本机 WXARC 监听服务已启动。' }, 502)
@@ -288,12 +359,62 @@ export function createListenerRoutes(service: ListenerService) {
       '*',
       bodyLimit({ maxSize: 512 * 1024, onError: (c) => c.json({ error: '配置过大。' }, 413) }),
     )
+    .route('/mandates', createMandateRoutes(service.mandates))
     .get('/config', (c) => c.json(service.getSettings()))
     .put('/config', async (c) => {
-      const { settings, revision, githubLookbackHours } = parseSettings(await requestJson(c))
-      return c.json(await service.saveSettings(settings, revision, githubLookbackHours))
+      const { settings, revision, githubLookbackHours, expectedMandateRevision } = parseSettings(
+        await requestJson(c),
+      )
+      return c.json(
+        await service.saveSettings(
+          settings,
+          revision,
+          githubLookbackHours,
+          expectedMandateRevision,
+        ),
+      )
     })
     .get('/status', (c) => c.json({ statuses: service.getStatus() }))
+    .get('/commission-grants', async (c) => {
+      const serviceForGrants = service.workspace.commission
+      if (!serviceForGrants) throw new HTTPException(503, { message: '委托对话服务不可用。' })
+      return c.json(await serviceForGrants.grants())
+    })
+    .put('/commission-grants', async (c) => {
+      const serviceForGrants = service.workspace.commission
+      if (!serviceForGrants) throw new HTTPException(503, { message: '委托对话服务不可用。' })
+      return c.json(await serviceForGrants.saveGrants(await requestJson(c)))
+    })
+    .get('/workspace-events', (c) =>
+      c.json({
+        items: service.workspace.listEvents(
+          pageNumber(c.req.query('limit'), 100) ?? 30,
+          pageNumber(c.req.query('beforeId'), Number.MAX_SAFE_INTEGER),
+        ),
+      }),
+    )
+    .get('/workspace/:scope', (c) =>
+      c.json(service.workspace.get(workspaceScope(c.req.param('scope')))),
+    )
+    .post('/workspace/:scope/messages', async (c) => {
+      const scope = workspaceScope(c.req.param('scope'))
+      const body = fields(await requestJson(c), ['requestId', 'text', 'retry'])
+      const { requestId, retry } = workspaceRequest(body)
+      if (
+        typeof body.text !== 'string' ||
+        body.text.length > 2000 ||
+        !body.text.trim() ||
+        /\p{Cc}/u.test(body.text.replace(/[\t\r\n]/g, ''))
+      )
+        badInput('请输入 1 到 2000 个字的提问。')
+      return c.json(await service.workspace.message(scope, requestId, body.text.trim(), retry))
+    })
+    .post('/workspace/:scope/actions', async (c) => {
+      const scope = workspaceScope(c.req.param('scope'))
+      const body = fields(await requestJson(c), ['requestId', 'action', 'retry'])
+      const { requestId, retry } = workspaceRequest(body)
+      return c.json(await service.workspace.action(scope, requestId, body.action, retry))
+    })
     .get('/routing/config', (c) => c.json(service.routing.getConfig()))
     .put('/routing/config', async (c) => {
       const { settings, revision } = parseRouting(await requestJson(c))
@@ -328,6 +449,69 @@ export function createListenerRoutes(service: ListenerService) {
       c.json({ records: service.routing.listWeb(pageNumber(c.req.query('limit'), 100) ?? 30) }),
     )
     .get('/routing/web/latest', (c) => c.json({ latestId: service.routing.latestWebDeliveryId() }))
+    .get('/web-notifications/latest', (c) => c.json({ id: service.webNotifications.latestId() }))
+    .get('/web-notifications/changes', (c) => {
+      // This loopback-only stream carries no content or identifiers. Readers fetch their own cursor.
+      const signal = c.req.raw.signal
+      const encoder = new TextEncoder()
+      const changed = encoder.encode('data: changed\n\n')
+      const heartbeat = encoder.encode(': keepalive\n\n')
+      let cleanup = () => {}
+      let flush = () => {}
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          let pending = true
+          flush = () => {
+            if (pending && (controller.desiredSize ?? 0) > 0) {
+              pending = false
+              controller.enqueue(changed)
+            }
+          }
+          const unsubscribe = service.webNotifications.subscribe(() => {
+            pending = true
+            flush()
+          })
+          const timer = setInterval(() => {
+            if ((controller.desiredSize ?? 0) > 0) controller.enqueue(heartbeat)
+          }, 5_000)
+          timer.unref?.()
+          const close = () => {
+            cleanup()
+            controller.close()
+          }
+          cleanup = () => {
+            clearInterval(timer)
+            unsubscribe()
+            signal.removeEventListener('abort', close)
+          }
+          if (signal.aborted) close()
+          else {
+            signal.addEventListener('abort', close, { once: true })
+            flush()
+          }
+        },
+        pull() {
+          flush()
+        },
+        cancel() {
+          cleanup()
+        },
+      })
+      return c.body(body, 200, { 'Content-Type': 'text/event-stream', 'X-Accel-Buffering': 'no' })
+    })
+    .get('/web-notifications', (c) => {
+      const query = c.req.query()
+      if (query.after !== undefined && query.before !== undefined) badInput('请选择一个分页方向。')
+      if (query.brief !== undefined && query.brief !== '1') badInput('简要视图参数无效。')
+      return c.json(
+        service.webNotifications.list({
+          after: query.after === '0' ? 0 : pageNumber(query.after, Number.MAX_SAFE_INTEGER),
+          before: pageNumber(query.before, Number.MAX_SAFE_INTEGER),
+          limit: pageNumber(query.limit, 100),
+          brief: query.brief === '1',
+        }),
+      )
+    })
     .post('/routing/presence', async (c) => {
       fields(await requestJson(c), [])
       await service.routing.heartbeat()
@@ -360,6 +544,26 @@ export function createListenerRoutes(service: ListenerService) {
         name ? repositoryName(name) : undefined,
       )
       return c.json({ repositories })
+    })
+    .post('/github/permissions', async (c) => {
+      const input = fields(await requestJson(c), [
+        'name',
+        'credentialRef',
+        'workflowFailures',
+        'prComments',
+        'prBase',
+      ])
+      const name = repositoryName(input.name)
+      const ref = credentialRef(input.credentialRef)
+      const selection = {
+        workflowFailures: checked(input.workflowFailures),
+        prComments: checked(input.prComments),
+        prBase: checked(input.prBase),
+      }
+      if (!selection.workflowFailures && !selection.prComments)
+        badInput('请先选择要检查的仓库监听条件。')
+      if (selection.prBase && !selection.prComments) badInput('目标分支检查需要启用 PR 评论规则。')
+      return c.json(await service.checkGithubPermissions(name, ref, selection, c.req.raw.signal))
     })
     .get('/wxarc/sessions', async (c) => {
       const sessions = await service.listWxarcSessions(c.req.raw.signal)

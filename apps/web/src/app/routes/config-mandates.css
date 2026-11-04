@@ -1,0 +1,101 @@
+.mandate-config {
+  container-type: inline-size;
+}
+.mandate-config .mandate-link {
+  color: var(--color-accent);
+  text-underline-offset: 3px;
+}
+.mandate-config .listener-actions > div > p {
+  margin-top: 4px;
+}
+.mandate-layout {
+  display: grid;
+  grid-template-columns: minmax(130px, 23%) minmax(0, 1fr);
+  gap: 18px;
+  border-block: 1px solid var(--color-border);
+  padding-block: 16px;
+}
+.mandate-index,
+.mandate-tabs {
+  display: flex;
+  gap: 4px;
+}
+.mandate-tabs button[aria-pressed="true"],
+.mandate-index button[aria-pressed="true"] {
+  background: var(--color-accent-glow);
+  border-color: var(--color-accent-dim);
+  color: var(--color-accent);
+}
+.mandate-index {
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  border-right: 1px solid var(--color-border);
+  padding-right: 12px;
+}
+.mandate-index .listener-field {
+  margin-bottom: 6px;
+}
+.mandate-index button {
+  text-align: left;
+  display: grid;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+.mandate-index button:not([aria-pressed="true"]) {
+  border-color: transparent;
+}
+.mandate-current {
+  align-content: start;
+}
+.mandate-config summary {
+  cursor: pointer;
+  font-weight: 570;
+}
+.mandate-config details[open] > summary {
+  margin-bottom: 10px;
+}
+.mandate-config textarea {
+  resize: vertical;
+  min-height: 62px;
+  padding: 8px 10px;
+  width: 100%;
+  border: 1px solid var(--color-border);
+  background: var(--color-main-bg);
+  border-radius: 6px;
+  color: var(--color-text-primary);
+}
+.mandate-config textarea:focus-visible {
+  outline: 2px solid var(--color-accent);
+}
+.mandate-config .mandate-empty,
+.mandate-preview {
+  padding: 12px;
+  border-left: 2px solid var(--color-accent-dim);
+  background: var(--color-accent-glow);
+}
+.mandate-preview {
+  display: grid;
+  gap: 5px;
+  overflow-wrap: anywhere;
+}
+@container (max-width: 620px) {
+  .mandate-layout {
+    grid-template-columns: 1fr;
+  }
+  .mandate-index {
+    max-height: 190px;
+    overflow: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border);
+    padding: 0 0 10px;
+  }
+}
+
+.mandate-order > .listener-stack {
+  margin-top: 10px;
+}
+.mandate-rule legend {
+  padding-inline: 5px;
+  color: var(--color-text-secondary);
+}

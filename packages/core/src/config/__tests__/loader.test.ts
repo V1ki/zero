@@ -230,6 +230,7 @@ channels:
     client_id_ref: dingtalk_ops_client_id
     client_secret_ref: dingtalk_ops_client_secret
     robot_code_ref: dingtalk_ops_robot_code
+    card_template_id: ops-card.schema
     keep_alive: false
   - name: weixin:personal
     type: weixin
@@ -276,6 +277,7 @@ channels:
       clientIdRef: 'dingtalk_ops_client_id',
       clientSecretRef: 'dingtalk_ops_client_secret',
       robotCodeRef: 'dingtalk_ops_robot_code',
+      cardTemplateId: 'ops-card.schema',
       debug: undefined,
       keepAlive: false,
     })

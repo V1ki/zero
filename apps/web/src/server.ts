@@ -4,6 +4,7 @@ import { WebMessageHandler } from '@zero-os/channel'
 import type { ServerWebSocket } from 'bun'
 import { Hono } from 'hono'
 import type { ZeroOS } from '../../server/src/main'
+import { createRepositoryWebhookRoutes } from './api/repository-webhooks'
 import { createRoutes } from './api/routes'
 
 const WEB_DIST = join(import.meta.dir, '../dist')
@@ -32,6 +33,7 @@ export function startWebServer(zero: ZeroOS): { port: number } {
   const app = createRoutes(zero)
 
   const server = new Hono()
+  server.route('/webhook', createRepositoryWebhookRoutes(zero.listeners))
   server.route('/', app)
 
   // Feishu webhook — only url_verification; events delivered via WSClient

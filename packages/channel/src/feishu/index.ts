@@ -19,6 +19,7 @@ import {
 import { type FeishuImageReference, FeishuImageResolver } from './image-resolver'
 import { readFeishuImageReferenceBuffer } from './image-source'
 import { type FeishuIncomingEventPayload, FeishuIncomingMessageBuilder } from './incoming-message'
+import { FeishuRouterDelivery } from './router'
 import {
   type FeishuImageTarget,
   type FeishuStreamingSession,
@@ -385,6 +386,7 @@ class FeishuMediaDelivery {
 export class FeishuChannel implements Channel {
   readonly name: string
   readonly type = 'feishu'
+  readonly router: FeishuRouterDelivery
 
   private client: lark.Client | null = null
   private eventDispatcher: lark.EventDispatcher | null = null
@@ -404,6 +406,7 @@ export class FeishuChannel implements Channel {
     config: FeishuChannelConfig,
     private readonly factories: FeishuChannelFactories = defaultFeishuChannelFactories,
   ) {
+    this.router = new FeishuRouterDelivery(() => this.client, config.appId)
     this.config = config
     this.name = config.name ?? 'feishu'
     this.connectionState = new FeishuConnectionState(this.name)
@@ -605,6 +608,7 @@ export class FeishuChannel implements Channel {
       isCurrent: () => this.runningRequested && generation === this.lifecycleGeneration,
     })
     const client = this.factories.createClient({
+      httpInstance: this.router.wrapTransport(lark.defaultHttpInstance),
       appId: this.config.appId,
       appSecret: this.config.appSecret,
       loggerLevel: lark.LoggerLevel.error,
@@ -617,6 +621,10 @@ export class FeishuChannel implements Channel {
       logger: sdkLogger,
     })
     this.incomingReceiver.register(eventDispatcher)
+    this.router.register(
+      eventDispatcher,
+      () => this.runningRequested && generation === this.lifecycleGeneration,
+    )
 
     // Use WebSocket long connection for event delivery (no webhook/ngrok needed).
     const wsClient = this.factories.createWsClient({

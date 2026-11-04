@@ -6,6 +6,7 @@ import {
   type DWClientDownStream,
   EventAck,
   type EventAckData,
+  TOPIC_CARD,
   TOPIC_ROBOT,
 } from 'dingtalk-stream'
 import type { Channel, MessageHandler } from '../base'
@@ -19,6 +20,8 @@ import {
   readString,
 } from './incoming-message'
 
+import { type DingtalkTaskCardAction, DingtalkTaskCards } from './task-cards'
+
 const DEFAULT_API_BASE_URL = 'https://api.dingtalk.com'
 
 export interface DingtalkChannelConfig {
@@ -26,6 +29,9 @@ export interface DingtalkChannelConfig {
   clientId: string
   clientSecret: string
   robotCode?: string
+  cardTemplateId?: string
+  cardStorePath?: string
+  onTaskCardAction?: (action: DingtalkTaskCardAction) => Promise<boolean>
   downloadsDir?: string
   apiBaseUrl?: string
   debug?: boolean
@@ -94,6 +100,7 @@ export class DingtalkChannel implements Channel {
   readonly name: string
   readonly type = 'dingtalk'
 
+  readonly taskCards: DingtalkTaskCards
   private readonly config: DingtalkChannelConfig
   private readonly apiBaseUrl: string
   private readonly fetchImpl: typeof fetch
@@ -110,6 +117,16 @@ export class DingtalkChannel implements Channel {
     this.name = config.name ?? 'dingtalk'
     this.apiBaseUrl = config.apiBaseUrl ?? DEFAULT_API_BASE_URL
     this.fetchImpl = config.fetch ?? fetch
+    this.taskCards = new DingtalkTaskCards({
+      dbPath: config.cardStorePath ?? ':memory:',
+      account: config.clientId,
+      robotCode: config.robotCode ?? config.clientId,
+      templateId: config.cardTemplateId,
+      apiBaseUrl: this.apiBaseUrl,
+      fetch: this.fetchImpl,
+      getToken: () => this.getAccessToken(),
+      onAction: config.onTaskCardAction,
+    })
     this.incomingBuilder = new DingtalkIncomingMessageBuilder({
       downloadMedia: (request) => this.downloadMedia(request),
       saveFile: (media, fileName) => this.saveFile(media, fileName),
@@ -137,6 +154,18 @@ export class DingtalkChannel implements Channel {
         return { status: EventAck.SUCCESS }
       })
 
+    if (this.config.cardTemplateId && this.config.onTaskCardAction) {
+      this.client.registerCallbackListener(TOPIC_CARD, (message) => {
+        this.taskCards
+          .handle(message)
+          .then((applied) => {
+            if (applied) this.client?.socketCallBackResponse(message.headers.messageId, {})
+          })
+          .catch((error) => {
+            console.error('[DingtalkChannel] Task card action failed:', describeError(error))
+          })
+      })
+    }
     await this.client.connect()
     this.running = true
   }
@@ -145,6 +174,7 @@ export class DingtalkChannel implements Channel {
     this.client?.disconnect()
     this.client = null
     this.running = false
+    this.taskCards.close()
   }
 
   async send(sessionId: string, content: string): Promise<void> {
@@ -232,7 +262,9 @@ export class DingtalkChannel implements Channel {
     const messageId = readString(incoming.metadata?.messageId)
     if (!this.recentMessages.shouldProcess(messageId)) return
 
-    this.rememberReplyTarget(parseStreamData(message.data), incoming.metadata)
+    const robotMessage = parseStreamData(message.data)
+    if (robotMessage) this.taskCards.remember(robotMessage)
+    this.rememberReplyTarget(robotMessage, incoming.metadata)
     this.messageHandler(incoming).catch((error) => {
       console.error('[DingtalkChannel] Async message handler error:', describeError(error))
     })

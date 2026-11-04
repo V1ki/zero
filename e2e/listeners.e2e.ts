@@ -26,7 +26,12 @@ test('selects sources, persists their scope, and reads new events separately fro
   let sessionLookups = 0
   await page.route('**/api/listeners/**', async (route) => {
     const path = new URL(route.request().url())
-    if (path.pathname.startsWith('/api/listeners/routing/')) return route.continue()
+    if (
+      /^\/api\/listeners\/(?:routing\/|mandates\/|web-notifications(?:\/|$)|commission-grants$)/.test(
+        path.pathname,
+      )
+    )
+      return route.continue()
     switch (path.pathname) {
       case '/api/listeners/config': {
         if (route.request().method() === 'PUT') {

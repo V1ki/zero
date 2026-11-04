@@ -140,6 +140,7 @@ export interface DingtalkChannelInstanceConfig extends BaseChannelInstanceConfig
   clientIdRef: string
   clientSecretRef: string
   robotCodeRef?: string
+  cardTemplateId?: string
   debug?: boolean
   keepAlive?: boolean
 }

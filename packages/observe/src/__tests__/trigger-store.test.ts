@@ -147,3 +147,59 @@ test('discard revoked polls and rebaseline only the selections whose filters cha
   expect(store.readCursor('wxarc:room')).toBeNull()
   expect(store.saveSettings(update, 5, 24)).toBe(5)
 })
+
+test('optional mandate revision blocks source cleanup racing another connection attaching a mandate', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'zero-trigger-source-cas-'))
+  dirs.push(dir)
+  const first = open(join(dir, 'test.db'))
+  const other = open(join(dir, 'test.db'))
+  first.saveSettings(settings, 0)
+  const originalSource = first.getSettings()
+  const originalMandate = first.mandates.getSettings()
+  other.mandates.saveSettings(
+    {
+      projects: [],
+      mandates: [
+        {
+          id: 'concurrent-reader',
+          name: 'Concurrent reader',
+          purpose: 'Observe release',
+          enabled: true,
+          source: 'github',
+          scope: 'Example/App',
+          keyword: '',
+          projectId: null,
+          targets: [],
+          archive: null,
+          policy: {},
+          deadline: null,
+          urgent: false,
+        },
+      ],
+    },
+    originalMandate.revision,
+  )
+  const removed = { ...settings, github: { ...settings.github, repositories: [] } }
+  expect(() =>
+    first.saveSettings(removed, originalSource.revision, undefined, originalMandate.revision),
+  ).toThrow(TriggerSettingsConflictError)
+  expect(first.getSettings()).toEqual(originalSource)
+  expect(first.getStreamStartedAt('github:example/app')).not.toBeNull()
+  expect(first.mandates.getSettings().settings.mandates[0].id).toBe('concurrent-reader')
+  // Even a no-op guarded request must reject a stale precondition.
+  expect(() =>
+    first.saveSettings(settings, originalSource.revision, undefined, originalMandate.revision),
+  ).toThrow(TriggerSettingsConflictError)
+  expect(
+    first.saveSettings(
+      removed,
+      originalSource.revision,
+      undefined,
+      other.mandates.getSettings().revision,
+    ),
+  ).toBe(originalSource.revision + 1)
+  // Existing callers remain valid when they omit the cross-resource precondition.
+  expect(first.saveSettings(settings, originalSource.revision + 1)).toBe(
+    originalSource.revision + 2,
+  )
+})

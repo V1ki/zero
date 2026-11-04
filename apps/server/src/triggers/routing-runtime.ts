@@ -6,6 +6,7 @@ import type {
   TriggerRoutingSettings,
 } from '@zero-os/shared'
 import { TriggerAgentError } from './event-agent'
+import { type NativePresenceProbe, TriggerPresenceReader } from './native-presence'
 import { TRIGGER_PRESENCE_TTL_MS, decideTriggerRoute } from './routing-policy'
 import { TriggerWeixinDeliveryError, type createTriggerWeixin } from './weixin-delivery'
 
@@ -16,6 +17,10 @@ interface RoutingDependencies {
     signal?: AbortSignal,
   ): Promise<TriggerAgentResult>
   weixin: ReturnType<typeof createTriggerWeixin>
+  onPolicyChange?(): void
+  onPresence?(): void
+  onWebDelivery?(): void
+  nativePresence?: NativePresenceProbe
 }
 
 export class TriggerRoutingRuntime {
@@ -25,12 +30,15 @@ export class TriggerRoutingRuntime {
   private running?: Promise<void>
   private requested = false
   private lastPresenceAt?: Date
+  private readonly presenceReader: TriggerPresenceReader
 
   constructor(
     private readonly store: TriggerStore['routing'],
     private readonly deps: RoutingDependencies,
     private readonly now: () => Date = () => new Date(),
-  ) {}
+  ) {
+    this.presenceReader = new TriggerPresenceReader(deps.nativePresence)
+  }
 
   start() {
     if (this.started || this.controller.signal.aborted) return
@@ -51,12 +59,26 @@ export class TriggerRoutingRuntime {
 
   saveConfig(settings: TriggerRoutingSettings, revision: number) {
     this.store.saveSettings(settings, revision)
+    this.presenceReader.reset()
+    this.deps.onPolicyChange?.()
     this.notify()
     return this.getConfig()
   }
 
   listTargets() {
     return this.deps.weixin.listTargets()
+  }
+
+  async getPresenceContext(settings: TriggerRoutingSettings) {
+    const native =
+      settings.enabled && settings.presence !== 'away'
+        ? await this.presenceReader.read(
+            settings.nativePresence,
+            this.now(),
+            this.controller.signal,
+          )
+        : undefined
+    return { lastPresenceAt: this.lastPresenceAt, native }
   }
 
   listRoutes(limit?: number) {
@@ -77,6 +99,7 @@ export class TriggerRoutingRuntime {
       ? now.getTime() - this.lastPresenceAt.getTime()
       : Number.POSITIVE_INFINITY
     this.lastPresenceAt = now
+    this.deps.onPresence?.()
     if (ageMs >= 0 && ageMs < TRIGGER_PRESENCE_TTL_MS) return
     const { settings } = this.getConfig()
     if (settings.enabled && settings.presence === 'auto') {
@@ -154,6 +177,8 @@ export class TriggerRoutingRuntime {
     // The model may have taken time. Only the latest policy and current authorized target can release a send.
     const { settings, revision } = this.getConfig()
     if (!settings.enabled) return
+    const presence = await this.getPresenceContext(settings)
+    if (this.controller.signal.aborted || this.getConfig().revision !== revision) return
     const target = settings.weixinTarget
     const available =
       !!target &&
@@ -161,8 +186,15 @@ export class TriggerRoutingRuntime {
         (option) => option.channelId === target.channelId && option.peerId === target.peerId,
       )
     const now = this.now()
-    const decision = decideTriggerRoute(settings, now, this.lastPresenceAt, available)
+    const decision = decideTriggerRoute(
+      settings,
+      now,
+      presence.lastPresenceAt,
+      available,
+      presence.native,
+    )
     if (!this.store.applyDecision(event.id, decision, revision, now.toISOString())) return
+    if (decision.destination === 'web') this.deps.onWebDelivery?.()
     if (decision.destination !== 'weixin' || !target) return
     try {
       await this.deps.weixin.send(target, event, agent)

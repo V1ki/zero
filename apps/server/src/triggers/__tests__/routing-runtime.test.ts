@@ -6,6 +6,8 @@ import type {
   TriggerRoutingSettings,
   TriggerWeixinTarget,
 } from '@zero-os/shared'
+import type { NativePresenceProbe } from '../native-presence'
+import { RouterWorkspaceService } from '../router-workspace'
 import { TriggerRoutingRuntime } from '../routing-runtime'
 import { ListenerRuntime } from '../runtime'
 import { TriggerWeixinDeliveryError } from '../weixin-delivery'
@@ -14,7 +16,13 @@ const target = { channelId: 'test-account', peerId: 'test-recipient' }
 const scope = 'project/repo'
 const stream = `github:${scope.toLowerCase()}`
 
-function fixture(options: { analyze?: () => Promise<void>; send?: () => Promise<void> } = {}) {
+function fixture(
+  options: {
+    analyze?: () => Promise<void>
+    send?: () => Promise<void>
+    nativePresence?: NativePresenceProbe
+  } = {},
+) {
   const store = new TriggerStore(':memory:')
   store.saveSettings(
     {
@@ -49,6 +57,8 @@ function fixture(options: { analyze?: () => Promise<void>; send?: () => Promise<
     store.routing,
     {
       analyze,
+      nativePresence: options.nativePresence,
+      onWebDelivery: () => store.webNotifications.changed(),
       weixin: { listTargets: () => [{ ...target, label: '测试会话' }], send },
     },
     () => clock,
@@ -132,11 +142,18 @@ test('a committed event enters routing once and a returning reader releases its 
       },
     ],
   }))
-  const listener = new ListenerRuntime(f.store, () => undefined, f.runtime, {
+  const workspace = new RouterWorkspaceService(f.store, f.runtime, async () => {
+    throw new Error('Unexpected chat')
+  })
+  const listener = new ListenerRuntime(f.store, () => undefined, f.runtime, workspace, {
     pollGithub,
     async pollWxarc() {
       throw new Error('WXARC is not configured')
     },
+  })
+  const markers: number[] = []
+  const unsubscribe = f.store.webNotifications.subscribe(() => {
+    markers.push(f.store.webNotifications.latestId())
   })
   try {
     f.configure({ enabled: true, presence: 'auto', awayFallback: 'defer' })
@@ -149,6 +166,7 @@ test('a committed event enters routing once and a returning reader releases its 
       agent: { summary: '分析 run-1' },
     })
     expect(f.runtime.listWeb()).toEqual([])
+    expect(markers).toEqual([])
     await listener.scan()
     await flush()
     expect(pollGithub).toHaveBeenCalledTimes(2)
@@ -159,9 +177,11 @@ test('a committed event enters routing once and a returning reader releases its 
       f.runtime.listWeb().map((w) => [w.event.id, w.event.summary, w.route.agent?.summary]),
     ).toEqual([[id, '原始事件', '分析 run-1']])
     expect(f.runtime.process(id)).toBe('already_processed')
+    expect(markers).toEqual([f.store.webNotifications.list({}).items[0].id])
     expect(f.analyze).toHaveBeenCalledTimes(1)
     expect(f.send).not.toHaveBeenCalled()
   } finally {
+    unsubscribe()
     await listener.close()
   }
 })
@@ -288,6 +308,39 @@ test('enabling routing does not backfill history and paused sources require an e
     expect(f.analyze).toHaveBeenCalledTimes(2)
     expect(f.send).not.toHaveBeenCalled()
   } finally {
+    await f.close()
+  }
+})
+
+test('after a slow Mac check, a changed policy is reread before a route can deliver', async () => {
+  const gate = Promise.withResolvers<void>()
+  const probe = mock(async () => {
+    await gate.promise
+    return { locked: false, idleSeconds: 0, bluetoothConnected: null }
+  })
+  const f = fixture({ nativePresence: probe })
+  try {
+    f.configure({
+      enabled: true,
+      nativePresence: { enabled: true, idleMinutes: 5, bluetooth: false },
+    })
+    f.runtime.start()
+    const id = f.receive('native-policy-race')
+    f.runtime.notify()
+    await flush()
+    expect(probe).toHaveBeenCalledTimes(1)
+    expect(f.runtime.listWeb()).toHaveLength(0)
+    f.configure({ presence: 'away' })
+    gate.resolve()
+    await flush()
+    expect(f.store.routing.get(id)).toMatchObject({
+      status: 'deferred',
+      decision: { destination: 'defer' },
+    })
+    expect(f.runtime.listWeb()).toHaveLength(0)
+    expect(probe).toHaveBeenCalledTimes(1)
+  } finally {
+    gate.resolve()
     await f.close()
   }
 })

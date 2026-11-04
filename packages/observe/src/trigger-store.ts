@@ -8,19 +8,27 @@ import {
   TriggerSettingsConflictError,
   type TriggerSettingsSnapshot,
   type TriggerSource,
+  type TriggerWorkspaceEvent,
 } from '@zero-os/shared'
 
+import { TriggerConversationStore } from './trigger-conversation-store'
+import { TriggerMandateStore } from './trigger-mandate-store'
+import { TriggerRetentionStore } from './trigger-retention-store'
 import { TriggerRoutingStore } from './trigger-routing-store'
+import { TriggerWebNotificationStore } from './trigger-web-notification-store'
 
 export { TriggerSettingsConflictError }
 
-export interface TriggerBatch {
+export interface TriggerPush {
   source: TriggerSource
   stream: string
   revision: number
+  events: readonly TriggerEvent[]
+}
+
+export interface TriggerBatch extends TriggerPush {
   previousCursor: string | null
   cursor: string
-  events: readonly TriggerEvent[]
 }
 
 function streamKey(source: TriggerSource, scope: string): string {
@@ -34,7 +42,16 @@ function activeFilters(settings: TriggerSettings): Map<string, string> {
     if (repo.enabled) {
       filters.set(
         streamKey('github', repo.name),
-        JSON.stringify([repo.branch, repo.workflow, repo.workflowFailures, repo.mention]),
+        JSON.stringify([
+          settings.github.credentialRef,
+          repo.branch,
+          repo.workflow,
+          repo.workflowFailures,
+          repo.mention,
+          repo.deliveryMode ?? 'poll',
+          repo.webhookSecretRef ?? '',
+          repo.ciWebhookSecretRef ?? '',
+        ]),
       )
     }
   }
@@ -44,8 +61,20 @@ function activeFilters(settings: TriggerSettings): Map<string, string> {
   return filters
 }
 
+type InboxRow = Omit<TriggerInboxItem, 'url'> & { url: string | null }
+const inboxQuery = `SELECT id, source, event_id AS eventId, scope, title, summary,
+  occurred_at AS occurredAt, received_at AS receivedAt, url FROM trigger_visible_inbox`
+
+function decodeInboxItem({ url, ...row }: InboxRow): TriggerInboxItem {
+  return url === null ? row : { ...row, url }
+}
+
 export class TriggerStore {
+  readonly mandates: TriggerMandateStore
+  readonly conversations: TriggerConversationStore
+  readonly retention: TriggerRetentionStore
   readonly routing: TriggerRoutingStore
+  readonly webNotifications: TriggerWebNotificationStore
   private readonly db: Database
 
   constructor(dbPath: string) {
@@ -83,6 +112,10 @@ export class TriggerStore {
       );
     `)
     this.routing = new TriggerRoutingStore(this.db)
+    this.mandates = new TriggerMandateStore(this.db, (id) => this.getInboxItem(id))
+    this.conversations = new TriggerConversationStore(this.db)
+    this.retention = new TriggerRetentionStore(this.db)
+    this.webNotifications = new TriggerWebNotificationStore(this.db)
     const defaults: TriggerSettings = {
       github: { credentialRef: '', repositories: [] },
       wxarc: { sessions: [] },
@@ -107,11 +140,17 @@ export class TriggerStore {
     settings: TriggerSettings,
     expectedRevision: number,
     githubLookbackHours?: 1 | 24,
+    expectedMandateRevision?: number,
   ): number {
     return this.db
       .transaction(() => {
         const current = this.getSettings()
         if (current.revision !== expectedRevision) throw new TriggerSettingsConflictError()
+        if (
+          expectedMandateRevision !== undefined &&
+          this.mandates.getSettings().revision !== expectedMandateRevision
+        )
+          throw new TriggerSettingsConflictError()
         const json = JSON.stringify(settings)
         if (JSON.stringify(current.settings) === json) return current.revision
 
@@ -173,42 +212,78 @@ export class TriggerStore {
         )
         if (changed.changes === 0) return false
 
-        const insert = this.db.query(
-          `INSERT INTO trigger_inbox (source, stream, event_id, scope, title, summary, occurred_at, received_at, url)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(stream, event_id) DO NOTHING`,
-        )
-        const now = new Date().toISOString()
-        for (const event of batch.events) {
-          if (streamKey(batch.source, event.scope) !== batch.stream) {
-            throw new Error('Trigger event scope does not match its subscription')
-          }
-          insert.run(
-            batch.source,
-            batch.stream,
-            event.eventId,
-            event.scope,
-            event.title,
-            event.summary,
-            event.occurredAt,
-            now,
-            event.url ?? null,
-          )
-        }
+        this.insertEvents(batch)
         return true
       })
       .immediate()
   }
 
-  listInbox(limit = 50, beforeId = Number.MAX_SAFE_INTEGER): TriggerInboxItem[] {
-    type InboxRow = Omit<TriggerInboxItem, 'url'> & { url: string | null }
-    const rows = this.db
-      .query<InboxRow, [number, number]>(
-        `SELECT id, source, event_id AS eventId, scope, title, summary,
-              occurred_at AS occurredAt, received_at AS receivedAt, url
-       FROM trigger_inbox WHERE id < ? ORDER BY id DESC LIMIT ?`,
+  /** Push delivery shares the inbox transaction and deduplication key without moving a poll cursor. */
+  commitPush(batch: TriggerPush): boolean {
+    return this.db
+      .transaction(() => {
+        const active = this.db
+          .query(`SELECT 1 FROM trigger_streams WHERE stream = ?
+        AND (SELECT revision FROM trigger_settings WHERE id=1) = ?`)
+          .get(batch.stream, batch.revision)
+        if (!active) return false
+        this.insertEvents(batch)
+        return true
+      })
+      .immediate()
+  }
+
+  private insertEvents(batch: TriggerPush) {
+    const insert = this.db.query(
+      `INSERT INTO trigger_inbox (source, stream, event_id, scope, title, summary, occurred_at, received_at, url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(stream, event_id) DO NOTHING`,
+    )
+    const receivedAt = new Date().toISOString()
+    for (const event of batch.events) {
+      if (streamKey(batch.source, event.scope) !== batch.stream) {
+        throw new Error('Trigger event scope does not match its subscription')
+      }
+      const added = insert.run(
+        batch.source,
+        batch.stream,
+        event.eventId,
+        event.scope,
+        event.title,
+        event.summary,
+        event.occurredAt,
+        receivedAt,
+        event.url ?? null,
       )
+      if (added.changes)
+        this.mandates.match({
+          ...event,
+          id: Number(added.lastInsertRowid),
+          source: batch.source,
+          receivedAt,
+        })
+    }
+  }
+
+  getInboxItem(id: number): TriggerInboxItem | null {
+    const row = this.db.query<InboxRow, [number]>(`${inboxQuery} WHERE id = ?`).get(id)
+    return row ? decodeInboxItem(row) : null
+  }
+
+  listInbox(limit = 50, beforeId = Number.MAX_SAFE_INTEGER): TriggerInboxItem[] {
+    return this.db
+      .query<InboxRow, [number, number]>(`${inboxQuery} WHERE id < ? ORDER BY id DESC LIMIT ?`)
       .all(beforeId, Math.max(1, Math.min(200, limit)))
-    return rows.map(({ url, ...row }) => (url === null ? row : { ...row, url }))
+      .map(decodeInboxItem)
+  }
+
+  listWorkspaceEvents(limit = 35, beforeId = Number.MAX_SAFE_INTEGER): TriggerWorkspaceEvent[] {
+    return this.db
+      .query<TriggerWorkspaceEvent, [number, number]>(
+        `SELECT i.id, i.source, i.title, i.received_at AS receivedAt, r.status
+         FROM trigger_visible_inbox i LEFT JOIN trigger_routes r ON r.inbox_id = i.id
+         WHERE i.id < ? ORDER BY i.id DESC LIMIT ?`,
+      )
+      .all(beforeId, Math.max(1, Math.min(100, limit)))
   }
 
   close(): void {

@@ -109,6 +109,8 @@ export class FeishuIncomingMessageBuilder {
       channelType: 'feishu',
       senderId: event?.sender?.sender_id?.open_id ?? 'unknown',
       content,
+      commandText:
+        msg.message_type === 'text' ? parsed.content.replace(/^(?:\s*@_user_\d+\s+)+/, '') : '',
       timestamp: new Date(Number(msg.create_time) * 1000).toISOString(),
       metadata: {
         chatId: msg.chat_id,

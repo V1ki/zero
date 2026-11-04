@@ -41,7 +41,7 @@ export type {
 } from './metrics'
 export { SessionDB } from './session-db'
 export { TriggerSettingsConflictError, TriggerStore } from './trigger-store'
-export type { TriggerBatch } from './trigger-store'
+export type { TriggerBatch, TriggerPush } from './trigger-store'
 export type { SessionRow } from './session-db'
 export { Tracer } from './trace'
 export type {

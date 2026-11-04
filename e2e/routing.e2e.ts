@@ -212,10 +212,18 @@ test('updates presence on trusted interaction and announces only new web deliver
   let latestId = 5
   let checks = 0
   let heartbeats = 0
-  await page.route('**/api/listeners/routing/web/latest', (route) => {
+  await page.route('**/api/listeners/web-notifications/latest', (route) => {
     checks++
-    return route.fulfill({ json: { latestId } })
+    return route.fulfill({ json: { id: latestId } })
   })
+  await page.route('**/api/listeners/web-notifications?*', (route) =>
+    route.fulfill({
+      json: {
+        items: [{ id: latestId, taskId: null, inboxId: 41, createdAt: '2026-11-04T02:00:00Z' }],
+        latestId,
+      },
+    }),
+  )
   await page.route('**/api/listeners/routing/presence', (route) => {
     expect(route.request().method()).toBe('POST')
     expect(route.request().postDataJSON()).toEqual({})
@@ -247,4 +255,39 @@ test('updates presence on trusted interaction and announces only new web deliver
   await notification.click()
   await expect(page).toHaveURL(/\/config\?tab=listeners#routing-web$/)
   await expect(page.getByRole('region', { name: '网页通知' })).toBeVisible()
+})
+
+test('saves local calendar exceptions and previews a locked Mac without reading the host', async ({
+  page,
+}) => {
+  let saved = structuredClone(initial)
+  await page.route('**/api/listeners/routing/config', async (route) => {
+    if (route.request().method() === 'PUT') {
+      const submitted = route.request().postDataJSON() as TriggerRoutingSettingsSnapshot
+      saved = { revision: submitted.revision + 1, settings: submitted.settings }
+    }
+    await route.fulfill({ json: saved })
+  })
+  await page.goto('/config?tab=listeners')
+  const prefs = page.getByRole('region', { name: 'Agent 与通知路由' })
+  await prefs.getByText('假日与补班', { exact: true }).click()
+  await prefs.getByLabel('例外日期').fill('2026-11-07')
+  await prefs.getByLabel('当天安排').selectOption('work')
+  await prefs.getByRole('button', { name: '加入日历' }).click()
+  await prefs.getByText('Mac 在场信号', { exact: true }).click()
+  await prefs.getByLabel('判断网页在场时检查 Mac 锁屏和空闲状态').check()
+  await prefs.getByRole('button', { name: '保存路由设置' }).click()
+  await expect.poll(() => saved.settings.dateOverrides).toEqual({ '2026-11-07': 'work' })
+  expect(saved.settings.nativePresence).toEqual({ enabled: true, bluetooth: false, idleMinutes: 5 })
+  await page.reload()
+  await prefs.getByText('情境预演', { exact: true }).click()
+  await prefs.getByLabel('模拟时间', { exact: false }).fill('2026-11-07T12:00')
+  const preview = prefs
+    .locator('details')
+    .filter({ has: page.getByText('情境预演', { exact: true }) })
+  await expect(preview.locator('output')).toContainText('网页展示')
+  await expect(preview.locator('output')).toContainText('日历指定上班')
+  await prefs.getByLabel('模拟 Mac 状态').selectOption('locked')
+  await expect(preview.locator('output')).toContainText('延后提醒')
+  await expect(preview.locator('output')).toContainText('已锁屏')
 })

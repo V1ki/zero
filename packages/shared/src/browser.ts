@@ -7,3 +7,7 @@ export * from './utils/mutex'
 export * from './utils/time'
 export * from './utils/tokens'
 export * from './trigger-routing-policy'
+
+export * from './router-surface'
+
+export type { RouterWorkspaceSnapshot, RouterWorkspaceTask } from './router-workspace'

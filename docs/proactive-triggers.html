@@ -245,7 +245,7 @@
       </div>
       <svg class="arc-desktop" viewBox="0 0 1100 366" role="img" aria-labelledby="arc-d-title arc-d-desc">
         <title id="arc-d-title">ZeRo 从两个来源接收事件，按情境路由到归档和提醒目标</title>
-        <desc id="arc-d-desc">GitHub API 与 WXARC 本机文字流先经授权过滤并持久去重。四端的订阅委托、用户的时间和在场状态共同影响情境 Router，需要分析时才调用 Agent。成果归档和主动提醒各自选择目标。</desc>
+        <desc id="arc-d-desc">GitHub 按仓库选择签名推送或轮询，外部 CI 可独立推送工作流失败。WXARC 以长等待返回本机文字事件。已授权的事件在收件箱持久去重。四端的订阅委托、用户的时间和在场状态共同影响情境 Router，需要分析时才调用 Agent。成果归档和主动提醒各自选择目标。</desc>
         <defs>
           <marker id="arc-end" markerWidth="8" markerHeight="8" refX="6.8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 7 4 0 8 2 4Z" fill="#abd8b5"/></marker>
           <marker id="arc-ctx-end" markerWidth="8" markerHeight="8" refX="6.8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 7 4 0 8 2 4Z" fill="#a1c5dd"/></marker>
@@ -264,10 +264,10 @@
           <path class="arc-wirectx" d="M643 274V235" marker-end="url(#arc-ctx-end)"/>
           <rect class="arc-box" x="35" y="90" width="174" height="74" rx="8"/>
           <g transform="translate(52 106)" fill="none" stroke="#b6dec0" stroke-width="1.7"><path d="M5 4v13c0 5 12 4 12-2V9"/><circle cx="5" cy="3" r="2.7" fill="#23453a"/><circle cx="17" cy="7" r="2.7" fill="#23453a"/><circle cx="5" cy="20" r="2.7" fill="#23453a"/></g>
-          <text class="arc-n" x="82" y="127">GitHub</text><text class="arc-copy" x="51" y="149">构建状态 / PR 讨论</text>
+          <text class="arc-n" x="82" y="127">GitHub / CI</text><text class="arc-copy" x="51" y="149">仓库推送或轮询</text>
           <rect class="arc-box" x="35" y="190" width="174" height="74" rx="8"/>
           <g transform="translate(52 206)" stroke="#b6dec0" stroke-width="1.75" fill="none" stroke-linecap="round"><path d="M1 4h19v12h-9l-5 4v-4H1z"/><path d="M5 8h11M5 12h7"/></g>
-          <text class="arc-n" x="82" y="227">WXARC</text><text class="arc-copy" x="51" y="249">本机微信文字事件</text>
+          <text class="arc-n" x="82" y="227">WXARC</text><text class="arc-copy" x="51" y="249">长等待本机文字流</text>
           <rect class="arc-box" x="279" y="130" width="195" height="96" rx="8"/>
           <g transform="translate(295 147)" fill="none" stroke="#b6dec0" stroke-width="1.7" stroke-linejoin="round"><path d="M0 0h18l-6 8v5l-5 2V8z"/></g>
           <text class="arc-n" x="295" y="190">事件收件箱</text><text class="arc-copy" x="295" y="212">授权匹配 · 持久化去重</text>
@@ -288,7 +288,7 @@
       </svg>
       <svg class="arc-phone" viewBox="0 0 356 567" role="img" aria-labelledby="arc-m-title arc-m-desc">
         <title id="arc-m-title">从事件来源到情境路由的纵向架构图</title>
-        <desc id="arc-m-desc">从 GitHub 或 WXARC 获取的事件，在本机授权匹配，命中后入库。四端委托与当前情境参与路由，分别决定任务归档与用户提醒。</desc>
+        <desc id="arc-m-desc">GitHub 推送或轮询、外部 CI 与 WXARC 长等待获取的事件在本机按授权匹配，命中后入库。四端委托与当前情境参与路由，分别决定任务归档与用户提醒。</desc>
         <defs>
           <marker id="arc-m-arr" markerWidth="8" markerHeight="8" refX="6.8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 7 4 0 8 2 4Z" fill="#abd8b5"/></marker>
           <marker id="arc-m-ctx" markerWidth="8" markerHeight="8" refX="6.8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 7 4 0 8 2 4Z" fill="#a1c5dd"/></marker>
@@ -296,9 +296,9 @@
         <g aria-hidden="true">
           <text class="arc-col" x="18" y="28">事件来源</text>
           <rect class="arc-box" x="18" y="42" width="153" height="62" rx="7"/>
-          <text class="arc-n" x="30" y="68">GitHub</text><text class="arc-copy" x="30" y="90">构建状态 / PR 讨论</text>
+          <text class="arc-n" x="30" y="68">GitHub / CI</text><text class="arc-copy" x="30" y="90">仓库推送或轮询</text>
           <rect class="arc-box" x="185" y="42" width="153" height="62" rx="7"/>
-          <text class="arc-n" x="197" y="68">WXARC</text><text class="arc-copy" x="197" y="90">本机微信文字事件</text>
+          <text class="arc-n" x="197" y="68">WXARC</text><text class="arc-copy" x="197" y="90">长等待本机文字流</text>
           <path class="arc-wire" d="M94 104V120Q94 125 100 125H255Q261 125 261 119V104M178 125V145" marker-end="url(#arc-m-arr)"/>
           <circle class="arc-node" cx="178" cy="125" r="4.5"/>
           <rect class="arc-box" x="64" y="150" width="228" height="67" rx="7"/>
@@ -414,7 +414,7 @@
 
 <section id="sources" aria-labelledby="src-title">
 <div class="wrap">
-<header class="src-heading"><h2 id="src-title">选择监听来源</h2><p>选一个仓库或微信会话，再指定什么变化值得交给 Agent。</p></header>
+<header class="src-heading"><h2 id="src-title">选择监听来源</h2><p>选一个仓库或微信会话，指定要跟踪的变化，再选择直接提醒或 Agent 归纳。</p></header>
 <div class="src-shell">
 <div class="src-toolbar"><div class="src-tabs" role="group" aria-label="选择事件来源"><button type="button" class="src-tab" data-src-mode="github" aria-controls="src-github" aria-pressed="true">GitHub</button><button type="button" class="src-tab" data-src-mode="wxarc" aria-controls="src-wxarc" aria-pressed="false">WXARC</button></div><span class="src-label">离线配置演示</span></div>
 <div class="src-columns">
@@ -426,12 +426,12 @@
 <div class="src-settings" id="src-gh-settings"><label class="src-wide" id="src-edit-row"><span class="src-field-label">正在配置的仓库</span><select id="src-edit" aria-label="正在配置的仓库"></select></label>
 <label><span class="src-field-label">关注事件</span><select id="src-kind"><option value="ci">Actions 工作流失败</option><option value="pr">PR 普通评论中提及我</option></select></label>
 <label><span class="src-field-label" id="src-filter-label">分支</span><input type="text" id="src-filter" value="main" maxlength="100" autocomplete="off" spellcheck="false"></label></div>
-<p class="src-note">正式接入只保存只读凭证引用，服务端按仓库验证权限。此处使用虚构仓库，可自行添加样例。</p>
+<p class="src-note">这里用虚构仓库试验匹配条件。在实际配置页可先点「检查读取权限」，分别验证 Actions、PR 普通评论和目标分支。每个仓库可选签名推送或 5 分钟轮询，外部 CI 可独立上报失败。</p>
 </div>
 <div id="src-wxarc" hidden>
 <fieldset><legend>允许监听的会话</legend><div class="src-row"><label class="src-choice"><input type="checkbox" value="发布协调群" data-src-chat checked>发布协调群</label><label class="src-choice"><input type="checkbox" value="研究讨论组" data-src-chat>研究讨论组</label></div></fieldset>
 <div class="src-settings"><label class="src-wide"><span class="src-field-label">文字里包含</span><input type="text" id="src-keyword" value="发布失败" maxlength="60"></label></div>
-<p class="src-note">会话名称和消息均为合成示例。接入时按稳定会话标识筛选，首次从本机文字流尾部开始。未命中的正文留在本机，不写入 ZeRo、不交给模型。</p>
+<p class="src-note">会话和消息为合成示例。ZeRo 从本机文字流末尾开始，发起最长 60 秒的等待。WXARC 在等待中约每秒检查事件表，发现记录就返回。只有所选会话中命中的文字片段才入箱。</p>
 </div>
 </div>
 <aside class="src-receipt" aria-label="订阅预览"><h3><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18l-2-1.5-2 1.5-2-1.5-2 1.5-2-1.5L6 21V3Z"/><path d="M9 8h6m-6 4h6"/></svg>订阅预览</h3>
@@ -482,13 +482,13 @@
       const picked = enabled();
       refs.scope.textContent = picked.map(([name]) => name).join('、') || '尚未选择仓库';
       refs.conditions.textContent = picked.map(([name, data]) => (picked.length > 1 ? name + ' · ' : '') + (valid(data) ? condition(data) : '请补全分支或有效的 @账号')).join('\n') || '勾选仓库后可预览条件';
-      refs.boundary.textContent = '从启用时起收取新事件，使用已授权的只读凭证引用。';
+      refs.boundary.textContent = '从启用时起接收。GitHub 推送与外部 CI 分别使用签名密钥，轮询私有仓库使用专用只读凭证。';
       refs.test.disabled = !picked.length || picked.some(([, data]) => !valid(data));
     } else {
       const rooms = chats(), keyword = refs.keyword.value.trim();
       refs.scope.textContent = rooms.join('、') || '尚未选择会话';
       refs.conditions.textContent = keyword ? '所选会话的文字包含「' + keyword + '」' : '请填写要匹配的关键词';
-      refs.boundary.textContent = '从当前文字流尾部起读，重连后从已提交的位置继续。';
+      refs.boundary.textContent = '从当前文字流末尾开始长等待，重连后从上次写入的位置继续。';
       refs.test.disabled = !rooms.length || !keyword;
     }
   }
@@ -526,7 +526,7 @@
 <div class="wrap">
 <div class="ch-code">渠道呈现预览</div>
 <h2 id="ch-title">同一次发布失败，四种表达</h2>
-<p class="ch-intro">切换平台，查看同一条示例事件在不同受众面前的样子。实际投递由 Router 为每个受众选择已授权的目标。</p>
+<p class="ch-intro">切换平台，查看同一条示例事件在不同受众面前的样子。这里展示的是渠道设计样张。真实 GitHub 事件可在本机 Router 工作台查失败步骤、对比历史运行，再在同一事件中追问。</p>
 <div class="ch-body">
 <div class="ch-platforms" role="tablist" aria-label="选择渠道样张">
 <button type="button" class="ch-tab" id="ch-tab-web" role="tab" aria-controls="ch-web" aria-selected="true" style="--chip-bg:#d4e1ce;--chip-ink:#37533d"><span class="ch-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="2" y="3.5" width="20" height="15" rx="2"/><path d="M3 8h18M9 21h6M12 18.5v2.5"/></svg></span><span><span class="ch-tab-name">Web</span><span class="ch-tab-sub">交互工作区</span></span><span class="ch-go" aria-hidden="true">→</span></button>
@@ -603,18 +603,21 @@
 })();
 </script>
 </section>
-<section id="delivery" aria-labelledby="delivery-title"><div class="wrap"><h2 id="delivery-title">从接入到实际投递</h2><p class="dl-lead">本页预演使用合成数据。真实事件与路由设置位于 <a href="http://localhost:3001/config?tab=listeners">本机 ZeRo 的「监听与收件箱」</a>。</p>
+<section id="delivery" aria-labelledby="delivery-title"><div class="wrap"><h2 id="delivery-title">从接入到实际投递</h2><p class="dl-lead">本页预演使用合成数据。要围绕真实事件提问，打开<a href="http://localhost:3001/router">本机 Router 工作台</a>。要调整监听和通知偏好，前往<a href="http://localhost:3001/config?tab=listeners">监听与收件箱</a>。</p>
 <ol class="timeline">
-<li><span class="step" aria-hidden="true">1</span><h3>接通真实来源</h3><p>在 Web 添加多个 GitHub 仓库、WXARC 会话和匹配条件，结果进入授权收件箱。</p><div class="accept"><b>验收</b>服务重启后续读，超过 200 条积压能追完，同一条事件不重复建任务。</div></li>
-<li><span class="step" aria-hidden="true">2</span><h3>按情境选去向</h3><p>主动处理默认关闭。启用后，Agent 分析新事件，再按作息与在场状态选择 Web、指定微信私聊或延后。</p><div class="accept"><b>验收</b>可按编号查看事件的分析结果、路由理由与投递状态，历史收件记录可逐条手动处理。</div></li>
-<li><span class="step" aria-hidden="true">3</span><h3>后续 · 接入原生卡片</h3><p>钉钉主动发卡，飞书可写入授权文档。卡片上的接手、追问和文字回复回到原任务。</p><div class="accept"><b>验收</b>回复地址过期后仍可主动发钉钉卡。飞书回调校验身份，重复点击只生效一次。</div></li>
+<li><span class="step" aria-hidden="true">1</span><h3>接通真实来源</h3><p>按仓库选择 GitHub 签名推送或轮询，可另接外部 CI。从 WXARC 长等待取回的微信文字中筛选所选会话。</p><div class="accept"><b>验收</b>服务重启后续读，超过 200 条积压能追完，同一条事件不重复建任务。</div></li>
+<li><span class="step" aria-hidden="true">2</span><h3>按情境选去向</h3><p>启用主动处理后，每项委托可选直接生成事实提醒或由 Agent 归纳。Router 按作息、在场状态与授权决定提醒去向。</p><div class="accept"><b>验收</b>模型离线时，直接提醒仍可投递。网页提示可直达任务，也可在<a href="http://localhost:3001/router?view=notifications">网页提醒记录</a>翻阅多条委托的摘要。</div></li>
+<li><span class="step" aria-hidden="true">3</span><h3>围绕事件继续问</h3><p>Router 有独立网页入口。可在通用对话中询问或提议修改一项偏好。选中具体事件，A2UI 卡片会呈现它的摘要、状态和可用动作。</p><div class="accept"><b>试一试</b>先问「为什么选了这个去向」，再问「如果我不在电脑前呢」。刷新后回到同一事件，继续之前的对话。</div></li>
 </ol>
 <h3 class="eng-title">实现时需要守住的边界</h3>
 <div class="notes">
-<details><summary>当前能实际使用哪些能力？</summary><p>可选 GitHub 仓库和本机 WXARC 会话，持续接收命中的事件。在真实配置页，可先预演当前草稿，再启用 Agent 摘要和按作息、在场状态路由。已接入 Web 通知和指定 iLink 微信私聊。本页的 A2UI 操作、按编号追问、钉钉与飞书卡片和研究文档归档属于后续设计。具体操作见<a href="proactive-triggers.md">阶段使用说明</a>。</p></details>
+<details><summary>两条情境规则同时命中时会怎样？</summary><p>在项目或委托中，上移需要优先的规则，保存后重新预演。工作日下午人在电脑前时，「普通事件在网页提醒」和「在场时无需提醒」都可能命中。把后者放在第一条，下一次符合条件的事件就会跳过提醒。任务记录会注明命中哪一层的第几条规则。临近截止的提前量默认 60 分钟，可由项目或委托调整。<a href="proactive-triggers.md#router-怎样作决定">查看规则与授权边界</a></p></details>
+<details><summary>当前能实际使用哪些能力？</summary><p>在配置页选择 GitHub 仓库和 WXARC 会话，保存工作时段、在场和通知偏好。在 Router 工作台预演已保存的规则，查看单条事件的 A2UI 卡片，用同一线程问清首次延后和最终投递的理由。对话中提出的偏好变更须在卡片上亲自确认。可以为同一来源创建多个委托，分别选择具体会话和可写文档。在任务详情里可以沿着同一事项查看历次事件、提醒与归档；在已授权的 IM 会话收到提醒后可按任务编号继续。<a href="proactive-triggers.md#router-工作台">工作台使用说明</a></p></details>
+<details><summary>工作台怎样调查一条 GitHub 事件？</summary><p>在失败事件卡点「查看 GitHub 事件详情」可核对本次尝试的作业和步骤，卡片会注明来源与读取时间。Checks 标注与可安全展示的运行器日志分开列出。若缺少日志读取权限，仍保留已核对的步骤。「对比此前的运行」会查询上一次重跑和同来源分支的历史记录。PR 评论卡可以打开原评论并查询当前 PR 状态。<a href="proactive-triggers.md#router-工作台">工作台使用说明</a></p></details>
 <details><summary>关掉网页，或者中途断线，会怎样？</summary><p>Server 持续运行，接入器把事件、订阅匹配和读取位置一起提交。发送前重新检查时间、在场和权限。一次提醒保留一个投递意图。平台可能已接收但回执丢失时，显示「微信投递待确认」并停止重发，可到所选私聊核对编号。</p></details>
+<details><summary>如何确认仓库真的在推送？</summary><p>在目标仓库注册可访问的 HTTPS 回调，再核对 Recent deliveries 的回执和 ZeRo 收件编号。本机验收用自己的密钥将一条真实 Actions 失败记录回放两次，收件箱和 Web 提醒各一条。公网注册与真实 GitHub 投递需在具体仓库完成。<a href="trigger-webhooks.md">GitHub 与外部 CI 接入步骤</a> · <a href="https://github.com/oven-sh/bun/actions/runs/41696246682">回放的失败运行</a></p></details>
 <details><summary>什么信息可以跨平台？</summary><p>先按任务受众和数据范围筛选目的地，再选展示深度。微信私聊可以只说「有一项发布决定」，项目日志留在已授权的工作空间。WXARC 未命中的文字在本机过滤，卡片被转发也不会赋予新用户执行权限。</p></details>
-<details><summary>何时考虑 Swift、蓝牙或 GitHub webhook？</summary><p>目前依据 Web 最近交互、手动状态、每周工作日和时段。需要系统锁屏、耳机连接等信号时，可由 Swift 原生端补充带时效的观测。GitHub 初版读取可观察到的状态变化，若要逐次捕获短暂出现又撤回的动作，再接签名 webhook。</p></details>
+<details><summary>何时考虑 Swift 或蓝牙？</summary><p>Mac 上可启用锁屏、空闲和蓝牙音频信号。锁屏或离席会阻止投到网页；蓝牙连接只补充已有的在场判断。设置中还可指定节假日与调休。Swift 客户端是可选入口。</p></details>
 </div></div></section></main>
 <footer class="foot"><div class="wrap"><strong>ZeRo OS · 主动监听与情境路由</strong><div class="links"><a href="proactive-triggers.md">完整设计文稿</a><a href="https://mp.weixin.qq.com/s/zoS7GlReWPhfCjENGxXCdg" rel="noreferrer">设计参考文章</a><a href="https://github.com/deepseek-ai/dsh-superagent-prototype" rel="noreferrer">DSH 原型</a><a href="#top">返回顶部 ↑</a></div></div></footer>
 <script>

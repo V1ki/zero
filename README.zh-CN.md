@@ -239,7 +239,8 @@ bun zero start
 - tool registry 可见性
 - logs 和 metrics
 - config 与 provider 状态
-- 配置页的「监听与收件箱」可选择 GitHub 仓库和本机 WXARC 微信会话。[设置与验证步骤](docs/proactive-triggers.md)
+- 在「监听与收件箱」按仓库选择 GitHub 签名推送或轮询，外部 CI 可独立上报构建失败。选择微信会话后，ZeRo 向本机 WXARC 长等待新的文字事件。[设置与验证](docs/proactive-triggers.md) · [签名回调接入](docs/trigger-webhooks.md)
+- 配置页支持按项目和委托设置规则。独立 Router 工作台可以预演去向、查看归档与提醒，在 A2UI 卡片上调查构建，并按任务继续对话。[使用 Router 工作台](docs/proactive-triggers.md#router-工作台)
 - 基于 WebSocket 的实时更新
 
 前端技术栈包括 Vite、React 19、TanStack Router、TanStack Query、Zustand、Hono

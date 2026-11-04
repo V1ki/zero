@@ -6,6 +6,7 @@ import {
   DingtalkIncomingMessageBuilder,
   type DingtalkStreamClient,
 } from '../dingtalk'
+import { DingtalkTaskCards } from '../dingtalk/task-cards'
 
 function robotPayload(overrides: Record<string, unknown> = {}) {
   return {
@@ -153,6 +154,7 @@ describe('DingtalkIncomingMessageBuilder', () => {
     )
 
     expect(message?.content).toBe('> 引用: 上一条用户消息\n继续处理这个')
+    expect(message?.commandText).toBe('继续处理这个')
     expect(message?.metadata).toMatchObject({
       messageId: 'msg_followup',
       originalMsgId: 'msg_quoted_original',
@@ -318,4 +320,51 @@ describe('DingtalkChannel', () => {
 
     await expect(channel.uploadImage(Buffer.from('image'))).resolves.toBe('media_1')
   })
+})
+
+describe('DingTalk final delivery authorization', () => {
+  for (const templateId of [undefined, 'fixture.schema']) {
+    test(`does not post a ${templateId ? 'native card' : 'Markdown reminder'} after revocation during token acquisition`, async () => {
+      const token = Promise.withResolvers<string>()
+      let authorized = true
+      let requests = 0
+      const cards = new DingtalkTaskCards({
+        dbPath: ':memory:',
+        account: 'app',
+        robotCode: 'local',
+        apiBaseUrl: 'https://fixture.invalid',
+        templateId,
+        getToken: () => token.promise,
+        onAction: async () => true,
+        fetch: Object.assign(
+          async () => {
+            requests++
+            throw new Error('No network write is authorized')
+          },
+          { preconnect() {} },
+        ),
+      })
+      try {
+        cards.remember(robotPayload({ senderCorpId: 'corp', chatbotCorpId: 'corp' }))
+        const payload = {
+          id: 'delivery',
+          digest: false,
+          entries: [{ taskId: 1, title: '任务', summary: '摘要' }],
+        }
+        const sending = cards.send(
+          'cid_1',
+          'staff_1',
+          payload,
+          new AbortController().signal,
+          () => authorized,
+        )
+        authorized = false
+        token.resolve('test-token')
+        await expect(sending).rejects.toMatchObject({ name: 'DingtalkCardError', uncertain: false })
+        expect(requests).toBe(0)
+      } finally {
+        cards.close()
+      }
+    })
+  }
 })

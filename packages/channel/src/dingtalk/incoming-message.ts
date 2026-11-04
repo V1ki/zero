@@ -117,6 +117,7 @@ export class DingtalkIncomingMessageBuilder {
       channelType: 'dingtalk',
       senderId,
       content: parsed.content,
+      commandText: msg.msgtype === 'text' ? (msg.text?.content ?? '') : '',
       timestamp: normalizeDingtalkEventTime(msg.createAt) ?? new Date().toISOString(),
       metadata: {
         chatId: conversationId,

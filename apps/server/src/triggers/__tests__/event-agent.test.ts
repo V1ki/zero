@@ -105,3 +105,21 @@ test('cancelled input never reaches model and an in-flight cancellation stops de
   response.resolve(answer)
   expect(calls).toBe(1)
 })
+
+test('mandate-aware analysis separates saved purpose, previous summaries and the new untrusted event', async () => {
+  const analyze = withAdapter(async (req) => {
+    const user = req.messages[0].content[0]
+    if (user.type !== 'text') throw new Error('expected text input')
+    expect(JSON.parse(user.text)).toMatchObject({
+      purpose: '归纳 [REDACTED]',
+      previousSummaries: ['之前已处理 [REDACTED]'],
+      event: { source: 'wxarc', title: item.title },
+    })
+    expect(req.tools).toEqual([])
+    return answer
+  })
+  await analyze(item, 'task-1', undefined, {
+    purpose: '归纳 example-secret',
+    previousSummaries: ['之前已处理 example-secret'],
+  })
+})

@@ -1,4 +1,6 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
+import { triggerWebhookSecretPatterns } from '@zero-os/shared'
 import type {
   TriggerGithubRepository,
   TriggerInboxItem,
@@ -12,6 +14,7 @@ import type {
 } from '@zero-os/shared'
 import { useEffect, useState } from 'react'
 import { apiFetch, apiPost, apiPut } from '../lib/api'
+import { CommissionGrants } from './config-commission-grants'
 import {
   ListenerRoutingResults,
   ListenerRoutingSettings,
@@ -19,6 +22,8 @@ import {
   useListenerRoutingConfig,
   useListenerRoutingResults,
 } from './config-listener-routing'
+import { ConfigMandates } from './config-mandates'
+import { GithubPermissionCheck } from './github-permission-check'
 import './config-listeners-tab.css'
 
 const base = '/api/listeners'
@@ -37,6 +42,18 @@ function errorMessage(error: unknown) {
 
 function DateStamp({ value }: { value: string }) {
   return <time dateTime={value}>{new Date(value).toLocaleString()}</time>
+}
+
+function webhookSettingsError(repo: TriggerGithubRepository) {
+  if (
+    repo.deliveryMode === 'webhook' &&
+    !triggerWebhookSecretPatterns.github.test(repo.webhookSecretRef?.trim() ?? '')
+  )
+    return '请填写 Secrets 中保存的 github_webhook 或 github_webhook_ 开头的密钥名称。'
+  const ciRef = repo.ciWebhookSecretRef?.trim()
+  if (ciRef && !triggerWebhookSecretPatterns.ci.test(ciRef)) {
+    return '请填写 Secrets 中保存的 ci_webhook 或 ci_webhook_ 开头的密钥名称。'
+  }
 }
 
 function GithubSettings({
@@ -188,14 +205,79 @@ function GithubSettings({
               />
               启用监听
             </label>
+            <label className="listener-field">
+              GitHub 事件接收方式
+              <select
+                value={repo.deliveryMode ?? 'poll'}
+                onChange={(e) =>
+                  patch(repo.name, {
+                    deliveryMode: e.target.value === 'webhook' ? 'webhook' : 'poll',
+                    webhookSecretRef:
+                      e.target.value === 'webhook' ? repo.webhookSecretRef : undefined,
+                  })
+                }
+              >
+                <option value="poll">定期从 GitHub 读取</option>
+                <option value="webhook">由 GitHub 实时推送</option>
+              </select>
+            </label>
+            {repo.deliveryMode === 'webhook' && (
+              <>
+                <label className="listener-field">
+                  GitHub 推送签名密钥名称
+                  <input
+                    value={repo.webhookSecretRef ?? ''}
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder="github_webhook"
+                    onChange={(e) => patch(repo.name, { webhookSecretRef: e.target.value })}
+                  />
+                </label>
+                <small>
+                  在仓库 Webhooks 中设置可从 GitHub 访问的 HTTPS 地址，路径为{' '}
+                  <code>/webhook/github/{repo.name}</code>。选择 JSON 格式及 Workflow runs 或 Issue
+                  comments 事件，并使用与 Secrets 中相同的签名密钥。
+                </small>
+              </>
+            )}
             <label className="listener-row">
               <input
                 type="checkbox"
                 checked={repo.workflowFailures}
-                onChange={(e) => patch(repo.name, { workflowFailures: e.target.checked })}
+                onChange={(e) =>
+                  patch(repo.name, {
+                    workflowFailures: e.target.checked,
+                    ciWebhookSecretRef: e.target.checked ? repo.ciWebhookSecretRef : undefined,
+                  })
+                }
               />
               Actions 工作流失败
             </label>
+            {repo.workflowFailures && (
+              <>
+                <label className="listener-field">
+                  外部 CI 推送签名密钥名称（可选）
+                  <input
+                    value={repo.ciWebhookSecretRef ?? ''}
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder="留空关闭；例如 ci_webhook_build"
+                    onChange={(e) => patch(repo.name, { ciWebhookSecretRef: e.target.value })}
+                  />
+                </label>
+                {repo.ciWebhookSecretRef && (
+                  <small>
+                    外部 CI 可以将此仓库的工作流失败事件签名后 POST 到{' '}
+                    <code>/webhook/ci/{repo.name}</code>。下方分支与工作流条件同样适用。
+                  </small>
+                )}
+              </>
+            )}
+            {webhookSettingsError(repo) && (
+              <p className="listener-error" role="alert">
+                {webhookSettingsError(repo)}
+              </p>
+            )}
             <div className="listener-fields">
               <label className="listener-field">
                 分支（PR 按目标分支）
@@ -225,6 +307,12 @@ function GithubSettings({
                 onChange={(e) => patch(repo.name, { mention: e.target.value })}
               />
             </label>
+            <GithubPermissionCheck
+              key={JSON.stringify([credentialRef, repo])}
+              repo={repo}
+              credentialRef={credentialRef}
+              validRef={validRef}
+            />
           </div>
         ))}
       </fieldset>
@@ -376,6 +464,9 @@ function ListenerInbox({
             {item.title}
           </summary>
           <p className="listener-body">{item.summary}</p>
+          <Link to="/router" search={{ event: item.id }}>
+            在 Router 中继续
+          </Link>
           <small>
             {item.scope} · #{item.id} · 事件 <DateStamp value={item.occurredAt} /> · 入箱{' '}
             <DateStamp value={item.receivedAt} />
@@ -419,7 +510,11 @@ export function ConfigListenersTab() {
   const routingEnabled = routingConfig.data?.settings.enabled === true
   useEffect(() => {
     const anchor = window.location.hash.slice(1)
-    if (['routing-settings', 'listener-inbox', 'routing-web', 'routing-records'].includes(anchor)) {
+    if (
+      ['mandates', 'routing-settings', 'listener-inbox', 'routing-web', 'routing-records'].includes(
+        anchor,
+      )
+    ) {
       const frame = requestAnimationFrame(() => document.getElementById(anchor)?.scrollIntoView())
       return () => cancelAnimationFrame(frame)
     }
@@ -470,6 +565,8 @@ export function ConfigListenersTab() {
   return (
     <div className="listeners-panel">
       <nav className="listener-section-links" aria-label="监听页面导航">
+        <Link to="/router">Router 工作台</Link>
+        <a href="#mandates">长期委托与项目</a>
         <a href="#routing-settings">通知路由设置</a>
         <a href="#listener-inbox">原始事件</a>
         <a href="#routing-web">网页通知</a>
@@ -510,6 +607,7 @@ export function ConfigListenersTab() {
                   disabled={
                     !dirty ||
                     save.isPending ||
+                    current.settings.github.repositories.some(webhookSettingsError) ||
                     (!!current.settings.github.credentialRef &&
                       !credentialPattern.test(current.settings.github.credentialRef.trim()))
                   }
@@ -590,7 +688,16 @@ export function ConfigListenersTab() {
               s.source === 'github'
                 ? config.data?.settings.github.repositories.find((repo) => repo.name === s.scope)
                 : config.data?.settings.wxarc.sessions.find((session) => session.id === s.scope)
-            const labels = { watching: '监听中', error: '检查失败', idle: '等待检查' }
+            const githubPush =
+              s.source === 'github' &&
+              range &&
+              'deliveryMode' in range &&
+              range.deliveryMode === 'webhook'
+            const labels = {
+              watching: '监听中',
+              error: '检查失败',
+              idle: githubPush ? '等待回调' : '等待检查',
+            }
             return (
               <li key={`${s.source}:${s.scope}`}>
                 <b>{s.source === 'github' ? 'GitHub' : 'WXARC'}</b> · {range?.name || s.scope} ·{' '}
@@ -607,6 +714,13 @@ export function ConfigListenersTab() {
           })}
         </ul>
       </section>
+      {config.data && (
+        <ConfigMandates
+          sources={config.data.settings}
+          routingEnabled={routingConfig.data?.settings.enabled}
+        />
+      )}
+      <CommissionGrants />
       <ListenerRoutingSettings config={routingConfig} />
       <ListenerInbox routingEnabled={routingEnabled} records={routeRecords.data?.records ?? []} />
       <ListenerRoutingResults kind="web" query={webNotifications} routingEnabled={routingEnabled} />

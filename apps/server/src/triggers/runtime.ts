@@ -1,13 +1,25 @@
+import { setTimeout as sleep } from 'node:timers/promises'
 import type { TriggerStore } from '@zero-os/observe'
 import type {
+  TriggerGithubPermissionSelection,
   TriggerSettings,
   TriggerSettingsSnapshot,
   TriggerSource,
   TriggerStatus,
   TriggerWxarcSession,
 } from '@zero-os/shared'
-import { getGithubRepository, listGithubRepositories, pollGithub } from './github'
+import {
+  checkGithubReadPermissions,
+  getGithubRepository,
+  listGithubRepositories,
+  pollGithub,
+} from './github'
+import type { TriggerMandateRuntime } from './mandate-runtime'
+import type { MandateService } from './mandate-service'
+import { type RepositoryWebhookProvider, acceptRepositoryWebhook } from './repository-webhook'
+import type { RouterWorkspaceService } from './router-workspace'
 import type { TriggerRoutingRuntime } from './routing-runtime'
+import type { TriggerTaskBridge } from './task-bridge'
 import { listWxarcSessions, pollWxarc } from './wxarc'
 
 const sources = ['github', 'wxarc'] as const
@@ -22,11 +34,13 @@ type SourceJob = {
 
 export class ListenerRuntime {
   private readonly controller = new AbortController()
+  private wxarcRequest?: AbortController
   private readonly status = new Map<string, TriggerStatus>()
   private readonly jobs: Record<TriggerSource, SourceJob> = {
     github: { refreshRequested: false, retryAt: 0 },
     wxarc: { refreshRequested: false, retryAt: 0 },
   }
+  private retentionTimer?: ReturnType<typeof setTimeout>
   private started = false
   private stopping?: Promise<void>
 
@@ -34,21 +48,63 @@ export class ListenerRuntime {
     private readonly store: TriggerStore,
     private readonly resolveSecret: (ref: string) => string | undefined,
     readonly routing: TriggerRoutingRuntime,
+    readonly workspace: RouterWorkspaceService,
     private readonly connectors = { pollGithub, pollWxarc },
+    private readonly tasks?: {
+      runtime: TriggerMandateRuntime
+      mandates: MandateService
+      bridge: TriggerTaskBridge
+    },
   ) {}
+
+  get mandates() {
+    return this.tasks?.mandates
+  }
+
+  get taskBridge() {
+    return this.tasks?.bridge
+  }
+
+  private notifyIntake() {
+    this.routing.notify()
+    this.tasks?.runtime.notify()
+  }
 
   start(): void {
     if (this.started || this.controller.signal.aborted) return
     this.started = true
+    this.sweepExpiredContent()
+    this.workspace.start()
     this.routing.start()
+    this.tasks?.runtime.start()
     for (const source of sources) this.request(source)
+  }
+
+  private sweepExpiredContent() {
+    if (this.controller.signal.aborted) return
+    let delay = 60 * 60_000
+    try {
+      if (this.store.retention.sweep().more) delay = 1000
+    } catch (error) {
+      console.error(
+        '[listeners] Router history cleanup failed, retrying in one minute.',
+        error instanceof Error ? error.name : 'UnknownError',
+      )
+      delay = 60_000
+    }
+    this.retentionTimer = setTimeout(() => this.sweepExpiredContent(), delay)
+    this.retentionTimer.unref()
   }
 
   close(): Promise<void> {
     if (!this.stopping) {
       this.controller.abort()
+      clearTimeout(this.retentionTimer)
       for (const job of Object.values(this.jobs)) clearTimeout(job.timer)
       this.stopping = Promise.allSettled([
+        this.tasks?.bridge.close(),
+        this.tasks?.runtime.close(),
+        this.workspace.close(),
         this.routing.close(),
         ...sources.map((source) => this.jobs[source].running),
       ]).then(() => this.store.close())
@@ -60,11 +116,21 @@ export class ListenerRuntime {
     return this.store.getSettings()
   }
 
-  saveSettings(settings: TriggerSettings, revision: number, githubLookbackHours?: 1 | 24) {
-    const next = this.store.saveSettings(settings, revision, githubLookbackHours)
+  saveSettings(
+    settings: TriggerSettings,
+    revision: number,
+    githubLookbackHours?: 1 | 24,
+    expectedMandateRevision?: number,
+  ) {
+    const next = this.store.saveSettings(
+      settings,
+      revision,
+      githubLookbackHours,
+      expectedMandateRevision,
+    )
     if (next !== revision) {
       this.status.clear()
-      this.routing.notify()
+      this.notifyIntake()
       for (const source of sources) this.request(source, true)
     }
     return this.getSettings()
@@ -89,10 +155,41 @@ export class ListenerRuntime {
     return this.store.listInbox(limit, beforeId)
   }
 
+  get webNotifications() {
+    return this.store.webNotifications
+  }
+
   async listGithubRepositories(signal: AbortSignal, credentialRef = '', name?: string) {
     const token = this.githubToken(credentialRef)
     if (name) return [await getGithubRepository(name, token, signal)]
     return listGithubRepositories(token, signal)
+  }
+
+  checkGithubPermissions(
+    name: string,
+    credentialRef: string,
+    selection: TriggerGithubPermissionSelection,
+    signal: AbortSignal,
+  ) {
+    return checkGithubReadPermissions(
+      name,
+      this.githubToken(credentialRef),
+      selection,
+      AbortSignal.any([signal, this.controller.signal]),
+    )
+  }
+
+  receiveWebhook(provider: RepositoryWebhookProvider, scope: string, request: Request) {
+    return acceptRepositoryWebhook(provider, scope, request, {
+      store: this.store,
+      resolveSecret: this.resolveSecret,
+      githubToken: (ref) => this.githubToken(ref),
+      signal: this.controller.signal,
+      accepted: (name, hasEvents) => {
+        this.checked('github', name)
+        if (hasEvents) this.notifyIntake()
+      },
+    })
   }
 
   listWxarcSessions(signal: AbortSignal) {
@@ -126,7 +223,10 @@ export class ListenerRuntime {
     if (!this.started || this.controller.signal.aborted) return
     const job = this.jobs[source]
     if (job.running) {
-      if (refresh) job.refreshRequested = true
+      if (refresh) {
+        job.refreshRequested = true
+        if (source === 'wxarc') this.wxarcRequest?.abort()
+      }
       return
     }
     clearTimeout(job.timer)
@@ -162,7 +262,9 @@ export class ListenerRuntime {
     settings,
     revision,
   }: TriggerSettingsSnapshot): Promise<number | null> {
-    const repos = settings.github.repositories.filter((row) => row.enabled)
+    const repos = settings.github.repositories.filter(
+      (row) => row.enabled && row.deliveryMode !== 'webhook',
+    )
     if (!repos.length) return null
     const signal = this.controller.signal
     for (const repo of repos) {
@@ -184,7 +286,7 @@ export class ListenerRuntime {
             ...batch,
           })
         ) {
-          if (batch.events.length) this.routing.notify()
+          if (batch.events.length) this.notifyIntake()
           this.checked('github', repo.name)
         }
       } catch (error) {
@@ -204,42 +306,84 @@ export class ListenerRuntime {
   }
 
   private async readWxarc({ settings, revision }: TriggerSettingsSnapshot): Promise<number | null> {
-    // One upstream feed contains all rooms. Rooms at an equal checkpoint share a request.
-    const groups = new Map<string | null, TriggerWxarcSession[]>()
-    for (const session of settings.wxarc.sessions.filter((row) => row.enabled)) {
-      const cursor = this.store.readCursor(this.key('wxarc', session.id))
-      const group = groups.get(cursor)
-      if (group) group.push(session)
-      else groups.set(cursor, [session])
-    }
-    if (!groups.size) return null
-    let delay = intervalMs.wxarc
-    for (const [cursor, sessions] of groups) {
-      if (!this.current(revision)) break
-      try {
-        const batch = await this.connectors.pollWxarc(sessions, cursor, this.controller.signal)
-        if (!this.current(revision)) break
-        for (const session of sessions) {
-          const saved = this.store.commitBatch({
-            source: 'wxarc',
-            stream: this.key('wxarc', session.id),
-            revision,
-            previousCursor: cursor,
-            cursor: batch.cursor,
-            events: batch.events.filter((event) => event.scope === session.id),
-          })
-          if (saved) {
-            if (batch.events.length) this.routing.notify()
-            this.checked('wxarc', session.id)
-          }
-        }
-        if (batch.hasMore) delay = 50
-      } catch (error) {
-        if (!this.current(revision)) break
-        for (const session of sessions) this.checked('wxarc', session.id, error)
+    const enabled = settings.wxarc.sessions.filter((room) => room.enabled)
+    if (!enabled.length) return null
+    const controller = new AbortController()
+    this.wxarcRequest = controller
+    const signal = AbortSignal.any([this.controller.signal, controller.signal])
+    // Each distinct checkpoint is queued once, even while its HTTP request is in flight.
+    // Rooms catching up to a waiting request can join it because the feed is global.
+    type Group = { cursor: string | null; rooms: TriggerWxarcSession[] }
+    const groups = new Map<string | null, Group>()
+    const pending: Group[] = []
+    const enqueue = (room: TriggerWxarcSession) => {
+      const cursor = this.store.readCursor(this.key('wxarc', room.id))
+      const existing = groups.get(cursor)
+      if (existing) existing.rooms.push(room)
+      else {
+        const group = { cursor, rooms: [room] }
+        groups.set(cursor, group)
+        pending.push(group)
       }
     }
-    return delay
+    for (const room of enabled) enqueue(room)
+
+    const consume = async () => {
+      while (!signal.aborted) {
+        const group = pending.shift()
+        if (!group) return
+        const { cursor, rooms } = group
+        const started = Date.now()
+        try {
+          const batch = await this.connectors.pollWxarc(enabled, cursor, signal)
+          if (signal.aborted || !this.current(revision)) return
+          // A nonconforming source can answer an idle request immediately. Bound reconnects.
+          if (batch.cursor === cursor) {
+            const delay = 1000 - (Date.now() - started)
+            if (delay > 0) await sleep(delay, undefined, { signal })
+          }
+          if (signal.aborted || !this.current(revision)) return
+          let matched = false
+          for (const room of rooms) {
+            const events = batch.events.filter((event) => event.scope === room.id)
+            if (
+              this.store.commitBatch({
+                source: 'wxarc',
+                stream: this.key('wxarc', room.id),
+                revision,
+                previousCursor: cursor,
+                cursor: batch.cursor,
+                events,
+              })
+            ) {
+              if (events.length) matched = true
+              this.checked('wxarc', room.id)
+            }
+          }
+          if (matched) this.notifyIntake()
+        } catch (error) {
+          if (signal.aborted || !this.current(revision)) return
+          for (const room of rooms) this.checked('wxarc', room.id, error)
+          await sleep(intervalMs.wxarc, undefined, { signal })
+        }
+        groups.delete(cursor)
+        // A partial failure or another local reader can advance a subset of rooms.
+        for (const room of rooms) enqueue(room)
+      }
+    }
+
+    const workers = Array.from({ length: Math.min(4, groups.size) }, consume)
+    try {
+      await Promise.all(workers)
+    } catch (error) {
+      if (!signal.aborted) throw error
+    } finally {
+      controller.abort()
+      await Promise.allSettled(workers)
+      this.wxarcRequest = undefined
+    }
+    // Settings edited by another process also establish a fresh set of subscriptions.
+    return 0
   }
 
   private checked(source: TriggerSource, scope: string, error?: unknown) {

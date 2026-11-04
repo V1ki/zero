@@ -1,5 +1,7 @@
 import type {
   TriggerEvent,
+  TriggerGithubPermissionReport,
+  TriggerGithubPermissionSelection,
   TriggerGithubRepository,
   TriggerRepositoryOption,
 } from '@zero-os/shared'
@@ -68,6 +70,16 @@ interface Page<T> {
   etag?: string
 }
 
+function githubHeaders(token: string | undefined): Record<string, string> {
+  const headers: Record<string, string> = {
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'ZeRo-OS-Trigger',
+    'X-GitHub-Api-Version': '2022-11-28',
+  }
+  if (token) headers.Authorization = `Bearer ${token}`
+  return headers
+}
+
 class GithubApi {
   constructor(
     private token: string | undefined,
@@ -77,12 +89,7 @@ class GithubApi {
 
   async page<T>(path: string, etag?: string): Promise<Page<T>> {
     let url = safeUrl(path)
-    const headers: Record<string, string> = {
-      Accept: 'application/vnd.github+json',
-      'User-Agent': 'ZeRo-OS-Trigger',
-      'X-GitHub-Api-Version': '2022-11-28',
-    }
-    if (this.token) headers.Authorization = `Bearer ${this.token}`
+    const headers = githubHeaders(this.token)
     if (etag) headers['If-None-Match'] = etag
     for (let redirects = 0; redirects < 5; redirects++) {
       const response = await this.fetcher(url, {
@@ -123,7 +130,7 @@ interface Run {
   id: number
   run_attempt?: number
   repository?: { id: number }
-  name: string
+  name: string | null
   path: string
   head_branch: string | null
   status: string
@@ -185,6 +192,78 @@ export async function getGithubRepository(
   return { name: repo.full_name }
 }
 
+type PermissionCheck = TriggerGithubPermissionReport['checks'][number]
+
+export async function checkGithubReadPermissions(
+  name: string,
+  token: string | undefined,
+  selection: TriggerGithubPermissionSelection,
+  signal: AbortSignal,
+  fetcher: Fetch = fetch,
+): Promise<TriggerGithubPermissionReport> {
+  const path = repoPath(name)
+  const resources: [PermissionCheck['resource'], string][] = []
+  if (selection.workflowFailures) resources.push(['actions', 'actions/runs'])
+  if (selection.prComments) resources.push(['prComments', 'issues/comments'])
+  if (selection.prBase) resources.push(['prBase', 'pulls'])
+  const headers = githubHeaders(token)
+
+  async function probe([resource, suffix]: (typeof resources)[number]): Promise<PermissionCheck> {
+    const url = safeUrl(`${path}/${suffix}?per_page=1`)
+    const init = {
+      headers,
+      redirect: 'manual' as const,
+      signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+    }
+    try {
+      let response = await fetcher(url, { ...init, method: 'HEAD' })
+      await response.body?.cancel()
+      if (response.status === 405 || response.status === 501) {
+        response = await fetcher(url, { ...init, method: 'GET' })
+        await response.body?.cancel()
+      }
+      if (response.ok) return { resource, status: 'readable' }
+      const retryAfterMs = retryDelay(response)
+      if (retryAfterMs) return { resource, status: 'rate_limited', retryAfterMs }
+      if (response.status === 401 || response.status === 403) return { resource, status: 'denied' }
+      if (response.status === 404) return { resource, status: 'not_found' }
+      return { resource, status: 'unavailable' }
+    } catch {
+      signal.throwIfAborted()
+      return { resource, status: 'unavailable' }
+    }
+  }
+  return {
+    access: token ? 'credential' : 'anonymous',
+    checks: await Promise.all(resources.map(probe)),
+  }
+}
+
+type FailureRun = Pick<Run, 'id' | 'run_attempt' | 'name' | 'path' | 'head_branch' | 'updated_at'>
+
+function matchesWorkflow(repo: TriggerGithubRepository, run: FailureRun) {
+  return (
+    (!repo.branch || repo.branch === run.head_branch) &&
+    (!repo.workflow || repo.workflow === run.name || repo.workflow === run.path)
+  )
+}
+
+function workflowFailure(
+  repo: TriggerGithubRepository,
+  repositoryId: number,
+  run: FailureRun,
+): TriggerEvent {
+  const attempt = id(run.run_attempt ?? 1)
+  return {
+    eventId: `${repositoryId}:run:${run.id}:${attempt}:failure`,
+    scope: repo.name,
+    occurredAt: run.updated_at,
+    title: `${run.name ?? run.path} 工作流失败`,
+    summary: `${repo.name} · ${run.head_branch ?? '无分支'} · 第 ${attempt} 次运行`,
+    url: `https://github.com/${repo.name}/actions/runs/${run.id}/attempts/${attempt}`,
+  }
+}
+
 async function scanRuns(
   api: GithubApi,
   repo: TriggerGithubRepository,
@@ -201,26 +280,17 @@ async function scanRuns(
     if (run.repository && run.repository.id !== cursor.repositoryId)
       throw new Error('GitHub repository identity changed; reconfigure this subscription')
     unseen.delete(run.id)
-    if (repo.branch && run.head_branch !== repo.branch) return
-    if (repo.workflow && repo.workflow !== run.name && repo.workflow !== run.path) return
+    if (!matchesWorkflow(repo, run)) return
     if (run.status !== 'completed') {
       if (pending.has(run.id) || timestamp(run.updated_at) >= since) pending.add(run.id)
       return
     }
     const wasPending = pending.delete(run.id)
     if (run.conclusion !== 'failure' || (!wasPending && timestamp(run.updated_at) < since)) return
-    const attempt = id(run.run_attempt ?? 1)
-    const eventId = `${cursor.repositoryId}:run:${run.id}:${attempt}:failure`
-    if (seenEvents.has(eventId)) return
-    seenEvents.add(eventId)
-    events.push({
-      eventId,
-      scope: repo.name,
-      occurredAt: run.updated_at,
-      title: `${run.name} 工作流失败`,
-      summary: `${repo.name} · ${run.head_branch ?? '无分支'} · 第 ${attempt} 次运行`,
-      url: `https://github.com/${repo.name}/actions/runs/${run.id}/attempts/${attempt}`,
-    })
+    const event = workflowFailure(repo, cursor.repositoryId, run)
+    if (seenEvents.has(event.eventId)) return
+    seenEvents.add(event.eventId)
+    events.push(event)
   }
 
   const allRuns = `${path}/actions/runs?per_page=100`
@@ -262,6 +332,42 @@ async function scanRuns(
   cursor.pending = [...pending]
 }
 
+function mentionPattern(login: string) {
+  if (!/^[a-z\d-]+(?:\[bot\])?$/i.test(login)) throw new Error('Invalid GitHub mention')
+  return new RegExp(
+    `(?:^|[^a-z0-9_@./-])@${login.replace(/[\[\]]/g, '\\$&')}(?![a-z0-9_-]|\\[bot\\])`,
+    'i',
+  )
+}
+
+function prMention(
+  repo: TriggerGithubRepository,
+  repositoryId: number,
+  number: number,
+  login: string,
+  comment: Omit<Comment, 'html_url'>,
+): TriggerEvent {
+  return {
+    eventId: `${repositoryId}:comment:${id(comment.id)}`,
+    scope: repo.name,
+    title: `PR #${number} · @${login}`,
+    summary: `${comment.user?.login ?? '未知作者'}：${comment.body.slice(0, 300)}`,
+    occurredAt: comment.created_at,
+    url: `https://github.com/${repo.name}/pull/${number}#issuecomment-${comment.id}`,
+  }
+}
+
+async function prBase(api: GithubApi, path: string, number: number, repositoryId: number) {
+  const { data } = await api.page<{ base: { ref: string; repo?: { id: number } } }>(
+    `${path}/pulls/${number}`,
+  )
+  if (!data?.base?.ref) throw new Error('Missing GitHub pull request branch')
+  if (data.base.repo && data.base.repo.id !== repositoryId) {
+    throw new Error('GitHub repository identity changed; reconfigure this subscription')
+  }
+  return data.base.ref
+}
+
 async function scanComments(
   api: GithubApi,
   repo: TriggerGithubRepository,
@@ -271,11 +377,7 @@ async function scanComments(
   events: TriggerEvent[],
 ) {
   const login = repo.mention.replace(/^@/, '')
-  if (!/^[a-z\d-]+(?:\[bot\])?$/i.test(login)) throw new Error('Invalid GitHub mention')
-  const mention = new RegExp(
-    `(?:^|[^a-z0-9_@./-])@${login.replace(/[\[\]]/g, '\\$&')}(?![a-z0-9_-])`,
-    'i',
-  )
+  const mention = mentionPattern(login)
   // Reuse conditional GET only for an identical page and query window.
   const from = new Date(Math.floor(since / 60_000) * 60_000).toISOString()
   const firstPath = `${path}/issues/comments?per_page=100&sort=updated&direction=asc&since=${encodeURIComponent(from)}`
@@ -302,23 +404,110 @@ async function scanComments(
       const number = id(Number(parts[4]))
       if (repo.branch) {
         if (!bases.has(number)) {
-          const { data } = await api.page<{ base: { ref: string } }>(`${path}/pulls/${number}`)
-          if (!data?.base?.ref) throw new Error('Missing GitHub pull request branch')
-          bases.set(number, data.base.ref)
+          bases.set(number, await prBase(api, path, number, cursor.repositoryId))
         }
         if (bases.get(number) !== repo.branch) continue
       }
-      events.push({
-        eventId: `${cursor.repositoryId}:comment:${id(comment.id)}`,
-        scope: repo.name,
-        title: `PR #${number} · @${login}`,
-        summary: `${comment.user?.login ?? '未知作者'}：${comment.body.slice(0, 300)}`,
-        occurredAt: comment.created_at,
-        url: `https://github.com/${repo.name}/pull/${number}#issuecomment-${comment.id}`,
-      })
+      events.push(prMention(repo, cursor.repositoryId, number, login, comment))
     }
     next = page.next
   }
+}
+
+export class GithubWebhookPayloadError extends Error {
+  constructor() {
+    super('Invalid or out-of-scope GitHub webhook payload')
+  }
+}
+
+function payloadObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new GithubWebhookPayloadError()
+  return value as Record<string, unknown>
+}
+
+function payloadText(value: unknown): string {
+  if (typeof value !== 'string') throw new GithubWebhookPayloadError()
+  return value
+}
+
+function payloadId(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1)
+    throw new GithubWebhookPayloadError()
+  return value
+}
+
+function payloadTime(value: unknown): string {
+  const time = payloadText(value)
+  if (
+    !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/.test(time) ||
+    !Number.isFinite(Date.parse(time))
+  )
+    throw new GithubWebhookPayloadError()
+  return time
+}
+
+/** The HTTP receiver authenticates the original bytes before handing off the JSON here. */
+export async function normalizeGithubWebhook(
+  repo: TriggerGithubRepository,
+  event: string,
+  payload: unknown,
+  getToken: () => string | undefined,
+  signal: AbortSignal,
+  fetcher: Fetch = fetch,
+): Promise<TriggerEvent[]> {
+  const body = payloadObject(payload)
+  const repository = payloadObject(body.repository)
+  const repositoryId = payloadId(repository.id)
+  if (payloadText(repository.full_name).toLowerCase() !== repo.name.toLowerCase())
+    throw new GithubWebhookPayloadError()
+  if (!repo.enabled) return []
+  if (
+    event === 'workflow_run' &&
+    repo.workflowFailures &&
+    payloadText(body.action) === 'completed'
+  ) {
+    const run = payloadObject(body.workflow_run)
+    if (run.repository !== undefined && payloadObject(run.repository).id !== repositoryId)
+      throw new GithubWebhookPayloadError()
+    if (
+      payloadText(run.status) !== 'completed' ||
+      run.conclusion === null ||
+      payloadText(run.conclusion) !== 'failure'
+    )
+      return []
+    const failure: FailureRun = {
+      id: payloadId(run.id),
+      run_attempt: payloadId(run.run_attempt),
+      name: run.name === null ? null : payloadText(run.name),
+      path: payloadText(run.path),
+      head_branch: run.head_branch === null ? null : payloadText(run.head_branch),
+      updated_at: payloadTime(run.updated_at),
+    }
+    return matchesWorkflow(repo, failure) ? [workflowFailure(repo, repositoryId, failure)] : []
+  }
+  if (event !== 'issue_comment' || !repo.mention || payloadText(body.action) !== 'created')
+    return []
+  const issue = payloadObject(body.issue)
+  if (issue.pull_request == null) return []
+  payloadObject(issue.pull_request)
+  const number = payloadId(issue.number)
+  const raw = payloadObject(body.comment)
+  const login = repo.mention.replace(/^@/, '')
+  const text = payloadText(raw.body)
+  if (!mentionPattern(login).test(text)) return []
+  const comment = {
+    id: payloadId(raw.id),
+    body: text,
+    user: raw.user == null ? null : { login: payloadText(payloadObject(raw.user).login) },
+    created_at: payloadTime(raw.created_at),
+  }
+  if (repo.branch) {
+    const api = new GithubApi(getToken(), signal, fetcher)
+    const branch = await prBase(api, repoPath(repo.name), number, repositoryId)
+    if (branch !== repo.branch) return []
+  }
+  return [prMention(repo, repositoryId, number, login, comment)]
 }
 
 export async function pollGithub(

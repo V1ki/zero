@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { DingtalkChannel } from '@zero-os/channel'
 import type { Vault } from '@zero-os/secrets'
@@ -31,6 +32,7 @@ export function buildConfiguredDingtalkDefinition(
       channel.clientSecretRef,
       ...(channel.robotCodeRef ? [channel.robotCodeRef] : []),
     ],
+    cardTemplateId: channel.cardTemplateId,
     debug: channel.debug ?? false,
     keepAlive: channel.keepAlive ?? true,
     credentials:
@@ -60,6 +62,21 @@ export async function registerDingtalkRuntimeChannel(
     clientId: definition.credentials.clientId,
     clientSecret: definition.credentials.clientSecret,
     robotCode: definition.credentials.robotCode,
+    cardTemplateId: definition.cardTemplateId,
+    cardStorePath: join(
+      options.zeroDir,
+      'channels',
+      'dingtalk',
+      `${createHash('sha256')
+        .update(JSON.stringify([definition.name, definition.credentials.clientId]))
+        .digest('hex')}.sqlite`,
+    ),
+    onTaskCardAction: async (action) =>
+      (await options.getTaskBridge?.()?.card({
+        platform: 'dingtalk',
+        channelId: definition.name,
+        ...action,
+      })) ?? false,
     debug: definition.debug,
     keepAlive: definition.keepAlive,
     downloadsDir: join(options.zeroDir, 'workspace', agentName, 'uploads'),

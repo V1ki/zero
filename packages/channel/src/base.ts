@@ -69,6 +69,8 @@ export interface IncomingMessage {
   eventType?: 'message' | 'message_recalled'
   senderId: string
   content: string
+  /** User-authored text only. Excludes quoted messages, cards and attachment previews. */
+  commandText?: string
   timestamp: string
   metadata?: Record<string, unknown>
   images?: ImageAttachment[]

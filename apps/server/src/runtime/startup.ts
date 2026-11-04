@@ -21,8 +21,20 @@ import { createBackgroundToolCompletionDeliveryHandler } from '../message/backgr
 import { writeRestartTrigger } from '../system/restart-trigger'
 import { rebuildWebBundleAsync } from '../system/runtime'
 import { createTriggerAgent } from '../triggers/event-agent'
+import { createGithubInvestigator } from '../triggers/investigation'
+import { createMandatePlatforms } from '../triggers/mandate-platforms'
+import { TriggerMandateRuntime } from '../triggers/mandate-runtime'
+import { createMandateService } from '../triggers/mandate-service'
+import { createRouterAgent } from '../triggers/router-agent'
+import { RouterCommissionService } from '../triggers/router-commission'
+import { RouterWorkspaceService } from '../triggers/router-workspace'
 import { TriggerRoutingRuntime } from '../triggers/routing-runtime'
 import { ListenerRuntime } from '../triggers/runtime'
+import {
+  type TriggerTaskBridge,
+  createChannelTaskAgent,
+  createTaskBridge,
+} from '../triggers/task-bridge'
 import { createTriggerWeixin } from '../triggers/weixin-delivery'
 import type { BusPayload, EventBus } from './bus'
 import { type ChannelRecoveryController, createChannelRecoveryController } from './channel-recovery'
@@ -129,6 +141,7 @@ export async function createStartupRuntime({
 export async function startStartupRuntimeChannels(runtime: StartupRuntime): Promise<void> {
   await startExternalRuntimeChannels({
     zeroDir: runtime.zeroDir,
+    getTaskBridge: () => runtime.zero.listeners.taskBridge,
     startedAt: runtime.startedAt,
     restartSentinelPath: runtime.restartSentinelPath,
     config: runtime.getConfig(),
@@ -211,16 +224,51 @@ async function createStartupRuntimeShell({
   })
 
   const store = new TriggerStore(join(zeroDir, 'listeners', 'inbox.sqlite'))
-  const routing = new TriggerRoutingRuntime(store.routing, {
-    analyze: createTriggerAgent(core),
-    weixin: createTriggerWeixin({
-      channels,
-      channelDefinitions,
-      sessionManager: core.sessionManager,
-    }),
+  const host = { channels, channelDefinitions, sessionManager: core.sessionManager }
+  const analyze = createTriggerAgent(core)
+  const platforms = createMandatePlatforms(host)
+  const routing: TriggerRoutingRuntime = new TriggerRoutingRuntime(store.routing, {
+    analyze,
+    weixin: createTriggerWeixin(host),
+    onPolicyChange: () => taskRuntime.wakeDeferred(),
+    onPresence: () => taskRuntime.heartbeat(),
+    onWebDelivery: () => store.webNotifications.changed(),
+  })
+  const taskRuntime = new TriggerMandateRuntime(store, {
+    analyze,
+    platforms,
+    getPresenceContext: (settings) => routing.getPresenceContext(settings),
+  })
+  const mandates = createMandateService({
+    store,
+    runtime: taskRuntime,
+    listTargets: platforms.listTargets,
+    listArchiveChannels: platforms.listArchiveChannels,
+    probeArchive: platforms.probeArchive,
+  })
+  const commission = new RouterCommissionService(store, mandates, core)
+  const bridge = createTaskBridge({
+    store,
+    agent: createChannelTaskAgent(core),
+    isLiveTarget: platforms.isLiveTarget,
+    commission,
+  })
+  const resolveSecret = (ref: string) => core.vault.get(ref)
+  const investigator = createGithubInvestigator(
+    () => store.getSettings(),
+    resolveSecret,
+    (text) => core.secretFilter.filter(text),
+  )
+  const workspace = new RouterWorkspaceService(store, routing, createRouterAgent(core), {
+    investigator,
+    commission,
   })
   return {
-    listeners: new ListenerRuntime(store, (ref) => core.vault.get(ref), routing),
+    listeners: new ListenerRuntime(store, resolveSecret, routing, workspace, undefined, {
+      runtime: taskRuntime,
+      mandates,
+      bridge,
+    }),
     channels,
     channelAdapters,
     channelDefinitions,
@@ -287,6 +335,7 @@ function createStartupShutdownRuntime({
 }
 
 interface StartExternalRuntimeChannelsOptions {
+  getTaskBridge(): TriggerTaskBridge | undefined
   zeroDir: string
   startedAt: number
   restartSentinelPath: string
@@ -304,6 +353,7 @@ interface StartExternalRuntimeChannelsOptions {
 }
 
 async function startExternalRuntimeChannels({
+  getTaskBridge,
   zeroDir,
   startedAt,
   restartSentinelPath,
@@ -324,6 +374,7 @@ async function startExternalRuntimeChannels({
   commandRouter.register(createRestartCommand({ zeroDir, startedAt, shutdown }))
 
   await registerExternalRuntimeChannels({
+    getTaskBridge,
     zeroDir,
     config,
     vault,

@@ -6,6 +6,7 @@ import { LogsPage } from './routes/logs'
 import { MemoPage } from './routes/memo'
 import { MemoryPage } from './routes/memory'
 import { MetricsPage } from './routes/metrics'
+import { RouterWorkspacePage } from './routes/router-workspace'
 import {
   SessionChannelDetailRedirectPage,
   SessionSourceDetailPage,
@@ -23,6 +24,31 @@ const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
   component: DashboardPage,
+})
+
+const routerWorkspaceRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/router',
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { event?: number; task?: number; view?: 'tasks' | 'chat' | 'notifications' } => {
+    const positiveId = (raw: unknown) => {
+      const id = typeof raw === 'string' && /^[1-9]\d*$/.test(raw) ? Number(raw) : raw
+      return typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? id : undefined
+    }
+    const task = positiveId(search.task)
+    return {
+      event: positiveId(search.event),
+      task,
+      view:
+        search.view === 'tasks' || search.view === 'notifications'
+          ? search.view
+          : search.view === 'chat' && task
+            ? 'chat'
+            : undefined,
+    }
+  },
+  component: RouterWorkspacePage,
 })
 
 const sessionsRoute = createRoute({
@@ -101,6 +127,7 @@ const metricsRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
+  routerWorkspaceRoute,
   sessionsRoute,
   sessionDetailRoute,
   sessionSourceDetailRoute,

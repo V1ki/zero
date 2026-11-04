@@ -249,6 +249,8 @@ The operator UI is a React app hosted by the Bun server. It covers:
 - tool registry visibility
 - logs and metrics
 - config and provider status
+- an event inbox for GitHub webhooks or polling, independently signed CI failures, and selected WeChat conversations through the local WXARC long-poll stream. [Webhook setup](docs/trigger-webhooks.md)
+- a Router workspace for per-task conversations, interactive A2UI cards, GitHub build investigation and notification history. Separate mandates on the same source can archive to a Feishu document and route reminders by schedule, presence and audience. [Router guide](docs/proactive-triggers.md)
 - realtime updates over WebSocket
 
 The front end uses Vite, React 19, TanStack Router, TanStack Query, Zustand, Hono, and

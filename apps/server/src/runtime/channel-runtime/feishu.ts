@@ -77,6 +77,20 @@ export async function registerFeishuRuntimeChannel(
       }),
     )
 
+    feishuChannel.router.setActionHandler(async (click) => {
+      const bridge = options.getTaskBridge?.()
+      if (!bridge || options.isShuttingDown()) return false
+      return bridge.card({
+        platform: 'feishu',
+        channelId: channelName,
+        peerId: click.chatId,
+        actorId: click.actorId,
+        cardId: click.messageId,
+        messageId: click.eventId,
+        taskId: click.taskId,
+        action: 'ack',
+      })
+    })
     await feishuChannel.start()
     console.log(`[ZeRo OS] Channel started: ${definition.name}`)
   }

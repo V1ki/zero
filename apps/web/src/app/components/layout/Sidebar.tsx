@@ -1,4 +1,5 @@
 import {
+  ArrowsSplit,
   Brain,
   CaretDown,
   ChartBar,
@@ -18,6 +19,7 @@ import { useUIStore } from '../../stores/ui'
 
 const navItems = [
   { name: 'Dashboard', icon: Gauge, path: '/' },
+  { name: 'Router', icon: ArrowsSplit, path: '/router' },
   { name: 'Sessions', icon: ClockCounterClockwise, path: '/sessions' },
   { name: 'Memory', icon: Brain, path: '/memory' },
   { name: 'Memo', icon: ClipboardText, path: '/memo' },

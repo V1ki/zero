@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import type {
   TriggerRouteDestination,
   TriggerRouteStatus,
@@ -9,6 +10,8 @@ import type {
 } from '@zero-os/shared'
 import { useState } from 'react'
 import { apiFetch, apiPost, apiPut } from '../lib/api'
+import { RetentionField } from './config-retention-field'
+import { RoutingContextFields } from './config-routing-context'
 import { RoutingPreview } from './config-routing-preview'
 
 const base = '/api/listeners/routing'
@@ -208,6 +211,10 @@ export function ListenerRoutingSettings({
                 开始和结束时间必须不同。结束早于开始时按跨午夜处理。
               </small>
             )}
+            <RetentionField
+              value={settings.retentionDays}
+              onChange={(retentionDays) => update({ retentionDays })}
+            />
             <fieldset className="listener-weekdays">
               <legend className="listener-muted">工作日</legend>
               {[1, 2, 3, 4, 5, 6, 0].map((day) => (
@@ -270,6 +277,7 @@ export function ListenerRoutingSettings({
                 </select>
               </label>
             </div>
+            <RoutingContextFields settings={settings} update={update} />
             <WeixinTargetPicker
               value={settings.weixinTarget}
               onChange={(weixinTarget) => update({ weixinTarget })}
@@ -371,6 +379,9 @@ function RoutingEntry({
         </span>
       </div>
       <h3>{event.title}</h3>
+      <Link to="/router" search={{ event: event.id }}>
+        在 Router 中继续
+      </Link>
       {route.agent && (
         <p className="listener-body">
           <b>Agent 摘要</b>　{route.agent.summary}
@@ -463,9 +474,16 @@ export function ListenerRoutingResults({
         </button>
       </div>
       <p className="listener-muted">
-        {webOnly
-          ? '最近 50 条实际投递到网页的通知。'
-          : '最近 50 条处理记录，含微信投递、延后复查和失败原因。'}
+        {webOnly ? (
+          <>
+            最近 50 条由基础路由送达网页的提醒。
+            <Link to="/router" search={{ view: 'notifications' }}>
+              查看全部网页提醒及委托任务
+            </Link>
+          </>
+        ) : (
+          '最近 50 条处理记录，含微信投递、延后复查和失败原因。'
+        )}
       </p>
       {query.isLoading && <small>正在读取…</small>}
       {query.error && (
@@ -474,7 +492,7 @@ export function ListenerRoutingResults({
         </p>
       )}
       {query.data?.records.length === 0 && (
-        <small>{webOnly ? '暂无已投递的网页通知。' : '暂无路由记录。'}</small>
+        <small>{webOnly ? '暂无由基础路由投递的网页通知。' : '暂无路由记录。'}</small>
       )}
       {query.data?.records.map((work) => (
         <RoutingEntry

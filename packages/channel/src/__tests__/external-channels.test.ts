@@ -956,6 +956,7 @@ describe('FeishuChannel contract', () => {
     }
 
     expect(msg.content).toBe('> 引用: 之前的回复内容\n\n用户的回复')
+    expect(msg.commandText).toBe('用户的回复')
     expect(msg.metadata).toMatchObject({
       parentId: 'om_quoted',
     })

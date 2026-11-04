@@ -10,8 +10,10 @@ import type { ChannelCapabilities, SessionSource } from '@zero-os/shared'
 import type { HeartbeatWriter } from '@zero-os/supervisor'
 import type { ChannelAdapter } from '../../channels/adapter'
 import { handleChannelMessage } from '../../message/handler'
+import { type TriggerTaskBridge, isRouterChannelCommand } from '../../triggers/task-bridge'
 
 export interface ExternalChannelRegistrarOptions {
+  getTaskBridge?(): TriggerTaskBridge | undefined
   zeroDir: string
   channels: Map<string, Channel>
   channelAdapters: Map<string, ChannelAdapter>
@@ -48,11 +50,57 @@ export function createFeishuStreamingStarter(
     replyToMessageId ? channel.replyStreaming(replyToMessageId) : channel.sendStreaming(chatId)
 }
 
+/** Returns true for Router commands, including rejected ones, so they never start a general-purpose Agent. */
+export async function dispatchRouterCommand(
+  message: IncomingMessage,
+  {
+    channelName: channelId,
+    channelType: platform,
+    channelAdapter,
+  }: Pick<RuntimeChannelMessageHandlerOptions, 'channelName' | 'channelType' | 'channelAdapter'>,
+  bridge?: TriggerTaskBridge,
+): Promise<boolean> {
+  if (platform !== 'weixin' && platform !== 'feishu' && platform !== 'dingtalk') return false
+  if (
+    message.eventType === 'message_recalled' ||
+    message.metadata?.eventType === 'message_recalled'
+  )
+    return false
+  const text = message.commandText ?? message.content
+  if (!isRouterChannelCommand(text)) return false
+  if (!bridge) return true
+  const metadata = message.metadata
+  const peerId = typeof metadata?.chatId === 'string' ? metadata.chatId : ''
+  const rawId = metadata?.messageId
+  const messageId = typeof rawId === 'number' || typeof rawId === 'string' ? String(rawId) : ''
+  // Read the authenticated sender before any channel-specific session mapping replaces it.
+  const result = await bridge.handle({
+    platform,
+    channelId,
+    peerId,
+    messageId,
+    text,
+    actorId: message.senderId,
+    isDirect:
+      platform === 'weixin'
+        ? metadata?.chatType === 'dm'
+        : platform === 'feishu'
+          ? metadata?.chatType === 'p2p'
+          : String(metadata?.conversationType) === '1',
+  })
+  if (result.reply && peerId && messageId)
+    await channelAdapter.reply(peerId, result.reply, messageId)
+  return true
+}
+
 export function createRuntimeChannelMessageHandler(
   registrarOptions: ExternalChannelRegistrarOptions,
   handlerOptions: RuntimeChannelMessageHandlerOptions,
 ): MessageHandler {
   return async (message) => {
+    if (registrarOptions.isShuttingDown()) return
+    if (await dispatchRouterCommand(message, handlerOptions, registrarOptions.getTaskBridge?.()))
+      return
     await handleChannelMessage(handlerOptions.mapMessage?.(message) ?? message, {
       channelType: handlerOptions.channelType,
       channelName: handlerOptions.channelName,
