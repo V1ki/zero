@@ -63,7 +63,9 @@ export async function createModelRouterRuntime(options: {
       }),
     ],
     onRefreshError: ({ providerName, message, reason }) => {
-      console.warn('[ZeRo OS] model_catalog_refresh_failed', { providerName, reason, message })
+      // Info-level on stdout (supervisor.log): expired OAuth retries are routine
+      // and previously flooded supervisor.error.log.
+      console.log('[ZeRo OS] model_catalog_refresh_failed', { providerName, reason, message })
     },
     forkEffect,
   })
