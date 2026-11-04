@@ -40,6 +40,15 @@ export type {
   UsageTotals,
 } from './metrics'
 export { SessionDB } from './session-db'
+export { RouterJobConflictError } from './router-job-store'
+export type {
+  RouterJob,
+  RouterJobExecutor,
+  RouterJobScope,
+  RouterJobStatus,
+  RouterJobStep,
+  RouterJobStore,
+} from './router-job-store'
 export type { RouterConversationStoreScope, RouterImScope } from './trigger-conversation-store'
 export { TriggerSettingsConflictError, TriggerStore } from './trigger-store'
 export type { TriggerBatch, TriggerPush } from './trigger-store'

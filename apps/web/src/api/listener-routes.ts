@@ -9,6 +9,7 @@ import {
 } from '@zero-os/shared'
 import { TriggerSettingsConflictError, triggerWebhookSecretPatterns } from '@zero-os/shared'
 import type {
+  CommissionOperator,
   TriggerGithubRepository,
   TriggerRoutingSettings,
   TriggerRoutingSettingsSnapshot,
@@ -59,6 +60,7 @@ type ListenerService = Pick<
     | 'saveConfig'
     | 'listTargets'
     | 'listPersonalTargets'
+    | 'isSelectedDirectTarget'
     | 'listPersonalBots'
     | 'getBotBindings'
     | 'saveBotBinding'
@@ -164,6 +166,19 @@ function parseSession(raw: unknown): TriggerWxarcSession {
   }
 }
 
+function parseGithubOperators(raw: unknown): CommissionOperator[] {
+  if (!Array.isArray(raw) || raw.length > triggerRoutePlatforms.length)
+    badInput('每个平台最多授权一个 Router 机器人。')
+  const operators = raw.map((row) => {
+    const target = parseMandateTarget(row)
+    if (!target.operatorId) badInput('缺少机器人私聊身份，请刷新后重试。')
+    return { ...target, operatorId: target.operatorId }
+  })
+  if (new Set(operators.map((t) => t.platform)).size !== operators.length)
+    badInput('同一平台不能重复授权。')
+  return operators
+}
+
 function parseSettings(
   raw: unknown,
 ): TriggerSettingsSnapshot & { githubLookbackHours?: 1 | 24; expectedMandateRevision?: number } {
@@ -181,7 +196,7 @@ function parseSettings(
   )
     badInput('GitHub 回看范围只能为 1 或 24 小时。')
   const settings = fields(data.settings, ['github', 'wxarc'])
-  const github = fields(settings.github, ['credentialRef', 'repositories'])
+  const github = fields(settings.github, ['credentialRef', 'repositories', 'routerOperators'])
   const wxarc = fields(settings.wxarc, ['sessions'])
   if (
     !Array.isArray(github.repositories) ||
@@ -205,7 +220,13 @@ function parseSettings(
         ? undefined
         : version(data.expectedMandateRevision),
     settings: {
-      github: { credentialRef: credentialRef(github.credentialRef), repositories },
+      github: {
+        credentialRef: credentialRef(github.credentialRef),
+        repositories,
+        ...(github.routerOperators !== undefined && {
+          routerOperators: parseGithubOperators(github.routerOperators),
+        }),
+      },
       wxarc: { sessions },
     },
   }
@@ -440,6 +461,25 @@ export function createListenerRoutes(service: ListenerService) {
       const { settings, revision, githubLookbackHours, expectedMandateRevision } = parseSettings(
         await requestJson(c),
       )
+      const current = service.getSettings()
+      if (current.revision !== revision) throw new TriggerSettingsConflictError()
+      const previous = current.settings.github
+      const github = settings.github
+      const sameConnection = github.credentialRef === previous.credentialRef
+      if (github.routerOperators === undefined && sameConnection && previous.routerOperators)
+        github.routerOperators = previous.routerOperators
+      if (github.routerOperators?.length) {
+        if (!github.credentialRef) badInput('请先设置用于 Router 的 GitHub 只读凭证。')
+        if (!sameConnection && previous.routerOperators?.length)
+          badInput('请先保存新的 GitHub 连接，再为新连接授权机器人。')
+        for (const operator of github.routerOperators) {
+          const retained =
+            sameConnection &&
+            previous.routerOperators?.some((t) => sameTriggerRouteTarget(t, operator))
+          if (!retained && !service.routing.isSelectedDirectTarget(operator))
+            badInput('该机器人私聊身份已变更或不可用，请刷新并重新选择。')
+        }
+      }
       return c.json(
         await service.saveSettings(
           settings,
@@ -639,6 +679,16 @@ export function createListenerRoutes(service: ListenerService) {
         ),
       }),
     )
+    .get('/github/router-operators', (c) => {
+      const bots = service.routing.listPersonalBots()
+      const operators = service.routing.listPersonalTargets().flatMap((target) => {
+        if (!target.operatorId || !service.routing.isSelectedDirectTarget(target)) return []
+        const { platform, channelId, peerId, operatorId } = target
+        const bot = bots.find((b) => b.platform === platform && b.channelId === channelId)
+        return bot ? [{ platform, channelId, peerId, operatorId, label: bot.label }] : []
+      })
+      return c.json({ operators })
+    })
     .get('/github/repositories', async (c) => {
       const ref = credentialRef(c.req.query('credentialRef') ?? '')
       const name = c.req.query('name')

@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
 import { normalizeReasoningEffort, readYaml, readYamlOrDefault } from '@zero-os/shared'
 import type {
   ChannelInstanceConfig,
@@ -10,6 +11,7 @@ import type {
   ModelPricing,
   ModelRouteConfig,
   ModelRoutePreference,
+  RouterCodexCheckout,
   SystemConfig,
 } from '@zero-os/shared'
 import { readString } from '../yaml'
@@ -83,6 +85,7 @@ function normalizeConfig(raw: Record<string, unknown>): SystemConfig {
   const modelPools = normalizeModelPools(raw.model_pools as Record<string, unknown> | undefined)
   const modelRoutes = normalizeModelRoutes(raw.model_routes)
   const recovery = normalizeRuntimeRecoveryConfig(raw.recovery)
+  const router = normalizeRouterCheckouts(raw.router)
 
   const rawChannels = Array.isArray(raw.channels)
     ? (raw.channels as Array<Record<string, unknown>>)
@@ -127,7 +130,53 @@ function normalizeConfig(raw: Record<string, unknown>): SystemConfig {
       ? { embedding: normalizeEmbeddingConfig(raw.embedding as Record<string, unknown>) }
       : {}),
     ...(raw.recovery !== undefined ? { recovery } : {}),
+    ...(router && { router }),
   }
+}
+
+function normalizeRouterCheckouts(raw: unknown): SystemConfig['router'] {
+  if (raw === undefined) return
+  if (!isRecord(raw)) throw new Error('Expected a router configuration object.')
+  const entries = raw.codex_checkouts ?? raw.codexCheckouts
+  if (entries === undefined) return
+  if (!isRecord(entries)) throw new Error('Expected a Router Codex checkout map.')
+  const codexCheckouts: Record<string, RouterCodexCheckout> = {}
+  for (const [repository, value] of Object.entries(entries)) {
+    const key = repository.toLowerCase()
+    if (
+      !/^[a-z0-9-]+\/[a-z0-9_.-]+$/i.test(repository) ||
+      /\/(?:\.|\.\.)$/.test(repository) ||
+      Object.hasOwn(codexCheckouts, key) ||
+      !isRecord(value) ||
+      typeof value.path !== 'string' ||
+      !isAbsolute(value.path) ||
+      /\p{Cc}/u.test(value.path)
+    )
+      throw new Error('Expected a unique GitHub owner/repository and an absolute checkout path.')
+    const channels = value.im_channels ?? value.imChannels ?? []
+    if (!Array.isArray(channels))
+      throw new Error('Expected an array of Router checkout IM channels.')
+    const imChannels: NonNullable<RouterCodexCheckout['imChannels']> = channels.map((channel) => {
+      if (isRecord(channel)) {
+        const id = channel.channel_id ?? channel.channelId
+        const platform = channel.platform
+        if (
+          (platform === 'weixin' || platform === 'dingtalk' || platform === 'feishu') &&
+          typeof id === 'string' &&
+          id.trim() === id &&
+          id.length > 0 &&
+          id.length <= 512 &&
+          !/[\p{Cc}*]/u.test(id)
+        )
+          return { platform, channelId: id }
+      }
+      throw new Error(
+        'Expected a platform and exact bot channel ID in Router checkout IM channels.',
+      )
+    })
+    codexCheckouts[key] = { path: value.path, ...(imChannels.length > 0 && { imChannels }) }
+  }
+  return { codexCheckouts }
 }
 
 function normalizeModelReference(

@@ -38,11 +38,32 @@ export interface RouterDirectReminder {
   reason?: string
 }
 
+/** One page of repository names actually returned for the current user's GitHub access. */
+export interface RouterRepositoryPage {
+  page: number
+  repositories: string[]
+  nextPage: number | null
+}
+
+/** Receipt for a one-off worker job. Private execution and delivery identifiers stay server-side. */
+export interface RouterJobReceipt {
+  id: number
+  executor: 'zero' | 'codex'
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'unknown'
+  attempt: number
+  repository?: string
+  result?: string
+}
+
 export interface TriggerConversationAnswer {
   /** Completed tool calls in execution order. Inputs, private results and reasoning stay out of this view. */
   toolSteps?: Array<{ name: string; ok: boolean }>
   /** Recorded only by the scoped read-only GitHub integration. */
   investigation?: GithubInvestigation
+  repositories?: RouterRepositoryPage
+  job?: RouterJobReceipt
+  /** Server-only authorization snapshot for redacting work history after access changes. */
+  workAccess?: { github: boolean; key: string }
   text: string
   intent?: TriggerConversationIntent
   points?: string[]

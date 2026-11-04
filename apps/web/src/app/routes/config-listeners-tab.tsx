@@ -1,7 +1,8 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { triggerWebhookSecretPatterns } from '@zero-os/shared'
+import { sameTriggerRouteTarget, triggerWebhookSecretPatterns } from '@zero-os/shared'
 import type {
+  CommissionOperator,
   TriggerGithubRepository,
   TriggerInboxItem,
   TriggerRepositoryOption,
@@ -58,9 +59,11 @@ function webhookSettingsError(repo: TriggerGithubRepository) {
 
 function GithubSettings({
   value,
+  saved,
   onChange,
 }: {
   value: TriggerSettings['github']
+  saved: TriggerSettings['github']
   onChange(value: TriggerSettings['github']): void
 }) {
   const [name, setName] = useState('')
@@ -68,6 +71,19 @@ function GithubSettings({
   const credentialRef = value.credentialRef.trim()
   const validRef = !credentialRef || credentialPattern.test(credentialRef)
   const repositories = value.repositories
+  const grants = value.routerOperators ?? []
+  const changedAuthorizedConnection =
+    saved.credentialRef !== credentialRef && Boolean(saved.routerOperators?.length)
+  const options = useQuery({
+    queryKey: ['listeners', 'github', 'router-operators'],
+    enabled: Boolean(credentialRef && validRef),
+    queryFn: ({ signal }) =>
+      apiFetch<{ operators: (CommissionOperator & { label: string })[] }>(
+        `${base}/github/router-operators`,
+        { signal },
+      ),
+    retry: false,
+  })
   const update = (repos: TriggerGithubRepository[]) => onChange({ ...value, repositories: repos })
   const patch = (name: string, fields: Partial<TriggerGithubRepository>) =>
     update(repositories.map((repo) => (repo.name === name ? { ...repo, ...fields } : repo)))
@@ -120,7 +136,7 @@ function GithubSettings({
             autoComplete="off"
             spellCheck={false}
             onChange={(e) => {
-              onChange({ ...value, credentialRef: e.target.value })
+              onChange({ ...value, credentialRef: e.target.value, routerOperators: [] })
               setChoices([])
               discover.reset()
             }}
@@ -131,6 +147,86 @@ function GithubSettings({
             请填写已保存的 github_listener 或 github_listener_ 后缀名称，无需输入令牌值。
           </p>
         )}
+        <fieldset className="listener-item listener-stack">
+          <legend>Router 读取 GitHub</legend>
+          <small>
+            在配置页的 Secrets 中保存只读凭证（如 github_listener），将名称填在上方并保存。网页
+            Router 即可查询，无需添加监听仓库。
+          </small>
+          <small>勾选机器人，允许它在已验证的本人私聊中列出和分析此凭证可访问的仓库。</small>
+          {changedAuthorizedConnection ? (
+            <small>保存新连接后，请为新连接重新勾选机器人。</small>
+          ) : (
+            credentialRef &&
+            validRef && (
+              <>
+                <div className="listener-row">
+                  <button
+                    type="button"
+                    disabled={options.isFetching}
+                    onClick={() => void options.refetch()}
+                  >
+                    刷新可授权机器人
+                  </button>
+                  {options.isFetching && <small>正在读取机器人…</small>}
+                </div>
+                {options.error && (
+                  <p className="listener-error" role="alert">
+                    {errorMessage(options.error)}
+                  </p>
+                )}
+                {options.isSuccess && !options.data.operators.length && (
+                  <small>
+                    尚无可授权的机器人。请先在通知路由设置中选择机器人，再给它发一条私聊。
+                  </small>
+                )}
+                {options.data?.operators.map(({ label, ...identity }) => {
+                  const { platform, channelId } = identity
+                  const checked = grants.some((t) => sameTriggerRouteTarget(t, identity))
+                  const platformLabel = { weixin: '微信', dingtalk: '钉钉', feishu: '飞书' }[
+                    platform
+                  ]
+                  return (
+                    <label key={`${platform}:${channelId}`} className="listener-row">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => {
+                          const next = grants.filter((t) => t.platform !== platform)
+                          if (e.target.checked) next.push(identity)
+                          onChange({ ...value, routerOperators: next })
+                        }}
+                      />
+                      {platformLabel} · {label}
+                    </label>
+                  )
+                })}
+                {!options.isPending &&
+                  grants
+                    .filter(
+                      (t) => !options.data?.operators.some((o) => sameTriggerRouteTarget(t, o)),
+                    )
+                    .map((old) => (
+                      <label className="listener-row" key={old.platform}>
+                        <input
+                          type="checkbox"
+                          checked
+                          onChange={() =>
+                            onChange({
+                              ...value,
+                              routerOperators: grants.filter(
+                                (t) => !sameTriggerRouteTarget(t, old),
+                              ),
+                            })
+                          }
+                        />
+                        {old.channelId} · 旧授权当前不可用，取消勾选可移除
+                      </label>
+                    ))}
+              </>
+            )
+          )}
+        </fieldset>
         <div className="listener-row">
           <label className="listener-field">
             仓库名称
@@ -577,6 +673,7 @@ export function ConfigListenersTab() {
           <fieldset className="listener-sources" disabled={save.isPending}>
             <GithubSettings
               value={current.settings.github}
+              saved={config.data?.settings.github ?? current.settings.github}
               onChange={(github) => update({ ...current.settings, github })}
             />
             <WxarcSettings

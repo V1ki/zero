@@ -1,5 +1,6 @@
 import type { ReasoningEffort } from './reasoning'
 import type { SessionSource } from './session'
+import type { MandatePlatform } from './trigger-mandate'
 
 export type ApiType =
   | 'anthropic_messages'
@@ -205,6 +206,12 @@ export interface RuntimeRecoveryConfig {
   sessionStallTimeoutMs?: number
 }
 
+/** Owner-approved writable checkout. IM use also requires a private GitHub grant. */
+export interface RouterCodexCheckout {
+  path: string
+  imChannels?: Array<{ platform: MandatePlatform; channelId: string }>
+}
+
 export interface SystemConfig {
   providers: Record<string, ProviderConfig>
   modelPools?: Record<string, ModelPoolConfig>
@@ -218,6 +225,7 @@ export interface SystemConfig {
   contextCompactionModel?: string
   embedding?: EmbeddingModelConfig
   recovery?: RuntimeRecoveryConfig
+  router?: { codexCheckouts: Record<string, RouterCodexCheckout> }
 }
 
 export interface SecretFilter {

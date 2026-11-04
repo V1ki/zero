@@ -1,3 +1,5 @@
+import type { CommissionOperator } from './trigger-commission'
+
 export type TriggerSource = 'github' | 'wxarc'
 
 export const triggerWebhookSecretPatterns = {
@@ -46,7 +48,12 @@ export interface TriggerWxarcSession extends TriggerWxarcOption {
 }
 
 export interface TriggerSettings {
-  github: { credentialRef: string; repositories: TriggerGithubRepository[] }
+  github: {
+    credentialRef: string
+    repositories: TriggerGithubRepository[]
+    /** Private Router operators explicitly allowed to read this GitHub connection. */
+    routerOperators?: CommissionOperator[]
+  }
   wxarc: { sessions: TriggerWxarcSession[] }
 }
 

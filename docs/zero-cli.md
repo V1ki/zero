@@ -332,3 +332,21 @@ bun zero status
 ```
 
 只检查 key 是否存在，不要输出 secret value。
+
+## Router 的 Codex 工作目录
+
+在本机 `.zero/config.yaml` 中列出允许 Codex 修改的仓库。每个仓库对应一个专用的本地 Git 签出目录。修改后重启 ZeRo 生效。
+
+```yaml
+router:
+  codex_checkouts:
+    example/service:
+      path: /Users/me/Projects/service-worker
+      im_channels:
+        - platform: weixin
+          channel_id: v1ki-bot
+```
+
+Web Router 可使用清单中的目录。要从机器人私聊派工程任务，另在 `im_channels` 中填写平台和所选机器人账号标识，并在网页授权对应操作者使用 GitHub 连接。省略 `im_channels` 时该仓库只向 Web 开放。未配置仓库时仍可使用只读查询和 ZeRo 分析。
+
+启动或继续 Codex 工作前，ZeRo 会重新核对目录和本地 Git 配置中的 `origin`。使用 GitHub 的 HTTPS 或 SSH 地址和绝对目录，目录需为 Git 工作树根目录，并与 ZeRo 的运行数据分开。请为会写文件、执行项目代码的工程任务提供可信的专用工作副本。

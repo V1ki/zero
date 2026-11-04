@@ -1,6 +1,53 @@
 import type { TriggerInboxItem, TriggerSettingsSnapshot } from '@zero-os/shared'
 import { expect, test } from './fixtures'
 
+test('grants a personal bot access to the GitHub connection without subscribing to a repository', async ({
+  page,
+}) => {
+  const operator = {
+    platform: 'weixin' as const,
+    channelId: 'e2e-wx-bot',
+    peerId: 'e2e-test-peer',
+    operatorId: 'e2e-test-peer',
+  }
+  let saved: TriggerSettingsSnapshot = {
+    revision: 1,
+    settings: { github: { credentialRef: '', repositories: [] }, wxarc: { sessions: [] } },
+  }
+  await page.route('**/api/listeners/config', (route) => {
+    if (route.request().method() === 'PUT') {
+      const data = route.request().postDataJSON() as TriggerSettingsSnapshot
+      expect(data.revision).toBe(saved.revision)
+      saved = { revision: saved.revision + 1, settings: data.settings }
+    }
+    return route.fulfill({ json: saved })
+  })
+  await page.route('**/api/listeners/github/router-operators', (route) =>
+    route.fulfill({ json: { operators: [{ ...operator, label: '个人机器人' }] } }),
+  )
+  await page.goto('/config?tab=listeners')
+  const github = page.getByRole('region', { name: 'GitHub 监听配置' })
+  const bot = github.getByRole('checkbox', { name: '微信 · 个人机器人' })
+  const credential = github.getByLabel('凭证名称（可选）')
+  await credential.fill('github_listener')
+  await bot.check()
+  await page.getByRole('button', { name: '保存监听设置' }).click()
+  await expect
+    .poll(() => saved.settings.github)
+    .toEqual({
+      credentialRef: 'github_listener',
+      repositories: [],
+      routerOperators: [operator],
+    })
+  await page.reload()
+  await expect(bot).toBeChecked()
+  await credential.fill('github_listener_new')
+  await expect(github.getByText('保存新连接后，请为新连接重新勾选机器人。')).toBeVisible()
+  await page.getByRole('button', { name: '保存监听设置' }).click()
+  await expect(bot).not.toBeChecked()
+  expect(saved.settings.github.routerOperators).toEqual([])
+})
+
 test('selects sources, persists their scope, and reads new events separately from scanning', async ({
   page,
 }) => {

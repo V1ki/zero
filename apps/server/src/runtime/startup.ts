@@ -22,13 +22,19 @@ import type { ChannelAdapter } from '../channels/adapter'
 import { createBackgroundToolCompletionDeliveryHandler } from '../message/background-delivery'
 import { writeRestartTrigger } from '../system/restart-trigger'
 import { rebuildWebBundleAsync } from '../system/runtime'
-import { createTriggerAgent } from '../triggers/event-agent'
+import { TriggerAgentError, createTriggerAgent } from '../triggers/event-agent'
 import { createGithubInvestigator } from '../triggers/investigation'
 import { createMandatePlatforms } from '../triggers/mandate-platforms'
 import { TriggerMandateRuntime } from '../triggers/mandate-runtime'
 import { createMandateService } from '../triggers/mandate-service'
 import { createRouterAgent } from '../triggers/router-agent'
+import { createRouterCheckoutResolver } from '../triggers/router-checkouts'
 import { RouterCommissionService } from '../triggers/router-commission'
+import { createRouterJobDelivery } from '../triggers/router-job-delivery'
+import { createRouterJobExecutor } from '../triggers/router-job-executors'
+import { RouterJobPrincipals, jobActor } from '../triggers/router-job-principal'
+import { RouterJobs } from '../triggers/router-jobs'
+import { createRouterRepositoryLookup } from '../triggers/router-repositories'
 import { RouterWorkspaceService } from '../triggers/router-workspace'
 import { TriggerRoutingRuntime } from '../triggers/routing-runtime'
 import { ListenerRuntime } from '../triggers/runtime'
@@ -266,7 +272,43 @@ async function createStartupRuntimeShell({
     resolveSecret,
     (text) => core.secretFilter.filter(text),
   )
+  const repositories = createRouterRepositoryLookup(
+    (actor) => store.getRouterGithubGrant(actor),
+    resolveSecret,
+  )
+  const principals = new RouterJobPrincipals(store, repositories)
+  const checkout = createRouterCheckoutResolver(config.router?.codexCheckouts, zeroDir)
+  const delegatedJobs = new RouterJobs(store.jobs, {
+    authorized: (scope, audience, repository) => principals.authorized(scope, audience, repository),
+    filter: (text) => core.secretFilter.filter(text),
+    execute: createRouterJobExecutor({
+      modelRouter: core.modelRouter,
+      secretFilter: core.secretFilter,
+      codex: core.worker,
+      async workspaceForRepository(job, repository) {
+        const actor = jobActor(job)
+        const directory = actor && (await checkout(repository, actor))
+        return principals.authorized(job.scope, job.audience, repository) ? directory : null
+      },
+      latestFailure(job, repository, signal, workflowFile) {
+        const actor = jobActor(job)
+        if (!actor || !principals.authorized(job.scope, job.audience, repository))
+          throw new TriggerAgentError('此任务的 GitHub 读取授权已变更。')
+        return repositories.latestFailure(actor, repository, signal, workflowFile)
+      },
+    }),
+    completed: createRouterJobDelivery(
+      routing,
+      (job) =>
+        store.jobs.get(job.scope, job.id)?.attempt === job.attempt &&
+        principals.authorized(job.scope, job.audience, job.repository),
+    ),
+  })
   const workspace = new RouterWorkspaceService(store, routing, createRouterAgent(core), {
+    repositories,
+    principals,
+    checkout,
+    delegatedJobs,
     investigator,
     commission,
   })

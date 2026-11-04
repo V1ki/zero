@@ -1,8 +1,9 @@
+import { Database } from 'bun:sqlite'
 import { afterEach, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { TriggerEvent, TriggerSettings } from '@zero-os/shared'
+import type { CommissionOperator, TriggerEvent, TriggerSettings } from '@zero-os/shared'
 import { TriggerSettingsConflictError, TriggerStore } from '../trigger-store'
 
 const settings: TriggerSettings = {
@@ -46,6 +47,55 @@ function open(path = ':memory:'): TriggerStore {
 afterEach(() => {
   for (const store of stores.splice(0)) store.close()
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
+
+test('GitHub connection generations survive restarts and only follow grants for their own principal', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'zero-github-grant-test-'))
+  dirs.push(dir)
+  const path = join(dir, 'grants.db')
+  const owner: CommissionOperator = {
+    platform: 'weixin',
+    channelId: 'wx',
+    peerId: 'dm',
+    operatorId: 'owner',
+  }
+  const other: CommissionOperator = { ...owner, operatorId: 'another' }
+  const selected = structuredClone(settings)
+  selected.github.credentialRef = 'github_listener'
+  selected.github.routerOperators = [owner]
+  // Open a pre-grants database with an existing GitHub connection.
+  const legacy = new Database(path, { create: true })
+  legacy.run(
+    'CREATE TABLE trigger_settings (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL, json TEXT NOT NULL)',
+  )
+  legacy.run('INSERT INTO trigger_settings VALUES (1, 9, ?)', [JSON.stringify(selected)])
+  legacy.close()
+  const store = open(path)
+  const initial = { credentialRef: 'github_listener', generation: 9 }
+  expect(store.getRouterGithubGrant(owner)).toEqual(initial)
+  expect(store.getRouterGithubGrant('web')).toEqual(initial)
+  expect(store.getRouterGithubGrant(other)).toBeNull()
+  selected.wxarc.sessions = []
+  selected.github.routerOperators = [other, owner]
+  store.saveSettings(selected, 9)
+  const reopened = open(path)
+  expect(reopened.getRouterGithubGrant(owner)).toEqual(initial)
+  expect(reopened.getRouterGithubGrant('web')).toEqual(initial)
+  expect(reopened.getRouterGithubGrant(other)?.generation).toBe(10)
+  selected.github.routerOperators = [other]
+  store.saveSettings(selected, 10)
+  expect(reopened.getRouterGithubGrant(owner)).toBeNull()
+  selected.github.routerOperators = [owner, other]
+  store.saveSettings(selected, 11)
+  expect(reopened.getRouterGithubGrant(owner)?.generation).toBe(12)
+  expect(reopened.getRouterGithubGrant(other)?.generation).toBe(10)
+  expect(reopened.getRouterGithubGrant('web')).toEqual(initial)
+  selected.github.credentialRef = 'github_listener_new'
+  store.saveSettings(selected, 12)
+  selected.github.credentialRef = 'github_listener'
+  store.saveSettings(selected, 13)
+  expect(reopened.getRouterGithubGrant('web')?.generation).toBe(14)
+  expect(reopened.getRouterGithubGrant(owner)?.generation).toBe(14)
 })
 
 test('atomic batch persists matches and cursor across readers and restarts', () => {

@@ -167,6 +167,59 @@ async function mockWorkspace(
   return submissions
 }
 
+test('opens only GitHub repository links and follows a delegated job from the same conversation', async ({
+  page,
+}) => {
+  const job = { id: 7, executor: 'zero' as const, attempt: 1 }
+  const receipt: TriggerConversationAnswer = {
+    text: '派工 #7（ZeRo）已排队。',
+    job: { ...job, status: 'queued' },
+  }
+  const submissions = await mockWorkspace(page, async ({ text }) => {
+    if (text === '看看我的 GitHub 仓库')
+      return {
+        text: '当前 GitHub 连接可见的仓库（第 1 页）：\n1. example/releases\n2. bad/../escape\n3. example/imagined',
+        repositories: { page: 1, repositories: ['example/releases', 'bad/../escape'], nextPage: 2 },
+      }
+    if (text === '列出我可访问的 GitHub 仓库第 2 页')
+      return {
+        text: '这是第二页。',
+        repositories: { page: 2, repositories: ['example/tools'], nextPage: null },
+      }
+    if (text === '分析 example/tools 的发布失败') return receipt
+    expect(text).toBe('查看派工 #7 的进度')
+    receipt.text = '派工 #7（ZeRo）执行中。'
+    receipt.job = { ...job, status: 'running' }
+    return receipt
+  })
+  await page.goto('/router')
+  const textbox = page.getByRole('textbox', { name: '给 Router 发消息' })
+  const send = page.getByRole('button', { name: '发送', exact: true })
+  const chat = page.getByRole('region', { name: '对话记录' })
+  await textbox.fill('看看我的 GitHub 仓库')
+  await send.click()
+  await expect(chat.getByRole('link', { name: 'example/releases' })).toHaveAttribute(
+    'href',
+    'https://github.com/example/releases',
+  )
+  await expect(chat.getByRole('link', { name: 'bad/../escape' })).toHaveCount(0)
+  await expect(chat.getByRole('link', { name: 'example/imagined' })).toHaveCount(0)
+  await chat.getByRole('button', { name: '查看第 2 页' }).click()
+  await expect(chat).toContainText('这是第二页。')
+  await textbox.fill('分析 example/tools 的发布失败')
+  await send.click()
+  await expect(chat).toContainText('派工 #7（ZeRo）已排队')
+  await chat.getByRole('button', { name: '查询派工进度' }).click()
+  await expect(chat).toContainText('派工 #7（ZeRo）执行中')
+  receipt.text = '派工 #7（ZeRo）已完成。\n失败发生在测试步骤。'
+  receipt.job = { ...job, status: 'completed', result: '失败发生在测试步骤。' }
+  await expect(chat).toContainText('派工 #7（ZeRo）已完成')
+  await expect(chat.getByRole('button', { name: '查询派工进度' })).toHaveCount(0)
+  await page.reload()
+  await expect(chat).toContainText('失败发生在测试步骤。')
+  expect(submissions.map((submission) => submission.scope)).toEqual(Array(4).fill('general'))
+})
+
 test('opens the Router from the main navigation, handles A2UI actions and restores the selected conversation', async ({
   page,
 }) => {

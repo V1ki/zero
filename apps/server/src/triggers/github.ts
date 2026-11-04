@@ -5,6 +5,7 @@ import type {
   TriggerGithubRepository,
   TriggerRepositoryOption,
 } from '@zero-os/shared'
+import { failedJobFacts } from './investigation'
 
 const API = 'https://api.github.com'
 const OVERLAP_MS = 5 * 60_000
@@ -154,6 +155,29 @@ interface Cursor {
   comments?: { path: string; etag: string }
 }
 
+async function repositoryNamesPage(api: GithubApi, path: string) {
+  const result = await api.page<Repository[]>(path)
+  if (!Array.isArray(result.data)) throw new Error('Invalid GitHub repository list')
+  const names = result.data.map((repo) => {
+    repoPath(repo.full_name)
+    return repo.full_name
+  })
+  return { names, next: result.next }
+}
+
+/** The Router reads one bounded page per call. The host fixes the endpoint and credentials. */
+export async function listGithubRepositoryPage(
+  token: string,
+  page: number,
+  signal: AbortSignal,
+  fetcher: Fetch = fetch,
+) {
+  const path = `/user/repos?per_page=20&sort=full_name&direction=asc&page=${page}`
+  const { names, next } = await repositoryNamesPage(new GithubApi(token, signal, fetcher), path)
+  if (names.length > 20) throw new Error('GitHub repository page exceeded the requested size')
+  return { page, repositories: names, nextPage: next ? page + 1 : null }
+}
+
 export async function listGithubRepositories(
   token: string | undefined,
   signal: AbortSignal,
@@ -164,11 +188,8 @@ export async function listGithubRepositories(
   let path: string | null = '/user/repos?per_page=100&sort=full_name&direction=asc'
   const names = new Set<string>()
   while (path) {
-    const page: Page<Repository[]> = await api.page(path)
-    for (const repo of page.data ?? []) {
-      repoPath(repo.full_name)
-      names.add(repo.full_name)
-    }
+    const page = await repositoryNamesPage(api, path)
+    for (const name of page.names) names.add(name)
     path = page.next
   }
   return Array.from(names, (name) => ({ name }))
@@ -547,4 +568,72 @@ export async function pollGithub(
   }
   cursor.scannedAt = now
   return { cursor: JSON.stringify(cursor), events }
+}
+
+export function isWorkflowFile(value: unknown): value is string {
+  return typeof value === 'string' && /^[^/\\\p{Cc}\p{Cf}]{1,160}\.ya?ml$/u.test(value)
+}
+
+// Account lookups have no inbox event. Keep the query on a single granted repository and
+// validate its identity before exposing the latest failed attempt and its bounded job facts.
+export async function readRouterLatestFailure(
+  name: string,
+  token: string,
+  signal: AbortSignal,
+  fetcher: Fetch = fetch,
+  workflowFile?: string,
+) {
+  if (!token) throw new Error('GitHub 凭据不可用。')
+  if (workflowFile !== undefined && !isWorkflowFile(workflowFile))
+    throw new Error('无效的工作流文件名。')
+  const api = new GithubApi(token, signal, fetcher)
+  const path = repoPath(name)
+  const base = `https://github.com/${name}`
+  const endpoint = workflowFile
+    ? `/actions/workflows/${encodeURIComponent(workflowFile)}`
+    : '/actions'
+  const limit = workflowFile ? 1 : 20
+  const { data } = await api.page<{
+    workflow_runs: Array<Run & { repository: { full_name: string } }>
+  }>(`${path}${endpoint}/runs?status=failure&per_page=${limit}`)
+  if (!Array.isArray(data?.workflow_runs) || data.workflow_runs.length > limit)
+    throw new Error('无效的工作流列表。')
+  const runs = data.workflow_runs
+  for (const run of runs) {
+    if (
+      run.repository?.full_name?.toLowerCase() !== name.toLowerCase() ||
+      run.conclusion !== 'failure' ||
+      run.status !== 'completed' ||
+      typeof run.path !== 'string' ||
+      (workflowFile && run.path !== `.github/workflows/${workflowFile}`)
+    )
+      throw new Error('GitHub 返回的工作流与授权范围不符。')
+  }
+  const run = runs[0]
+  if (!run) return { repository: name, latestFailure: null }
+  const clean = (value: unknown) =>
+    typeof value === 'string'
+      ? value
+          .replace(/[\p{Cc}\p{Cf}]+/gu, ' ')
+          .trim()
+          .slice(0, 160)
+      : ''
+  const filename = (run: Run) => run.path.replace(/^\.github\/workflows\//u, '')
+  const runId = id(run.id)
+  const attempt = id(run.run_attempt)
+  const attemptPath = `/actions/runs/${runId}/attempts/${attempt}`
+  const jobs = await api.page<Record<string, unknown>>(`${path}${attemptPath}/jobs?per_page=50`)
+  if (!jobs.data) throw new Error('GitHub 未返回作业信息。')
+  return {
+    repository: name,
+    latestFailure: {
+      workflow: clean(run.name),
+      workflowFile: clean(filename(run)),
+      branch: clean(run.head_branch),
+      occurredAt: new Date(timestamp(run.updated_at)).toISOString(),
+      url: `${base}${attemptPath}`,
+      facts: failedJobFacts(jobs.data, runId, attempt, base, clean).facts,
+    },
+    recentFailedWorkflows: [...new Set(runs.map(filename).filter(isWorkflowFile))],
+  }
 }

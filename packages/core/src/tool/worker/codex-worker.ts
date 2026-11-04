@@ -7,7 +7,10 @@ import { CodexAppServerRequestError } from './app-server-client'
 import type { CodexWorkerConnection, CodexWorkerServer } from './codex-worker-server'
 import { CodexTurnUsage, type CodexWorkerUsageRecord } from './codex-worker-usage'
 
+import { RouterCodexError, routerJobPolicy, verifyRouterJobPolicy } from './router-job-policy'
+
 interface CodexWorkerInput {
+  routerJob?: boolean
   instruction: string
   workingDirectory?: string
   additionalDirectories?: string[]
@@ -55,6 +58,7 @@ function extendedSandbox(sandbox: unknown, cwd: string, directories: string[]): 
 
 class TurnOutput {
   response = ''
+  finalResponse = ''
   readonly files: Array<{ path: string; kind: string; destination?: string }> = []
   readonly commands: string[] = []
   readonly errors = new Set<string>()
@@ -109,6 +113,7 @@ class TurnOutput {
     switch (item.type) {
       case 'agentMessage':
         this.response = stringField(item, 'text')
+        if (item.phase == null || item.phase === 'final_answer') this.finalResponse = this.response
         break
       case 'fileChange':
         if (item.status !== 'completed') break
@@ -303,7 +308,11 @@ export async function runCodexWorker(
   input: CodexWorkerInput,
   server: CodexWorkerServer,
   recordUsage?: (entry: CodexWorkerUsageRecord) => void,
-): Promise<ToolResult> {
+): Promise<
+  ToolResult & {
+    routerJob?: { threadId?: string; text: string; submitted: boolean; reason?: string }
+  }
+> {
   const cwd = resolve(ctx.projectRoot ?? ctx.workDir, input.workingDirectory ?? '.')
   const handle = ctx.currentToolUseId
     ? ctx.runningToolRegistry?.get(ctx.currentToolUseId)
@@ -326,6 +335,7 @@ export async function runCodexWorker(
   let unavailable = false
   let terminalStatus: string | undefined
   let abortReason: string | undefined
+  let policyError: RouterCodexError | undefined
   let interruptFailure: string | undefined
   let abortTimer: ReturnType<typeof setTimeout> | undefined
   const earlyEvents: Array<{ method: string; params: Fields }> = []
@@ -486,13 +496,17 @@ export async function runCodexWorker(
       subscription = subscribe(connection, input.resumeThreadId)
       resumeUnconfirmed = true
     }
+    const policy = input.routerJob ? await routerJobPolicy(connection, cwd) : undefined
+    if (abortReason) throw new Error(abortReason)
     const thread = await connection
       .request(input.resumeThreadId ? 'thread/resume' : 'thread/start', {
         ...(input.resumeThreadId ? { threadId: input.resumeThreadId, excludeTurns: true } : {}),
         cwd,
         approvalPolicy: 'never',
-        sandbox: 'workspace-write',
-        config: { shell_environment_policy: { set: buildToolContextEnv(ctx) } },
+        ...(policy ?? {
+          sandbox: 'workspace-write',
+          config: { shell_environment_policy: { set: buildToolContextEnv(ctx) } },
+        }),
         ...(input.model ? { model: input.model } : {}),
       })
       .catch((error: unknown) => {
@@ -507,6 +521,7 @@ export async function runCodexWorker(
     resumeUnconfirmed = false
     subscription ??= subscribe(connection, id)
     threadId = id
+    if (policy) await verifyRouterJobPolicy(connection, thread, id, cwd, policy.permissions)
     const previous: unknown = Array.isArray(state.turns) ? state.turns.at(-1) : undefined
     if (
       input.resumeThreadId &&
@@ -571,6 +586,7 @@ export async function runCodexWorker(
     const problem = await Promise.race([completed.promise, stopped.promise])
     if (problem) throw problem
   } catch (error) {
+    if (error instanceof RouterCodexError) policyError = error
     output.errors.add(toErrorMessage(error))
   } finally {
     // A matching turn/started also identifies usage already received if the RPC ACK was lost.
@@ -625,5 +641,15 @@ export async function runCodexWorker(
       outputSummary: ctx.secretFilter?.filter(result.outputSummary) ?? result.outputSummary,
     })
   }
-  return result
+  return input.routerJob
+    ? {
+        ...result,
+        routerJob: {
+          threadId,
+          text: output.finalResponse,
+          submitted: submitting,
+          reason: policyError?.message,
+        },
+      }
+    : result
 }

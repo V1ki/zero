@@ -20,11 +20,12 @@ import { Link, useSearch } from '@tanstack/react-router'
 import type {
   RouterSurfaceAction,
   RouterWorkspaceSnapshot,
+  TriggerConversationAnswer,
   TriggerConversationScope,
   TriggerRouteStatus,
   TriggerWorkspaceEvent,
 } from '@zero-os/shared'
-import { useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, useLayoutEffect, useRef, useState } from 'react'
 import { RouterSurface } from '../components/RouterSurface'
 import { apiFetch, apiPost } from '../lib/api'
 import { ListenerRoutingSettings, useListenerRoutingConfig } from './config-listener-routing'
@@ -47,6 +48,10 @@ const toolLabels: Record<string, string> = {
   prepare_bot_selection: '准备更换机器人',
   prepare_commission: '准备跟踪委托',
   inspect_github: '检查 GitHub 事件',
+  list_github_repositories: '列出可访问的 GitHub 仓库',
+  delegate_task: '派发工作',
+  get_task_status: '查询派工进度',
+  continue_task: '继续派工',
   unknown: '工具未识别',
 }
 const statuses: Record<TriggerRouteStatus, string> = {
@@ -165,6 +170,70 @@ type Operation =
   | { requestId: string; text: string; retry?: boolean }
   | { requestId: string; action: RouterSurfaceAction; retry?: boolean }
 
+function RouterAnswer({
+  answer,
+  disabled,
+  ask,
+}: {
+  answer: TriggerConversationAnswer
+  disabled: boolean
+  ask: (text: string) => void
+}) {
+  const { repositories, job } = answer
+  const nextPage = repositories?.nextPage
+  const text = repositories
+    ? answer.text.split('\n').map((line, index) => {
+        const entry = /^(\d+)\. ([a-z\d-]+\/[a-z\d_.-]+)$/i.exec(line)
+        const name = entry?.[2]
+        const verified =
+          entry &&
+          name &&
+          !/\/\.{1,2}$/.test(name) &&
+          name === repositories.repositories[Number(entry[1]) - 1]
+        return (
+          <Fragment key={`${index}-${line}`}>
+            {index > 0 && '\n'}
+            {verified ? (
+              <>
+                {entry[1]}.{' '}
+                <a href={`https://github.com/${name}`} target="_blank" rel="noreferrer">
+                  {name}
+                </a>
+              </>
+            ) : (
+              line
+            )}
+          </Fragment>
+        )
+      })
+    : answer.text
+  return (
+    <>
+      <p className="rw-answer">{text}</p>
+      {nextPage != null && (
+        <button
+          type="button"
+          className="rw-inline-button rw-work-action"
+          disabled={disabled}
+          onClick={() => ask(`列出我可访问的 GitHub 仓库第 ${nextPage} 页`)}
+        >
+          查看第 {nextPage} 页
+        </button>
+      )}
+      {job && (job.status === 'queued' || job.status === 'running') && (
+        <button
+          type="button"
+          className="rw-inline-button rw-work-action"
+          disabled={disabled}
+          onClick={() => ask(`查看派工 #${job.id} 的进度`)}
+        >
+          查询派工进度
+        </button>
+      )}
+    </>
+  )
+}
+
 function Conversation({
   scope,
   draft,
@@ -193,7 +262,11 @@ function Conversation({
       const data = q.state.data
       if (sending || q.state.status === 'error' || !data) return false
       return data.turns.some(
-        (t) => t.status === 'pending' || t.answer?.reminder?.status === 'sending',
+        (t) =>
+          t.status === 'pending' ||
+          t.answer?.reminder?.status === 'sending' ||
+          t.answer?.job?.status === 'queued' ||
+          t.answer?.job?.status === 'running',
       ) || ['pending', 'analyzing', 'ready', 'sending'].includes(data.route?.status ?? '')
         ? 2000
         : 30_000
@@ -329,7 +402,7 @@ function Conversation({
                 ? `持续任务 #${data.task.id} · ${data.task.eventCount} 条命中`
                 : data.event
                   ? `${data.event.source === 'github' ? 'GitHub' : 'WXARC'} 事件 #${data.event.id}`
-                  : '查询提醒会发到哪里，给自己发消息，或安排跟踪委托。'}
+                  : '查询仓库、安排工作、跟进派工，或调整提醒与跟踪委托。'}
             </p>
             {data.task && <p>{data.task.purpose}</p>}
           </div>
@@ -430,7 +503,13 @@ function Conversation({
                     )}
                   </div>
                 )}
-                {turn.answer && <p className="rw-answer">{turn.answer.text}</p>}
+                {turn.answer && (
+                  <RouterAnswer
+                    answer={turn.answer}
+                    disabled={busy || readOnly}
+                    ask={(text) => submit({ requestId: crypto.randomUUID(), text })}
+                  />
+                )}
                 {!!turn.answer?.toolSteps?.length && (
                   <details className="rw-tool-steps">
                     <summary>本轮调用了 {turn.answer.toolSteps.length} 次工具</summary>

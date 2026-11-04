@@ -1,11 +1,16 @@
+import { isAbsolute } from 'node:path'
 import type { SecretFilter, ToolContext, ToolResult } from '@zero-os/shared'
-import { steerRunningWorker } from '../session/running-tool-registry'
+import { SessionRunningToolRegistry, steerRunningWorker } from '../session/running-tool-registry'
 import { BaseTool } from './base'
 import { runCodexWorker } from './worker/codex-worker'
 import { CodexWorkerServer } from './worker/codex-worker-server'
 import type { CodexWorkerUsageRecord } from './worker/codex-worker-usage'
 
 export type { CodexWorkerUsageRecord } from './worker/codex-worker-usage'
+
+import { RouterCodexError } from './worker/router-job-policy'
+
+export { RouterCodexError }
 
 const workerTypes = ['codex', 'dsh'] as const
 
@@ -54,6 +59,8 @@ export class WorkerTool extends BaseTool {
   }
 
   private readonly server: CodexWorkerServer
+  private readonly routerServer: CodexWorkerServer
+  private readonly secretFilter?: SecretFilter
   private readonly recordUsage?: (entry: CodexWorkerUsageRecord) => void
 
   constructor(
@@ -66,10 +73,63 @@ export class WorkerTool extends BaseTool {
     super()
     this.server = new CodexWorkerServer(options)
     this.recordUsage = options.recordUsage
+    this.secretFilter = options.secretFilter
+    this.routerServer = new CodexWorkerServer({ ...options, experimentalApi: true })
   }
 
-  close(): Promise<void> {
-    return this.server.close()
+  async close(): Promise<void> {
+    await Promise.all([this.server.close(), this.routerServer.close()])
+  }
+
+  /** Host-only entrypoint. Workspace and continuation IDs come from the authorized Router job. */
+  async runRouterJob(input: {
+    sessionId: string
+    workingDirectory: string
+    instruction: string
+    resumeThreadId?: string
+    signal: AbortSignal
+  }): Promise<{ result: string; threadId: string }> {
+    if (!isAbsolute(input.workingDirectory) || !input.instruction.trim() || input.signal.aborted)
+      throw new RouterCodexError('Codex 任务已取消或缺少有效工作区和指令。', false)
+    const registry = new SessionRunningToolRegistry()
+    const handle = registry.register({
+      toolName: this.name,
+      toolUseId: 'router-job',
+      abortable: true,
+    })
+    const onAbort = () => handle.requestAbort('Router job cancelled')
+    input.signal.addEventListener('abort', onAbort, { once: true })
+    try {
+      const completed = await runCodexWorker(
+        {
+          sessionId: input.sessionId,
+          currentToolUseId: handle.toolUseId,
+          workDir: input.workingDirectory,
+          runningToolRegistry: registry,
+          secretFilter: this.secretFilter,
+          logger: { info() {}, warn() {}, error() {} },
+        },
+        { instruction: input.instruction, resumeThreadId: input.resumeThreadId, routerJob: true },
+        this.routerServer,
+        this.recordUsage,
+      )
+      const outcome = completed.routerJob
+      if (!completed.success || !outcome?.text.trim() || !outcome.threadId) {
+        const submitted = outcome?.submitted ?? true
+        throw new RouterCodexError(
+          submitted
+            ? 'Codex 任务未能返回确认结果，请检查工作区后再继续。'
+            : (outcome?.reason ?? 'Codex 任务未启动，请检查 Codex 服务、工作区和权限配置。'),
+          submitted,
+        )
+      }
+      return {
+        threadId: outcome.threadId,
+        result: (this.secretFilter?.filter(outcome.text) ?? outcome.text).trim().slice(0, 8000),
+      }
+    } finally {
+      input.signal.removeEventListener('abort', onAbort)
+    }
   }
 
   protected async execute(ctx: ToolContext, input: unknown): Promise<ToolResult> {

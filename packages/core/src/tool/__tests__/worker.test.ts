@@ -55,7 +55,7 @@ function setup() {
     },
   })
   fixtures.push({ tool, workspace })
-  return { workspace, ctx, trace, tool, usage, waitForRequest }
+  return { workspace, projectRoot, ctx, trace, tool, usage, waitForRequest }
 }
 
 function startWaiting(
@@ -693,5 +693,77 @@ describe('WorkerTool', () => {
       'eof',
       'fresh',
     ])
+  })
+})
+
+describe('Router engineering jobs', () => {
+  test('applies the restricted profile before start and resume and only returns the final assistant text', async () => {
+    const { projectRoot, tool, trace } = setup()
+    const request = {
+      sessionId: 'router-job-7',
+      instruction: 'early',
+      workingDirectory: projectRoot,
+      signal: new AbortController().signal,
+    }
+    const first = await tool.runRouterJob(request)
+    expect(first).toEqual({ threadId: 'thread-fixture-1', result: 'the final worker response' })
+    expect(await tool.runRouterJob({ ...request, resumeThreadId: first.threadId })).toEqual(first)
+    for (const method of ['thread/start', 'thread/resume']) {
+      expect(trace().find((item) => item.method === method)).toMatchObject({
+        cwd: projectRoot,
+        runtimeWorkspaceRoots: [projectRoot],
+        approvalPolicy: 'never',
+        permissionsConfig: {
+          filesystem: {
+            ':minimal': 'read',
+            ':workspace_roots': 'write',
+            [join(projectRoot, '.zero')]: 'deny',
+          },
+          network: { enabled: false },
+        },
+        mcpConfig: { inherited: { enabled: false } },
+        shellInherit: 'none',
+        shellOverride: '',
+      })
+    }
+    expect(trace().filter((item) => item.method === 'mcpServerStatus/list')).toHaveLength(2)
+  })
+
+  test('refuses enabled host tools, rejects before a turn, and distinguishes lost post-submit outcomes', async () => {
+    const { projectRoot, tool, trace, workspace } = setup()
+    const request = {
+      sessionId: 'router-job-8',
+      instruction: 'early',
+      workingDirectory: projectRoot,
+      signal: new AbortController().signal,
+    }
+    writeFileSync(join(workspace, 'external-tools'), '')
+    await expect(tool.runRouterJob(request)).rejects.toMatchObject({ outcomeUnknown: false })
+    expect(trace().some((item) => item.method === 'turn/start')).toBe(false)
+    rmSync(join(workspace, 'external-tools'))
+    await expect(tool.runRouterJob({ ...request, instruction: 'reject' })).rejects.toMatchObject({
+      outcomeUnknown: false,
+    })
+    await expect(tool.runRouterJob({ ...request, instruction: 'eof' })).rejects.toMatchObject({
+      outcomeUnknown: true,
+    })
+  })
+
+  test('interrupts an active job and never submits an already aborted job', async () => {
+    const { projectRoot, tool, trace, waitForRequest } = setup()
+    const abort = new AbortController()
+    const request = {
+      sessionId: 'router-job-9',
+      instruction: 'wait',
+      workingDirectory: projectRoot,
+      signal: abort.signal,
+    }
+    const run = tool.runRouterJob(request)
+    await waitForRequest('turn/start')
+    abort.abort()
+    await expect(run).rejects.toMatchObject({ outcomeUnknown: true })
+    await expect(tool.runRouterJob(request)).rejects.toMatchObject({ outcomeUnknown: false })
+    expect(trace().filter((item) => item.method === 'turn/interrupt')).toHaveLength(1)
+    expect(trace().filter((item) => item.method === 'turn/start')).toHaveLength(1)
   })
 })

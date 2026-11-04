@@ -283,6 +283,13 @@
 .rw-tool-steps summary {
   cursor: pointer;
 }
+.rw-answer a {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+.rw-work-action {
+  justify-self: start;
+}
 .rw-tool-steps ol {
   padding-inline-start: 20px;
   margin-block: 5px;

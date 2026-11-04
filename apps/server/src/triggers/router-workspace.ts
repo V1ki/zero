@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { RouterImScope, TriggerStore } from '@zero-os/observe'
 import {
+  type CommissionOperator,
   type GithubInvestigation,
   type GithubInvestigationAction,
   type MandatePlatform,
@@ -25,7 +26,13 @@ import { MandateInputError } from './mandate-input'
 import type { RouterAgentInput, RouterBot, createRouterAgent } from './router-agent'
 import type { RouterCommissionService } from './router-commission'
 import { parseDirectReminder } from './router-direct-reminder'
+import { routerImScope } from './router-job-principal'
 import { buildRouterReplySurface, buildRouterSurface } from './router-surface'
+import {
+  type RouterWorkIntegrations,
+  createRouterWorkTurn,
+  visibleWorkTurn,
+} from './router-work-turn'
 import { DirectReminderUnavailableError, type TriggerRoutingRuntime } from './routing-runtime'
 import type { TaskMessage } from './task-bridge'
 
@@ -46,6 +53,7 @@ const inspectionQuestions = {
 type Scope = TriggerConversationScope
 interface ImTurn {
   scope: RouterImScope
+  actor: CommissionOperator
   platform: MandatePlatform
   authorized: () => boolean
 }
@@ -105,7 +113,7 @@ export class RouterWorkspaceService {
     private readonly store: TriggerStore,
     private readonly routing: Routing,
     private readonly ask: ReturnType<typeof createRouterAgent>,
-    private readonly integrations: {
+    private readonly integrations: RouterWorkIntegrations & {
       investigator?: GithubInvestigator
       commission?: RouterCommissionService
     } = {},
@@ -119,11 +127,12 @@ export class RouterWorkspaceService {
     if (this.started || this.stop.signal.aborted) return
     this.store.conversations.recoverInterrupted()
     this.started = true
+    this.integrations.delegatedJobs?.start()
   }
 
   async close() {
     this.stop.abort()
-    await Promise.allSettled(this.jobs)
+    await Promise.allSettled([...this.jobs, this.integrations.delegatedJobs?.close()])
   }
 
   listEvents(limit?: number, beforeId?: number) {
@@ -188,7 +197,13 @@ export class RouterWorkspaceService {
 
   get(scope: Scope): RouterWorkspaceSnapshot {
     const context = this.context(scope)
-    const turns = this.store.conversations.list(scope).map(publicTurn)
+    const turns = this.store.conversations
+      .list(scope)
+      .map((entry) =>
+        publicTurn(
+          scope === 'general' ? visibleWorkTurn(entry, 'web', scope, this.integrations) : entry,
+        ),
+      )
     const bots =
       !context.task && (scope === 'general' || turns.some((turn) => turn.answer?.proposal))
         ? this.routing.listPersonalBots()
@@ -267,8 +282,13 @@ export class RouterWorkspaceService {
       return null
     const mayUse = () => this.started && !this.stop.signal.aborted && authorized()
     if (!mayUse()) return null
-    const identity = JSON.stringify([input.platform, input.channelId, input.peerId, input.actorId])
-    const scope: RouterImScope = `im-${createHash('sha256').update(identity).digest('hex')}`
+    const actor: CommissionOperator = {
+      platform: input.platform,
+      channelId: input.channelId,
+      peerId: input.peerId,
+      operatorId: input.actorId,
+    }
+    const scope = routerImScope(actor)
     const requestId = createHash('sha256')
       .update(JSON.stringify([scope, input.messageId]))
       .digest('hex')
@@ -293,6 +313,7 @@ export class RouterWorkspaceService {
       try {
         await this.answer(this.context('general'), claim.turn, claim.attempt, undefined, {
           scope,
+          actor,
           platform: input.platform,
           authorized: mayUse,
         })
@@ -301,7 +322,8 @@ export class RouterWorkspaceService {
         return mayUse() ? error.message : null
       }
       if (!mayUse()) return null
-      const answer = conversations.get(scope, requestId)?.answer
+      const saved = conversations.get(scope, requestId)
+      const answer = saved && visibleWorkTurn(saved, actor, scope, this.integrations).answer
       if (!answer) return null
       const reminder = answer.reminder
       if (reminder?.status === 'draft')
@@ -350,6 +372,22 @@ export class RouterWorkspaceService {
     const scope = im?.scope ?? context.scope
     const conversations = this.store.conversations
     const toolSteps: NonNullable<TriggerConversationAnswer['toolSteps']> = []
+    const history = conversations.list(scope, 20, turn.id)
+    const actor = im?.actor ?? 'web'
+    const personalScope = im?.scope ?? 'general'
+    const mainUserTurn = context.scope === 'general' && !cardAction
+    const work =
+      context.scope === 'general'
+        ? createRouterWorkTurn(
+            this.integrations,
+            this.store,
+            personalScope,
+            actor,
+            turn,
+            history,
+            () => !this.stop.signal.aborted && (!im || im.authorized()),
+          )
+        : undefined
     try {
       if (!task && (cardAction === 'inspect_github' || cardAction === 'compare_runs') && event) {
         const investigator = this.integrations.investigator
@@ -369,14 +407,13 @@ export class RouterWorkspaceService {
         return
       }
       const sources = this.store.getSettings().settings
-      const history = conversations.list(scope, 20, turn.id)
       let draft: TriggerConversationAnswer | undefined
       let investigation: GithubInvestigation | undefined
-      const mainUserTurn = context.scope === 'general' && !cardAction
       const commission = mainUserTurn && !im ? this.commission : undefined
       const previewRoute = !task && this.routing.previewCurrentRoute?.bind(this.routing)
       const investigator = !task && event && this.integrations.investigator
       const actions: NonNullable<RouterAgentInput['actions']> = {
+        ...(mainUserTurn && work?.actions),
         onToolStep(name, ok) {
           if (toolSteps.length < 8) toolSteps.push({ name, ok })
         },
@@ -457,7 +494,11 @@ export class RouterWorkspaceService {
           actions,
           task,
           question: turn.question,
-          history: history.map(publicTurn),
+          history: history.map((saved) =>
+            publicTurn(
+              work ? visibleWorkTurn(saved, actor, personalScope, this.integrations) : saved,
+            ),
+          ),
           event,
           route,
           settings: botRoutingPreferences(settings.settings),
@@ -471,13 +512,14 @@ export class RouterWorkspaceService {
       )
       if (im && !im.authorized()) throw new TriggerAgentError('机器人授权已变更。')
       // Model output cannot mint receipts, drafts, investigation findings or tool history.
-      const reply: TriggerConversationAnswer = draft ?? {
-        text: result.text,
-        ...(result.intent && { intent: result.intent }),
-        ...(result.points && { points: result.points }),
-        ...(result.proposal && { proposal: result.proposal }),
-        ...(investigation && { investigation }),
-      }
+      const reply: TriggerConversationAnswer = draft ??
+        work?.verified(result) ?? {
+          text: result.text,
+          ...(result.intent && { intent: result.intent }),
+          ...(result.points && { points: result.points }),
+          ...(result.proposal && { proposal: result.proposal }),
+          ...(investigation && { investigation }),
+        }
       if (task && !this.context(context.scope).task?.active) {
         conversations.fail(scope, turn.requestId, attempt, '这项任务的委托或来源授权已撤销。')
         throw new RouterWorkspaceError(409, '这项任务的委托或来源授权已撤销。')
@@ -489,7 +531,12 @@ export class RouterWorkspaceService {
           : reply.proposal
             ? { ...reply, proposalRevision: settings.revision }
             : reply
-      if (!conversations.finish(scope, turn.requestId, attempt, { ...answer, toolSteps }))
+      if (
+        !conversations.finish(scope, turn.requestId, attempt, {
+          ...(work?.protect(answer) ?? answer),
+          toolSteps,
+        })
+      )
         throw new RouterWorkspaceError(409, '本次回答已失效，请刷新对话。')
     } catch (error) {
       // Keep the truthful receipt and dispatched steps if only the model's follow-up failed.
@@ -505,6 +552,15 @@ export class RouterWorkspaceService {
       )
         return
       if (error instanceof RouterWorkspaceError) throw error
+      const completedWork = work?.verified()
+      if (work && completedWork && (!im || im.authorized())) {
+        try {
+          const answer = work.protect(completedWork)
+          if (conversations.finish(scope, turn.requestId, attempt, { ...answer, toolSteps })) return
+        } catch (accessError) {
+          if (!(accessError instanceof TriggerAgentError)) throw accessError
+        }
+      }
       const detail =
         error instanceof TriggerAgentError ||
         error instanceof MandateInputError ||

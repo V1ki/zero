@@ -116,6 +116,31 @@ for await (const line of lines) {
     send({ id, result: { userAgent: 'worker-fixture' } })
   } else if (method === 'initialized') {
     record({ method })
+  } else if (method === 'config/read') {
+    record({ method, cwd: params.cwd })
+    send({
+      id,
+      result: {
+        config: {
+          mcp_servers: { inherited: {} },
+          shell_environment_policy: { set: { PRIVATE_SETTING: 'fixture-secret' } },
+        },
+      },
+    })
+  } else if (method === 'mcpServerStatus/list') {
+    record({ method, threadId: params.threadId })
+    send({
+      id,
+      result: {
+        data: [
+          {
+            name: 'inherited',
+            runtimeStatus: existsSync(join(workspace, 'external-tools')) ? 'ready' : 'disabled',
+          },
+        ],
+        nextCursor: null,
+      },
+    })
   } else if (method === 'thread/start' || method === 'thread/resume') {
     const threadId = params.threadId ?? `thread-fixture-${++threadsStarted}`
     const env = params.config?.shell_environment_policy?.set
@@ -130,6 +155,14 @@ for await (const line of lines) {
       sandbox,
       approvalPolicy,
       env: zeroEnv(env),
+      ...(params.permissions && {
+        permissions: params.permissions,
+        runtimeWorkspaceRoots: params.runtimeWorkspaceRoots,
+        permissionsConfig: params.config.permissions[params.permissions],
+        mcpConfig: params.config.mcp_servers,
+        shellInherit: params.config.shell_environment_policy.inherit,
+        shellOverride: env.PRIVATE_SETTING,
+      }),
       extraEnvKeys: Object.keys(env ?? {}).filter((key) => !zeroKeys.includes(key)).length,
     })
     const firstExternalResume =
@@ -178,9 +211,13 @@ for await (const line of lines) {
         modelProvider: 'fixture-provider',
         cwd,
         approvalPolicy,
+        ...(params.permissions && {
+          runtimeWorkspaceRoots: params.runtimeWorkspaceRoots,
+          activePermissionProfile: { id: params.permissions },
+        }),
         sandbox: {
           type: 'workspaceWrite',
-          writableRoots: [join(workspace, 'configured-root')],
+          writableRoots: params.permissions ? [] : [join(workspace, 'configured-root')],
           networkAccess: false,
           excludeSlashTmp: true,
           excludeTmpdirEnvVar: true,

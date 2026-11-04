@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { TriggerSettingsConflictError } from '@zero-os/shared'
+import { TriggerSettingsConflictError, getTriggerRouteBot } from '@zero-os/shared'
 import type {
   MandateTarget,
   TriggerGithubPermissionSelection,
@@ -201,6 +201,13 @@ function fixture(mandates?: MandateService) {
                   { platform: 'feishu', ...group, label: '研究' },
                 ]
               : [],
+          isSelectedDirectTarget: (t) =>
+            targetsAvailable &&
+            t.platform === 'weixin' &&
+            t.channelId === getTriggerRouteBot(routingSettings, 'weixin') &&
+            t.channelId === target.channelId &&
+            t.peerId === target.peerId &&
+            t.operatorId === target.peerId,
           listRoutes: () => [],
           listWeb: () => [],
           latestWebDeliveryId: () => 7,
@@ -476,6 +483,77 @@ describe('listener control plane', () => {
     const ok = await req('github/repositories?name=valid/repo&credentialRef=github_listener_work')
     expect(await ok.json()).toEqual({ repositories: [{ name: 'valid/repo' }] })
     expect((await req('inbox?beforeId=-1')).status).toBe(400)
+  })
+
+  test('grants account discovery to a selected verified bot and permits offline revocation', async () => {
+    const { req, put, settings, target, routingWrite, routingSettings, unbindTarget } = fixture()
+    const operator = { platform: 'weixin', ...target, operatorId: target.peerId }
+    const connection = (
+      revision: number,
+      routerOperators: unknown[],
+      ref = 'github_listener_work',
+    ) =>
+      put({
+        revision,
+        settings: {
+          ...settings,
+          github: { credentialRef: ref, repositories: [], routerOperators },
+        },
+      })
+    expect(await (await req('github/router-operators')).json()).toEqual({ operators: [] })
+    expect((await connection(0, [operator])).status).toBe(400)
+    await routingWrite('preferences', {
+      revision: 0,
+      settings: { ...routingSettings, personalBots: { weixin: target.channelId } },
+    })
+    expect(await (await req('github/router-operators')).json()).toEqual({
+      operators: [{ ...operator, label: 'iLink' }],
+    })
+    for (const invalid of [
+      [{ ...operator, operatorId: 'unknown' }],
+      [{ ...operator, peerId: 'other' }],
+      [{ ...operator, platform: 'dingtalk' }],
+      [operator, operator],
+      [{ ...operator, extra: 'value' }],
+    ])
+      expect((await connection(0, invalid)).status).toBe(400)
+    expect((await connection(0, [operator], '')).status).toBe(400)
+    expect((await connection(0, [operator])).status).toBe(200)
+    // Existing clients editing subscriptions omit grants; the same connection keeps them.
+    const compatible = await put({ revision: 1, settings })
+    expect((await compatible.json()).settings.github.routerOperators).toEqual([operator])
+    expect((await connection(2, [operator], 'github_listener_other')).status).toBe(400)
+    unbindTarget()
+    expect(await (await req('github/router-operators')).json()).toEqual({ operators: [] })
+    expect((await connection(2, [])).status).toBe(200)
+    expect((await connection(3, [operator])).status).toBe(400)
+  })
+
+  test('a credential switch from a legacy client drops the previous connection grants', async () => {
+    const { req, put, settings, target, routingWrite, routingSettings } = fixture()
+    await routingWrite('preferences', {
+      revision: 0,
+      settings: { ...routingSettings, personalBots: { weixin: target.channelId } },
+    })
+    await put({
+      revision: 0,
+      settings: {
+        ...settings,
+        github: {
+          ...settings.github,
+          routerOperators: [{ platform: 'weixin', ...target, operatorId: target.peerId }],
+        },
+      },
+    })
+    const switched = await put({
+      revision: 1,
+      settings: {
+        ...settings,
+        github: { ...settings.github, credentialRef: 'github_listener_other' },
+      },
+    })
+    expect(switched.status).toBe(200)
+    expect((await (await req('config')).json()).settings.github.routerOperators ?? []).toEqual([])
   })
 
   test('a read permission check probes only the selected repository rules and leaves local state untouched', async () => {

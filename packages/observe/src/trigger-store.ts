@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite'
 import { closeSync, mkdirSync, openSync } from 'node:fs'
 import { dirname } from 'node:path'
 import {
+  type CommissionOperator,
   type TriggerEvent,
   type TriggerInboxItem,
   type TriggerSettings,
@@ -11,6 +12,7 @@ import {
   type TriggerWorkspaceEvent,
 } from '@zero-os/shared'
 
+import { RouterJobStore } from './router-job-store'
 import { TriggerConversationStore } from './trigger-conversation-store'
 import { TriggerMandateStore } from './trigger-mandate-store'
 import { TriggerRetentionStore } from './trigger-retention-store'
@@ -33,6 +35,12 @@ export interface TriggerBatch extends TriggerPush {
 
 function streamKey(source: TriggerSource, scope: string): string {
   return `${source}:${source === 'github' ? scope.toLowerCase() : scope}`
+}
+
+function githubActorKey(actor: 'web' | CommissionOperator): string {
+  return actor === 'web'
+    ? actor
+    : JSON.stringify([actor.platform, actor.channelId, actor.peerId, actor.operatorId])
 }
 
 /** Only settings that change the event filter should reset its baseline. */
@@ -70,6 +78,7 @@ function decodeInboxItem({ url, ...row }: InboxRow): TriggerInboxItem {
 }
 
 export class TriggerStore {
+  readonly jobs: RouterJobStore
   readonly mandates: TriggerMandateStore
   readonly conversations: TriggerConversationStore
   readonly retention: TriggerRetentionStore
@@ -92,6 +101,11 @@ export class TriggerStore {
         revision INTEGER NOT NULL,
         json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS router_github_grants (
+        actor TEXT PRIMARY KEY,
+        credential_ref TEXT NOT NULL,
+        generation INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS trigger_streams (
         stream TEXT PRIMARY KEY,
         started_at TEXT NOT NULL,
@@ -111,6 +125,7 @@ export class TriggerStore {
         UNIQUE (stream, event_id)
       );
     `)
+    this.jobs = new RouterJobStore(this.db)
     this.routing = new TriggerRoutingStore(this.db)
     this.mandates = new TriggerMandateStore(this.db, (id) => this.getInboxItem(id))
     this.conversations = new TriggerConversationStore(this.db)
@@ -124,6 +139,43 @@ export class TriggerStore {
       'INSERT INTO trigger_settings (id, revision, json) VALUES (1, 0, ?) ON CONFLICT(id) DO NOTHING',
       [JSON.stringify(defaults)],
     )
+    this.db
+      .transaction(() => {
+        const { revision, settings } = this.getSettings()
+        this.syncGithubGrants(settings.github, revision)
+      })
+      .immediate()
+  }
+
+  private syncGithubGrants(github: TriggerSettings['github'], revision: number): void {
+    const actors = github.credentialRef
+      ? [
+          'web',
+          ...(github.routerOperators ?? []).filter((actor) => actor.operatorId).map(githubActorKey),
+        ]
+      : []
+    this.db.run(
+      'DELETE FROM router_github_grants WHERE actor NOT IN (SELECT value FROM json_each(?))',
+      [JSON.stringify(actors)],
+    )
+    for (const actor of actors) {
+      // Only (re)granting this principal or replacing its connection creates a new generation.
+      this.db.run(
+        `INSERT INTO router_github_grants (actor, credential_ref, generation) VALUES (?, ?, ?)
+         ON CONFLICT (actor) DO UPDATE SET credential_ref = excluded.credential_ref,
+           generation = excluded.generation
+         WHERE router_github_grants.credential_ref <> excluded.credential_ref`,
+        [actor, github.credentialRef, revision],
+      )
+    }
+  }
+
+  getRouterGithubGrant(actor: 'web' | CommissionOperator) {
+    return this.db
+      .query<{ credentialRef: string; generation: number }, [string]>(
+        'SELECT credential_ref AS credentialRef, generation FROM router_github_grants WHERE actor = ?',
+      )
+      .get(githubActorKey(actor))
   }
 
   getSettings(): TriggerSettingsSnapshot {
@@ -172,6 +224,7 @@ export class TriggerStore {
           }
         }
         const revision = current.revision + 1
+        this.syncGithubGrants(settings.github, revision)
         this.db.run('UPDATE trigger_settings SET revision = ?, json = ? WHERE id = 1', [
           revision,
           json,

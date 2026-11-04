@@ -3,7 +3,7 @@ import { buildCodexServerEnv } from '../process-env'
 import { CodexAppServerClient } from './app-server-client'
 
 type Fields = Record<string, unknown>
-type ServerOptions = { codexPath?: string; secretFilter?: SecretFilter }
+type ServerOptions = { codexPath?: string; secretFilter?: SecretFilter; experimentalApi?: boolean }
 interface ThreadListener {
   notify(method: string, params: Fields): void
   fail(error: Error): void
@@ -55,7 +55,7 @@ export class CodexWorkerConnection {
       for (const listener of this.threads.values()) listener.fail(error)
       this.threads.clear()
     })
-    this.ready = this.initialize()
+    this.ready = this.initialize(options.experimentalApi)
   }
 
   private releaseOrphan(threadId: string): void {
@@ -70,10 +70,11 @@ export class CodexWorkerConnection {
     void this.unsubscribe(threadId).then(release, (error: Error) => process.emitWarning(error))
   }
 
-  private async initialize(): Promise<void> {
+  private async initialize(experimentalApi?: boolean): Promise<void> {
     try {
       await this.client.request('initialize', {
         clientInfo: { name: 'zero_os_worker', version: '1' },
+        ...(experimentalApi && { capabilities: { experimentalApi: true } }),
       })
       this.client.notify('initialized', {})
     } catch (error) {

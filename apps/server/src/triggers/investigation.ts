@@ -334,15 +334,15 @@ async function historyFacts(
   return facts
 }
 
-async function jobFacts(
-  id: RunSubject,
-  path: string,
-  { base, repo, get, request, clean }: RepositoryReader,
-  stop: AbortSignal,
-  fetcher: Fetch,
-): Promise<Fact[]> {
+/** Validate job identities before exposing bounded facts about a single run attempt. */
+export function failedJobFacts(
+  data: Row,
+  run: number,
+  attempt: number,
+  base: string,
+  clean: (value: unknown) => string,
+) {
   const facts: Fact[] = []
-  const data = await get(`${path}/jobs?per_page=50`)
   const jobs = rows(data.jobs)
   if (
     typeof data.total_count !== 'number' ||
@@ -352,7 +352,7 @@ async function jobFacts(
   )
     invalid()
   const failed = jobs.filter((job) => {
-    if (job.run_id !== id.run || job.run_attempt !== id.attempt) invalid()
+    if (job.run_id !== run || job.run_attempt !== attempt) invalid()
     return job.conclusion === 'failure' || job.conclusion === 'timed_out'
   })
   facts.push({
@@ -371,9 +371,21 @@ async function jobFacts(
             .map((s) => `步骤 ${integer(s.number)} · ${clean(s.name)}`)
             .join('；')
         : 'GitHub 未标出失败步骤。',
-      url: `${base}/actions/runs/${id.run}/job/${integer(job.id)}`,
+      url: `${base}/actions/runs/${run}/job/${integer(job.id)}`,
     })
   }
+  return { facts, failed }
+}
+
+async function jobFacts(
+  id: RunSubject,
+  path: string,
+  { base, repo, get, request, clean }: RepositoryReader,
+  stop: AbortSignal,
+  fetcher: Fetch,
+): Promise<Fact[]> {
+  const data = await get(`${path}/jobs?per_page=50`)
+  const { facts, failed } = failedJobFacts(data, id.run, id.attempt, base, clean)
   if (failed.length) {
     const checkUrl = failed[0].check_run_url
     const checkId = typeof checkUrl === 'string' ? (checkUrl.split('/').at(-1) ?? '') : ''
