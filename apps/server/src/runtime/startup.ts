@@ -13,7 +13,9 @@ import {
   type Notification,
   type SessionSource,
   type SystemConfig,
+  botRoutingPreferences,
   describeError,
+  isTriggerRoutePlatform,
 } from '@zero-os/shared'
 import type { HeartbeatWriter } from '@zero-os/supervisor'
 import type { ChannelAdapter } from '../channels/adapter'
@@ -139,9 +141,12 @@ export async function createStartupRuntime({
 }
 
 export async function startStartupRuntimeChannels(runtime: StartupRuntime): Promise<void> {
+  const bridge = runtime.zero.listeners.taskBridge
+  if (!bridge) throw new Error('Router 消息入口尚未就绪，无法启动外部通道。')
+  runtime.zero.listeners.workspace.start()
   await startExternalRuntimeChannels({
     zeroDir: runtime.zeroDir,
-    getTaskBridge: () => runtime.zero.listeners.taskBridge,
+    getTaskBridge: () => bridge,
     startedAt: runtime.startedAt,
     restartSentinelPath: runtime.restartSentinelPath,
     config: runtime.getConfig(),
@@ -210,13 +215,6 @@ async function createStartupRuntimeShell({
     sessionManager: core.sessionManager,
   })
 
-  core.startSchedulerRuntime({
-    config,
-    sessionManager: core.sessionManager,
-    channels,
-    addNotification,
-  })
-
   await registerWebRuntimeChannel({
     channels,
     channelDefinitions,
@@ -224,14 +222,28 @@ async function createStartupRuntimeShell({
   })
 
   const store = new TriggerStore(join(zeroDir, 'listeners', 'inbox.sqlite'))
+  const syncRouterOwnedChannels = () => {
+    const settings = botRoutingPreferences(store.routing.getSettings().settings)
+    core.sessionManager.setRouterOwnedChannels(settings.personalBots ?? {})
+  }
+  syncRouterOwnedChannels()
+  core.startSchedulerRuntime({
+    config,
+    sessionManager: core.sessionManager,
+    channels,
+    addNotification,
+  })
   const host = { channels, channelDefinitions, sessionManager: core.sessionManager }
   const analyze = createTriggerAgent(core)
-  const platforms = createMandatePlatforms(host)
+  const platforms = createMandatePlatforms(host, (target) => routing.isSelectedDirectTarget(target))
   const routing: TriggerRoutingRuntime = new TriggerRoutingRuntime(store.routing, {
     analyze,
     weixin: createTriggerWeixin(host),
     personal: platforms,
-    onPolicyChange: () => taskRuntime.wakeDeferred(),
+    onPolicyChange: () => {
+      syncRouterOwnedChannels()
+      taskRuntime.wakeDeferred()
+    },
     onPresence: () => taskRuntime.heartbeat(),
     onWebDelivery: () => store.webNotifications.changed(),
   })
@@ -248,13 +260,6 @@ async function createStartupRuntimeShell({
     probeArchive: platforms.probeArchive,
   })
   const commission = new RouterCommissionService(store, mandates, core)
-  const bridge = createTaskBridge({
-    store,
-    agent: createChannelTaskAgent(core),
-    isLiveTarget: platforms.isLiveTarget,
-    isPersonalTarget: (target) => routing.isPersonalTarget(target),
-    commission,
-  })
   const resolveSecret = (ref: string) => core.vault.get(ref)
   const investigator = createGithubInvestigator(
     () => store.getSettings(),
@@ -264,6 +269,17 @@ async function createStartupRuntimeShell({
   const workspace = new RouterWorkspaceService(store, routing, createRouterAgent(core), {
     investigator,
     commission,
+  })
+  const bridge = createTaskBridge({
+    store,
+    agent: createChannelTaskAgent(core),
+    isLiveTarget: platforms.isLiveTarget,
+    isPersonalTarget: (target) => routing.isPersonalTarget(target),
+    commission,
+    personalDialog: {
+      authorize: (target) => routing.claimRouterImTarget(target),
+      handle: (input, authorized) => workspace.handleIm(input, authorized),
+    },
   })
   return {
     listeners: new ListenerRuntime(store, resolveSecret, routing, workspace, undefined, {
@@ -488,6 +504,11 @@ async function notifyBackgroundToolCompletion(options: {
   if (!channelName || !deliveryChannelId || channelName === 'web') return
 
   const channel = options.channels.get(channelName)
+  if (
+    isTriggerRoutePlatform(channel?.type) &&
+    options.sessionManager.isRouterOwnedChannel(channel.type, channelName)
+  )
+    return
   const text = buildBackgroundToolNotificationText(options.payload, {
     prefixSessionId: shouldPrefixBackgroundToolSessionId(options.payload, options.sessionManager),
   })
@@ -688,6 +709,7 @@ function createNotificationRuntime({
     for (const [name, ch] of channels) {
       const definition = channelDefinitions.get(name)
       if (!definition?.receiveNotifications || !ch.isConnected() || ch.type === 'web') continue
+      if (sessionManager.isRouterOwnedChannel(definition.type, name)) continue
       const chatIds = sessionManager.getCurrentChannelIds(definition.type as SessionSource, name)
       const text = `[notification]${notification.title}: ${notification.description}`
       for (const chatId of chatIds) {

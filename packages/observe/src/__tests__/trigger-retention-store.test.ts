@@ -250,6 +250,25 @@ test('retention expires stale reminder drafts without replaying them and protect
   expect(store.conversations.claimReminder('general', 'sending')).toBe(false)
 })
 
+test('retention expires IM history per audience and preserves the inbound replay barrier', () => {
+  const { store } = fixture()
+  config(store, { retentionDays: 7 })
+  const busy = `im-${'a'.repeat(64)}` as const
+  const idle = `im-${'b'.repeat(64)}` as const
+  const c = store.conversations
+  for (const scope of [busy, idle]) {
+    const turn = c.begin(scope, 'upstream-id', 'question')
+    if (turn.kind !== 'started') throw Error('Expected a turn')
+    expect(c.finish(scope, 'upstream-id', turn.attempt, { text: 'private reply' })).toBe(true)
+  }
+  expect(c.begin(busy, 'followup', 'next question').kind).toBe('started')
+  expect(store.retention.sweep(future()).turns).toBe(1)
+  expect(c.list(idle)).toEqual([])
+  expect(c.begin(idle, 'upstream-id', 'question').kind).toBe('conflict')
+  expect(c.get(busy, 'upstream-id')?.answer?.text).toBe('private reply')
+  expect(c.begin(busy, 'upstream-id', 'question').kind).toBe('existing')
+})
+
 test('a retired task expires independently of its active sibling and their shared event', () => {
   const { store, sql, receive } = fixture()
   config(store, { enabled: true, retentionDays: 7 })

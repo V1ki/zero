@@ -757,6 +757,38 @@ test('after a slow Mac check, a changed policy is reread before a route can deli
   }
 })
 
+test('Router private ingress requires the selected verified peer and fences in-flight replies after a change', async () => {
+  const bot = { platform: 'feishu' as const, channelId: 'personal', label: 'work', online: true }
+  const dm = { ...bot, peerId: 'chat1', operatorId: 'person1' }
+  const second = { ...bot, peerId: 'chat2', operatorId: 'person2' }
+  const direct = [dm]
+  const f = fixture({
+    personal: {
+      listPersonalBots: () => [bot],
+      listPersonalTargets: () => [dm, second],
+      listPersonalDirectTargets: () => direct,
+      sendPersonal: async () => ({ status: 'accepted' }),
+    },
+  })
+  try {
+    expect(f.runtime.claimRouterImTarget(dm)).toBeNull()
+    f.configure({ enabled: false, personalBots: { feishu: bot.channelId } })
+    expect(f.runtime.claimRouterImTarget(second)).toBeNull()
+    const allowed = f.runtime.claimRouterImTarget(dm)
+    expect(allowed?.()).toBe(true)
+    direct.push(second)
+    expect(allowed?.()).toBe(false)
+    expect(f.runtime.claimRouterImTarget(second)).toBeNull()
+    direct.pop()
+    f.configure({ personalBots: { feishu: 'different-bot' } })
+    f.configure({ personalBots: { feishu: bot.channelId } })
+    expect(allowed?.()).toBe(false)
+    expect(f.runtime.claimRouterImTarget(dm)?.()).toBe(true)
+  } finally {
+    await f.close()
+  }
+})
+
 test('explicit private reminders use a pinned selected bot without an event, automatic routing or a work period', async () => {
   const bot = {
     platform: 'feishu' as const,
@@ -830,6 +862,22 @@ test('explicit private reminders use a pinned selected bot without an event, aut
       target: { peerId: dm.peerId },
     })
     const next = f.runtime.prepareDirectReminder('feishu')
+    let imCallerAuthorized = true
+    beforeWrite = () => {
+      imCallerAuthorized = false
+    }
+    expect(
+      (
+        await f.runtime.sendDirectReminder(
+          'feishu',
+          next,
+          '不要发送',
+          'im-request',
+          signal,
+          () => imCallerAuthorized,
+        )
+      ).status,
+    ).toBe('rejected')
     beforeWrite = () => {
       direct.push(another)
     }

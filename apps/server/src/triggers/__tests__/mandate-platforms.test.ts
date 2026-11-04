@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from 'bun:test'
-import { FeishuChannel, WeixinChannel } from '@zero-os/channel'
+import { type Channel, DingtalkChannel, FeishuChannel, WeixinChannel } from '@zero-os/channel'
 import { createMandatePlatforms } from '../mandate-platforms'
 
 function weixinFixture(result: 'accepted' | 'uncertain') {
@@ -28,6 +28,80 @@ function weixinFixture(result: 'accepted' | 'uncertain') {
   const platforms = createMandatePlatforms(host)
   return { platforms, messages, bindings }
 }
+
+test('detached Router bots keep only the authorized verified private task recipient', async () => {
+  const feishu = new FeishuChannel({ name: 'feishu', appId: 'fixture', appSecret: 'fixture' })
+  const ding = new DingtalkChannel({
+    name: 'dingtalk',
+    clientId: 'fixture',
+    clientSecret: 'fixture',
+  })
+  for (const channel of [feishu, ding]) spyOn(channel, 'isConnected').mockReturnValue(true)
+  feishu.directPeers.recordVerifiedDirect('oc_self', 'ou_self')
+  feishu.directPeers.recordVerifiedDirect('oc_other', 'ou_other')
+  for (const [conversationId, conversationType] of [
+    ['self', '1'],
+    ['group', '2'],
+  ])
+    ding.taskCards.remember({
+      conversationId,
+      conversationType,
+      chatbotCorpId: 'org',
+      senderStaffId: 'staff',
+      senderCorpId: 'org',
+    })
+  const feishuSend = spyOn(feishu.router, 'send').mockResolvedValue({
+    status: 'accepted',
+    receipt: 'om_fixture',
+  })
+  const dingSend = spyOn(ding.taskCards, 'send').mockResolvedValue('receipt')
+  const wx = new WeixinChannel({
+    name: 'weixin',
+    accountId: 'fixture',
+    token: 'fixture',
+    homeDir: '/unused',
+  })
+  spyOn(wx, 'listReminderPeers').mockReturnValue(['wx_self'])
+  spyOn(wx, 'sendReminderWithReceipt').mockResolvedValue({ status: 'accepted' })
+  const channels = new Map<string, Channel>(
+    [wx, feishu, ding].map((channel) => [channel.name, channel]),
+  )
+  let selected = true
+  const platforms = createMandatePlatforms(
+    {
+      channels,
+      sessionManager: { listCurrentBindings: () => [] },
+      channelDefinitions: new Map(
+        [wx, feishu, ding].map(({ type, name }) => [
+          name,
+          { type, name, configured: true, receiveNotifications: false, secretRefs: [] },
+        ]),
+      ),
+    },
+    (target) => selected && ['wx_self', 'ou_self', 'staff'].includes(target.operatorId ?? ''),
+  )
+  const targets = platforms.listTargets()
+  expect(targets.map((t) => t.peerId)).toEqual(['wx_self', 'oc_self', 'self'])
+  const signal = new AbortController().signal
+  const payload = {
+    id: 'task',
+    digest: false,
+    entries: [{ taskId: 1, matchId: 1, inboxId: 1, title: 'title', summary: 'summary' }],
+  }
+  for (const target of targets) {
+    expect(platforms.isLiveTarget(target)).toBe(true)
+    expect((await platforms.send(target, payload, signal)).status).toBe('accepted')
+    expect(platforms.isLiveTarget({ ...target, operatorId: 'stranger' })).toBe(false)
+  }
+  selected = false
+  expect(platforms.listTargets()).toEqual([])
+  expect(feishuSend.mock.calls[0][3]?.()).toBe(false)
+  expect(dingSend.mock.calls[0][4]?.()).toBe(false)
+  for (const target of targets)
+    expect((await platforms.send(target, payload, signal)).status).toBe('rejected')
+  ding.taskCards.close()
+  feishu.directPeers.close()
+})
 
 test('matches the current sender binding exactly and never sends to an unbound operator', async () => {
   const { platforms, messages, bindings } = weixinFixture('accepted')

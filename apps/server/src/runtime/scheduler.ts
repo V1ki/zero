@@ -96,10 +96,13 @@ export async function handleScheduleTrigger(
   { sessionManager, channels, addNotification }: ScheduleTriggerOptions,
 ): Promise<void> {
   const binding = schedConfig.channel
+  const isRouterOwned = () =>
+    binding && sessionManager.isRouterOwnedChannel(binding.source, binding.channelName)
   let session: Session
   let shouldInitializeAgent = false
 
   if (binding) {
+    if (isRouterOwned()) throw new Error(`Schedule "${schedConfig.name}" targets a Router-only bot`)
     const result = sessionManager.getOrCreateForChannel(
       binding.source as SessionSource,
       binding.channelId,
@@ -118,6 +121,7 @@ export async function handleScheduleTrigger(
     if (!switched.success) {
       throw new Error(`Schedule "${schedConfig.name}" model resolution failed: ${switched.message}`)
     }
+    if (isRouterOwned()) return
   }
 
   if (shouldInitializeAgent) {
@@ -129,7 +133,7 @@ export async function handleScheduleTrigger(
 
   const replies = await session.handleMessage(schedConfig.instruction)
 
-  if (!binding) return
+  if (!binding || isRouterOwned()) return
 
   const channel = channels.get(binding.channelName)
   const text = collectAssistantReply(replies)

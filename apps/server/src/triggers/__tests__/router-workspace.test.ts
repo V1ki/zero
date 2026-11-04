@@ -702,3 +702,175 @@ test('the normal workspace entry point runs successive model tool calls, feeds a
   expect(sendReminder).toHaveBeenCalledTimes(1)
   expect(calls).toBe(3)
 })
+
+const routerDm = {
+  platform: 'weixin' as const,
+  channelId: 'v1ki-bot',
+  actorId: 'im-owner',
+  peerId: 'im-owner',
+  messageId: 'im-upstream-id',
+  text: '我的工作日偏好是什么？',
+  isDirect: true,
+}
+
+test('Router IM retains history only for the authenticated platform, bot, peer and actor', async () => {
+  const { service, ask } = setup(async (input) => ({ text: input.question }))
+  await service.message('general', crypto.randomUUID(), '只存在于网页主对话')
+  const allowed = () => true
+  for (const identity of [
+    routerDm,
+    { ...routerDm, platform: 'feishu' as const },
+    { ...routerDm, platform: 'feishu' as const, peerId: 'another-chat' },
+    { ...routerDm, platform: 'feishu' as const, actorId: 'another-actor' },
+    { ...routerDm, channelId: 'another-bot' },
+  ]) {
+    expect(await service.handleIm(identity, allowed)).toContain(routerDm.text)
+    expect(ask.mock.lastCall?.[0].history).toEqual([])
+  }
+  const imSessions = ask.mock.calls.slice(1).map(([input]) => input.sessionId)
+  expect(new Set(imSessions).size).toBe(5)
+  const next = { ...routerDm, messageId: 'next-im-id', text: '接着上一个问题。' }
+  await service.handleIm(next, allowed)
+  expect(ask.mock.lastCall?.[0].sessionId).toBe(imSessions[0])
+  expect(ask.mock.lastCall?.[0].history.map((turn) => turn.question)).toEqual([routerDm.text])
+  expect(service.get('general').turns.map((turn) => turn.question)).toEqual(['只存在于网页主对话'])
+})
+
+test('Router IM deduplicates concurrent and replayed deliveries across service restarts', async () => {
+  const started = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  const { service, ask, store, routing } = setup(async () => {
+    started.resolve()
+    await release.promise
+    return { text: '这是唯一一条回复。' }
+  })
+  const first = service.handleIm(routerDm, () => true)
+  await started.promise
+  const replay = service.handleIm(routerDm, () => true)
+  release.resolve()
+  expect((await Promise.all([first, replay])).filter(Boolean)).toEqual(['这是唯一一条回复。'])
+  await service.close()
+  const restored = new RouterWorkspaceService(store, routing, ask)
+  restored.start()
+  try {
+    expect(await restored.handleIm(routerDm, () => true)).toBeNull()
+    expect(ask).toHaveBeenCalledTimes(1)
+  } finally {
+    await restored.close()
+  }
+})
+
+test('Router IM refuses groups and revoked access before releasing a model response or an external send', async () => {
+  let allowed = false
+  const authorized = () => allowed
+  const { ask, service, prepareReminder, sendReminder } = setup(async (input) => {
+    allowed = false
+    await input.actions?.sendReminder?.('weixin', '发送测试', new AbortController().signal)
+    return { text: '不得发送这条回复。' }
+  })
+  prepareReminder.mockReturnValue(reminderRecipient)
+  sendReminder.mockResolvedValue({ status: 'accepted' })
+  expect(await service.handleIm(routerDm, authorized)).toBeNull()
+  expect(await service.handleIm({ ...routerDm, isDirect: false }, () => true)).toBeNull()
+  expect(ask).not.toHaveBeenCalled()
+  allowed = true
+  expect(
+    await service.handleIm({ ...routerDm, text: '现在发微信提醒我发送测试' }, authorized),
+  ).toBeNull()
+  expect(ask).toHaveBeenCalledTimes(1)
+  expect(sendReminder).not.toHaveBeenCalled()
+})
+
+test('an IM reminder draft stays in its private dialogue and confirmation survives delivery replay', async () => {
+  const body = '处理充值'
+  const { service, ask, prepareReminder, sendReminder } = setup(async (input) => {
+    if (input.history.length === 0) {
+      input.actions?.prepareReminder?.('weixin', body)
+    } else {
+      const prior = input.history[0]
+      expect(prior.answer?.reminder?.status).toBe('draft')
+      expect(prior.answer?.reminder?.audienceKey).toBeUndefined()
+      await input.actions?.sendReminder?.('weixin', body, new AbortController().signal, prior.id)
+    }
+    return { text: '已处理。' }
+  })
+  prepareReminder.mockReturnValue(reminderRecipient)
+  sendReminder.mockResolvedValue({ status: 'accepted' })
+  const draft = { ...routerDm, text: '先帮我拟一份微信草稿：处理充值' }
+  const confirmation = { ...routerDm, text: '把上一条草稿发出去', messageId: 'confirmation' }
+  expect(await service.handleIm(draft, () => true)).toContain(body)
+  expect(sendReminder).not.toHaveBeenCalled()
+  expect(await service.handleIm(confirmation, () => true)).toContain('受理')
+  expect(await service.handleIm(confirmation, () => true)).toBeNull()
+  expect(ask).toHaveBeenCalledTimes(2)
+  expect(sendReminder).toHaveBeenCalledTimes(1)
+  expect(service.get('general').turns).toHaveLength(0)
+})
+
+test('a read-only reply cannot leave the Router after ownership changes during the model call', async () => {
+  let allowed = true
+  const { service, ask } = setup(async () => {
+    allowed = false
+    return { text: '只应向原收件人展示。' }
+  })
+  expect(await service.handleIm(routerDm, () => allowed)).toBeNull()
+  allowed = true
+  expect(await service.handleIm(routerDm, () => allowed)).toBeNull()
+  expect(ask).toHaveBeenCalledTimes(1)
+})
+
+test('an IM Router turn exposes personal reminder tools and keeps global confirmation cards in the Web workspace', async () => {
+  const tools: string[][] = []
+  const adapter: ProviderAdapter = {
+    apiType: 'test',
+    healthCheck: async () => true,
+    stream() {
+      throw Error('Unexpected streaming')
+    },
+    async complete(request) {
+      tools.push(request.tools?.map((tool) => tool.name) ?? [])
+      const first = tools.length === 1
+      const content: ContentBlock[] = first
+        ? [
+            {
+              type: 'tool_use',
+              id: 'send',
+              name: 'send_personal_reminder',
+              input: { platform: 'weixin', text: '处理充值' },
+            },
+          ]
+        : [{ type: 'text', text: '平台已受理。' }]
+      if (!first) {
+        const result = request.messages.at(-1)?.content[0]
+        expect(result?.type === 'tool_result' && result.content).toContain('accepted')
+      }
+      return {
+        id: 'local-test',
+        model: 'fake',
+        content,
+        usage: { input: 1, output: 1 },
+        stopReason: first ? 'tool_use' : 'end_turn',
+      }
+    },
+  }
+  const { service, prepareReminder, sendReminder } = setup(
+    createRouterAgent({
+      secretFilter: { filter: (v) => v },
+      modelRouter: { getDefaultModel: () => ({ adapter }), getCurrentModel: () => undefined },
+    }),
+  )
+  prepareReminder.mockReturnValue(reminderRecipient)
+  sendReminder.mockResolvedValue({ status: 'accepted' })
+  const message = { ...routerDm, text: '现在发微信提醒我处理充值' }
+  expect(await service.handleIm(message, () => true)).toContain('受理')
+  expect(await service.handleIm(message, () => true)).toBeNull()
+  expect(tools[0]).toContain('get_routing_context')
+  expect(tools[0]).toContain('send_personal_reminder')
+  expect(tools[0]).toContain('prepare_personal_reminder')
+  expect(tools[0]).not.toContain('prepare_routing_preference')
+  expect(tools[0]).not.toContain('prepare_bot_selection')
+  expect(tools[0]).not.toContain('bash')
+  expect(tools).toHaveLength(2)
+  expect(sendReminder).toHaveBeenCalledTimes(1)
+  expect(service.get('general').turns).toHaveLength(0)
+})

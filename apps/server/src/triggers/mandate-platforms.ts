@@ -25,10 +25,13 @@ async function sendWeixinText(
   return { status: receipt.status === 'uncertain' ? 'unknown' : 'rejected', reason: receipt.reason }
 }
 
-export function createMandatePlatforms(host: Host) {
+export function createMandatePlatforms(
+  host: Host,
+  isSelectedDirectTarget?: (target: MandateTarget) => boolean,
+) {
   const weixin = createTriggerWeixin(host)
-  const feishu = createFeishuTaskDelivery(host)
-  const dingtalk = createDingtalkTaskDelivery(host)
+  const feishu = createFeishuTaskDelivery(host, isLiveTarget)
+  const dingtalk = createDingtalkTaskDelivery(host, isLiveTarget)
   function listPersonalBots() {
     return Array.from(host.channelDefinitions).flatMap(([channelId, definition]) => {
       const platform = definition.type
@@ -55,20 +58,28 @@ export function createMandatePlatforms(host: Host) {
   }
 
   function listTargets(personal = false) {
-    return [...weixinTargets(), ...feishu.listTargets(), ...dingtalk.listTargets(personal)]
-  }
-
-  function listPersonalDirectTargets() {
-    return [...weixinTargets(true), ...feishu.listDirectTargets(), ...dingtalk.listDirectTargets()]
-  }
-
-  function listPersonalTargets() {
-    const targets = listTargets(true)
-    for (const direct of listPersonalDirectTargets()) {
+    const targets = [...weixinTargets(), ...feishu.listTargets(), ...dingtalk.listTargets(personal)]
+    if (!personal && !isSelectedDirectTarget) return targets
+    // Personal resolution needs all verified DMs to detect ambiguity. Mandates may use
+    // a detached DM only when it is the selected bot's currently authorized recipient.
+    for (const direct of listPersonalDirectTargets(!personal)) {
+      if (!personal && !isSelectedDirectTarget?.(direct)) continue
       if (!targets.some((candidate) => sameTriggerRouteTarget(candidate, direct)))
         targets.push(direct)
     }
     return targets
+  }
+
+  function listPersonalDirectTargets(forTask = false) {
+    return [
+      ...weixinTargets(true),
+      ...feishu.listDirectTargets(),
+      ...dingtalk.listDirectTargets(forTask),
+    ]
+  }
+
+  function listPersonalTargets() {
+    return listTargets(true)
   }
 
   function isLiveTarget(target: MandateTarget, personal = false) {

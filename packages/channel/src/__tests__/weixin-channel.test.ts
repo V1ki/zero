@@ -227,6 +227,7 @@ describe('WeixinChannel.send', () => {
     expect(received[0].metadata).toMatchObject({
       chatType: 'dm',
       chatId: 'user',
+      routerDirect: false,
     })
   })
 
@@ -257,7 +258,7 @@ describe('WeixinChannel.send', () => {
     expect(received.length).toBe(1)
     expect(received[0].senderId).toBe('peer')
     expect(received[0].timestamp).toBe('2025-12-08T08:40:00.000Z')
-    expect(received[0].metadata).toMatchObject({ sessionId: 'sess1', seq: 7 })
+    expect(received[0].metadata).toMatchObject({ sessionId: 'sess1', seq: 7, routerDirect: true })
     expect(internal.tokenStore.get('me', 'peer')).toBe('ctx1')
     await internal.processMessage({
       from_user_id: 'peer',

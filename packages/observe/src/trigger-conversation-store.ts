@@ -8,6 +8,14 @@ import type {
 import { TriggerCommissionStore } from './trigger-commission-store'
 import { migrateLegacyTaskTurns } from './trigger-task-thread-migration'
 
+/** Internal IM audience threads are deliberately outside the Web API scope. */
+export type RouterImScope = `im-${string}`
+export type RouterConversationStoreScope = TriggerConversationScope | RouterImScope
+
+function isPersonalScope(scope: RouterConversationStoreScope): scope is 'general' | RouterImScope {
+  return scope === 'general' || (typeof scope === 'string' && /^im-[a-f0-9]{64}$/.test(scope))
+}
+
 type TurnRow = Omit<TriggerConversationTurn, 'answer'> & { answer: string | null }
 
 type BeginResult =
@@ -18,8 +26,8 @@ type BeginResult =
 const turnColumns =
   'id, request_id AS requestId, question, answer, status, error, created_at AS createdAt, updated_at AS updatedAt'
 
-function threadId(scope: TriggerConversationScope) {
-  if (scope === 'general') return '0'
+function threadId(scope: RouterConversationStoreScope) {
+  if (isPersonalScope(scope)) return scope === 'general' ? '0' : scope
   if (
     typeof scope === 'string' &&
     /^task-[1-9]\d*$/.test(scope) &&
@@ -35,8 +43,8 @@ function decodeTurn(row: TurnRow): TriggerConversationTurn {
   return { ...row, answer: row.answer === null ? null : JSON.parse(row.answer) }
 }
 
-function isPreparedDraft(scope: TriggerConversationScope, reminder: RouterDirectReminder) {
-  return scope === 'general' && reminder.status === 'draft' && !!reminder.audienceKey?.trim()
+function isPreparedDraft(scope: RouterConversationStoreScope, reminder: RouterDirectReminder) {
+  return isPersonalScope(scope) && reminder.status === 'draft' && !!reminder.audienceKey?.trim()
 }
 
 export class TriggerConversationStore {
@@ -97,7 +105,7 @@ export class TriggerConversationStore {
   }
 
   private expired(thread: string): boolean {
-    if (thread === '0') return false
+    if (thread === '0' || thread.startsWith('im-')) return false
     if (thread.startsWith('task-')) {
       return !this.db
         .query(`SELECT 1 FROM mandate_tasks WHERE id=?
@@ -107,7 +115,7 @@ export class TriggerConversationStore {
     return !!this.db.query('SELECT 1 FROM trigger_retired_inbox WHERE id=?').get(thread)
   }
 
-  get(scope: TriggerConversationScope, requestId: string): TriggerConversationTurn | null {
+  get(scope: RouterConversationStoreScope, requestId: string): TriggerConversationTurn | null {
     const row = this.db
       .query<TurnRow, [string, string]>(
         `SELECT ${turnColumns} FROM trigger_visible_turns WHERE thread = ? AND request_id = ?`,
@@ -117,7 +125,7 @@ export class TriggerConversationStore {
   }
 
   /** Latest window (or the previous page), always returned in reading order. */
-  list(scope: TriggerConversationScope, limit = 50, beforeId = Number.MAX_SAFE_INTEGER) {
+  list(scope: RouterConversationStoreScope, limit = 50, beforeId = Number.MAX_SAFE_INTEGER) {
     return this.db
       .query<TurnRow, [string, number, number]>(
         `SELECT ${turnColumns} FROM trigger_visible_turns
@@ -129,7 +137,7 @@ export class TriggerConversationStore {
   }
 
   begin(
-    scope: TriggerConversationScope,
+    scope: RouterConversationStoreScope,
     requestId: string,
     question: string,
     retry = false,
@@ -172,7 +180,7 @@ export class TriggerConversationStore {
   }
 
   finish(
-    scope: TriggerConversationScope,
+    scope: RouterConversationStoreScope,
     requestId: string,
     attempt: number,
     answer: TriggerConversationAnswer,
@@ -203,7 +211,7 @@ export class TriggerConversationStore {
   }
 
   fail(
-    scope: TriggerConversationScope,
+    scope: RouterConversationStoreScope,
     requestId: string,
     attempt: number,
     error: string,
@@ -238,7 +246,7 @@ export class TriggerConversationStore {
         this.db.run(
           `UPDATE trigger_conversation_turns SET answer = json_set(json_remove(answer,'$.reminder.audienceKey'),
         '$.reminder.status', 'unknown', '$.reminder.reason', ?), updated_at = ?
-       WHERE thread='0' AND json_extract(answer,'$.reminder.status')='sending'`,
+       WHERE (thread='0' OR thread GLOB 'im-*') AND json_extract(answer,'$.reminder.status')='sending'`,
           ['服务重启时尚未记录平台回执，请先在机器人私聊核对。', now],
         )
         this.db.run(
@@ -255,7 +263,7 @@ export class TriggerConversationStore {
 
   /** Prepare an old plain answer only once when its user explicitly requests it. */
   attachReminder(
-    scope: TriggerConversationScope,
+    scope: RouterConversationStoreScope,
     turnRequestId: string,
     reminder: RouterDirectReminder,
   ): boolean {
@@ -263,31 +271,31 @@ export class TriggerConversationStore {
       isPreparedDraft(scope, reminder) &&
       this.db.run(
         `UPDATE trigger_conversation_turns SET answer=json_set(answer,'$.reminder',json(?)), updated_at=?
-         WHERE thread='0' AND request_id=? AND status='completed' AND json_type(answer)='object'
+         WHERE thread=? AND request_id=? AND status='completed' AND json_type(answer)='object'
            AND json_type(answer,'$.reminder') IS NULL AND json_type(answer,'$.proposal') IS NULL
            AND json_type(answer,'$.commission') IS NULL AND json_type(answer,'$.investigation') IS NULL
            AND id NOT IN (SELECT id FROM trigger_retired_turns)`,
-        [JSON.stringify(reminder), new Date().toISOString(), turnRequestId],
+        [JSON.stringify(reminder), new Date().toISOString(), threadId(scope), turnRequestId],
       ).changes === 1
     )
   }
 
   /** Claim the draft before calling the platform, even when two clicks have different request IDs. */
-  claimReminder(scope: TriggerConversationScope, turnRequestId: string): boolean {
+  claimReminder(scope: RouterConversationStoreScope, turnRequestId: string): boolean {
     return (
-      scope === 'general' &&
+      isPersonalScope(scope) &&
       this.db.run(
         `UPDATE trigger_conversation_turns SET answer=json_set(answer,'$.reminder.status','sending'), updated_at=?
-         WHERE thread='0' AND request_id=? AND status='completed' AND json_extract(answer,'$.reminder.status')='draft'
+         WHERE thread=? AND request_id=? AND status='completed' AND json_extract(answer,'$.reminder.status')='draft'
            AND id NOT IN (SELECT id FROM trigger_retired_turns)`,
-        [new Date().toISOString(), turnRequestId],
+        [new Date().toISOString(), threadId(scope), turnRequestId],
       ).changes === 1
     )
   }
 
   /** Only the current model attempt may reserve a send; confirmation of an old draft consumes both turns. */
   reserveToolReminder(
-    scope: TriggerConversationScope,
+    scope: RouterConversationStoreScope,
     turnRequestId: string,
     attempt: number,
     reminder: RouterDirectReminder,
@@ -297,10 +305,10 @@ export class TriggerConversationStore {
     return this.db
       .transaction(() => {
         const pending = this.db
-          .query<{ id: number }, [string, number]>(
-            "SELECT id FROM trigger_visible_turns WHERE thread='0' AND request_id=? AND attempt=? AND status='pending' AND answer IS NULL",
+          .query<{ id: number }, [string, string, number]>(
+            "SELECT id FROM trigger_visible_turns WHERE thread=? AND request_id=? AND attempt=? AND status='pending' AND answer IS NULL",
           )
-          .get(turnRequestId, attempt)
+          .get(threadId(scope), turnRequestId, attempt)
         if (!pending) return false
         const now = new Date().toISOString()
         if (sourceDraftId !== undefined) {
@@ -312,13 +320,14 @@ export class TriggerConversationStore {
             return false
           const claimed = this.db.run(
             `UPDATE trigger_conversation_turns SET answer=json_set(answer,'$.reminder.status','sending'),updated_at=?
-           WHERE id=? AND thread='0' AND status='completed' AND id NOT IN (SELECT id FROM trigger_retired_turns)
+           WHERE id=? AND thread=? AND status='completed' AND id NOT IN (SELECT id FROM trigger_retired_turns)
              AND json_extract(answer,'$.reminder.status')='draft' AND json_extract(answer,'$.reminder.platform')=?
              AND json_extract(answer,'$.reminder.channelId')=? AND json_extract(answer,'$.reminder.text')=?
              AND json_extract(answer,'$.reminder.audienceKey')=?`,
             [
               now,
               sourceDraftId,
+              threadId(scope),
               reminder.platform,
               reminder.channelId,
               reminder.text,
@@ -346,32 +355,38 @@ export class TriggerConversationStore {
   }
 
   finishReminder(
-    scope: TriggerConversationScope,
+    scope: RouterConversationStoreScope,
     turnRequestId: string,
     outcome: { status: 'accepted' | 'rejected' | 'unknown'; reason?: string },
   ): boolean {
     return (
-      scope === 'general' &&
+      isPersonalScope(scope) &&
       this.db.run(
         `WITH sender AS MATERIALIZED (
-           SELECT id,reminder_source_id FROM trigger_conversation_turns c WHERE thread='0' AND request_id=?
+           SELECT id,reminder_source_id FROM trigger_conversation_turns c WHERE thread=? AND request_id=?
              AND status IN ('pending','completed') AND json_extract(answer,'$.reminder.status')='sending'
              AND NOT EXISTS(SELECT 1 FROM trigger_conversation_turns other WHERE other.reminder_source_id=c.id))
          UPDATE trigger_conversation_turns SET answer=json_patch(answer,?), updated_at=?
-         WHERE id IN (SELECT id FROM sender UNION ALL SELECT reminder_source_id FROM sender)
+         WHERE thread=? AND id IN (SELECT id FROM sender UNION ALL SELECT reminder_source_id FROM sender)
            AND json_extract(answer,'$.reminder.status')='sending'`,
         [
+          threadId(scope),
           turnRequestId,
           JSON.stringify({
             reminder: { status: outcome.status, reason: outcome.reason, audienceKey: null },
           }),
           new Date().toISOString(),
+          threadId(scope),
         ],
       ).changes > 0
     )
   }
 
-  markProposalApplied(scope: TriggerConversationScope, turnRequestId: string, at: string): void {
+  markProposalApplied(
+    scope: RouterConversationStoreScope,
+    turnRequestId: string,
+    at: string,
+  ): void {
     const changed = this.db.run(
       `UPDATE trigger_conversation_turns
        SET answer = json_set(answer, '$.proposalAppliedAt', ?), updated_at = ?
@@ -385,7 +400,7 @@ export class TriggerConversationStore {
 
   /** Persist a local state change and its receipt in the same transaction. */
   applyActionOnce(
-    scope: TriggerConversationScope,
+    scope: RouterConversationStoreScope,
     requestId: string,
     identity: string,
     apply: () => void,
@@ -407,7 +422,7 @@ export class TriggerConversationStore {
       .immediate()
   }
 
-  getActionIdentity(scope: TriggerConversationScope, requestId: string): string | null {
+  getActionIdentity(scope: RouterConversationStoreScope, requestId: string): string | null {
     return (
       this.db
         .query<{ identity: string }, [string, string]>(

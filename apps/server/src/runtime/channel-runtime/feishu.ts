@@ -65,6 +65,7 @@ export async function registerFeishuRuntimeChannel(
       feishuDirectPeerStorePath(options.zeroDir, definition.name, definition.credentials.appId),
   })
 
+  options.channels.set(definition.name, feishuChannel)
   let activeStreamingSessions: Set<FeishuStreamingSession> | undefined
   if (definition.credentials) {
     const channelName = definition.name
@@ -102,7 +103,6 @@ export async function registerFeishuRuntimeChannel(
     console.log(`[ZeRo OS] Channel started: ${definition.name}`)
   }
 
-  options.channels.set(definition.name, feishuChannel)
   options.heartbeat.write()
   if (activeStreamingSessions) options.registerFeishuStreamingSessionSet(activeStreamingSessions)
 }

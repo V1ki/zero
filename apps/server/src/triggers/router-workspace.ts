@@ -1,4 +1,5 @@
-import type { TriggerStore } from '@zero-os/observe'
+import { createHash } from 'node:crypto'
+import type { RouterImScope, TriggerStore } from '@zero-os/observe'
 import {
   type GithubInvestigation,
   type GithubInvestigationAction,
@@ -26,6 +27,7 @@ import type { RouterCommissionService } from './router-commission'
 import { parseDirectReminder } from './router-direct-reminder'
 import { buildRouterReplySurface, buildRouterSurface } from './router-surface'
 import { DirectReminderUnavailableError, type TriggerRoutingRuntime } from './routing-runtime'
+import type { TaskMessage } from './task-bridge'
 
 export class RouterWorkspaceError extends Error {
   constructor(
@@ -42,6 +44,11 @@ const inspectionQuestions = {
 } satisfies Record<GithubInvestigationAction, string>
 
 type Scope = TriggerConversationScope
+interface ImTurn {
+  scope: RouterImScope
+  platform: MandatePlatform
+  authorized: () => boolean
+}
 type Routing = Pick<
   TriggerRoutingRuntime,
   | 'getConfig'
@@ -92,6 +99,7 @@ export class RouterWorkspaceService {
   private started = false
   private readonly stop = new AbortController()
   private readonly jobs = new Set<Promise<unknown>>()
+  private readonly imTurns = new Map<RouterImScope, Promise<string | null>>()
 
   constructor(
     private readonly store: TriggerStore,
@@ -226,10 +234,10 @@ export class RouterWorkspaceService {
       throw new RouterWorkspaceError(503, 'Router 服务正在启动或关闭，请稍后重试。')
   }
 
-  private async track(work: Promise<unknown>) {
+  private async track<T>(work: Promise<T>) {
     this.jobs.add(work)
     try {
-      await work
+      return await work
     } finally {
       this.jobs.delete(work)
     }
@@ -251,6 +259,64 @@ export class RouterWorkspaceService {
 
   async message(scope: Scope, requestId: string, question: string, retry = false) {
     return this.runTurn(scope, requestId, question, retry)
+  }
+
+  /** Authenticated IM transport only. Public workspace URLs cannot select these private threads. */
+  async handleIm(input: TaskMessage, authorized: () => boolean): Promise<string | null> {
+    if (!input.isDirect || !input.messageId.trim() || !input.peerId.trim() || !input.actorId.trim())
+      return null
+    const mayUse = () => this.started && !this.stop.signal.aborted && authorized()
+    if (!mayUse()) return null
+    const identity = JSON.stringify([input.platform, input.channelId, input.peerId, input.actorId])
+    const scope: RouterImScope = `im-${createHash('sha256').update(identity).digest('hex')}`
+    const requestId = createHash('sha256')
+      .update(JSON.stringify([scope, input.messageId]))
+      .digest('hex')
+    const question = input.text.trim()
+    // Sequence messages from one peer while letting other conversations run independently.
+    const prior = this.imTurns.get(scope)
+    const run = async () => {
+      if (!mayUse()) return null
+      const conversations = this.store.conversations
+      if (
+        !question ||
+        question.length > 2000 ||
+        /\p{Cc}/u.test(question.replace(/[\t\r\n]/g, ''))
+      ) {
+        return conversations.applyActionOnce(scope, requestId, 'invalid-text', () => {}) ===
+          'applied'
+          ? '请发一条不超过 2000 字的文字消息给 Router。'
+          : null
+      }
+      const claim = conversations.begin(scope, requestId, question)
+      if (claim.kind !== 'started') return null
+      try {
+        await this.answer(this.context('general'), claim.turn, claim.attempt, undefined, {
+          scope,
+          platform: input.platform,
+          authorized: mayUse,
+        })
+      } catch (error) {
+        if (!(error instanceof RouterWorkspaceError)) throw error
+        return mayUse() ? error.message : null
+      }
+      if (!mayUse()) return null
+      const answer = conversations.get(scope, requestId)?.answer
+      if (!answer) return null
+      const reminder = answer.reminder
+      if (reminder?.status === 'draft')
+        return `提醒草稿（${reminder.botLabel}）：${reminder.text}\n要发送请回复「把上一条草稿发出去」。`
+      if (reminder?.status === 'rejected') return reminder.reason ?? '这条提醒未发出。'
+      if (reminder) return reminder.reason ?? reminderStatusText[reminder.status]
+      return [answer.text, ...(answer.points ?? [])].join('\n')
+    }
+    const job = prior ? prior.then(run, run) : run()
+    this.imTurns.set(scope, job)
+    try {
+      return await this.track(job)
+    } finally {
+      if (this.imTurns.get(scope) === job) this.imTurns.delete(scope)
+    }
   }
 
   private async runTurn(
@@ -278,8 +344,10 @@ export class RouterWorkspaceService {
     turn: TriggerConversationTurn,
     attempt: number,
     cardAction?: GithubInvestigationAction | 'explain_route' | 'suggest_next',
+    im?: ImTurn,
   ) {
-    const { scope, event, route, settings, task } = context
+    const { event, route, settings, task } = context
+    const scope = im?.scope ?? context.scope
     const conversations = this.store.conversations
     const toolSteps: NonNullable<TriggerConversationAnswer['toolSteps']> = []
     try {
@@ -304,8 +372,8 @@ export class RouterWorkspaceService {
       const history = conversations.list(scope, 20, turn.id)
       let draft: TriggerConversationAnswer | undefined
       let investigation: GithubInvestigation | undefined
-      const mainUserTurn = scope === 'general' && !cardAction
-      const commission = mainUserTurn ? this.commission : undefined
+      const mainUserTurn = context.scope === 'general' && !cardAction
+      const commission = mainUserTurn && !im ? this.commission : undefined
       const previewRoute = !task && this.routing.previewCurrentRoute?.bind(this.routing)
       const investigator = !task && event && this.integrations.investigator
       const actions: NonNullable<RouterAgentInput['actions']> = {
@@ -315,12 +383,13 @@ export class RouterWorkspaceService {
         ...(previewRoute && { previewRoute }),
         ...(mainUserTurn && {
           prepareReminder: (platform, text) => {
+            if (im && !im.authorized()) throw new TriggerAgentError('机器人授权已变更。')
             const reminder = this.prepareReminder({ platform, text })
             draft = { text: reminderStatusText.draft, reminder }
             return { platform, botLabel: reminder.botLabel, text }
           },
           sendReminder: async (platform, text, signal, draftTurnId) => {
-            if (signal.aborted || this.stop.signal.aborted)
+            if (signal.aborted || this.stop.signal.aborted || (im && !im.authorized()))
               throw new TriggerAgentError('已取消发送。')
             const source =
               draftTurnId === undefined
@@ -353,6 +422,7 @@ export class RouterWorkspaceService {
               reminder.audienceKey,
               signal,
               source?.requestId,
+              im,
             )
             return { platform, botLabel: reminder.botLabel, text, ...outcome }
           },
@@ -383,6 +453,7 @@ export class RouterWorkspaceService {
       const result = await this.ask(
         {
           sessionId: typeof scope === 'string' ? `router-${scope}` : `router-event-${scope}`,
+          ...(im && { imPlatform: im.platform }),
           actions,
           task,
           question: turn.question,
@@ -398,6 +469,7 @@ export class RouterWorkspaceService {
         },
         this.stop.signal,
       )
+      if (im && !im.authorized()) throw new TriggerAgentError('机器人授权已变更。')
       // Model output cannot mint receipts, drafts, investigation findings or tool history.
       const reply: TriggerConversationAnswer = draft ?? {
         text: result.text,
@@ -406,7 +478,7 @@ export class RouterWorkspaceService {
         ...(result.proposal && { proposal: result.proposal }),
         ...(investigation && { investigation }),
       }
-      if (task && !this.context(scope).task?.active) {
+      if (task && !this.context(context.scope).task?.active) {
         conversations.fail(scope, turn.requestId, attempt, '这项任务的委托或来源授权已撤销。')
         throw new RouterWorkspaceError(409, '这项任务的委托或来源授权已撤销。')
       }
@@ -548,6 +620,7 @@ export class RouterWorkspaceService {
     audienceKey: string,
     signal: AbortSignal = this.stop.signal,
     deliveryId: string = turnId,
+    im?: ImTurn,
   ) {
     let result: Awaited<ReturnType<Routing['sendDirectReminder']>>
     try {
@@ -557,12 +630,13 @@ export class RouterWorkspaceService {
         reminder.text,
         deliveryId,
         signal,
+        im?.authorized,
       )
     } catch {
       // A transport that unwinds after taking the request may already have sent it.
       result = { status: 'unknown', reason: '未能确认平台回执，请在机器人私聊中核对。' }
     }
-    if (!this.store.conversations.finishReminder('general', turnId, result))
+    if (!this.store.conversations.finishReminder(im?.scope ?? 'general', turnId, result))
       throw new RouterWorkspaceError(409, '提醒回执已更新，请刷新对话。')
     return result
   }

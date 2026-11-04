@@ -1,5 +1,5 @@
 import { FeishuChannel } from '@zero-os/channel'
-import type { MandateArchive, MandateTarget } from '@zero-os/shared'
+import { type MandateArchive, type MandateTarget, sameTriggerRouteTarget } from '@zero-os/shared'
 import type { ZeroOS } from '../runtime/types'
 import type { MandateDelivery, MandateReceipt } from './mandate-runtime'
 import type { MandateTargetOption } from './mandate-service'
@@ -8,7 +8,10 @@ type FeishuHost = Pick<ZeroOS, 'channels' | 'channelDefinitions'> & {
   sessionManager: Pick<ZeroOS['sessionManager'], 'listCurrentBindings'>
 }
 
-export function createFeishuTaskDelivery(host: FeishuHost) {
+export function createFeishuTaskDelivery(
+  host: FeishuHost,
+  isLiveTarget?: (target: MandateTarget) => boolean,
+) {
   function connectedChannel(id: string) {
     const channel = host.channels.get(id)
     const definition = host.channelDefinitions.get(id)
@@ -76,12 +79,8 @@ export function createFeishuTaskDelivery(host: FeishuHost) {
   ): Promise<MandateReceipt> {
     const channel = connectedChannel(target.channelId)
     const isBound = () =>
-      listTargets().some(
-        (entry) =>
-          entry.channelId === target.channelId &&
-          entry.peerId === target.peerId &&
-          entry.operatorId === target.operatorId,
-      )
+      isLiveTarget?.(target) ??
+      listTargets().some((candidate) => sameTriggerRouteTarget(candidate, target))
     if (target.platform !== 'feishu' || !channel || !isBound())
       return { status: 'rejected', reason: '飞书目标会话和操作人未绑定或已失效。' }
     return channel.router.send(

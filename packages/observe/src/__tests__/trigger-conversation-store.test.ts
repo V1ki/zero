@@ -283,6 +283,49 @@ const reminder = {
   status: 'draft',
 } as const
 
+test('an IM reminder can consume only a draft from its own private Router conversation', () => {
+  const path = temporaryPath()
+  const store = open(path)
+  const c = store.conversations
+  const first = `im-${'a'.repeat(64)}` as const
+  const second = `im-${'b'.repeat(64)}` as const
+  for (const invalid of ['im-', `im-${'A'.repeat(64)}`, `im-${'a'.repeat(63)}`] as const)
+    expect(() => c.list(invalid)).toThrow()
+
+  function draft(scope: typeof first | 'general', text: string) {
+    const turn = c.begin(scope, 'same-message', text)
+    if (turn.kind !== 'started') throw Error('Expected an independent draft turn')
+    expect(c.finish(scope, 'same-message', turn.attempt, { text, reminder })).toBe(true)
+    expect(c.begin(scope, 'same-message', text).kind).toBe('existing')
+    return turn.turn.id
+  }
+  const webDraft = draft('general', 'web only')
+  const otherDraft = draft(second, 'second only')
+  const myDraft = draft(first, 'first only')
+  expect(c.list(first).map((t) => t.question)).toEqual(['first only'])
+  expect(c.list(second).map((t) => t.question)).toEqual(['second only'])
+
+  const sending = c.begin(first, 'confirm', '发刚才的草稿')
+  if (sending.kind !== 'started') throw Error('Expected a confirmation turn')
+  for (const foreign of [webDraft, otherDraft])
+    expect(c.reserveToolReminder(first, 'confirm', sending.attempt, reminder, foreign)).toBe(false)
+  expect(c.reserveToolReminder(first, 'confirm', sending.attempt, reminder, myDraft)).toBe(true)
+  expect(c.finishReminder(second, 'confirm', { status: 'accepted' })).toBe(false)
+  close(store)
+  const recovered = open(path).conversations
+  recovered.recoverInterrupted()
+  for (const id of ['same-message', 'confirm']) {
+    expect(recovered.get(first, id)).toMatchObject({
+      status: 'completed',
+      answer: { reminder: { status: 'unknown' } },
+    })
+    expect(recovered.get(first, id)?.answer?.reminder).not.toHaveProperty('audienceKey')
+  }
+  expect(recovered.begin(first, 'confirm', '发刚才的草稿', true).kind).toBe('existing')
+  for (const scope of ['general', second] as const)
+    expect(recovered.get(scope, 'same-message')?.answer?.reminder).toEqual(reminder)
+})
+
 test('one reminder draft authorizes one send and one final receipt across store instances', () => {
   const path = temporaryPath()
   const store = open(path)
@@ -433,7 +476,10 @@ test('a historical plain answer gets one prepared reminder without overwriting a
     expect(c.attachReminder('general', id, { ...draft, audienceKey: undefined })).toBe(false)
     expect(c.attachReminder('general', id, { ...draft, status: 'accepted' })).toBe(false)
     expect(c.attachReminder(1, id, draft)).toBe(false)
+    const otherAudience = `im-${'c'.repeat(64)}` as const
+    expect(c.attachReminder(otherAudience, id, draft)).toBe(false)
     expect(c.attachReminder('general', id, draft)).toBe(!answer.proposal)
+    expect(c.claimReminder(otherAudience, id)).toBe(false)
     expect(
       reader.conversations.attachReminder('general', id, { ...draft, text: '另一条提醒' }),
     ).toBe(false)

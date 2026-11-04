@@ -15,7 +15,7 @@ export function migrateLegacyTaskTurns(db: Database): void {
     const range = db
       .query<{ start: number; end: number }, []>(`SELECT cursor AS start,
       COALESCE((SELECT MIN(id)-1 FROM trigger_conversation_turns WHERE id>cursor AND status='pending'
-        AND thread NOT LIKE 'task-%' AND thread!='0' AND request_id LIKE 'im-%'),
+        AND thread GLOB '[1-9]*' AND request_id LIKE 'im-%'),
         (SELECT COALESCE(MAX(id),0) FROM trigger_conversation_turns)) AS end
       FROM trigger_task_thread_upgrade WHERE id=1`)
       .get()
@@ -23,7 +23,7 @@ export function migrateLegacyTaskTurns(db: Database): void {
     db.run('UPDATE trigger_task_thread_upgrade SET cursor=? WHERE id=1', [range.end])
     const legacy = db
       .query(`SELECT 1 FROM trigger_conversation_turns
-      WHERE thread NOT LIKE 'task-%' AND thread!='0' AND request_id LIKE 'im-%'
+      WHERE thread GLOB '[1-9]*' AND request_id LIKE 'im-%'
       AND status!='pending' AND id>? AND id<=? LIMIT 1`)
       .get(range.start, range.end)
     if (!legacy) return

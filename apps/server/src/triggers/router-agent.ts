@@ -1,4 +1,5 @@
 import {
+  type MandatePlatform,
   type Message,
   type RouterWorkspaceTask,
   type TriggerConversationAnswer,
@@ -21,6 +22,7 @@ export type RouterBot = ReturnType<TriggerRoutingRuntime['listPersonalBots']>[nu
 
 export interface RouterAgentInput {
   sessionId: string
+  imPlatform?: MandatePlatform
   actions?: RouterTurnActions
   task?: RouterWorkspaceTask
   question: string
@@ -33,7 +35,7 @@ export interface RouterAgentInput {
 }
 
 const instructions = [
-  '你是 ZeRo 网页中的 Router 助手，请用中文回答当前用户的问题，并结合本对话之前的问答。',
+  '你是 ZeRo 的 Router 助手，请用中文回答当前用户的问题，并结合本对话之前的问答。',
   '你是负责消息分发的主 Agent。理解用户意图，自主调用本轮提供的路由工具，阅读工具结果后再决定下一步。普通问答可直接回答。没有执行主机命令或操作用户项目的工具。',
   '要解释规则、某次投递或当前去向，查 get_routing_context；实时去向查 preview_current_route。要查询某个机器人的可用状态，查 list_notification_bots。',
   '一次性通知不需要收件箱事件。当前用户明确要求现在用指定平台给自己发消息时调用 send_personal_reminder，正文来自当前请求。要预览或拟稿用 prepare_personal_reminder。时段、内容、渠道或收件人不清楚时先澄清。不要把定时提醒误作立即发送。',
@@ -222,9 +224,11 @@ export function createRouterAgent({ modelRouter, secretFilter }: AgentDependenci
     const raw = await runTriggerModel(modelRouter, {
       label: 'Router 对话',
       sessionId: input.sessionId,
-      system: instructions,
+      system: input.imPlatform
+        ? `${instructions}\n你正在机器人私聊中接待用户，请用适合聊天的文字回复。本轮只使用实际可用的工具。若任务需要读取账户或运行项目而缺少对应工具，说明能力范围，不要猜测数据或声称已转交其他 Agent。全局通知设置请引导用户到 Web Router 操作。`
+        : instructions,
       prompt: JSON.stringify({
-        scope: input.task ? 'task' : input.event ? 'event' : 'general',
+        scope: input.imPlatform ?? (input.task ? 'task' : input.event ? 'event' : 'general'),
         question: secretFilter.filter(input.question),
       }),
       history: historyMessages(input, secretFilter),

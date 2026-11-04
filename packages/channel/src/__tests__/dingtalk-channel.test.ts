@@ -92,11 +92,24 @@ describe('DingtalkIncomingMessageBuilder', () => {
       content: 'hello',
       metadata: {
         chatId: 'cid_1',
+        routerDirect: false,
         messageId: 'msg_1',
         sessionWebhook: 'https://example.test/sessionWebhook',
         robotCode: 'robot_1',
       },
     })
+  })
+
+  test('Router direct input requires a same-organization staff DM', async () => {
+    const builder = new DingtalkIncomingMessageBuilder()
+    const dm = { conversationType: '1', chatbotCorpId: 'corp', senderCorpId: 'corp' }
+    for (const [overrides, verified] of [
+      [dm, true],
+      [{ ...dm, conversationType: '2' }, false],
+      [{ ...dm, senderCorpId: 'other' }, false],
+      [{ ...dm, senderStaffId: undefined }, false],
+    ] as const)
+      expect((await builder.build(robotPayload(overrides)))?.metadata?.routerDirect).toBe(verified)
   })
 
   test('downloads rich text image elements into image attachments', async () => {

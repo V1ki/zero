@@ -94,9 +94,9 @@ export class TriggerRetentionStore {
         // A general conversation can run for years. Finished historical turns expire individually.
         this.db.run(
           `INSERT INTO retention_turns SELECT c.id FROM trigger_visible_turns c
-        WHERE c.thread=0 AND c.updated_at <= ?1 AND NOT ${openTurn}
+        WHERE (c.thread='0' OR c.thread GLOB 'im-*') AND c.updated_at <= ?1 AND NOT ${openTurn}
         AND NOT EXISTS (SELECT 1 FROM trigger_conversation_turns pending
-          WHERE pending.thread=0 AND pending.status='pending')
+          WHERE pending.thread=c.thread AND pending.status='pending')
         ORDER BY c.id LIMIT ?2`,
           [cutoff, batchSize],
         )

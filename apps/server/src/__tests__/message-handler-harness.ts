@@ -28,6 +28,7 @@ export function createDefaultMessageHandlerDeps(
   overrides: Partial<MessageHandlerDeps> = {},
 ): MessageHandlerDeps {
   const sessionManager = {
+    isRouterOwnedChannel: () => false,
     getOrCreateForChannel: () => ({ session, isNew: false }),
     isCurrentSessionForChannel: (
       _source: unknown,

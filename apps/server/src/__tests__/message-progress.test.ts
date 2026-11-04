@@ -129,4 +129,26 @@ describe('MessageProgressDelivery', () => {
     expect(delivery.streaming).toBe(nextStreaming)
     expect(delivery.streamText).toBe('second')
   })
+
+  test('an update queued before detachment cannot write into the selected bot', async () => {
+    let current = true
+    const updates: string[] = []
+    const delivery = new MessageProgressDelivery({
+      channelAdapter: { reply: async () => {}, showTyping: async () => null },
+      streaming: {
+        update: async (text) => {
+          updates.push(text)
+        },
+        complete: async () => {},
+        abort: async () => {},
+      },
+      chatId: 'dm',
+      channelName: 'weixin',
+      canDeliverToCurrentSession: () => current,
+    })
+    delivery.onTextDelta?.('old answer', { turnId: 'turn' })
+    current = false
+    await delivery.flush()
+    expect(updates).toEqual([])
+  })
 })

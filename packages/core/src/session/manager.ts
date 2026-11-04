@@ -36,6 +36,7 @@ export interface InterruptedSessionRef {
  */
 export class SessionManager {
   private sessions: Map<string, Session> = new Map()
+  private routerOwnedChannels: Partial<Record<SessionSource, string | null>> = {}
   private currentBindings: SessionCurrentBindingCoordinator
   private pendingBackgroundEvaluations = new Set<string>()
   private store: SessionManagerStore
@@ -89,6 +90,25 @@ export class SessionManager {
 
   listCurrentBindings(): ChannelSessionBinding[] {
     return this.currentBindings.list()
+  }
+
+  setRouterOwnedChannels(accounts: Partial<Record<SessionSource, string | null>>): void {
+    this.routerOwnedChannels = { ...accounts }
+    for (const binding of this.currentBindings.list()) {
+      if (this.isRouterOwnedChannel(binding.source, binding.channelName)) {
+        this.currentBindings.clear(binding)
+      }
+    }
+  }
+
+  isRouterOwnedChannel(source: SessionSource, channelName?: string): boolean {
+    return this.routerOwnedChannels[source] === (channelName || source)
+  }
+
+  private assertOrdinaryChannel(source: SessionSource, channelName?: string): void {
+    if (this.isRouterOwnedChannel(source, channelName)) {
+      throw new Error('此机器人已绑定 Router，无法创建普通 Agent 会话。')
+    }
   }
 
   getCurrentBinding(
@@ -169,6 +189,7 @@ export class SessionManager {
     channelName?: string,
     participantId?: string,
   ): { session: Session; isNew: boolean } {
+    this.assertOrdinaryChannel(source, channelName)
     return this.channels.getOrCreateForChannel(source, channelId, channelName, participantId)
   }
 
@@ -179,6 +200,7 @@ export class SessionManager {
     channelName?: string,
     participantId?: string,
   ): { session: Session; previousSessionId?: string; isRestored: boolean } | null {
+    if (this.isRouterOwnedChannel(source, channelName)) return null
     return this.channels.switchCurrentSessionForChannel(
       source,
       channelId,
@@ -194,6 +216,12 @@ export class SessionManager {
     channelNameOrOptions?: string | StartNewForChannelOptions,
     _maybeOptions?: { previousStatus?: string },
   ): { session: Session; previousSessionId?: string } {
+    this.assertOrdinaryChannel(
+      source,
+      typeof channelNameOrOptions === 'string'
+        ? channelNameOrOptions
+        : channelNameOrOptions?.channelName,
+    )
     return this.channels.startNewForChannel(source, channelId, channelNameOrOptions)
   }
 
@@ -214,7 +242,9 @@ export class SessionManager {
   }
 
   restoreFromDB(): number {
-    return this.channels.restoreFromDB()
+    return this.channels.restoreFromDB((binding) =>
+      this.isRouterOwnedChannel(binding.source, binding.channelName),
+    )
   }
 
   async drainAndCollectInterrupted(timeoutMs = 30_000): Promise<InterruptedSessionRef[]> {
@@ -644,6 +674,12 @@ class SessionBindingRegistry {
   }
 
   delete(binding: ChannelSessionBinding): void {
+    this.sessionDb?.deleteBinding(
+      binding.source,
+      binding.channelId,
+      binding.channelName,
+      binding.participantId,
+    )
     this.bindings.delete(
       getChannelSessionKey(
         binding.source,
@@ -651,12 +687,6 @@ class SessionBindingRegistry {
         binding.channelName,
         binding.participantId,
       ),
-    )
-    this.sessionDb?.deleteBinding(
-      binding.source,
-      binding.channelId,
-      binding.channelName,
-      binding.participantId,
     )
   }
 
@@ -737,7 +767,10 @@ class SessionCurrentBindingCoordinator {
 
   clear(binding: ChannelSessionBinding): void {
     this.bindings.delete(binding)
-    this.deps.observability?.syncSessionCurrentState(binding.sessionId, false)
+    this.deps.observability?.syncSessionCurrentState(
+      binding.sessionId,
+      this.bindings.hasSession(binding.sessionId),
+    )
     this.emitBindingEvent('binding_cleared', {
       sessionId: binding.sessionId,
       source: binding.source,
@@ -1102,7 +1135,7 @@ class SessionChannelLifecycle {
     this.sessions.delete(sessionId)
   }
 
-  restoreFromDB(): number {
+  restoreFromDB(isRouterOwned: (binding: ChannelSessionBinding) => boolean): number {
     if (!this.sessionDb) return 0
 
     this.store.reloadModelPreferences()
@@ -1110,6 +1143,10 @@ class SessionChannelLifecycle {
     let restored = 0
 
     for (const binding of bindings) {
+      if (isRouterOwned(binding)) {
+        this.currentBindings.clear(binding)
+        continue
+      }
       const session = this.store.restoreSessionById(binding.sessionId)
       if (!session) {
         this.sessionDb.deleteBinding(

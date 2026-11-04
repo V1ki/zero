@@ -28,6 +28,7 @@ function createBackgroundEvent(): BackgroundToolCompletionEvent {
 
 function createSessionManager() {
   return {
+    isRouterOwnedChannel: () => false,
     isCurrentSessionForChannel: (
       source: string,
       channelId: string,
@@ -44,6 +45,18 @@ function createSessionManager() {
 }
 
 describe('background tool completion delivery', () => {
+  test('a Router-only bot does not run the old session continuation or open an IM reply', async () => {
+    const handler = createBackgroundToolCompletionDeliveryHandler({
+      channelAdapters: new Map(),
+      sessionManager: { ...createSessionManager(), isRouterOwnedChannel: () => true },
+    })
+    expect(
+      await handler(createBackgroundEvent(), () => {
+        throw new Error('old continuation ran')
+      }),
+    ).toBe(true)
+  })
+
   test('streams background continuation output to a new channel message', async () => {
     const calls: Array<{ name: string; chatId: string; messageId?: string | number }> = []
     const updates: string[] = []

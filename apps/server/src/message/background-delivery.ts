@@ -1,15 +1,23 @@
 import type { HandleMessageOptions, SessionDeps, SessionManager } from '@zero-os/core'
 import { type SessionSource, describeError } from '@zero-os/shared'
 import type { ChannelAdapter } from '../channels/adapter'
+import { dismissStreaming } from './streaming'
 import { createMessageTurnState, runMessageWithDelivery } from './turn'
 
 export function createBackgroundToolCompletionDeliveryHandler(options: {
   channelAdapters: Map<string, ChannelAdapter>
-  sessionManager: Pick<SessionManager, 'isCurrentSessionForChannel'>
+  sessionManager: Pick<SessionManager, 'isCurrentSessionForChannel' | 'isRouterOwnedChannel'>
 }): NonNullable<SessionDeps['backgroundToolCompletionHandler']> {
   return async (event, run) => {
     const binding = event.channelBinding
     if (!binding || binding.source === 'web') return false
+    if (
+      options.sessionManager.isRouterOwnedChannel(
+        binding.source as SessionSource,
+        binding.channelName,
+      )
+    )
+      return true
 
     const channelAdapter = options.channelAdapters.get(binding.channelName)
     if (!channelAdapter) return false
@@ -46,7 +54,9 @@ export function createBackgroundToolCompletionDeliveryHandler(options: {
       )
       await state.typingHandle?.clear().catch(() => {})
       const streaming = state.progressDelivery?.streaming ?? state.streaming
-      if (streaming) {
+      if (streaming && !canDeliverToCurrentSession()) {
+        await dismissStreaming(streaming).catch(() => {})
+      } else if (streaming) {
         await streaming.abort('Background task completion processing failed.').catch(() => {})
       } else if (canDeliverToCurrentSession()) {
         await channelAdapter

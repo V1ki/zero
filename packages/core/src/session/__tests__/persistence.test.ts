@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test'
+import { join } from 'node:path'
 import type { ModelRouter } from '@zero-os/model'
 import { type ObservabilityStore, SessionDB } from '@zero-os/observe'
 import type { Message, Session as SessionData } from '@zero-os/shared'
@@ -51,6 +52,67 @@ describe('Session Persistence', () => {
     sessionDb = SessionDB.createInMemory()
     modelRouter = createTestModelRouter()
     toolRegistry = new ToolRegistry()
+  })
+
+  test('Router ownership unbinds only the selected account, preserves history, and guards ordinary session entry points', () => {
+    const path = join(testProject.projectRoot, 'router-ownership.sqlite')
+    let db = new SessionDB(path)
+    const openManager = () =>
+      new SessionManager(
+        modelRouter,
+        toolRegistry,
+        { sessionDb: db, projectRoot: testProject.projectRoot },
+        db,
+      )
+    try {
+      const manager = openManager()
+      const chat = manager.getOrCreateForChannel('weixin', 'peer', 'bot').session
+      const otherPeer = manager.getOrCreateForChannel('weixin', 'other', 'bot').session
+      const otherBot = manager.getOrCreateForChannel('weixin', 'peer', 'second').session
+      const feishu = manager.getOrCreateForChannel('feishu', 'peer', 'bot', 'participant').session
+      db.saveMessages(chat.data.id, [
+        {
+          id: 'before-ownership',
+          sessionId: chat.data.id,
+          role: 'user',
+          messageType: 'message',
+          content: [{ type: 'text', text: 'previous conversation' }],
+          createdAt: chat.data.createdAt,
+        },
+      ])
+      manager.setRouterOwnedChannels({ weixin: 'bot' })
+      expect(manager.getPlacement(chat.data.id)).toBe('background')
+      expect(manager.getPlacement(otherPeer.data.id)).toBe('background')
+      expect(manager.getPlacement(otherBot.data.id)).toBe('current')
+      expect(manager.getPlacement(feishu.data.id)).toBe('current')
+      expect(() => manager.getOrCreateForChannel('weixin', 'peer', 'bot')).toThrow('Router')
+      expect(() =>
+        manager.startNewForChannel('weixin', 'new-peer', { channelName: 'bot' }),
+      ).toThrow('Router')
+      expect(
+        manager.switchCurrentSessionForChannel('weixin', 'peer', chat.data.id, 'bot'),
+      ).toBeNull()
+      expect(
+        db
+          .loadBindings()
+          .map((b) => b.sessionId)
+          .sort(),
+      ).toEqual([otherBot.data.id, feishu.data.id].sort())
+
+      manager.setRouterOwnedChannels({ weixin: 'second', feishu: 'bot' })
+      expect(manager.getPlacement(feishu.data.id)).toBe('background')
+      expect(db.loadBindings()).toEqual([])
+      db.close()
+      db = new SessionDB(path)
+      const restored = openManager()
+      expect(restored.restoreFromDB()).toBe(0)
+      expect(restored.getMessagesFromDB(chat.data.id)[0]?.id).toBe('before-ownership')
+      const fresh = restored.getOrCreateForChannel('weixin', 'peer', 'bot')
+      expect(fresh.isNew).toBe(true)
+      expect(fresh.session.data.id).not.toBe(chat.data.id)
+    } finally {
+      db.close()
+    }
   })
 
   test('Session constructor persists to DB when sessionDb provided', () => {

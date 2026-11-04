@@ -63,14 +63,13 @@ function PersonalDeliveryBots({
   return (
     <div className="listener-stack">
       <div className="listener-actions">
-        <h3>通知机器人</h3>
+        <h3>Router 专用机器人</h3>
         <button type="button" disabled={choices.isFetching} onClick={() => void choices.refetch()}>
           {choices.isFetching ? '正在读取机器人…' : '刷新机器人'}
         </button>
       </div>
       <p className="listener-muted">
-        每个平台选一个已接入的机器人。你可以直接给它发消息，Router
-        会按下方规则决定何时由它主动提醒你。
+        保存后，Router 接管所选机器人的本人私聊。原来的普通 Agent 会话会解绑，历史记录保留。
       </p>
       <div className="listener-fields">
         {triggerRoutePlatforms.map((platform) => {

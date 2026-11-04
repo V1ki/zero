@@ -6,7 +6,7 @@ import type {
   MandateTaskDetail,
   TriggerConversationTurn,
 } from '@zero-os/shared'
-import { sameTriggerRouteTarget } from '@zero-os/shared'
+import { getTriggerRouteBot, sameTriggerRouteTarget } from '@zero-os/shared'
 import { type AgentDependencies, TriggerAgentError, runTriggerModel } from './event-agent'
 import { isCommissionCommand } from './router-commission'
 
@@ -65,6 +65,10 @@ interface TaskBridgeOptions {
   agent: ReturnType<typeof createChannelTaskAgent>
   isLiveTarget(target: MandateTarget): boolean
   isPersonalTarget(target: MandateTarget): boolean
+  personalDialog?: {
+    authorize(target: MandateTarget): (() => boolean) | null
+    handle(input: TaskMessage, authorized: () => boolean): Promise<string | null>
+  }
   commission?: {
     handleIm(
       principal: MandateTarget & { operatorId: string; isDirect?: boolean },
@@ -125,16 +129,21 @@ function deliveredTo(task: MandateTaskDetail, target: MandateTarget, cardId?: st
   )
 }
 
-/** Handles only explicit references. Ordinary chat retains the channel's usual Agent/session. */
+/** Dispatch explicit references on any bot and private Router dialogs on selected bots. */
 export function createTaskBridge({
   store,
   agent,
   isLiveTarget,
   isPersonalTarget,
+  personalDialog,
   commission,
 }: TaskBridgeOptions) {
   const stop = new AbortController()
   const jobs = new Set<Promise<unknown>>()
+
+  function isSelectedBot(platform: MandatePlatform, channelId: string) {
+    return getTriggerRouteBot(store.routing.getSettings().settings, platform) === channelId
+  }
 
   function context(target: MandateTarget, id: number, isTask: boolean) {
     if (isTask) {
@@ -183,14 +192,28 @@ export function createTaskBridge({
     }
   }
 
-  async function handle(input: TaskMessage): Promise<{ handled: boolean; reply?: string }> {
+  async function handle(input: TaskMessage): Promise<{
+    handled: boolean
+    reply?: string
+    mayReply?: () => boolean
+  }> {
     const text = input.text.trim()
     const command = taskReference.exec(text)
     const target = identity(input)
     const trusted =
       target &&
       (target.platform !== 'weixin' || (input.isDirect && target.operatorId === target.peerId))
-    if (!command && !isCommissionCommand(text)) return { handled: false }
+    if (!command && !isCommissionCommand(text)) {
+      if (!isSelectedBot(input.platform, input.channelId)) return { handled: false }
+      if (!personalDialog || !trusted || !input.isDirect || stop.signal.aborted)
+        return { handled: true }
+      const authorized = personalDialog.authorize(target)
+      if (!authorized) return { handled: true }
+      const mayReply = () => !stop.signal.aborted && authorized()
+      if (!mayReply()) return { handled: true }
+      const reply = await personalDialog.handle(input, mayReply)
+      return reply && mayReply() ? { handled: true, reply, mayReply } : { handled: true }
+    }
     if (!trusted || stop.signal.aborted) return { handled: true, reply: denied }
     const messageKey = hash(
       input.platform,
@@ -319,6 +342,7 @@ export function createTaskBridge({
   }
 
   return {
+    isSelectedBot,
     handle(input: TaskMessage) {
       const work = handle(input)
       jobs.add(work)

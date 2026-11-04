@@ -230,6 +230,34 @@ export class TriggerRoutingRuntime {
     )
   }
 
+  private selectedDirectClaim(target: MandateTarget) {
+    if (getTriggerRouteBot(this.getConfig().settings, target.platform) !== target.channelId)
+      return undefined
+    const endpoint = this.personalEndpoints(true).find(
+      ({ bot }) => bot.platform === target.platform && bot.channelId === target.channelId,
+    )
+    return endpoint?.claim && sameTriggerRouteTarget(endpoint.claim.target, target)
+      ? endpoint.claim
+      : undefined
+  }
+
+  isSelectedDirectTarget(target: MandateTarget): boolean {
+    return !!this.selectedDirectClaim(target)
+  }
+
+  /** Pin the verified private recipient and fence an in-flight conversation against rebinding. */
+  claimRouterImTarget(target: MandateTarget): (() => boolean) | null {
+    const revision = this.getConfig().revision
+    const claim = this.selectedDirectClaim(target)
+    if (!claim || this.controller.signal.aborted) return null
+    const pin = this.store.claimDirectBotBinding(target, claim.bindingRevision, revision)
+    if (pin === null) return null
+    return () =>
+      !this.controller.signal.aborted &&
+      this.getConfig().revision === revision &&
+      this.selectedDirectClaim(target)?.bindingRevision === pin
+  }
+
   private directRecipient(platform: MandatePlatform) {
     const { settings, revision } = this.getConfig()
     const channelId = getTriggerRouteBot(settings, platform)
@@ -256,6 +284,7 @@ export class TriggerRoutingRuntime {
     text: string,
     deliveryId: string,
     signal: AbortSignal,
+    originAuthorized: () => boolean = () => true,
   ): Promise<MandateReceipt> {
     const cancelled = {
       status: 'rejected' as const,
@@ -263,7 +292,8 @@ export class TriggerRoutingRuntime {
     }
     const send = this.deps.personal?.sendDirect
     const operation = AbortSignal.any([signal, this.controller.signal])
-    if (!text.trim() || !deliveryId.trim() || operation.aborted || !send) return cancelled
+    if (!text.trim() || !deliveryId.trim() || operation.aborted || !send || !originAuthorized())
+      return cancelled
     let selected: ReturnType<TriggerRoutingRuntime['directRecipient']>
     try {
       selected = this.directRecipient(platform)
@@ -283,6 +313,7 @@ export class TriggerRoutingRuntime {
     // A first send creates the pin. From now on even an address changed away and back is stale.
     const maySend = () =>
       !operation.aborted &&
+      originAuthorized() &&
       this.getConfig().revision === revision &&
       this.personalEndpoints(true).some(
         ({ claim: current }) =>

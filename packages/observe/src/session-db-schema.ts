@@ -3,6 +3,9 @@ import type { Database } from 'bun:sqlite'
 type ParticipantScopedTable = 'channel_models' | 'channel_session_bindings'
 
 export function initializeSessionDbSchema(db: Database): void {
+  const legacyBindingModel = !db
+    .query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='channel_session_bindings'")
+    .get()
   db.run(`
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
@@ -108,7 +111,8 @@ export function initializeSessionDbSchema(db: Database): void {
   addColumnIfMissing(db, 'schedules', 'channel_participant_id TEXT')
   addColumnIfMissing(db, 'schedules', 'delivery_channel_id TEXT')
 
-  backfillLegacyBindings(db)
+  // A migrated database can legitimately have no current bindings after an explicit unlink.
+  if (legacyBindingModel) backfillLegacyBindings(db)
 }
 
 export function backfillLegacyBindings(db: Database): void {

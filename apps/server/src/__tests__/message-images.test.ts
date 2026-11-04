@@ -72,14 +72,14 @@ describe('message image helpers', () => {
       channelAdapter,
       chatId: 'chat_test',
       channelName: 'test',
-      canDeliver: false,
+      canDeliver: () => false,
     })
     await sendFallbackImageBlocks({
-      imageBlocks: [fallbackImage],
+      imageBlocks: [fallbackImage, fallbackImage],
       channelAdapter,
       chatId: 'chat_test',
       channelName: 'test',
-      canDeliver: true,
+      canDeliver: () => sent.length === 0,
     })
 
     expect(sent).toEqual([fallbackImage.data])

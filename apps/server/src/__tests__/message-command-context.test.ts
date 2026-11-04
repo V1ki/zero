@@ -38,7 +38,9 @@ describe('handleChannelMessage command context', () => {
         channelName: 'telegram',
         agentName: 'ZeRo OS',
         agentInstruction: 'test instruction',
-        sessionManager: {} as MessageHandlerDeps['sessionManager'],
+        sessionManager: {
+          isRouterOwnedChannel: () => false,
+        } as unknown as MessageHandlerDeps['sessionManager'],
         commandRouter: commandRouter as MessageHandlerDeps['commandRouter'],
         channelAdapter,
         metrics: metrics as unknown as MessageHandlerDeps['metrics'],

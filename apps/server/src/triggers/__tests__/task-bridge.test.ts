@@ -447,6 +447,57 @@ test('the channel entry point replies in the authenticated origin and ignores co
   expect(adapter.reply).toHaveBeenCalledTimes(1)
 })
 
+test('selected bots claim ordinary text, slash commands, recalls and media without diverting other bots', async () => {
+  const { options, store } = setup(wx)
+  store.routing.saveSettings(
+    { ...store.routing.getSettings().settings, personalBots: { weixin: wx.channelId } },
+    store.routing.getSettings().revision,
+  )
+  const handle = mock(async () => 'Router 的答复。')
+  const bridge = createTaskBridge({
+    ...options,
+    personalDialog: {
+      authorize: (target) => (sameTriggerRouteTarget(target, wx) ? () => true : null),
+      handle,
+    },
+  })
+  const adapter = { reply: mock(async () => {}), showTyping: async () => null }
+  const channel = {
+    channelName: wx.channelId,
+    channelType: 'weixin' as const,
+    channelAdapter: adapter,
+  }
+  const dm = {
+    channelType: 'weixin',
+    senderId: wx.peerId,
+    timestamp: now,
+    metadata: { messageId: 'a', chatType: 'dm', chatId: wx.peerId, routerDirect: true },
+    content: '引用中的其他内容',
+    commandText: '看看我的 GitHub 里面的仓库',
+  }
+  for (const text of [dm.commandText, '/new']) {
+    expect(await dispatchRouterCommand({ ...dm, commandText: text }, channel, bridge)).toBe(true)
+    expect(handle).toHaveBeenLastCalledWith(expect.objectContaining({ text }), expect.any(Function))
+  }
+  const media = { ...dm, commandText: '', metadata: { ...dm.metadata, messageId: 'image' } }
+  expect(await dispatchRouterCommand(media, channel, bridge)).toBe(true)
+  expect(handle).toHaveBeenLastCalledWith(
+    expect.objectContaining({ text: '' }),
+    expect.any(Function),
+  )
+  for (const msg of [
+    { ...dm, eventType: 'message_recalled' as const },
+    { ...dm, senderId: 'other' },
+    { ...dm, commandText: '#任务1 确认', metadata: { ...dm.metadata, routerDirect: false } },
+  ])
+    expect(await dispatchRouterCommand(msg, channel, bridge)).toBe(true)
+  expect(handle).toHaveBeenCalledTimes(3)
+  expect(adapter.reply).toHaveBeenCalledTimes(3)
+  expect(await dispatchRouterCommand(dm, { ...channel, channelName: 'another' }, bridge)).toBe(
+    false,
+  )
+})
+
 test('IM follows the referenced task across later events and cannot read local or sibling task turns', async () => {
   const { store, bridge, agent, input, matchId, taskId, inboxId } = setup(ding, true)
   store.mandates.finishEffect(matchId, 'notify', 'done', 'work-card')

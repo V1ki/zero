@@ -95,9 +95,9 @@ export async function registerDingtalkRuntimeChannel(
     }),
   )
 
+  options.channels.set(definition.name, dingtalkChannel)
   await dingtalkChannel.start()
   console.log(`[ZeRo OS] Channel started: ${definition.name}`)
 
-  options.channels.set(definition.name, dingtalkChannel)
   options.heartbeat.write()
 }

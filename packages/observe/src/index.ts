@@ -40,6 +40,7 @@ export type {
   UsageTotals,
 } from './metrics'
 export { SessionDB } from './session-db'
+export type { RouterConversationStoreScope, RouterImScope } from './trigger-conversation-store'
 export { TriggerSettingsConflictError, TriggerStore } from './trigger-store'
 export type { TriggerBatch, TriggerPush } from './trigger-store'
 export type { SessionRow } from './session-db'

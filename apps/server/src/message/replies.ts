@@ -18,6 +18,10 @@ export async function deliverAssistantReplies(options: {
   messageId?: string | number
   canDeliverToCurrentSession(): boolean
 }): Promise<StreamAdapter | null> {
+  if (!options.canDeliverToCurrentSession()) {
+    if (options.streaming) await dismissStreaming(options.streaming)
+    return null
+  }
   const shouldEmbedImageBlocks = Boolean(options.streaming) || !options.lastSentMsgId
   const imageBlocks = collectAssistantImageBlocks(options.replies)
   const { imageMarkdownSuffix, failedImageBlocks } = await prepareImageBlockDelivery({
@@ -60,7 +64,7 @@ export async function deliverAssistantReplies(options: {
     channelAdapter: options.channelAdapter,
     chatId: options.chatId,
     channelName: options.channelName,
-    canDeliver: options.canDeliverToCurrentSession(),
+    canDeliver: options.canDeliverToCurrentSession,
   })
 
   return streaming
@@ -124,17 +128,12 @@ export async function sendFallbackImageBlocks(options: {
   channelAdapter: ChannelAdapter
   chatId: string
   channelName: string
-  canDeliver: boolean
+  canDeliver(): boolean
 }): Promise<void> {
-  if (
-    options.imageBlocks.length === 0 ||
-    !options.channelAdapter.sendImage ||
-    !options.canDeliver
-  ) {
-    return
-  }
+  if (!options.channelAdapter.sendImage) return
 
   for (const img of options.imageBlocks) {
+    if (!options.canDeliver()) return
     try {
       const imageBuffer = Buffer.from(img.data, 'base64')
       await options.channelAdapter.sendImage(options.chatId, imageBuffer)

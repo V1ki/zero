@@ -55,6 +55,7 @@ describe('stalled session message recovery', () => {
     })
     const recoverCalls: unknown[][] = []
     const sessionManager = {
+      isRouterOwnedChannel: () => false,
       getOrCreateForChannel: () => ({ session: oldSession, isNew: false }),
       recoverStalledCurrentSessionForChannel: (...args: unknown[]) => {
         recoverCalls.push(args)
@@ -132,6 +133,7 @@ describe('stalled session message recovery', () => {
       },
     })
     const sessionManager = {
+      isRouterOwnedChannel: () => false,
       getOrCreateForChannel: () => ({ session: oldSession, isNew: false }),
       recoverStalledCurrentSessionForChannel: () => ({
         session: newSession,

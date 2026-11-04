@@ -145,7 +145,7 @@ async function recoverMessageHandlerError(options: {
   })
 
   try {
-    const canDeliver = canDeliverToCurrentSession(options)
+    const canDeliver = () => canDeliverToCurrentSession(options)
 
     if (options.streaming) {
       await settleErrorStreaming({
@@ -161,11 +161,11 @@ async function recoverMessageHandlerError(options: {
     }
 
     await options.typingHandle?.clear().catch(() => {})
-    if (canDeliver) {
+    if (canDeliver()) {
       await options.channelAdapter.markError?.(options.chatId, options.messageId).catch(() => {})
     }
 
-    if (!options.streaming && canDeliver) {
+    if (!options.streaming && canDeliver()) {
       await options.channelAdapter.reply(options.chatId, userReply, options.messageId)
     }
   } catch {}
@@ -225,19 +225,20 @@ async function settleErrorStreaming(options: {
   streamText: string
   rolledBack: boolean
   userReply: string
-  canDeliverToCurrentSession: boolean
+  canDeliverToCurrentSession(): boolean
   channelAdapter: ChannelAdapter
   chatId: string
   messageId?: string | number
 }): Promise<void> {
-  if (!options.canDeliverToCurrentSession) {
+  if (!options.canDeliverToCurrentSession()) {
     await dismissStreaming(options.streaming).catch(() => {})
     return
   }
 
   if (!options.rolledBack && options.streamText) {
     await options.streaming.complete(options.streamText).catch(() => {})
-    await options.channelAdapter.reply(options.chatId, options.userReply, options.messageId)
+    if (options.canDeliverToCurrentSession())
+      await options.channelAdapter.reply(options.chatId, options.userReply, options.messageId)
     return
   }
 

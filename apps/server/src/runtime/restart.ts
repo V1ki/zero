@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import type { Channel } from '@zero-os/channel'
 import type { AgentSnapshot, InterruptedSessionRef, SessionManager } from '@zero-os/core'
-import { collectAssistantReply, describeError } from '@zero-os/shared'
+import { collectAssistantReply, describeError, isTriggerRoutePlatform } from '@zero-os/shared'
 import {
   type RestartTrigger,
   consumeRestartTrigger,
@@ -18,6 +18,7 @@ interface RecordRestartSentinelOptions {
   zeroDir: string
   restartSentinelPath: string
   interruptedSessions: InterruptedSessionRef[]
+  sessionManager: SessionManager
   channels: Map<string, Channel>
 }
 
@@ -49,7 +50,7 @@ export async function recoverInterruptedSessionsAfterRestart({
 
   if (sentinel.trigger) {
     console.log(formatRestartTriggerLog(sentinel.trigger))
-    await notifyRestartTriggerComplete(sentinel.trigger, channels)
+    await notifyRestartTriggerComplete(sentinel.trigger, channels, sessionManager)
   }
 
   if (!Array.isArray(sentinel.sessions) || sentinel.sessions.length === 0) return
@@ -71,13 +72,16 @@ export async function recordRestartSentinel({
   zeroDir,
   restartSentinelPath,
   interruptedSessions,
+  sessionManager,
   channels,
 }: RecordRestartSentinelOptions): Promise<void> {
   const trigger = consumeRestartTrigger(zeroDir)
   const sentinel: RestartSentinelFile = {
     ts: new Date().toISOString(),
     trigger,
-    sessions: interruptedSessions.filter(isRestartSentinelEntry),
+    sessions: interruptedSessions
+      .filter(isRestartSentinelEntry)
+      .filter((entry) => !sessionManager.isRouterOwnedChannel(entry.source, entry.channelName)),
   }
 
   if (!trigger && sentinel.sessions.length === 0) return
@@ -122,11 +126,17 @@ function readAndConsumeRestartSentinel(restartSentinelPath: string): RestartSent
 async function notifyRestartTriggerComplete(
   trigger: RestartTrigger,
   channels: Map<string, Channel>,
+  sessionManager: SessionManager,
 ): Promise<void> {
   if (!trigger.channelName || !trigger.channelId) return
 
   const triggerChannel = channels.get(trigger.channelName)
   if (!triggerChannel?.isConnected()) return
+  if (
+    isTriggerRoutePlatform(triggerChannel.type) &&
+    sessionManager.isRouterOwnedChannel(triggerChannel.type, trigger.channelName)
+  )
+    return
 
   try {
     await triggerChannel.send(trigger.channelId, '✅ ZeRo OS 已重启完成')
@@ -143,17 +153,15 @@ async function resumeRestartedSession({
 }: ResumeRestartedSessionOptions): Promise<void> {
   const session = sessionManager.get(entry.sessionId)
   if (!session) return
-  if (
-    !sessionManager.isCurrentSessionForChannel(
+  const isCurrent = () =>
+    sessionManager.isCurrentSessionForChannel(
       entry.source,
       entry.channelId,
       entry.channelName,
       entry.sessionId,
       entry.participantId,
     )
-  ) {
-    return
-  }
+  if (!isCurrent()) return
 
   const channel = entry.channelName ? channels.get(entry.channelName) : undefined
   if (!channel || !channel.isConnected()) return
@@ -173,9 +181,10 @@ async function resumeRestartedSession({
     if (entry.channelId !== triggerChannelId) {
       await channel.send(entry.channelId, '✅ ZeRo OS 已重启完成')
     }
+    if (!isCurrent()) return
     const replies = await session.handleMessage(buildRestartRecoveryMessage(entry))
     const replyText = collectAssistantReply(replies)
-    if (replyText) {
+    if (replyText && isCurrent()) {
       await channel.send(entry.channelId, replyText)
     }
   } catch (error) {

@@ -42,7 +42,10 @@ export function createIncomingMessageContext(
     participantId,
     messageId,
     source: createIncomingMessageSource(deps, chatId, participantId, messageId),
-    reply: (text) => deps.channelAdapter.reply(chatId, text, messageId),
+    reply: async (text) => {
+      if (!deps.sessionManager.isRouterOwnedChannel(deps.channelType, deps.channelName))
+        await deps.channelAdapter.reply(chatId, text, messageId)
+    },
   }
 }
 

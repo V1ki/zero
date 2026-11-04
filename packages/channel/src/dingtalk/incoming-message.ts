@@ -124,6 +124,11 @@ export class DingtalkIncomingMessageBuilder {
         conversationId,
         conversationTitle: readString(msg.conversationTitle),
         conversationType: readStringOrNumber(msg.conversationType),
+        routerDirect:
+          String(msg.conversationType) === '1' &&
+          !!msg.senderStaffId &&
+          !!msg.chatbotCorpId &&
+          msg.chatbotCorpId === msg.senderCorpId,
         messageId,
         msgtype: readString(msg.msgtype),
         senderNick: readString(msg.senderNick),

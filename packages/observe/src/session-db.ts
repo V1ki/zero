@@ -124,7 +124,7 @@ export class SessionDB {
     this.logsBasePath = dbPath === ':memory:' ? undefined : dirname(dbPath)
     this.db = new Database(dbPath, { create: true })
     this.configureConnection()
-    initializeSessionDbSchema(this.db)
+    this.db.transaction(() => initializeSessionDbSchema(this.db)).immediate()
   }
 
   static createInMemory(): SessionDB {

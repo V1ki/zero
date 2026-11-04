@@ -1,5 +1,5 @@
 import { DingtalkChannel } from '@zero-os/channel'
-import type { MandateTarget } from '@zero-os/shared'
+import { type MandateTarget, sameTriggerRouteTarget } from '@zero-os/shared'
 import type { ZeroOS } from '../runtime/types'
 import type { MandateDelivery, MandateReceipt } from './mandate-runtime'
 
@@ -7,7 +7,10 @@ type Host = Pick<ZeroOS, 'channels' | 'channelDefinitions'> & {
   sessionManager: Pick<ZeroOS['sessionManager'], 'listCurrentBindings'>
 }
 
-export function createDingtalkTaskDelivery(zero: Host) {
+export function createDingtalkTaskDelivery(
+  zero: Host,
+  isLiveTarget?: (target: MandateTarget) => boolean,
+) {
   function connectedChannel(channelId: string) {
     const channel = zero.channels.get(channelId)
     const definition = zero.channelDefinitions.get(channelId)
@@ -46,18 +49,21 @@ export function createDingtalkTaskDelivery(zero: Host) {
     return targets
   }
 
-  function listDirectTargets() {
-    return Array.from(zero.channelDefinitions.keys()).flatMap((channelId) =>
-      (connectedChannel(channelId)?.taskCards.listDirectPeers() ?? []).map(
-        ({ peerId, actorId: operatorId }) => ({
+  function listDirectTargets(forTask = false) {
+    return Array.from(zero.channelDefinitions.keys()).flatMap((channelId) => {
+      const cards = connectedChannel(channelId)?.taskCards
+      if (!cards) return []
+      return cards
+        .listDirectPeers()
+        .filter(({ peerId, actorId }) => !forTask || cards.canSend(peerId, actorId))
+        .map(({ peerId, actorId: operatorId }) => ({
           platform: 'dingtalk' as const,
           channelId,
           peerId,
           operatorId,
-          label: `${channelId} · ${peerId} · ${operatorId}`,
-        }),
-      ),
-    )
+          label: `${channelId} · ${peerId} · ${operatorId}${forTask ? ` · ${cards.modeLabel}` : ''}`,
+        }))
+    })
   }
 
   async function send(
@@ -68,12 +74,8 @@ export function createDingtalkTaskDelivery(zero: Host) {
   ): Promise<MandateReceipt> {
     const channel = zero.channels.get(target.channelId)
     const isBound = () =>
-      listTargets().some(
-        (candidate) =>
-          candidate.channelId === target.channelId &&
-          candidate.peerId === target.peerId &&
-          candidate.operatorId === target.operatorId,
-      )
+      isLiveTarget?.(target) ??
+      listTargets().some((candidate) => sameTriggerRouteTarget(candidate, target))
     if (
       !(channel instanceof DingtalkChannel) ||
       !target.operatorId ||

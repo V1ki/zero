@@ -50,7 +50,7 @@ export function createFeishuStreamingStarter(
     replyToMessageId ? channel.replyStreaming(replyToMessageId) : channel.sendStreaming(chatId)
 }
 
-/** Returns true for Router commands, including rejected ones, so they never start a general-purpose Agent. */
+/** Claimed inputs, including unsupported events on a selected bot, cannot open an Agent session. */
 export async function dispatchRouterCommand(
   message: IncomingMessage,
   {
@@ -61,15 +61,31 @@ export async function dispatchRouterCommand(
   bridge?: TriggerTaskBridge,
 ): Promise<boolean> {
   if (platform !== 'weixin' && platform !== 'feishu' && platform !== 'dingtalk') return false
+  const selected = bridge?.isSelectedBot(platform, channelId) ?? false
   if (
     message.eventType === 'message_recalled' ||
     message.metadata?.eventType === 'message_recalled'
   )
-    return false
+    return selected
   const text = message.commandText ?? message.content
-  if (!isRouterChannelCommand(text)) return false
+  const command = isRouterChannelCommand(text)
+  if (!selected && !command) return false
   if (!bridge) return true
   const metadata = message.metadata
+  const direct =
+    platform === 'weixin'
+      ? metadata?.chatType === 'dm'
+      : platform === 'feishu'
+        ? metadata?.chatType === 'p2p'
+        : String(metadata?.conversationType) === '1'
+  // A selected bot may handle an authorized group task, but never treat an
+  // apparent DM with conflicting sender, corporation or room metadata as private.
+  if (selected && (!direct || metadata?.routerDirect !== true)) {
+    const group =
+      (platform === 'feishu' && metadata?.chatType === 'group') ||
+      (platform === 'dingtalk' && String(metadata?.conversationType) === '2')
+    if (!command || !group) return true
+  }
   const peerId = typeof metadata?.chatId === 'string' ? metadata.chatId : ''
   const rawId = metadata?.messageId
   const messageId = typeof rawId === 'number' || typeof rawId === 'string' ? String(rawId) : ''
@@ -81,14 +97,9 @@ export async function dispatchRouterCommand(
     messageId,
     text,
     actorId: message.senderId,
-    isDirect:
-      platform === 'weixin'
-        ? metadata?.chatType === 'dm'
-        : platform === 'feishu'
-          ? metadata?.chatType === 'p2p'
-          : String(metadata?.conversationType) === '1',
+    isDirect: direct && (!selected || metadata?.routerDirect === true),
   })
-  if (result.reply && peerId && messageId)
+  if (result.reply && peerId && messageId && (!result.mayReply || result.mayReply()))
     await channelAdapter.reply(peerId, result.reply, messageId)
   return true
 }

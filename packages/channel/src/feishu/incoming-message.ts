@@ -117,6 +117,7 @@ export class FeishuIncomingMessageBuilder {
         chatId: msg.chat_id,
         messageId: msg.message_id,
         chatType: msg.chat_type,
+        routerDirect: msg.chat_type === 'p2p' && event?.sender?.sender_type === 'user',
         parentId: msg.parent_id,
       },
       images: images.length > 0 ? images : undefined,

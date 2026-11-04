@@ -165,7 +165,7 @@ class MessageStreamingProgress {
       const previousStreaming = this.streaming
       this.streamText = ''
       this.turnRotateChain = this.turnRotateChain.then(async () => {
-        if (!previousStreaming) return
+        if (!previousStreaming || !this.options.canDeliverToCurrentSession()) return
         this.streaming = await rotateStreamingTurn({
           previousStreaming,
           previousText: prevText,
@@ -173,6 +173,7 @@ class MessageStreamingProgress {
           channelName: this.options.channelName,
           chatId: this.options.chatId,
           messageId: this.options.messageId,
+          canDeliver: this.options.canDeliverToCurrentSession,
         })
       })
     }
@@ -187,9 +188,10 @@ class MessageStreamingProgress {
   }
 
   private queueStreamingUpdate(textSnapshot: string): void {
-    this.turnRotateChain = this.turnRotateChain.then(() =>
-      updateStreamingText(this.streaming, textSnapshot, this.options.channelName),
-    )
+    this.turnRotateChain = this.turnRotateChain.then(() => {
+      if (this.options.canDeliverToCurrentSession())
+        return updateStreamingText(this.streaming, textSnapshot, this.options.channelName)
+    })
   }
 }
 
@@ -213,10 +215,11 @@ async function rotateStreamingTurn(options: {
   channelName: string
   chatId: string
   messageId?: string | number
+  canDeliver(): boolean
 }): Promise<StreamAdapter | null> {
   try {
     await options.previousStreaming.complete(options.previousText)
-    if (!options.channelAdapter.createStreaming) return null
+    if (!options.channelAdapter.createStreaming || !options.canDeliver()) return null
     return await options.channelAdapter.createStreaming(options.chatId, options.messageId)
   } catch (err) {
     console.error(

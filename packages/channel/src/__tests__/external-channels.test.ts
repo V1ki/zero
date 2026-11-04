@@ -55,7 +55,7 @@ interface FeishuBinaryResponseLike {
 }
 
 interface FeishuIncomingPayload {
-  sender?: { sender_id?: { open_id?: string } }
+  sender?: { sender_id?: { open_id?: string }; sender_type?: string }
   message?: {
     message_id?: string
     chat_id?: string
@@ -633,6 +633,7 @@ describe('FeishuChannel contract', () => {
         chatId: 'chat_test',
         messageId: 'om_test',
         chatType: 'p2p',
+        routerDirect: false,
       },
     })
     expect(msg.images).toEqual([
@@ -641,6 +642,28 @@ describe('FeishuChannel contract', () => {
         data: Buffer.from('fake-image').toString('base64'),
       },
     ])
+  })
+
+  test('Router direct input requires a human sender in a Feishu p2p chat', async () => {
+    const channel = new FeishuChannel({ appId: 'test-id', appSecret: 'test-secret' })
+    for (const [senderType, chatType, verified] of [
+      ['user', 'p2p', true],
+      ['app', 'p2p', false],
+      ['user', 'group', false],
+    ] as const) {
+      const msg = await buildFeishuIncomingMessage(channel, {
+        sender: { sender_type: senderType, sender_id: { open_id: 'ou_test' } },
+        message: {
+          chat_type: chatType,
+          chat_id: 'oc_test',
+          message_id: 'om_test',
+          create_time: '1710000000',
+          message_type: 'text',
+          content: '{"text":"测试"}',
+        },
+      })
+      expect(msg?.metadata?.routerDirect).toBe(verified)
+    }
   })
 
   test('buildIncomingMessage downloads file messages into agent workspace uploads', async () => {

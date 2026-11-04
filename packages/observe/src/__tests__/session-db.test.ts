@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Message, Session as SessionData, TimelineCompactionBlock } from '@zero-os/shared'
 import { SessionDB } from '../session-db'
-import { backfillLegacyBindings } from '../session-db-schema'
+import { initializeSessionDbSchema } from '../session-db-schema'
 
 function expectDefined<T>(value: T | null | undefined): NonNullable<T> {
   expect(value).toBeDefined()
@@ -471,7 +471,8 @@ describe('SessionDB', () => {
       updatedAt: '2026-04-22T00:30:00.000Z',
     })
 
-    backfillLegacyBindings(unsafe.db)
+    unsafe.db.run('DROP TABLE channel_session_bindings')
+    initializeSessionDbSchema(unsafe.db)
 
     expect(db.loadBindings()).toEqual([
       {

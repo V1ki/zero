@@ -236,12 +236,14 @@ export async function runMessageWithDelivery(options: {
     messageId: options.messageId,
   })
 
-  options.state.streaming = await createStreamingBestEffort({
-    channelAdapter: options.channelAdapter,
-    channelName: options.channelName,
-    chatId: options.chatId,
-    messageId: options.messageId,
-  })
+  if (options.canDeliverToCurrentSession()) {
+    options.state.streaming = await createStreamingBestEffort({
+      channelAdapter: options.channelAdapter,
+      channelName: options.channelName,
+      chatId: options.chatId,
+      messageId: options.messageId,
+    })
+  }
 
   options.state.progressDelivery = new MessageProgressDelivery({
     streaming: options.state.streaming,

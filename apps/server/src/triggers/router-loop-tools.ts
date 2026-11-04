@@ -230,7 +230,7 @@ export function createRouterToolset(
         () => previewRoute(),
       )
   }
-  if (general) {
+  if (general && !input.imPlatform) {
     register(
       'prepare_routing_preference',
       '为用户要求更改的一项在场模式、时段去向或离席备选准备确认卡。',
@@ -285,6 +285,8 @@ export function createRouterToolset(
         return { status: 'draft', platform: p, botLabel: filter.filter(bot.label) }
       },
     )
+  }
+  if (general) {
     if (prepareReminder)
       register(
         'prepare_personal_reminder',

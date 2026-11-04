@@ -115,6 +115,7 @@ export async function runShutdownSequence({
     zeroDir,
     restartSentinelPath,
     interruptedSessions,
+    sessionManager,
     channels,
   })
   await abortActiveStreamingSessions(activeStreamingSessionSets)

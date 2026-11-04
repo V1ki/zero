@@ -132,6 +132,12 @@ export class WeixinInboundDispatcher {
           : new Date().toISOString(),
       metadata: {
         chatType,
+        routerDirect:
+          chatType === 'dm' &&
+          !message.group_id &&
+          !message.chat_room_id &&
+          !message.room_id &&
+          !senderId.endsWith('@chatroom'),
         chatId,
         messageId: messageId || undefined,
         accountId: this.accountId,

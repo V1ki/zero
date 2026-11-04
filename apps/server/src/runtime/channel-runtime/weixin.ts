@@ -92,9 +92,9 @@ export async function registerWeixinRuntimeChannel(
     }),
   )
 
+  options.channels.set(definition.name, weixinChannel)
   await weixinChannel.start()
   console.log(`[ZeRo OS] Channel started: ${definition.name}`)
 
-  options.channels.set(definition.name, weixinChannel)
   options.heartbeat.write()
 }
