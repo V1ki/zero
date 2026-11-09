@@ -1,4 +1,4 @@
-import type { ChannelCapabilities } from '@zero-os/shared'
+import type { ChannelCapabilities, ChannelMessageReference } from '@zero-os/shared'
 
 export type { ChannelCapabilities } from '@zero-os/shared'
 
@@ -71,6 +71,9 @@ export interface IncomingMessage {
   content: string
   /** User-authored text only. Excludes quoted messages, cards and attachment previews. */
   commandText?: string
+  /** Authored parts of a formatted message for the selected private Router dialog. */
+  dialogText?: string
+  reference?: ChannelMessageReference
   timestamp: string
   metadata?: Record<string, unknown>
   images?: ImageAttachment[]

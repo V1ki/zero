@@ -1,6 +1,9 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash } from 'node:crypto'
+import { setTimeout as delay } from 'node:timers/promises'
 import type { Client, EventDispatcher } from '@larksuiteoapi/node-sdk'
+import type { RouterPresentation, RouterPublicationAction } from '@zero-os/shared'
+import { buildFeishuMarkdownCardV2, chunkFeishuRichContent } from './card'
 
 interface RouterEntry {
   taskId: number
@@ -117,7 +120,7 @@ async function awaitResponse<T>(send: () => Promise<T>, signal?: AbortSignal): P
   }
 }
 
-function rejected(reason: string): Receipt {
+function rejected(reason: string): Exclude<Receipt, { status: 'accepted' }> {
   return { status: 'rejected', reason }
 }
 
@@ -128,7 +131,7 @@ class WriteNotAuthorized extends Error {
   }
 }
 
-function apiFailure(error: unknown, operation: string): Receipt {
+function apiFailure(error: unknown, operation: string): Exclude<Receipt, { status: 'accepted' }> {
   if (error instanceof WriteNotAuthorized && !error.dispatched)
     return rejected('飞书投递前授权已变更或已取消。')
   const response = record(record(error).response)
@@ -201,6 +204,12 @@ export class FeishuRouterDelivery {
     }
   }
 
+  private onPublication?: (click: RouterPublicationAction) => Promise<boolean>
+
+  setPublicationHandler(handler: (click: RouterPublicationAction) => Promise<boolean>) {
+    this.onPublication = handler
+  }
+
   setActionHandler(handler: (click: CardClick) => Promise<boolean>): void {
     this.onClick = handler
   }
@@ -220,6 +229,42 @@ export class FeishuRouterDelivery {
     const { source, action, taskId, digest } = record(value)
     const denied = { toast: { type: 'error', content: '该卡片操作不可用或没有权限。' } }
     // Apps can host unrelated cards. Trace only identified Router actions, without payload fields.
+    if (app_id === this.appId && source === 'zero_router_publication') {
+      const { deliveryId, actionId } = record(value)
+      if (
+        !current ||
+        !this.onPublication ||
+        typeof tenant_key !== 'string' ||
+        !tenant_key ||
+        actor.tenant_key !== tenant_key ||
+        host !== 'im_message' ||
+        tag !== 'button' ||
+        typeof actor.open_id !== 'string' ||
+        !nativeActor.test(actor.open_id) ||
+        typeof open_chat_id !== 'string' ||
+        !nativeChat.test(open_chat_id) ||
+        typeof open_message_id !== 'string' ||
+        !nativeMessage.test(open_message_id) ||
+        typeof event_id !== 'string' ||
+        !event_id ||
+        typeof deliveryId !== 'string' ||
+        !/^publication-[a-f0-9]{64}-feishu$/.test(deliveryId) ||
+        typeof actionId !== 'string' ||
+        !/^[a-zA-Z0-9_-]{1,40}$/.test(actionId)
+      )
+        return denied
+      const accepted = await this.onPublication({
+        peerId: open_chat_id,
+        actorId: actor.open_id,
+        cardId: open_message_id,
+        messageId: event_id,
+        deliveryId,
+        actionId,
+      })
+      return accepted
+        ? { toast: { type: 'success', content: '已交给 Router 跟进，结果会继续更新。' } }
+        : denied
+    }
     if (app_id !== this.appId || source !== 'zero_router') return denied
     console.log('[FeishuChannel] Router card callback: received')
     if (!current || !this.onClick) {
@@ -306,6 +351,43 @@ export class FeishuRouterDelivery {
     )
   }
 
+  async replyMarkdown(messageId: string, text: string, mayReply?: () => boolean): Promise<void> {
+    for (const [index, chunk] of chunkFeishuRichContent(text).entries()) {
+      await this.replyCard(messageId, buildFeishuMarkdownCardV2(chunk), mayReply, index)
+    }
+  }
+
+  async replyCard(
+    messageId: string,
+    content: string,
+    mayReply?: () => boolean,
+    index = 0,
+  ): Promise<void> {
+    const client = this.client()
+    if (!client || !nativeMessage.test(messageId)) throw new Error('Invalid Feishu reply target')
+    const response = await this.write(
+      client,
+      AbortSignal.timeout(15_000),
+      mayReply,
+      () =>
+        client.im.message.reply({
+          path: { message_id: messageId },
+          data: {
+            msg_type: 'interactive',
+            content,
+            uuid: nativeUuid('router-prs', this.appId, index ? `${messageId}:${index}` : messageId),
+          },
+        }),
+      true,
+    )
+    if (
+      response.code !== 0 ||
+      !response.data?.message_id ||
+      !nativeMessage.test(response.data.message_id)
+    )
+      throw new Error(`Feishu card reply was not confirmed (code ${response.code ?? 'unknown'})`)
+  }
+
   sendListenerReminder(
     chatId: string,
     inboxId: number,
@@ -319,6 +401,45 @@ export class FeishuRouterDelivery {
       chatId,
       nativeUuid('listener', chatId, String(inboxId)),
       body,
+      signal,
+      maySend,
+    )
+  }
+
+  async sendPresentation(
+    chatId: string,
+    deliveryId: string,
+    presentation: RouterPresentation,
+    signal: AbortSignal,
+    maySend: () => boolean,
+  ): Promise<Receipt> {
+    const client = this.client()
+    if (
+      !client ||
+      !nativeChat.test(chatId) ||
+      !/^publication-[a-f0-9]{64}-feishu$/.test(deliveryId) ||
+      signal.aborted
+    )
+      return rejected('飞书交付目标不可用。')
+    const elements: unknown[] = [{ tag: 'markdown', content: presentation.text }]
+    for (const action of presentation.actions)
+      elements.push({
+        tag: 'button',
+        type: 'default',
+        text: text(action.label),
+        behaviors: [
+          {
+            type: 'callback',
+            value: { source: 'zero_router_publication', deliveryId, actionId: action.id },
+          },
+        ],
+      })
+    return this.sendMessage(
+      client,
+      chatId,
+      'interactive',
+      JSON.stringify(card(presentation.title, elements)),
+      nativeUuid('publication', chatId, deliveryId),
       signal,
       maySend,
     )
@@ -431,6 +552,72 @@ export class FeishuRouterDelivery {
       return { ok: true, reason: '应用写入权限和所选文档编辑权限已核对。' }
     } catch {
       return { ok: false, reason: '无法核对飞书应用权限或文档授权，请检查连接。' }
+    }
+  }
+
+  async appendDocument(
+    documentId: string,
+    id: string,
+    title: string,
+    body: string,
+    signal: AbortSignal,
+    maySend: () => boolean,
+  ): Promise<Receipt> {
+    const client = this.client()
+    if (!client || !id || !title.trim() || !body.trim()) return rejected('归档内容或文档连接无效。')
+    const access = await this.probeDocument(documentId, signal)
+    if (!access.ok) return rejected(access.reason)
+    const codepoints = Array.from(`${title}\n${body}`)
+    const paragraphs = [] as string[]
+    for (let offset = 0; offset < codepoints.length; offset += 1800)
+      paragraphs.push(codepoints.slice(offset, offset + 1800).join(''))
+    const written: string[] = []
+    const failed = (result: Exclude<Receipt, { status: 'accepted' }>): Receipt =>
+      written.length
+        ? {
+            status: 'unknown',
+            reason: `前 ${written.length} 个文本块已写入。后续写入：${result.reason}`,
+          }
+        : result
+    // Feishu accepts at most 50 children per request and three edits per second per document.
+    try {
+      for (let offset = 0; offset < paragraphs.length; offset += 50) {
+        if (offset) await delay(334, undefined, { signal })
+        const batch = paragraphs.slice(offset, offset + 50)
+        const token = nativeUuid('router-document', documentId, offset ? `${id}:${offset}` : id)
+        const response = await this.write(
+          client,
+          signal,
+          maySend,
+          () =>
+            client.docx.documentBlockChildren.create({
+              path: { document_id: documentId, block_id: documentId },
+              params: { document_revision_id: -1, client_token: token },
+              data: {
+                index: -1,
+                children: batch.map((content) => ({
+                  block_type: 2,
+                  text: { elements: [{ text_run: { content } }] },
+                })),
+              },
+            }),
+          true,
+        )
+        if (typeof response.code === 'number' && response.code !== 0)
+          return failed(rejected(`飞书拒绝写入文档（${response.code}）。`))
+        const ids = response.data?.children?.map((b) => b.block_id)
+        if (
+          response.code !== 0 ||
+          response.data?.client_token !== token ||
+          ids?.length !== batch.length ||
+          !ids.every((id): id is string => !!id)
+        )
+          return failed({ status: 'unknown', reason: '文档回执不完整，请核对原文档。' })
+        written.push(...ids)
+      }
+      return { status: 'accepted', receipt: `${documentId}#${written.join(',')}` }
+    } catch (error) {
+      return failed(apiFailure(error, '归档结果'))
     }
   }
 

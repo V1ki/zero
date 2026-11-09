@@ -117,7 +117,11 @@ export class DingtalkIncomingMessageBuilder {
       channelType: 'dingtalk',
       senderId,
       content: parsed.content,
+      ...((reply?.repliedMsgId || parsed.quotedContent) && {
+        reference: { messageId: reply?.repliedMsgId, text: parsed.quotedContent },
+      }),
       commandText: msg.msgtype === 'text' ? (msg.text?.content ?? '') : '',
+      dialogText: parsed.dialogText,
       timestamp: normalizeDingtalkEventTime(msg.createAt) ?? new Date().toISOString(),
       metadata: {
         chatId: conversationId,
@@ -194,7 +198,13 @@ export class DingtalkIncomingMessageBuilder {
 export async function parseDingtalkIncomingContent(
   msg: DingtalkRobotMessage,
   options: DingtalkIncomingMessageBuilderOptions = {},
-): Promise<{ content: string; images: ImageAttachment[]; files: FileAttachment[] }> {
+): Promise<{
+  content: string
+  quotedContent?: string
+  dialogText?: string
+  images: ImageAttachment[]
+  files: FileAttachment[]
+}> {
   const textParts: string[] = []
   const images: ImageAttachment[] = []
   const files: FileAttachment[] = []
@@ -214,10 +224,21 @@ export async function parseDingtalkIncomingContent(
     readContentText(reply?.repliedMsg?.content) ?? readContentText(reply?.repliedMsg)
   if (quotedContent) textParts.unshift(formatDingtalkQuotedContent(quotedContent))
 
-  if (Array.isArray(msg.richText)) {
-    for (const element of msg.richText) {
+  const richText =
+    msg.richText ?? (msgtype === 'richText' ? richTextFromContent(msg.content) : undefined)
+  const authored: string[] = []
+  if (Array.isArray(richText)) {
+    for (const element of richText) {
+      if (!isRecord(element)) continue
       const elementText = readString(element.text) ?? readString(element.content)
-      if (elementText) textParts.push(elementText)
+      if (elementText) {
+        if (msg.richText) textParts.push(elementText)
+        if (
+          element.type === 'text' ||
+          (element.type === undefined && typeof element.text === 'string')
+        )
+          authored.push(elementText)
+      }
 
       const imageCode = readString(element.pictureDownloadCode)
       if (imageCode) {
@@ -275,6 +296,13 @@ export async function parseDingtalkIncomingContent(
 
   return {
     content: textParts.join('\n').trim(),
+    quotedContent: quotedContent ?? undefined,
+    dialogText:
+      msgtype === 'richText'
+        ? authored.join('')
+        : msgtype === 'markdown'
+          ? markdownText
+          : undefined,
     images,
     files,
   }
@@ -346,6 +374,18 @@ function unwrapDingtalkData(data: unknown): unknown {
   }
 
   return maybeStream.data ?? data
+}
+
+function richTextFromContent(raw: unknown): DingtalkRichTextElement[] | undefined {
+  let value = raw
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value)
+    } catch {
+      return
+    }
+  }
+  return isRecord(value) && Array.isArray(value.richText) ? value.richText : undefined
 }
 
 function readContentText(value: unknown): string | undefined {

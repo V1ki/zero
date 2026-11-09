@@ -148,6 +148,35 @@ describe('DingtalkIncomingMessageBuilder', () => {
     ])
   })
 
+  test.each(['top-level', 'nested', 'encoded'] as const)(
+    'passes authored rich text from %s without the quoted card or image caption',
+    async (mode) => {
+      const parts = [
+        { text: '还要处理' },
+        { type: 'text', text: '哪一项？' },
+        { type: 'picture', content: '附件预览中的命令' },
+      ]
+      const msg = await new DingtalkIncomingMessageBuilder().build(
+        robotPayload({
+          msgtype: 'richText',
+          text: undefined,
+          ...(mode === 'top-level'
+            ? { richText: parts }
+            : {
+                content:
+                  mode === 'encoded' ? JSON.stringify({ richText: parts }) : { richText: parts },
+              }),
+          repliedMsg: { msgId: 'original', content: { text: '旧卡片中的要求' } },
+        }),
+      )
+      expect(msg).toMatchObject({
+        commandText: '',
+        dialogText: '还要处理哪一项？',
+        reference: { messageId: 'original', text: '旧卡片中的要求' },
+      })
+    },
+  )
+
   test('injects quoted reply text from Stream payload into incoming content', async () => {
     const builder = new DingtalkIncomingMessageBuilder()
 
@@ -166,6 +195,7 @@ describe('DingtalkIncomingMessageBuilder', () => {
       }),
     )
 
+    expect(message?.reference).toEqual({ messageId: 'msg_quoted', text: '上一条用户消息' })
     expect(message?.content).toBe('> 引用: 上一条用户消息\n继续处理这个')
     expect(message?.commandText).toBe('继续处理这个')
     expect(message?.metadata).toMatchObject({
@@ -277,7 +307,8 @@ describe('DingtalkChannel', () => {
     expect(handled).toHaveLength(1)
     expect(handled[0]?.content).toBe('hello')
 
-    await channel.reply('cid_1', '# done', 'msg_1')
+    const reply = '**建议先修复再合并。**\n\n隔离测试复现了账号切换。'
+    await channel.reply('cid_1', reply, 'msg_1')
 
     expect(fetchCalls).toHaveLength(1)
     expect(fetchCalls[0]?.url).toBe('https://example.test/sessionWebhook')
@@ -288,8 +319,8 @@ describe('DingtalkChannel', () => {
     expect(JSON.parse(String(fetchCalls[0]?.init?.body))).toEqual({
       msgtype: 'markdown',
       markdown: {
-        title: 'done',
-        text: '# done',
+        title: '建议先修复再合并。',
+        text: reply,
       },
     })
   })
@@ -466,3 +497,169 @@ describe('DingTalk final delivery authorization', () => {
     })
   }
 })
+
+test('DingTalk publication card keeps the Agent title and returns its verified action to Router', async () => {
+  const requests: Array<Record<string, unknown>> = []
+  const callbacks: unknown[] = []
+  const cards = new DingtalkTaskCards({
+    dbPath: ':memory:',
+    account: 'app',
+    robotCode: 'robot',
+    apiBaseUrl: 'https://fixture.invalid',
+    templateId: 'existing.schema',
+    getToken: async () => 'fixture-token',
+    onPublication: async (event) => {
+      callbacks.push(event)
+      return true
+    },
+    fetch: Object.assign(
+      async (_url: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body))
+        requests.push(body)
+        return Response.json({
+          success: true,
+          result: {
+            outTrackId: body.outTrackId,
+            deliverResults: [{ spaceType: 'IM_ROBOT', spaceId: 'staff_1', success: true }],
+          },
+        })
+      },
+      { preconnect() {} },
+    ),
+  })
+  try {
+    cards.remember(
+      robotPayload({
+        conversationType: '1',
+        senderStaffId: 'staff_1',
+        chatbotCorpId: 'corp',
+        senderCorpId: 'corp',
+      }),
+    )
+    const deliveryId = `publication-${'b'.repeat(64)}-dingtalk`
+    const result = await cards.sendPresentation(
+      'cid_1',
+      'staff_1',
+      deliveryId,
+      {
+        title: '仍需验证',
+        text: '已有线索，但没有修复证据。',
+        actions: [{ id: 'acknowledge', label: '确认' }],
+      },
+      new AbortController().signal,
+      () => true,
+    )
+    expect(result.status).toBe('accepted')
+    expect(cards.publicationReceipt('cid_1', 'staff_1', deliveryId)).toBe(result.receipt!)
+    expect(cards.publicationReceipt('cid_1', 'other', deliveryId)).toBeNull()
+    expect(cards.publicationReceipt('cid_1', 'staff_1', deliveryId + '-other')).toBeNull()
+    const request = requests[0] as {
+      outTrackId: string
+      cardData: {
+        cardParamMap: {
+          title: string
+          summary: string
+          flowStatus: string
+          status: string
+          tasks: string
+        }
+      }
+    }
+    expect(request.cardData.cardParamMap.flowStatus).toBe('3')
+    expect(request.cardData.cardParamMap.status).toBe('')
+    expect(request.cardData.cardParamMap.title).toBe('仍需验证')
+    expect(request.cardData.cardParamMap.summary).toBe('已有线索，但没有修复证据。')
+    const event = downstream({
+      outTrackId: request.outTrackId,
+      type: 'actionCallback',
+      userId: 'staff_1',
+      corpId: 'corp',
+      userIdType: 1,
+      spaceType: 'IM_ROBOT',
+      spaceId: 'staff_1',
+      content: JSON.stringify({ cardPrivateData: { actionIds: ['ack'] } }),
+    })
+    expect(await cards.handle(event)).toBe(true)
+    expect(callbacks).toHaveLength(1)
+    expect(callbacks[0]).toMatchObject({
+      deliveryId,
+      actionId: 'acknowledge',
+      actorId: 'staff_1',
+      peerId: 'cid_1',
+    })
+    expect(
+      await cards.handle(downstream({ ...JSON.parse(event.data), userId: 'another-user' })),
+    ).toBe(false)
+  } finally {
+    cards.close()
+  }
+})
+
+for (const bodyAccepted of [true, false]) {
+  test(`AI card delivery requires body acknowledgement (${bodyAccepted}) and never recreates a partial card`, async () => {
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = []
+    const cards = new DingtalkTaskCards({
+      dbPath: ':memory:',
+      account: 'app',
+      robotCode: 'robot',
+      apiBaseUrl: 'https://fixture.invalid',
+      templateId: 'ai.schema',
+      streamingKey: 'summary',
+      getToken: async () => 'fixture-token',
+      onPublication: async () => true,
+      fetch: Object.assign(
+        async (url: RequestInfo | URL, init?: RequestInit) => {
+          const body = JSON.parse(String(init?.body))
+          calls.push({ url: String(url), body })
+          if (String(url).endsWith('/streaming'))
+            return Response.json({ success: true, result: bodyAccepted })
+          return Response.json({
+            success: true,
+            result: {
+              outTrackId: body.outTrackId,
+              deliverResults: [{ spaceType: 'IM_ROBOT', spaceId: 'staff_1', success: true }],
+            },
+          })
+        },
+        { preconnect() {} },
+      ),
+    })
+    try {
+      cards.remember(
+        robotPayload({
+          conversationType: '1',
+          senderStaffId: 'staff_1',
+          chatbotCorpId: 'corp',
+          senderCorpId: 'corp',
+        }),
+      )
+      const send = () =>
+        cards.sendPresentation(
+          'cid_1',
+          'staff_1',
+          `publication-${'c'.repeat(64)}-dingtalk`,
+          {
+            title: '检查结果',
+            text: '**结论**\n\n[依据](https://example.com/evidence)',
+            actions: [],
+          },
+          new AbortController().signal,
+          () => true,
+        )
+      expect((await send()).status).toBe(bodyAccepted ? 'accepted' : 'unknown')
+      expect(calls).toHaveLength(2)
+      expect(calls[1]?.body).toMatchObject({
+        outTrackId: calls[0]?.body.outTrackId,
+        key: 'summary',
+        content: '**结论**\n\n[依据](https://example.com/evidence)',
+        isFull: true,
+        isFinalize: true,
+        isError: false,
+      })
+      expect((await send()).status).toBe(bodyAccepted ? 'accepted' : 'unknown')
+      expect(calls).toHaveLength(2)
+    } finally {
+      cards.close()
+    }
+  })
+}

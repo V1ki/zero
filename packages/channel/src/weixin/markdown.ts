@@ -146,11 +146,20 @@ function splitMarkdownBlocks(content: string): string[] {
   return blocks.filter(Boolean)
 }
 
-function truncateHard(content: string, maxLength: number): string[] {
+export function splitWeixinPlainText(content: string, maxLength = MAX_MESSAGE_LENGTH): string[] {
   const chunks: string[] = []
-  for (let i = 0; i < content.length; i += maxLength) {
-    chunks.push(content.slice(i, i + maxLength))
+  let chunk = ''
+  for (const character of content) {
+    if (chunk && chunk.length + character.length > maxLength) {
+      const lineEnd = chunk.lastIndexOf('\n') + 1
+      const cut =
+        lineEnd && chunk.length - lineEnd + character.length <= maxLength ? lineEnd : chunk.length
+      chunks.push(chunk.slice(0, cut))
+      chunk = chunk.slice(cut)
+    }
+    chunk += character
   }
+  if (chunk) chunks.push(chunk)
   return chunks
 }
 
@@ -171,7 +180,7 @@ function packBlocks(content: string, maxLength: number): string[] {
     if (block.length <= maxLength) {
       current = block
     } else {
-      packed.push(...truncateHard(block, maxLength))
+      packed.push(...splitWeixinPlainText(block, maxLength))
     }
   }
   if (current) packed.push(current)

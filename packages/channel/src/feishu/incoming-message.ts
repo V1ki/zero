@@ -47,6 +47,7 @@ interface FeishuWrappedEventPayload<T> {
 
 export interface ParsedFeishuIncomingContent {
   content: string
+  dialogText?: string
   images: ImageAttachment[]
   files: FileAttachment[]
 }
@@ -94,9 +95,10 @@ export class FeishuIncomingMessageBuilder {
     let { content } = parsed
     const { files, images } = parsed
 
+    let quotedContent: string | null = null
     if (msg.parent_id) {
-      const quotedContent = await this.quotedMessageResolver
-        .fetchQuotedContent(msg.parent_id)
+      quotedContent = await this.quotedMessageResolver
+        .fetchQuotedContent(msg.parent_id, msg.chat_id)
         .catch((err) => {
           console.warn('[FeishuChannel] Failed to resolve quoted message:', describeError(err))
           return null
@@ -110,8 +112,12 @@ export class FeishuIncomingMessageBuilder {
       channelType: 'feishu',
       senderId: event?.sender?.sender_id?.open_id ?? 'unknown',
       content,
+      ...(msg.parent_id && {
+        reference: { messageId: msg.parent_id, text: quotedContent ?? undefined },
+      }),
       commandText:
         msg.message_type === 'text' ? parsed.content.replace(/^(?:\s*@_user_\d+\s+)+/, '') : '',
+      dialogText: parsed.dialogText,
       timestamp: new Date(Number(msg.create_time) * 1000).toISOString(),
       metadata: {
         chatId: msg.chat_id,
@@ -290,11 +296,14 @@ async function parseFeishuIncomingMessageContent(
   const images: ParsedFeishuIncomingContent['images'] = []
   const files: ParsedFeishuIncomingContent['files'] = []
   let content = ''
+  let dialogText: string | undefined
 
   if (msg.message_type === 'text') {
     content = parseFeishuTextMessageContent(msg)
   } else if (msg.message_type === 'post') {
-    content = await parseFeishuPostMessageContent(msg, messageId, mediaDownloader, images)
+    const authored: string[] = []
+    content = await parseFeishuPostMessageContent(msg, messageId, mediaDownloader, images, authored)
+    dialogText = authored.join('\n')
   } else if (msg.message_type === 'image') {
     content = await parseFeishuImageMessageContent(msg, messageId, mediaDownloader, images)
   } else if (msg.message_type === 'file') {
@@ -303,7 +312,7 @@ async function parseFeishuIncomingMessageContent(
     content = `[${msg.message_type} message]`
   }
 
-  return { content, images, files }
+  return { content, images, files, dialogText }
 }
 
 function parseFeishuTextMessageContent(msg: FeishuMessagePayload): string {
@@ -321,11 +330,12 @@ async function parseFeishuPostMessageContent(
   messageId: string,
   mediaDownloader: FeishuIncomingMediaDownloader,
   images: ImageAttachment[],
+  authored: string[],
 ): Promise<string> {
   try {
     const parsed = JSON.parse(msg.content ?? '{}')
     const pendingImages: ImageAttachment[] = []
-    let content = parseFeishuPostContent(parsed, pendingImages)
+    let content = parseFeishuPostContent(parsed, pendingImages, authored)
 
     if (messageId) {
       const downloads = pendingImages
@@ -422,7 +432,11 @@ async function parseFeishuFileMessageContent(
   }
 }
 
-function parseFeishuPostContent(parsed: unknown, images: ImageAttachment[]): string {
+function parseFeishuPostContent(
+  parsed: unknown,
+  images: ImageAttachment[],
+  authored?: string[],
+): string {
   if (!parsed || typeof parsed !== 'object') {
     return extractTextFromJson(parsed)
   }
@@ -445,11 +459,24 @@ function parseFeishuPostContent(parsed: unknown, images: ImageAttachment[]): str
   }
 
   const parts: string[] = []
-  if (doc.title) parts.push(`# ${doc.title}`)
+  if (doc.title) {
+    parts.push(`# ${doc.title}`)
+    authored?.push(doc.title)
+  }
 
   for (const paragraph of doc.content) {
     if (!Array.isArray(paragraph)) continue
     const line = paragraph.map((el) => parsePostElement(el, images)).join('')
+    if (authored) {
+      const visible = paragraph
+        .map((el) => {
+          if (el?.tag === 'text' && typeof el.text === 'string') return el.text
+          if (el?.tag === 'a') return parsePostElement(el, images)
+          return ''
+        })
+        .join('')
+      if (visible) authored.push(visible)
+    }
     if (line) parts.push(line)
   }
 
@@ -531,46 +558,15 @@ function parsePostElement(el: unknown, images: ImageAttachment[]): string {
 class FeishuQuotedMessageResolver {
   constructor(private readonly options: FeishuIncomingMessageBuilderOptions) {}
 
-  async fetchQuotedContent(parentMessageId: string): Promise<string | null> {
-    if (!this.client) return null
-
-    try {
-      const response = await (
-        this.client as unknown as { request: (opts: unknown) => Promise<unknown> }
-      ).request({
-        method: 'GET',
-        url: '/open-apis/im/v1/messages/mget',
-        params: {
-          message_ids: parentMessageId,
-          user_id_type: 'open_id',
-        },
-      })
-
-      const data = response as {
-        code?: number
-        data?: {
-          items?: Array<{
-            msg_type?: string
-            body?: { content?: string }
-            sender?: { id?: string; sender_type?: string }
-          }>
-        }
-      }
-
-      if (data.code !== 0 || !data.data?.items?.length) return null
-
-      const [item] = data.data.items
-      if (!item) return null
-
-      return this.parseQuotedItemText(item).trim() || null
-    } catch (error) {
-      console.warn('[FeishuChannel] Failed to fetch quoted message:', describeError(error))
-      return null
-    }
-  }
-
-  private get client(): lark.Client | null {
-    return this.options.getClient()
+  async fetchQuotedContent(parentMessageId: string, chatId?: string): Promise<string | null> {
+    const client = this.options.getClient()
+    if (!client || !chatId) return null
+    const response = await client.im.message.get({ path: { message_id: parentMessageId } })
+    if (response.code !== 0) throw new Error(`Feishu message.get returned ${response.code}`)
+    const item = response.data?.items?.find(
+      (entry) => entry.message_id === parentMessageId && entry.chat_id === chatId && !entry.deleted,
+    )
+    return item ? this.parseQuotedItemText(item).trim() || null : null
   }
 
   private parseQuotedItemText(item: {

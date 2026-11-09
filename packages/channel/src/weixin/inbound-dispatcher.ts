@@ -110,7 +110,12 @@ export class WeixinInboundDispatcher {
     console.log(
       `[WeixinChannel] received ${chatType} message channel=${this.channelName} chat=${safeId(chatId)} sender=${safeId(senderId)} message=${safeId(messageId)} items=${items.length}`,
     )
-    const text = extractText(items)
+    const textItems = items.filter((item) => item.type === ITEM_TEXT)
+    const dialogText = textItems
+      .map((item) => item.text_item?.text)
+      .filter(Boolean)
+      .join('\n')
+    const text = extractText(items) || dialogText
     const { images, files } = await this.mediaCollector.collect(items)
 
     if (!text && images.length === 0 && files.length === 0) {
@@ -121,11 +126,20 @@ export class WeixinInboundDispatcher {
       return
     }
 
+    const textItem = textItems[0]
+    const referenced = textItems.find((item) => item.ref_msg)?.ref_msg
+    const referenceText =
+      referenced &&
+      [referenced.title, referenced.message_item && extractText([referenced.message_item])]
+        .filter(Boolean)
+        .join(' | ')
     const outbound: ZeroIncomingMessage = {
       channelType: 'weixin',
       senderId,
       content: text,
-      commandText: items.find((item) => item.type === ITEM_TEXT)?.text_item?.text ?? '',
+      commandText: textItem?.text_item?.text ?? '',
+      dialogText,
+      ...(referenceText && { reference: { text: referenceText } }),
       timestamp:
         typeof message.create_time_ms === 'number'
           ? new Date(message.create_time_ms).toISOString()

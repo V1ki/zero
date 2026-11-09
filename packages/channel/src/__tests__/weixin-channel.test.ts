@@ -89,6 +89,45 @@ describe('WeixinChannel.send', () => {
     expect(body.msg.item_list[0].text_item?.text).toBe('hello')
   })
 
+  test('literal replies keep line breaks and external titles in one text item, even when a receipt is lost', async () => {
+    const { fetchImpl, calls } = makeFetch((call) => {
+      expect(new URL(call.url).pathname).toBe('/ilink/bot/sendmessage')
+      return Response.json(calls.length === 1 ? { unknown: true } : { ret: 0 })
+    })
+    const ch = new WeixinChannel(
+      { accountId: 'acc', token: 'tok', homeDir: tempDir, splitMultilineMessages: true },
+      { fetchImpl, sleep: async () => {} },
+    )
+    const text =
+      '开放 PR\n\n#185 ![test](data:image/png;base64,aW1n)\n#184 [notes](https://example.test)'
+    await expect(ch.replyPlainText('peer', text, 'incoming-1')).rejects.toThrow('发送回执')
+    expect(calls).toHaveLength(1)
+    await ch.replyPlainText('peer', text, 'incoming-1')
+    await ch.replyPlainText('peer', text, 'incoming-2')
+    expect(calls).toHaveLength(3)
+    const packets = calls.map((call) => JSON.parse(String(call.init?.body)).msg)
+    for (const packet of packets) {
+      expect(packet.item_list).toEqual([{ type: ITEM_TEXT, text_item: { text } }])
+    }
+    expect(packets[1].client_id).toBe(packets[0].client_id)
+    expect(packets[2].client_id).not.toBe(packets[0].client_id)
+  })
+
+  test('a long Router answer keeps its last condition and uses a distinct key per bubble', async () => {
+    const { fetchImpl, calls } = makeFetch(() => Response.json({ ret: 0 }))
+    const ch = new WeixinChannel(
+      { accountId: 'acc', token: 'tok', homeDir: tempDir },
+      { fetchImpl },
+    )
+    const text = '证'.repeat(3999) + '📄尚待更新。'
+    await ch.replyPlainText('peer', text, 'incoming-long', () => true)
+    const packets = calls.map((c) => JSON.parse(String(c.init?.body)).msg)
+    expect(packets.map((p) => p.item_list[0].text_item.text).join('')).toBe(text)
+    expect(new Set(packets.map((p) => p.client_id)).size).toBe(2)
+    await ch.replyPlainText('peer', text, 'another', () => false)
+    expect(calls.length).toBe(2)
+  })
+
   test('sends typing start and cancel using cached typing ticket', async () => {
     const { fetchImpl, calls } = makeFetch((call) => {
       if (new URL(call.url).pathname === '/ilink/bot/getconfig') {
@@ -253,10 +292,25 @@ describe('WeixinChannel.send', () => {
       session_id: 'sess1',
       seq: 7,
       message_id: 'm1',
-      item_list: [{ type: 1, text_item: { text: 'hello' } }],
+      item_list: [
+        {
+          type: 1,
+          text_item: { text: 'hello' },
+        },
+        {
+          type: 1,
+          text_item: { text: '补充这条' },
+          ref_msg: { message_item: { type: 1, text_item: { text: '原文' } } },
+        },
+      ],
     })
     expect(received.length).toBe(1)
     expect(received[0].senderId).toBe('peer')
+    expect(received[0]).toMatchObject({
+      commandText: 'hello',
+      dialogText: 'hello\n补充这条',
+      reference: { text: '原文' },
+    })
     expect(received[0].timestamp).toBe('2025-12-08T08:40:00.000Z')
     expect(received[0].metadata).toMatchObject({ sessionId: 'sess1', seq: 7, routerDirect: true })
     expect(internal.tokenStore.get('me', 'peer')).toBe('ctx1')

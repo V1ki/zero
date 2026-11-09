@@ -32,7 +32,7 @@ async function harness(botAppId = appId) {
   const channel = new FeishuChannel({ name: 'office', appId: botAppId, appSecret: 'fixture' }, {
     createClient: () =>
       ({
-        im: { message: { create } },
+        im: { message: { create, reply: create } },
         application: { scope: { list: scopes } },
         drive: { permissionMember: { auth: access } },
         docx: { documentBlockChildren: { create: append } },
@@ -73,6 +73,48 @@ function actionEvent() {
 }
 
 describe('Feishu native Router', () => {
+  test('a long Markdown reply retains links, emphasis and the ending across distinct cards', async () => {
+    const h = await harness()
+    try {
+      const start = '**只列文档** · [#145](https://github.com/example/project/pull/145)'
+      const end = '尚未合并，须更新原分支。'
+      await h.channel.router.replyMarkdown(
+        'om_docs',
+        [start, '资料。'.repeat(5500), end].join('\n\n'),
+      )
+      const data = h.create.mock.calls.map(
+        ([r]) => (r as { data: { uuid: string; content: string } }).data,
+      )
+      expect(data.length).toBeGreaterThan(1)
+      expect(new Set(data.map((d) => d.uuid)).size).toBe(data.length)
+      const content = data.map((d) => JSON.parse(d.content).body.elements[0].content).join('\n')
+      expect(content).toContain(start)
+      expect(content.endsWith(end)).toBe(true)
+    } finally {
+      await h.channel.stop()
+    }
+  })
+  test('a PR card is one reply with a stable key and no fallback after an uncertain receipt', async () => {
+    const h = await harness()
+    const send = (allowed: boolean) =>
+      h.channel.router.replyCard('om_incoming', '{"schema":"2.0"}', () => allowed)
+    try {
+      await expect(send(false)).rejects.toThrow()
+      expect(h.create).not.toHaveBeenCalled()
+      await send(true)
+      const [first] = h.create.mock.calls[0]
+      expect(first).toMatchObject({
+        path: { message_id: 'om_incoming' },
+        data: { msg_type: 'interactive' },
+      })
+      h.create.mockImplementationOnce(async () => ({ code: 0, data: {} }))
+      await expect(send(true)).rejects.toThrow('not confirmed')
+      expect(h.create).toHaveBeenCalledTimes(2)
+      expect(h.create.mock.calls[1][0]).toEqual(first)
+    } finally {
+      await h.channel.stop()
+    }
+  })
   test('sends manual text without an inbox entry and namespaces the stable write key by bot and delivery', async () => {
     const first = await harness()
     const other = await harness('cli_other')
@@ -427,4 +469,159 @@ describe('Feishu native Router', () => {
     )
     expect(h.append).not.toHaveBeenCalled()
   })
+})
+
+test('Agent-composed native presentation preserves content and callback identity without legacy task ids', async () => {
+  const h = await harness()
+  const deliveryId = `publication-${'a'.repeat(64)}-feishu`
+  const received = mock(async (input: { actorId: string }) => input.actorId === 'ou_user')
+  h.channel.router.setPublicationHandler(received)
+  const presentation = {
+    title: '核查有了新结果',
+    text: '**找到相关讨论**，但还没有复测证据。\n[查看原讨论](https://github.com/example/repo/issues/1)；不代表修复完成。',
+    actions: [{ id: 'verify', label: '继续核对' }],
+  }
+  try {
+    const result = await h.channel.router.sendPresentation(
+      'oc_room',
+      deliveryId,
+      presentation,
+      signal(),
+      () => true,
+    )
+    expect(result).toEqual({ status: 'accepted', receipt: 'om_native' })
+    const sent = h.create.mock.calls[0][0] as { data: { content: string } }
+    const view = JSON.parse(sent.data.content)
+    expect(view.header.title.content).toBe(presentation.title)
+    expect(view.body.elements[0]).toEqual({ tag: 'markdown', content: presentation.text })
+    const button = view.body.elements[1]
+    expect(button.text.content).toBe('继续核对')
+    expect(button.behaviors[0].value).toEqual({
+      source: 'zero_router_publication',
+      deliveryId,
+      actionId: 'verify',
+    })
+    const original = actionEvent()
+    const click = {
+      ...original,
+      event: { ...original.event, action: { tag: 'button', value: button.behaviors[0].value } },
+    }
+    expect(await h.invoke(click)).toMatchObject({ toast: { type: 'success' } })
+    expect(received).toHaveBeenCalledWith({
+      peerId: 'oc_room',
+      actorId: 'ou_user',
+      cardId: 'om_native',
+      messageId: 'event_a',
+      deliveryId,
+      actionId: 'verify',
+    })
+    expect(
+      await h.invoke({ ...click, header: { ...click.header, app_id: 'wrong-app' } }),
+    ).toMatchObject({ toast: { type: 'error' } })
+    const denied = {
+      ...click,
+      event: { ...click.event, operator: { tenant_key: 'tenant1', open_id: 'ou_other' } },
+    }
+    expect(await h.invoke(denied)).toMatchObject({ toast: { type: 'error' } })
+  } finally {
+    await h.channel.stop()
+  }
+})
+
+test('generic archive preserves content beyond notification length and fences revoked writes', async () => {
+  const h = await harness()
+  const body = '完整原始证据和限制。'.repeat(400)
+  h.append.mockImplementation(async (input) => {
+    const count = (input as unknown as { data: { children: unknown[] } }).data.children.length
+    return {
+      code: 0,
+      data: {
+        client_token: input.params.client_token,
+        children: Array.from({ length: count }, (_, i) => ({ block_id: `block${i}` })),
+      },
+    }
+  })
+  try {
+    expect(
+      (
+        await h.channel.router.appendDocument(
+          'DocToken',
+          'archive-one',
+          '测试归档',
+          body,
+          signal(),
+          () => true,
+        )
+      ).status,
+    ).toBe('accepted')
+    const request = h.append.mock.calls[0][0] as unknown as {
+      data: { children: Array<{ text: { elements: Array<{ text_run: { content: string } }> } }> }
+    }
+    expect(request.data.children.map((b) => b.text.elements[0].text_run.content).join('')).toBe(
+      `测试归档\n${body}`,
+    )
+    expect(
+      (
+        await h.channel.router.appendDocument(
+          'DocToken',
+          'archive-two',
+          '测试归档',
+          body,
+          signal(),
+          () => false,
+        )
+      ).status,
+    ).toBe('rejected')
+    expect(h.append).toHaveBeenCalledTimes(1)
+  } finally {
+    await h.channel.stop()
+  }
+})
+
+test('a long archive retains the last block and only acknowledges complete batches', async () => {
+  const h = await harness()
+  const body = '调查原文'.repeat(24500) + '🌿末尾的依据'
+  const received: string[][] = []
+  let rejectSecond = false
+  h.append.mockImplementation(async (input) => {
+    const req = input as typeof input & {
+      data: { children: Array<{ text: { elements: [{ text_run: { content: string } }] } }> }
+    }
+    const contents = req.data.children.map((c) => c.text.elements[0].text_run.content)
+    received.push(contents)
+    if (rejectSecond && received.length === 2) return { code: 99991400 }
+    return {
+      code: 0,
+      data: {
+        client_token: input.params.client_token,
+        children: contents.map((_, i) => ({ block_id: 'part-' + received.length + '-' + i })),
+      },
+    }
+  })
+  try {
+    const send = () =>
+      h.channel.router.appendDocument(
+        'DocToken',
+        'long-archive',
+        '归档',
+        body,
+        signal(),
+        () => true,
+      )
+    expect((await send()).status).toBe('accepted')
+    expect(received.length).toBe(2)
+    expect(received[0]).toHaveLength(50)
+    expect(received.flat().join('')).toBe('归档\n' + body)
+    const tokens = h.append.mock.calls.map(([i]) => i.params.client_token)
+    expect(new Set(tokens).size).toBe(2)
+    received.length = 0
+    rejectSecond = true
+    expect(await send()).toMatchObject({
+      status: 'unknown',
+      reason: expect.stringContaining('前 50 个文本块已写入'),
+    })
+    expect(h.append.mock.calls.slice(2).map(([i]) => i.params.client_token)).toEqual(tokens)
+  } finally {
+    await h.channel.stop()
+  }
 })

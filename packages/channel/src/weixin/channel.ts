@@ -13,6 +13,7 @@ import {
 } from './constants'
 import { WeixinDelivery } from './delivery'
 import { WeixinInboundDispatcher } from './inbound-dispatcher'
+import { splitWeixinPlainText } from './markdown'
 import { runWeixinPollingLoop } from './polling'
 import { ContextTokenStore } from './storage'
 import type { IncomingMessage as ILinkIncomingMessage, WeixinChannelConfig } from './types'
@@ -367,6 +368,50 @@ export class WeixinChannel implements Channel {
     await this.delivery.sendToChat(chatId, content)
   }
 
+  /** Send the Router's wording literally, without treating text as file attachments. */
+  async replyPlainText(
+    peerId: string,
+    text: string,
+    messageId: string,
+    mayReply?: () => boolean,
+  ): Promise<void> {
+    this.sessionPause.assertActive()
+    if (!messageId.trim() || !text.trim()) throw new Error('微信文字回复为空或缺少原消息编号。')
+    const chunks = splitWeixinPlainText(text)
+    for (const [index, chunk] of chunks.entries()) {
+      if (mayReply && !mayReply()) return
+      await this.sendPlainTextOnce(
+        peerId,
+        chunk,
+        `router-reply:${messageId}${index ? `:${index}` : ''}`,
+      )
+    }
+  }
+
+  private async sendPlainTextOnce(
+    peerId: string,
+    text: string,
+    deliveryId?: string,
+  ): Promise<void> {
+    const id = deliveryId
+      ? createHash('sha256')
+          .update(JSON.stringify([this.accountId, peerId, deliveryId]))
+          .digest('hex')
+          .slice(0, 32)
+      : crypto.randomUUID()
+    await sendTextMessage(
+      {
+        baseUrl: this.baseUrl,
+        token: this.token,
+        to: peerId,
+        text,
+        clientId: `zero-weixin-${id}`,
+        contextToken: this.tokenStore.get(this.accountId, peerId),
+      },
+      { ...this.apiOpts(), requireAck: true },
+    )
+  }
+
   listReminderPeers(): string[] {
     return this.tokenStore
       .listPeers(this.accountId)
@@ -388,7 +433,7 @@ export class WeixinChannel implements Channel {
     )
   }
 
-  /** One plain-text send. A lost response can mean the platform accepted the message. */
+  /** A lost response can mean the platform accepted the message. */
   async sendReminderOnce(
     peerId: string,
     text: string,
@@ -401,29 +446,33 @@ export class WeixinChannel implements Channel {
     peerId: string,
     text: string,
     deliveryId?: string,
+    maySend: () => boolean = () => true,
   ): Promise<WeixinReminderReceipt> {
-    if (!this.canSendReminderTo(peerId) || !text.trim() || text.length > MAX_MESSAGE_LENGTH)
-      return { status: 'unavailable', reason: '微信通道或私聊上下文不可用。' }
+    if (!text.trim()) return { status: 'unavailable', reason: '提醒正文为空。' }
+    const chunks = splitWeixinPlainText(text)
+    for (const [index, chunk] of chunks.entries()) {
+      const id = index && deliveryId ? JSON.stringify([deliveryId, index]) : deliveryId
+      const receipt =
+        this.canSendReminderTo(peerId) && maySend()
+          ? await this.sendReminderChunk(peerId, chunk, id)
+          : { status: 'unavailable' as const, reason: '微信通道或私聊上下文不可用。' }
+      if (receipt.status === 'accepted') continue
+      if (index === 0) return receipt
+      return {
+        status: 'uncertain',
+        reason: `前 ${index} 段已受理。第 ${index + 1} 段：${receipt.reason}`,
+      }
+    }
+    return { status: 'accepted' }
+  }
 
+  private async sendReminderChunk(
+    peerId: string,
+    text: string,
+    deliveryId?: string,
+  ): Promise<WeixinReminderReceipt> {
     try {
-      await sendTextMessage(
-        {
-          baseUrl: this.baseUrl,
-          token: this.token,
-          to: peerId,
-          text,
-          clientId: `zero-weixin-${
-            deliveryId
-              ? createHash('sha256')
-                  .update(JSON.stringify([this.accountId, peerId, deliveryId]))
-                  .digest('hex')
-                  .slice(0, 32)
-              : crypto.randomUUID()
-          }`,
-          contextToken: this.tokenStore.get(this.accountId, peerId),
-        },
-        { ...this.apiOpts(), requireAck: true },
-      )
+      await this.sendPlainTextOnce(peerId, text, deliveryId)
       return { status: 'accepted' }
     } catch (error) {
       if (error instanceof ILinkSendRejection) return { status: 'rejected', reason: error.message }

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type { RouterPublicationAction } from '@zero-os/shared'
 import { describeError } from '@zero-os/shared'
 import {
   DWClient,
@@ -30,7 +31,9 @@ export interface DingtalkChannelConfig {
   clientSecret: string
   robotCode?: string
   cardTemplateId?: string
+  cardStreamingKey?: string
   cardStorePath?: string
+  onPublicationAction?: (action: RouterPublicationAction) => Promise<boolean>
   onTaskCardAction?: (action: DingtalkTaskCardAction) => Promise<boolean>
   downloadsDir?: string
   apiBaseUrl?: string
@@ -122,10 +125,12 @@ export class DingtalkChannel implements Channel {
       account: config.clientId,
       robotCode: config.robotCode ?? config.clientId,
       templateId: config.cardTemplateId,
+      streamingKey: config.cardStreamingKey,
       apiBaseUrl: this.apiBaseUrl,
       fetch: this.fetchImpl,
       getToken: () => this.getAccessToken(),
       onAction: config.onTaskCardAction,
+      onPublication: config.onPublicationAction,
     })
     this.incomingBuilder = new DingtalkIncomingMessageBuilder({
       downloadMedia: (request) => this.downloadMedia(request),
@@ -154,7 +159,10 @@ export class DingtalkChannel implements Channel {
         return { status: EventAck.SUCCESS }
       })
 
-    if (this.config.cardTemplateId && this.config.onTaskCardAction) {
+    if (
+      this.config.cardTemplateId &&
+      (this.config.onTaskCardAction || this.config.onPublicationAction)
+    ) {
       this.client.registerCallbackListener(TOPIC_CARD, (message) => {
         this.taskCards
           .handle(message)
@@ -181,8 +189,13 @@ export class DingtalkChannel implements Channel {
     await this.sendMarkdown(this.requireTarget(sessionId), content)
   }
 
-  async reply(chatId: string, content: string, replyToMessageId?: string | number): Promise<void> {
-    await this.sendMarkdown(this.requireTarget(chatId, replyToMessageId), content)
+  async reply(
+    chatId: string,
+    content: string,
+    replyToMessageId?: string | number,
+    mayReply?: () => boolean,
+  ): Promise<void> {
+    await this.sendMarkdown(this.requireTarget(chatId, replyToMessageId), content, mayReply)
   }
 
   async uploadImage(image: Buffer, mediaType = 'image/png'): Promise<string | null> {
@@ -341,8 +354,13 @@ export class DingtalkChannel implements Channel {
     return target
   }
 
-  private async sendMarkdown(target: DingtalkReplyTarget, text: string): Promise<void> {
+  private async sendMarkdown(
+    target: DingtalkReplyTarget,
+    text: string,
+    mayReply?: () => boolean,
+  ): Promise<void> {
     const token = await this.getAccessToken()
+    if (mayReply && !mayReply()) return
     const response = await this.fetchImpl(target.sessionWebhook, {
       method: 'POST',
       headers: {

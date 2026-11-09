@@ -122,6 +122,7 @@ interface FeishuTestHarness {
         get?: (payload: FeishuMessageResourcePayload) => Promise<FeishuBinaryResponseLike>
       }
       message?: {
+        get?: (payload: { path: { message_id: string } }) => Promise<unknown>
         create?: (payload: FeishuMessageCreatePayload) => Promise<unknown>
         reply?: (payload: FeishuMessageReplyPayload) => Promise<unknown>
         delete?: (payload: { path: { message_id: string } }) => Promise<void>
@@ -941,25 +942,33 @@ describe('FeishuChannel contract', () => {
   test('buildIncomingMessage injects quoted interactive card content into reply text', async () => {
     const channel = new FeishuChannel({ appId: 'test-id', appSecret: 'test-secret' })
     getFeishuHarness(channel).client = {
-      im: {},
-      request: async () => ({
-        code: 0,
-        data: {
-          items: [
-            {
-              msg_type: 'interactive',
-              body: {
-                content: JSON.stringify({
-                  schema: '2.0',
-                  body: {
-                    elements: [{ tag: 'markdown', content: '之前的回复内容' }],
+      im: {
+        message: {
+          get: async ({ path }) => {
+            expect(path.message_id).toBe('om_quoted')
+            return {
+              code: 0,
+              data: {
+                items: [
+                  {
+                    message_id: 'om_quoted',
+                    chat_id: 'chat_test',
+                    msg_type: 'interactive',
+                    body: {
+                      content: JSON.stringify({
+                        schema: '2.0',
+                        body: {
+                          elements: [{ tag: 'markdown', content: '之前的回复内容' }],
+                        },
+                      }),
+                    },
                   },
-                }),
+                ],
               },
-            },
-          ],
+            }
+          },
         },
-      }),
+      },
     }
 
     const msg = await buildFeishuIncomingMessage(channel, {

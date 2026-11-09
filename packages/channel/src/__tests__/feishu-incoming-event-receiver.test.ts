@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test'
+import type * as lark from '@larksuiteoapi/node-sdk'
 import type { IncomingMessage } from '../base'
+import { FeishuIncomingMessageBuilder } from '../feishu/incoming-message'
 import { FeishuIncomingEventReceiver } from '../feishu'
 
 function feishuPayload(messageId: string) {
@@ -162,5 +164,74 @@ describe('FeishuIncomingEventReceiver', () => {
     await Promise.resolve()
 
     expect(handledCount).toBe(1)
+  })
+})
+
+test('keeps the parent id as quoted context even if the original Feishu message is unavailable', async () => {
+  const payload = feishuPayload('reply-id')
+  const builder = new FeishuIncomingMessageBuilder({ getClient: () => null })
+  const message = await builder.build({
+    ...payload,
+    message: { ...payload.message, parent_id: 'original-id' },
+  })
+  expect(message).toMatchObject({ commandText: 'hello', reference: { messageId: 'original-id' } })
+})
+
+test('Feishu resolves only the requested message in the original chat, without making the quote a new instruction', async () => {
+  const item = {
+    message_id: 'parent-id',
+    chat_id: 'chat_1',
+    msg_type: 'text',
+    body: { content: JSON.stringify({ text: '旧收据' }) },
+    deleted: false,
+  }
+  const get = async (payload: { path: { message_id: string } }) => {
+    expect(payload.path.message_id).toBe('parent-id')
+    return { code: 0, data: { items: [item] } }
+  }
+  const builder = new FeishuIncomingMessageBuilder({
+    getClient: () => ({ im: { message: { get } } }) as unknown as lark.Client,
+  })
+  const event = feishuPayload('msg1')
+  const build = () =>
+    builder.build({ ...event, message: { ...event.message, parent_id: 'parent-id' } })
+  expect(await build()).toMatchObject({
+    commandText: 'hello',
+    reference: { messageId: 'parent-id', text: '旧收据' },
+  })
+  item.chat_id = 'another-chat'
+  expect((await build())?.reference?.text).toBeUndefined()
+  item.chat_id = 'chat_1'
+  item.deleted = true
+  expect((await build())?.reference?.text).toBeUndefined()
+})
+
+test('a quoted Feishu post exposes its authored paragraphs to the dialog separately from attachment labels', async () => {
+  const payload = feishuPayload('post-id')
+  const builder = new FeishuIncomingMessageBuilder({ getClient: () => null })
+  const post = await builder.build({
+    ...payload,
+    message: {
+      ...payload.message,
+      message_type: 'post',
+      parent_id: 'old',
+      content: JSON.stringify({
+        zh_cn: {
+          title: '复核',
+          content: [
+            [
+              { tag: 'text', text: '还有哪些', style: ['bold'] },
+              { tag: 'text', text: '未处理？' },
+            ],
+            [{ tag: 'media', file_name: '不要把附件名当指令' }],
+          ],
+        },
+      }),
+    },
+  })
+  expect(post).toMatchObject({
+    commandText: '',
+    dialogText: '复核\n还有哪些未处理？',
+    reference: { messageId: 'old' },
   })
 })
