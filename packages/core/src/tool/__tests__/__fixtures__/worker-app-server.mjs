@@ -6,7 +6,9 @@ import { createInterface } from 'node:readline'
 // The test controls the server through the task instruction. Never connect to a model.
 const workspace = import.meta.dir
 const traceFile = join(workspace, 'wire.jsonl')
-const record = (event) => appendFileSync(traceFile, `${JSON.stringify(event)}\n`)
+const account = process.argv.find((arg) => arg.startsWith('--account='))?.split('=')[1]
+const record = (event) =>
+  appendFileSync(traceFile, `${JSON.stringify({ ...(account ? { account } : {}), ...event })}\n`)
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`)
 const lines = createInterface({ input: process.stdin })
 const threads = new Map()
@@ -122,6 +124,8 @@ for await (const line of lines) {
       id,
       result: {
         config: {
+          approval_policy: 'never',
+          sandbox_mode: 'danger-full-access',
           mcp_servers: { inherited: {} },
           shell_environment_policy: { set: { PRIVATE_SETTING: 'fixture-secret' } },
         },
@@ -163,6 +167,7 @@ for await (const line of lines) {
         shellInherit: params.config.shell_environment_policy.inherit,
         shellOverride: env.PRIVATE_SETTING,
       }),
+      configOverride: params.config,
       extraEnvKeys: Object.keys(env ?? {}).filter((key) => !zeroKeys.includes(key)).length,
     })
     const firstExternalResume =
@@ -233,6 +238,17 @@ for await (const line of lines) {
     }
     const mode = params.input[0].text
     record({ method, threadId: params.threadId, mode, sandboxPolicy: params.sandboxPolicy })
+    if (mode === 'quota-rpc' && account !== 'ys') {
+      send({
+        id,
+        error: {
+          code: -32000,
+          message: 'usage exhausted',
+          data: { codexErrorInfo: 'usageLimitExceeded' },
+        },
+      })
+      continue
+    }
     if (mode === 'reject') {
       send({ id, error: { code: -32602, message: 'invalid turn parameters' } })
       continue
@@ -249,7 +265,15 @@ for await (const line of lines) {
     }
     if (threadId === 'replay-before-turn-ack') replayUsage(threadId)
     if (mode !== 'early') send({ id, result: { turn: turn('inProgress') } })
-    if (mode.startsWith('usage:')) {
+    if ((mode === 'quota' && account !== 'ys') || mode.includes('quota-both')) {
+      if (mode === 'quota') record({ effect: 'completed-before-quota' })
+      complete('failed', { message: 'usage exhausted', codexErrorInfo: 'usageLimitExceeded' })
+    } else if (mode === 'model-not-found' || mode === 'rate-limit') {
+      complete('failed', {
+        message: mode,
+        codexErrorInfo: mode === 'model-not-found' ? 'modelNotFound' : 'rateLimitExceeded',
+      })
+    } else if (mode.startsWith('usage:')) {
       const previous = threadUsage.get(threadId)?.tokenUsage
       if (mode === 'usage:unchanged') {
         // A current turn ID may accompany unchanged totals and the preceding model request's last.
@@ -285,6 +309,13 @@ for await (const line of lines) {
         text: threads.get(threadId).ZERO_SESSION_ID,
       })
       complete('completed')
+    } else if (mode === 'long-result') {
+      completedItem({
+        id: 'long',
+        type: 'agentMessage',
+        text: `${'正文'.repeat(12000)}\n最终证据与待办`,
+      })
+      complete('completed')
     } else if (mode === 'fail') {
       complete('failed', { message: 'fixture model rejected the turn', codexErrorInfo: null })
     } else if (mode === 'malformed notification') {
@@ -307,6 +338,11 @@ for await (const line of lines) {
         turn: { id: 'different-turn', status: 'failed', error: { message: 'from other turn' } },
       })
       event('item/commandExecution/outputDelta', { itemId: 'cmd', delta })
+      completedItem({
+        id: 'hidden-reasoning',
+        type: 'reasoning',
+        content: ['fixture-private-reasoning'],
+      })
       completedItem({
         id: 'cmd',
         type: 'commandExecution',

@@ -210,7 +210,7 @@ function resolveFormat(format: FetchFormat, contentType: string): 'html' | 'json
   return 'text'
 }
 
-function htmlToMarkdown(html: string, _url: string): string {
+export function htmlToMarkdown(html: string, _url: string): string {
   const { document } = parseHTML(html)
 
   // Use Readability to extract main content

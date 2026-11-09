@@ -86,6 +86,25 @@ function normalizeConfig(raw: Record<string, unknown>): SystemConfig {
   const modelRoutes = normalizeModelRoutes(raw.model_routes)
   const recovery = normalizeRuntimeRecoveryConfig(raw.recovery)
   const router = normalizeRouterCheckouts(raw.router)
+  let worker: SystemConfig['worker']
+  if (raw.worker !== undefined) {
+    if (!isRecord(raw.worker)) throw new Error('worker must be an object')
+    worker = {}
+    for (const [key, target] of [
+      ['codex_command', 'codexCommand'],
+      ['codex_fallback_command', 'codexFallbackCommand'],
+    ] as const) {
+      const command = raw.worker[key]
+      if (command === undefined) continue
+      if (
+        !Array.isArray(command) ||
+        !command.length ||
+        command.some((arg) => typeof arg !== 'string' || !arg.trim())
+      )
+        throw new Error(`worker.${key} must be a non-empty command argument array`)
+      worker[target] = command as [string, ...string[]]
+    }
+  }
 
   const rawChannels = Array.isArray(raw.channels)
     ? (raw.channels as Array<Record<string, unknown>>)
@@ -131,6 +150,7 @@ function normalizeConfig(raw: Record<string, unknown>): SystemConfig {
       : {}),
     ...(raw.recovery !== undefined ? { recovery } : {}),
     ...(router && { router }),
+    ...(worker && { worker }),
   }
 }
 
@@ -153,28 +173,7 @@ function normalizeRouterCheckouts(raw: unknown): SystemConfig['router'] {
       /\p{Cc}/u.test(value.path)
     )
       throw new Error('Expected a unique GitHub owner/repository and an absolute checkout path.')
-    const channels = value.im_channels ?? value.imChannels ?? []
-    if (!Array.isArray(channels))
-      throw new Error('Expected an array of Router checkout IM channels.')
-    const imChannels: NonNullable<RouterCodexCheckout['imChannels']> = channels.map((channel) => {
-      if (isRecord(channel)) {
-        const id = channel.channel_id ?? channel.channelId
-        const platform = channel.platform
-        if (
-          (platform === 'weixin' || platform === 'dingtalk' || platform === 'feishu') &&
-          typeof id === 'string' &&
-          id.trim() === id &&
-          id.length > 0 &&
-          id.length <= 512 &&
-          !/[\p{Cc}*]/u.test(id)
-        )
-          return { platform, channelId: id }
-      }
-      throw new Error(
-        'Expected a platform and exact bot channel ID in Router checkout IM channels.',
-      )
-    })
-    codexCheckouts[key] = { path: value.path, ...(imChannels.length > 0 && { imChannels }) }
+    codexCheckouts[key] = { path: value.path }
   }
   return { codexCheckouts }
 }
@@ -343,6 +342,7 @@ function normalizeChannelConfig(raw: Record<string, unknown>): ChannelInstanceCo
       clientSecretRef,
       robotCodeRef: readString(raw, 'robotCodeRef', 'robot_code_ref'),
       cardTemplateId: readString(raw, 'cardTemplateId', 'card_template_id'),
+      cardStreamingKey: readString(raw, 'cardStreamingKey', 'card_streaming_key'),
       debug: readBoolean(raw, 'debug'),
       keepAlive: readBoolean(raw, 'keepAlive', 'keep_alive'),
     }

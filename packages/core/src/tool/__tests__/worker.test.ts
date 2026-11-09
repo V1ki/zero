@@ -18,7 +18,7 @@ import { type CodexWorkerUsageRecord, WorkerTool } from '../worker'
 
 const fixtures: Array<{ tool: WorkerTool; workspace: string }> = []
 
-function setup() {
+function setup(fallback = false) {
   const workspace = realpathSync(mkdtempSync(join(tmpdir(), 'zero-worker-test-')))
   const binary = join(workspace, 'fake-codex.mjs')
   copyFileSync(join(import.meta.dir, '__fixtures__/worker-app-server.mjs'), binary)
@@ -50,6 +50,12 @@ function setup() {
   const usage = new Map<string, CodexWorkerUsageRecord>()
   const tool = new WorkerTool({
     codexPath: binary,
+    ...(fallback
+      ? {
+          codexCommand: [process.execPath, binary, '--account=primary'] as [string, ...string[]],
+          codexFallbackCommand: [process.execPath, binary, '--account=ys'] as [string, ...string[]],
+        }
+      : {}),
     recordUsage: (record) => {
       usage.set(JSON.stringify([record.threadId, record.turnId]), record)
     },
@@ -697,7 +703,7 @@ describe('WorkerTool', () => {
 })
 
 describe('Router engineering jobs', () => {
-  test('applies the restricted profile before start and resume and only returns the final assistant text', async () => {
+  test('inherits the configured Codex policy before start and resume without disabling host capabilities', async () => {
     const { projectRoot, tool, trace } = setup()
     const request = {
       sessionId: 'router-job-7',
@@ -711,25 +717,20 @@ describe('Router engineering jobs', () => {
     for (const method of ['thread/start', 'thread/resume']) {
       expect(trace().find((item) => item.method === method)).toMatchObject({
         cwd: projectRoot,
-        runtimeWorkspaceRoots: [projectRoot],
         approvalPolicy: 'never',
-        permissionsConfig: {
-          filesystem: {
-            ':minimal': 'read',
-            ':workspace_roots': 'write',
-            [join(projectRoot, '.zero')]: 'deny',
-          },
-          network: { enabled: false },
-        },
-        mcpConfig: { inherited: { enabled: false } },
-        shellInherit: 'none',
-        shellOverride: '',
+        sandbox: 'danger-full-access',
       })
     }
-    expect(trace().filter((item) => item.method === 'mcpServerStatus/list')).toHaveLength(2)
+    expect(trace().filter((item) => item.method === 'mcpServerStatus/list')).toHaveLength(0)
+    for (const entry of trace().filter((item) =>
+      ['thread/start', 'thread/resume'].includes(String(item.method)),
+    )) {
+      expect(entry.configOverride).toBeUndefined()
+      expect(entry.permissions).toBeUndefined()
+    }
   })
 
-  test('refuses enabled host tools, rejects before a turn, and distinguishes lost post-submit outcomes', async () => {
+  test('allows configured host tools and distinguishes rejected turns from lost post-submit outcomes', async () => {
     const { projectRoot, tool, trace, workspace } = setup()
     const request = {
       sessionId: 'router-job-8',
@@ -738,8 +739,8 @@ describe('Router engineering jobs', () => {
       signal: new AbortController().signal,
     }
     writeFileSync(join(workspace, 'external-tools'), '')
-    await expect(tool.runRouterJob(request)).rejects.toMatchObject({ outcomeUnknown: false })
-    expect(trace().some((item) => item.method === 'turn/start')).toBe(false)
+    expect((await tool.runRouterJob(request)).result).toBe('the final worker response')
+    expect(trace().some((item) => item.method === 'turn/start')).toBe(true)
     rmSync(join(workspace, 'external-tools'))
     await expect(tool.runRouterJob({ ...request, instruction: 'reject' })).rejects.toMatchObject({
       outcomeUnknown: false,
@@ -766,4 +767,113 @@ describe('Router engineering jobs', () => {
     expect(trace().filter((item) => item.method === 'turn/interrupt')).toHaveLength(1)
     expect(trace().filter((item) => item.method === 'turn/start')).toHaveLength(1)
   })
+})
+
+test('Router Codex result preserves text beyond the previous 8000 character cap', async () => {
+  const { tool, projectRoot } = setup()
+  const result = await tool.runRouterJob({
+    sessionId: 'router-long',
+    workingDirectory: projectRoot,
+    instruction: 'long-result',
+    signal: new AbortController().signal,
+  })
+  expect(result.result).toBe(`${'正文'.repeat(12000)}\n最终证据与待办`)
+})
+
+describe('Codex quota fallback', () => {
+  test('resumes the same thread on the fallback account after confirmed quota failure', async () => {
+    const { tool, projectRoot, trace } = setup(true)
+    const result = await tool.runRouterJob({
+      sessionId: 'router-quota',
+      workingDirectory: projectRoot,
+      instruction: 'quota',
+      signal: new AbortController().signal,
+    })
+    expect(result.result).toBe('the final worker response')
+    const runs = trace().filter((e) => e.method === 'turn/start')
+    expect(runs.map((e) => e.account)).toEqual(['primary', 'ys'])
+    expect(runs[1].threadId).toBe(runs[0].threadId)
+    expect(runs[1].mode).toContain('不要重复已经完成的写入')
+    expect(trace().filter((e) => e.effect === 'completed-before-quota')).toHaveLength(1)
+    expect(trace().find((e) => e.account === 'ys' && e.method === 'thread/resume')).toBeDefined()
+  })
+
+  test('ordinary Worker uses the same fallback after an explicit pre-submit quota rejection', async () => {
+    const { tool, ctx, trace } = setup(true)
+    const result = await tool.run(ctx, { type: 'codex', instruction: 'quota-rpc' })
+    expect(result.success).toBe(true)
+    expect(result.outputSummary).toContain('quota fallback')
+    expect(
+      trace()
+        .filter((e) => e.method === 'turn/start')
+        .map((e) => e.account),
+    ).toEqual(['primary', 'ys'])
+  })
+
+  test.each(['model-not-found', 'rate-limit', 'eof', 'reject'])(
+    'does not switch accounts for %s',
+    async (instruction) => {
+      const { tool, projectRoot, trace } = setup(true)
+      await expect(
+        tool.runRouterJob({
+          sessionId: 'router-no-fallback',
+          workingDirectory: projectRoot,
+          instruction,
+          signal: new AbortController().signal,
+        }),
+      ).rejects.toThrow()
+      expect(trace().some((e) => e.account === 'ys')).toBe(false)
+    },
+  )
+
+  test('reports exhaustion of both accounts without cycling back to the primary', async () => {
+    const { tool, projectRoot, trace } = setup(true)
+    await expect(
+      tool.runRouterJob({
+        sessionId: 'router-both',
+        workingDirectory: projectRoot,
+        instruction: 'quota-both',
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow('usage exhausted')
+    expect(
+      trace()
+        .filter((e) => e.method === 'turn/start')
+        .map((e) => e.account),
+    ).toEqual(['primary', 'ys'])
+  })
+})
+
+test('Router persists thread before rejected or disconnected turns and can resume it', async () => {
+  const { projectRoot, tool, trace } = setup()
+  let saved: string | undefined
+  const request = {
+    sessionId: 'router-thread-persistence',
+    workingDirectory: projectRoot,
+    instruction: 'reject',
+    signal: new AbortController().signal,
+    onThreadReady(id: string) {
+      expect(trace().filter((e) => e.method === 'turn/start')).toHaveLength(0)
+      saved = id
+    },
+  }
+  await expect(tool.runRouterJob(request)).rejects.toMatchObject({ outcomeUnknown: false })
+  expect(saved).toBe('thread-fixture-1')
+  const events: { method: string; data: Record<string, unknown> }[] = []
+  const result = await tool.runRouterJob({
+    ...request,
+    instruction: 'early',
+    resumeThreadId: saved,
+    onThreadReady: undefined,
+    onPublicEvent: (method, data) => events.push({ method, data }),
+  })
+  expect(result.threadId).toBe('thread-fixture-1')
+  expect(trace().some((e) => e.method === 'thread/resume')).toBe(true)
+  expect(events.find((e) => e.method === 'turn/start')?.data).toMatchObject({
+    threadId: saved,
+    input: [{ text: 'early' }],
+  })
+  expect(events.filter((e) => e.method === 'item/completed' && e.data.id === 'cmd')).toHaveLength(1)
+  expect(JSON.stringify(events)).toContain('fixture stdout')
+  expect(JSON.stringify(events)).not.toContain('fixture-private-reasoning')
 })

@@ -9,8 +9,10 @@ import { CodexTurnUsage, type CodexWorkerUsageRecord } from './codex-worker-usag
 
 import { RouterCodexError, routerJobPolicy, verifyRouterJobPolicy } from './router-job-policy'
 
-interface CodexWorkerInput {
+export interface CodexWorkerInput {
   routerJob?: boolean
+  onThreadReady?(threadId: string): void
+  onPublicEvent?(method: string, data: Record<string, unknown>): void
   instruction: string
   workingDirectory?: string
   additionalDirectories?: string[]
@@ -67,7 +69,10 @@ class TurnOutput {
   private progressChars = 0
   private progressTail = ''
 
-  constructor(private readonly ctx: ToolContext) {}
+  constructor(
+    private readonly ctx: ToolContext,
+    private readonly onPublicEvent?: CodexWorkerInput['onPublicEvent'],
+  ) {}
 
   private progress(delta: string): void {
     if (!delta || !this.ctx.currentToolUseId) return
@@ -85,6 +90,7 @@ class TurnOutput {
       case 'item/commandExecution/outputDelta': {
         const id = stringField(params, 'itemId')
         const delta = stringField(params, 'delta')
+        this.onPublicEvent?.(method, { itemId: id, delta })
         const stream = this.commandStreams.get(id) ?? { preview: '', length: 0 }
         stream.preview = (stream.preview + delta).slice(0, 500)
         stream.length += delta.length
@@ -110,6 +116,17 @@ class TurnOutput {
     const id = idField(item)
     if (this.completedItems.has(id)) return
     this.completedItems.add(id)
+    if (
+      [
+        'agentMessage',
+        'fileChange',
+        'commandExecution',
+        'mcpToolCall',
+        'dynamicToolCall',
+        'webSearch',
+      ].includes(String(item.type))
+    )
+      this.onPublicEvent?.('item/completed', item)
     switch (item.type) {
       case 'agentMessage':
         this.response = stringField(item, 'text')
@@ -310,14 +327,21 @@ export async function runCodexWorker(
   recordUsage?: (entry: CodexWorkerUsageRecord) => void,
 ): Promise<
   ToolResult & {
-    routerJob?: { threadId?: string; text: string; submitted: boolean; reason?: string }
+    codexOutcome: { threadId?: string; quotaExceeded: boolean }
+    routerJob?: {
+      threadId?: string
+      text: string
+      submitted: boolean
+      outcomeUnknown: boolean
+      reason?: string
+    }
   }
 > {
   const cwd = resolve(ctx.projectRoot ?? ctx.workDir, input.workingDirectory ?? '.')
   const handle = ctx.currentToolUseId
     ? ctx.runningToolRegistry?.get(ctx.currentToolUseId)
     : undefined
-  const output = new TurnOutput(ctx)
+  const output = new TurnOutput(ctx, input.onPublicEvent)
   const startedAt = Date.now()
   const turnReady = Promise.withResolvers<void>()
   const completed = Promise.withResolvers<void>()
@@ -334,6 +358,7 @@ export async function runCodexWorker(
   let closing = false
   let unavailable = false
   let terminalStatus: string | undefined
+  let quotaExceeded = false
   let abortReason: string | undefined
   let policyError: RouterCodexError | undefined
   let interruptFailure: string | undefined
@@ -378,6 +403,7 @@ export async function runCodexWorker(
     }
     if (closing || !submitting || params.threadId !== threadId) return
     if (method === TOKEN_USAGE && turnId && params.turnId === turnId) {
+      input.onPublicEvent?.(method, { threadId, turnId, tokenUsage: params.tokenUsage })
       usage?.update(params.tokenUsage)
       return
     }
@@ -402,6 +428,8 @@ export async function runCodexWorker(
         for (const item of turn.items) output.item(fields(item, 'turn item'))
       }
       if (status === 'failed') {
+        quotaExceeded =
+          !!turn.error && fields(turn.error, 'turn error').codexErrorInfo === 'usageLimitExceeded'
         output.errors.add(
           turn.error
             ? stringField(fields(turn.error, 'turn error'), 'message')
@@ -410,6 +438,7 @@ export async function runCodexWorker(
       } else if (status === 'interrupted') {
         output.errors.add(abortReason ?? 'Codex turn interrupted')
       }
+      input.onPublicEvent?.(method, { threadId, turnId, status })
       completed.resolve()
     } else if (params.turnId === turnId) {
       output.notification(method, params)
@@ -502,8 +531,8 @@ export async function runCodexWorker(
       .request(input.resumeThreadId ? 'thread/resume' : 'thread/start', {
         ...(input.resumeThreadId ? { threadId: input.resumeThreadId, excludeTurns: true } : {}),
         cwd,
-        approvalPolicy: 'never',
         ...(policy ?? {
+          approvalPolicy: 'never',
           sandbox: 'workspace-write',
           config: { shell_environment_policy: { set: buildToolContextEnv(ctx) } },
         }),
@@ -521,7 +550,8 @@ export async function runCodexWorker(
     resumeUnconfirmed = false
     subscription ??= subscribe(connection, id)
     threadId = id
-    if (policy) await verifyRouterJobPolicy(connection, thread, id, cwd, policy.permissions)
+    if (policy) verifyRouterJobPolicy(thread, cwd)
+    input.onThreadReady?.(id)
     const previous: unknown = Array.isArray(state.turns) ? state.turns.at(-1) : undefined
     if (
       input.resumeThreadId &&
@@ -564,6 +594,7 @@ export async function runCodexWorker(
         : {}),
     }
     submitting = true
+    input.onPublicEvent?.('turn/start', turnParams)
     const started = await Promise.race([
       connection.request('turn/start', turnParams),
       stopped.promise,
@@ -573,6 +604,7 @@ export async function runCodexWorker(
     })
     if (started instanceof Error) throw started
     turnId = idField(fields(started.turn, 'started turn'))
+    input.onPublicEvent?.('turn/started', { threadId, turnId })
     startUsage(turnId)
     ctx.logger.info('worker_turn_started', {
       type: 'codex',
@@ -587,6 +619,12 @@ export async function runCodexWorker(
     if (problem) throw problem
   } catch (error) {
     if (error instanceof RouterCodexError) policyError = error
+    if (
+      error instanceof CodexAppServerRequestError &&
+      !submitting &&
+      error.codexErrorInfo === 'usageLimitExceeded'
+    )
+      quotaExceeded = true
     output.errors.add(toErrorMessage(error))
   } finally {
     // A matching turn/started also identifies usage already received if the RPC ACK was lost.
@@ -641,15 +679,21 @@ export async function runCodexWorker(
       outputSummary: ctx.secretFilter?.filter(result.outputSummary) ?? result.outputSummary,
     })
   }
+  const codexOutcome = { threadId, quotaExceeded: quotaExceeded && !abortReason }
   return input.routerJob
     ? {
         ...result,
+        codexOutcome,
         routerJob: {
           threadId,
           text: output.finalResponse,
           submitted: submitting,
-          reason: policyError?.message,
+          outcomeUnknown: submitting && terminalStatus !== 'failed',
+          reason:
+            policyError?.message ??
+            ctx.secretFilter?.filter([...output.errors].join('\n')) ??
+            [...output.errors].join('\n'),
         },
       }
-    : result
+    : { ...result, codexOutcome }
 }

@@ -3,7 +3,12 @@ import { buildCodexServerEnv } from '../process-env'
 import { CodexAppServerClient } from './app-server-client'
 
 type Fields = Record<string, unknown>
-type ServerOptions = { codexPath?: string; secretFilter?: SecretFilter; experimentalApi?: boolean }
+type ServerOptions = {
+  codexPath?: string
+  codexCommand?: [string, ...string[]]
+  secretFilter?: SecretFilter
+  experimentalApi?: boolean
+}
 interface ThreadListener {
   notify(method: string, params: Fields): void
   fail(error: Error): void
@@ -22,6 +27,7 @@ export class CodexWorkerConnection {
       cwd: process.cwd(),
       env: buildCodexServerEnv(),
       codexPath: options.codexPath,
+      codexCommand: options.codexCommand,
       filterDiagnostic: options.secretFilter?.filter.bind(options.secretFilter),
       onNotification: (method, params) => {
         const listener = typeof params.threadId === 'string' && this.threads.get(params.threadId)

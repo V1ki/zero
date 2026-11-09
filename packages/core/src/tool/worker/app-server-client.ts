@@ -12,12 +12,20 @@ const MAX_FRAME_BYTES = 64 * 1024 * 1024
 type RpcObject = Record<string, unknown>
 
 /** A negative acknowledgement from app-server, as distinct from losing the connection. */
-export class CodexAppServerRequestError extends Error {}
+export class CodexAppServerRequestError extends Error {
+  constructor(
+    message: string,
+    readonly codexErrorInfo?: unknown,
+  ) {
+    super(message)
+  }
+}
 
 interface ClientOptions {
   cwd: string
   env: Record<string, string>
   codexPath?: string
+  codexCommand?: [string, ...string[]]
   onNotification: (method: string, params: RpcObject) => void
   /** A timed-out start or resume may still subscribe this connection to a thread. */
   onLateResult?: (method: string, result: RpcObject, expectedResumeThreadId?: string) => void
@@ -69,14 +77,15 @@ export class CodexAppServerClient {
   private readonly secrets: OutputSecretFilter
 
   constructor(private readonly options: ClientOptions) {
-    const args = ['app-server', '--listen', 'stdio://']
-    if (!options.codexPath) args.unshift(require.resolve('@openai/codex/bin/codex.js'))
+    const args = [...(options.codexCommand?.slice(1) ?? []), 'app-server', '--listen', 'stdio://']
+    if (!options.codexCommand && !options.codexPath)
+      args.unshift(require.resolve('@openai/codex/bin/codex.js'))
     this.secrets = new OutputSecretFilter(
       Object.entries(options.env).filter(([name]) =>
         /key|token|secret|password|credential|auth/i.test(name),
       ),
     )
-    this.child = spawn(options.codexPath ?? process.execPath, args, {
+    this.child = spawn(options.codexCommand?.[0] ?? options.codexPath ?? process.execPath, args, {
       cwd: options.cwd,
       env: options.env,
       stdio: 'pipe',
@@ -206,7 +215,12 @@ export class CodexAppServerClient {
       if (late?.expectedResumeThreadId !== undefined) {
         this.options.onLateResumeRejected?.(late.expectedResumeThreadId)
       }
-      reply?.reject(new CodexAppServerRequestError(this.redact(frame.error.message)))
+      reply?.reject(
+        new CodexAppServerRequestError(
+          this.redact(frame.error.message),
+          isObject(frame.error.data) ? frame.error.data.codexErrorInfo : undefined,
+        ),
+      )
     } else if (isObject(frame.result) && !('error' in frame)) {
       if (late) this.options.onLateResult?.(late.method, frame.result, late.expectedResumeThreadId)
       reply?.resolve(frame.result)

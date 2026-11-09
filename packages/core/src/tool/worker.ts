@@ -2,7 +2,7 @@ import { isAbsolute } from 'node:path'
 import type { SecretFilter, ToolContext, ToolResult } from '@zero-os/shared'
 import { SessionRunningToolRegistry, steerRunningWorker } from '../session/running-tool-registry'
 import { BaseTool } from './base'
-import { runCodexWorker } from './worker/codex-worker'
+import { type CodexWorkerInput, runCodexWorker } from './worker/codex-worker'
 import { CodexWorkerServer } from './worker/codex-worker-server'
 import type { CodexWorkerUsageRecord } from './worker/codex-worker-usage'
 
@@ -60,12 +60,15 @@ export class WorkerTool extends BaseTool {
 
   private readonly server: CodexWorkerServer
   private readonly routerServer: CodexWorkerServer
+  private readonly fallbackServer?: CodexWorkerServer
   private readonly secretFilter?: SecretFilter
   private readonly recordUsage?: (entry: CodexWorkerUsageRecord) => void
 
   constructor(
     options: {
       codexPath?: string
+      codexCommand?: [string, ...string[]]
+      codexFallbackCommand?: [string, ...string[]]
       secretFilter?: SecretFilter
       recordUsage?: (entry: CodexWorkerUsageRecord) => void
     } = {},
@@ -75,10 +78,54 @@ export class WorkerTool extends BaseTool {
     this.recordUsage = options.recordUsage
     this.secretFilter = options.secretFilter
     this.routerServer = new CodexWorkerServer({ ...options, experimentalApi: true })
+    if (options.codexFallbackCommand)
+      this.fallbackServer = new CodexWorkerServer({
+        codexCommand: options.codexFallbackCommand,
+        secretFilter: options.secretFilter,
+        experimentalApi: true,
+      })
   }
 
   async close(): Promise<void> {
-    await Promise.all([this.server.close(), this.routerServer.close()])
+    await Promise.all([
+      this.server.close(),
+      this.routerServer.close(),
+      this.fallbackServer?.close(),
+    ])
+  }
+
+  private async runWithQuotaFallback(ctx: ToolContext, input: CodexWorkerInput) {
+    const primary = await runCodexWorker(
+      ctx,
+      input,
+      input.routerJob ? this.routerServer : this.server,
+      this.recordUsage,
+    )
+    const handle = ctx.currentToolUseId
+      ? ctx.runningToolRegistry?.get(ctx.currentToolUseId)
+      : undefined
+    if (!primary.codexOutcome.quotaExceeded || !this.fallbackServer || handle?.getAbortReason())
+      return primary
+    const resumeThreadId = primary.codexOutcome.threadId ?? input.resumeThreadId
+    ctx.logger.info('worker_account_fallback', {
+      reason: 'usageLimitExceeded',
+      threadId: resumeThreadId,
+      from: 'primary',
+      to: 'fallback',
+    })
+    const result = await runCodexWorker(
+      ctx,
+      {
+        ...input,
+        resumeThreadId,
+        instruction: resumeThreadId
+          ? `原账号额度已用尽，现切换到备用账号继续同一任务。请先承接本线程已完成的操作和结果，再处理剩余工作，不要重复已经完成的写入。原始请求：\n${input.instruction}`
+          : input.instruction,
+      },
+      this.fallbackServer,
+      this.recordUsage,
+    )
+    return { ...result, outputSummary: `${result.outputSummary} (quota fallback)` }
   }
 
   /** Host-only entrypoint. Workspace and continuation IDs come from the authorized Router job. */
@@ -87,6 +134,8 @@ export class WorkerTool extends BaseTool {
     workingDirectory: string
     instruction: string
     resumeThreadId?: string
+    onThreadReady?(threadId: string): void
+    onPublicEvent?: CodexWorkerInput['onPublicEvent']
     signal: AbortSignal
   }): Promise<{ result: string; threadId: string }> {
     if (!isAbsolute(input.workingDirectory) || !input.instruction.trim() || input.signal.aborted)
@@ -100,22 +149,26 @@ export class WorkerTool extends BaseTool {
     const onAbort = () => handle.requestAbort('Router job cancelled')
     input.signal.addEventListener('abort', onAbort, { once: true })
     try {
-      const completed = await runCodexWorker(
+      const completed = await this.runWithQuotaFallback(
         {
           sessionId: input.sessionId,
           currentToolUseId: handle.toolUseId,
           workDir: input.workingDirectory,
           runningToolRegistry: registry,
           secretFilter: this.secretFilter,
-          logger: { info() {}, warn() {}, error() {} },
+          logger: { info: (event, data) => console.info(event, data), warn() {}, error() {} },
         },
-        { instruction: input.instruction, resumeThreadId: input.resumeThreadId, routerJob: true },
-        this.routerServer,
-        this.recordUsage,
+        {
+          instruction: input.instruction,
+          resumeThreadId: input.resumeThreadId,
+          onThreadReady: input.onThreadReady,
+          onPublicEvent: input.onPublicEvent,
+          routerJob: true,
+        },
       )
       const outcome = completed.routerJob
       if (!completed.success || !outcome?.text.trim() || !outcome.threadId) {
-        const submitted = outcome?.submitted ?? true
+        const submitted = outcome?.outcomeUnknown ?? true
         throw new RouterCodexError(
           submitted
             ? 'Codex 任务未能返回确认结果，请检查工作区后再继续。'
@@ -125,7 +178,7 @@ export class WorkerTool extends BaseTool {
       }
       return {
         threadId: outcome.threadId,
-        result: (this.secretFilter?.filter(outcome.text) ?? outcome.text).trim().slice(0, 8000),
+        result: (this.secretFilter?.filter(outcome.text) ?? outcome.text).trim(),
       }
     } finally {
       input.signal.removeEventListener('abort', onAbort)
@@ -171,18 +224,13 @@ export class WorkerTool extends BaseTool {
     ) {
       throw new Error('additionalDirectories must be an array of non-empty paths.')
     }
-    return runCodexWorker(
-      ctx,
-      {
-        instruction: args.instruction,
-        workingDirectory: optionalString(args, 'workingDirectory'),
-        model: optionalString(args, 'model'),
-        additionalDirectories: directories,
-        resumeThreadId: optionalString(args, 'resumeThreadId'),
-      },
-      this.server,
-      this.recordUsage,
-    )
+    return this.runWithQuotaFallback(ctx, {
+      instruction: args.instruction,
+      workingDirectory: optionalString(args, 'workingDirectory'),
+      model: optionalString(args, 'model'),
+      additionalDirectories: directories,
+      resumeThreadId: optionalString(args, 'resumeThreadId'),
+    })
   }
 }
 

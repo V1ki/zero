@@ -206,6 +206,7 @@ async function createAgentRuntimeComponents({
   })
 
   const worker = new WorkerTool({
+    ...config.worker,
     secretFilter: secretsRuntime.secretFilter,
     recordUsage: createCodexWorkerUsageRecorder(metrics),
   })

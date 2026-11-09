@@ -15,6 +15,25 @@ describe('loadConfig', () => {
     rmSync(tmpDir, { recursive: true, force: true })
   })
 
+  test('loads Codex account commands as argument arrays without shell interpolation', () => {
+    const path = join(tmpDir, 'worker-accounts.yaml')
+    writeFileSync(
+      path,
+      `worker:
+  codex_command: ["/usr/bin/python3", "/account kit/account.py", "cli", "default"]
+  codex_fallback_command: ["/usr/bin/python3", "/account kit/account.py", "cli", "ys"]
+`,
+    )
+    expect(loadConfig(path).worker).toEqual({
+      codexCommand: ['/usr/bin/python3', '/account kit/account.py', 'cli', 'default'],
+      codexFallbackCommand: ['/usr/bin/python3', '/account kit/account.py', 'cli', 'ys'],
+    })
+    for (const invalid of ['[]', '"codex-ys"', '["codex", 1]']) {
+      writeFileSync(path, `worker:\n  codex_fallback_command: ${invalid}\n`)
+      expect(() => loadConfig(path)).toThrow('command argument array')
+    }
+  })
+
   test('throws error when file not found', () => {
     const badPath = join(tmpDir, 'nonexistent.yaml')
     expect(() => loadConfig(badPath)).toThrow(`Config file not found: ${badPath}`)
@@ -231,6 +250,7 @@ channels:
     client_secret_ref: dingtalk_ops_client_secret
     robot_code_ref: dingtalk_ops_robot_code
     card_template_id: ops-card.schema
+    card_streaming_key: summary
     keep_alive: false
   - name: weixin:personal
     type: weixin
@@ -278,6 +298,7 @@ channels:
       clientSecretRef: 'dingtalk_ops_client_secret',
       robotCodeRef: 'dingtalk_ops_robot_code',
       cardTemplateId: 'ops-card.schema',
+      cardStreamingKey: 'summary',
       debug: undefined,
       keepAlive: false,
     })

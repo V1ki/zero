@@ -66,6 +66,9 @@ export interface AgentLoopConfig {
 }
 
 export interface AgentLoopHooks {
+  /** Continue a provider-truncated response without executing partial tool calls. */
+  onTruncatedResponse?(response: CompletionResponse, ctx: LoopIterationContext): Message[]
+
   buildRequestUserContent?(content: ContentBlock[], ctx: LoopIterationContext): ContentBlock[]
   onNewMessage?(msg: Message, ctx: LoopIterationContext): void
   filterAssistantContent?(content: ContentBlock[], ctx: LoopIterationContext): ContentBlock[]
@@ -481,6 +484,15 @@ export class AgentLoop {
       ctx.iteration += 1
       const request = this.buildRequest(messages, ctx)
       let response = await this.complete(request, ctx)
+
+      if (response.stopReason === 'max_tokens' && this.hooks.onTruncatedResponse) {
+        if (this.hooks.shouldAbort?.(ctx)) break
+        for (const message of this.hooks.onTruncatedResponse(response, ctx)) {
+          messages.push(message)
+          this.notifyNewMessage(message, ctx)
+        }
+        continue
+      }
 
       while (response.content.length === 0) {
         if (this.hooks.shouldAbort?.(ctx)) {
