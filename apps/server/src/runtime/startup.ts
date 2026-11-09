@@ -1,5 +1,5 @@
 import { appendFileSync, existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import type { Channel } from '@zero-os/channel'
 import {
   type Command,
@@ -15,6 +15,7 @@ import {
   type SystemConfig,
   botRoutingPreferences,
   describeError,
+  githubWorkflowFollowupSubject,
   isTriggerRoutePlatform,
 } from '@zero-os/shared'
 import type { HeartbeatWriter } from '@zero-os/supervisor'
@@ -23,18 +24,39 @@ import { createBackgroundToolCompletionDeliveryHandler } from '../message/backgr
 import { writeRestartTrigger } from '../system/restart-trigger'
 import { rebuildWebBundleAsync } from '../system/runtime'
 import { TriggerAgentError, createTriggerAgent } from '../triggers/event-agent'
+import { createVaultGithubAppAuth } from '../triggers/github-app-auth'
+import { createGithubIssueCloser } from '../triggers/github-issue-close'
+import { createGithubOwnerRequest } from '../triggers/github-owner-request'
+import { createDuplicateEvidenceReader, createResolvedDuplicatePolicy } from '../triggers/github-resolved-duplicate'
+import { createGithubWorkDelivery } from '../triggers/github-work-delivery'
 import { createGithubInvestigator } from '../triggers/investigation'
 import { createMandatePlatforms } from '../triggers/mandate-platforms'
 import { TriggerMandateRuntime } from '../triggers/mandate-runtime'
 import { createMandateService } from '../triggers/mandate-service'
 import { createRouterAgent } from '../triggers/router-agent'
+import { createRouterArchiveWorker } from '../triggers/router-archive-worker'
 import { createRouterCheckoutResolver } from '../triggers/router-checkouts'
 import { RouterCommissionService } from '../triggers/router-commission'
+import { RouterDocuments } from '../triggers/router-documents'
+import { createRouterEventWorker } from '../triggers/router-event-worker'
+import { RouterGithubReplies } from '../triggers/router-github-reply'
 import { createRouterJobDelivery } from '../triggers/router-job-delivery'
 import { createRouterJobExecutor } from '../triggers/router-job-executors'
-import { RouterJobPrincipals, jobActor } from '../triggers/router-job-principal'
+import {
+  RouterJobPrincipals,
+  createRouterOwnerIdentity,
+  jobActor,
+} from '../triggers/router-job-principal'
 import { RouterJobs } from '../triggers/router-jobs'
+import { createRouterReplay } from '../triggers/router-replay'
 import { createRouterRepositoryLookup } from '../triggers/router-repositories'
+import { createRouterRepositoryTracking } from '../triggers/router-repository-tracking'
+import { createRouterTraceSink } from '../triggers/router-trace'
+import {
+  createRouterWorkerCapabilities,
+  handoffAuthorized,
+  workerSourcesAuthorized,
+} from '../triggers/router-worker-capabilities'
 import { RouterWorkspaceService } from '../triggers/router-workspace'
 import { TriggerRoutingRuntime } from '../triggers/routing-runtime'
 import { ListenerRuntime } from '../triggers/runtime'
@@ -55,12 +77,13 @@ import { type CoreRuntime, createCoreRuntime } from './core'
 import { createReloadModelProviders } from './model-providers/reload'
 import { recoverInterruptedSessionsAfterRestart } from './restart'
 import { type ShutdownRuntime, createShutdownRuntime } from './shutdown'
-import type { ZeroOS } from './types'
+import type { StartOptions, ZeroOS } from './types'
 
 const DEFAULT_AGENT_INSTRUCTION =
   'You are ZeRo OS, an AI agent system. Be helpful, concise, and accurate.'
 
-interface CreateStartupRuntimeOptions {
+interface CreateStartupRuntimeOptions
+  extends Pick<StartOptions, 'routerSources' | 'routerExecutors'> {
   zeroDir: string
   projectRoot: string
   bus: EventBus
@@ -97,6 +120,8 @@ export async function createStartupRuntime({
   projectRoot,
   bus,
   skipProcessExit,
+  routerSources,
+  routerExecutors,
 }: CreateStartupRuntimeOptions): Promise<StartupRuntime> {
   const startedAt = Date.now()
   const core = await createCoreRuntime({
@@ -111,6 +136,8 @@ export async function createStartupRuntime({
     bus,
     core,
     config,
+    routerSources,
+    routerExecutors,
   })
 
   const restartSentinelPath = getRestartSentinelPath(zeroDir)
@@ -149,7 +176,7 @@ export async function createStartupRuntime({
 export async function startStartupRuntimeChannels(runtime: StartupRuntime): Promise<void> {
   const bridge = runtime.zero.listeners.taskBridge
   if (!bridge) throw new Error('Router 消息入口尚未就绪，无法启动外部通道。')
-  runtime.zero.listeners.workspace.start()
+  runtime.zero.listeners.workspace.start(false)
   await startExternalRuntimeChannels({
     zeroDir: runtime.zeroDir,
     getTaskBridge: () => bridge,
@@ -169,6 +196,7 @@ export async function startStartupRuntimeChannels(runtime: StartupRuntime): Prom
   })
   runtime.channelRecovery.start()
   runtime.zero.listeners.start()
+  runtime.zero.listeners.workspace.resumeQueuedImTurns()
 }
 
 export function markStartupRuntimeReady(runtime: StartupRuntime): void {
@@ -184,7 +212,9 @@ async function createStartupRuntimeShell({
   bus,
   core,
   config,
-}: {
+  routerSources,
+  routerExecutors,
+}: Pick<StartOptions, 'routerSources' | 'routerExecutors'> & {
   zeroDir: string
   bus: EventBus
   core: CoreRuntime
@@ -228,6 +258,16 @@ async function createStartupRuntimeShell({
   })
 
   const store = new TriggerStore(join(zeroDir, 'listeners', 'inbox.sqlite'))
+  store.useAgentIntake()
+  const routerCore = {
+    ...core,
+    modelRouter: {
+      getDefaultModel: () => core.modelRouter.getDefaultModel(),
+      getCurrentModel: () => core.modelRouter.getCurrentModel(),
+      trace: createRouterTraceSink(store.ledger, (text) => core.secretFilter.filter(text)),
+    },
+  }
+
   const syncRouterOwnedChannels = () => {
     const settings = botRoutingPreferences(store.routing.getSettings().settings)
     core.sessionManager.setRouterOwnedChannels(settings.personalBots ?? {})
@@ -240,7 +280,7 @@ async function createStartupRuntimeShell({
     addNotification,
   })
   const host = { channels, channelDefinitions, sessionManager: core.sessionManager }
-  const analyze = createTriggerAgent(core)
+  const analyze = createTriggerAgent(routerCore)
   const platforms = createMandatePlatforms(host, (target) => routing.isSelectedDirectTarget(target))
   const routing: TriggerRoutingRuntime = new TriggerRoutingRuntime(store.routing, {
     analyze,
@@ -265,26 +305,126 @@ async function createStartupRuntimeShell({
     listArchiveChannels: platforms.listArchiveChannels,
     probeArchive: platforms.probeArchive,
   })
-  const commission = new RouterCommissionService(store, mandates, core)
+  const commission = new RouterCommissionService(store, mandates, routerCore)
   const resolveSecret = (ref: string) => core.vault.get(ref)
+  const githubApp = createVaultGithubAppAuth(zeroDir)
   const investigator = createGithubInvestigator(
     () => store.getSettings(),
     resolveSecret,
     (text) => core.secretFilter.filter(text),
+    undefined,
+    githubApp,
   )
   const repositories = createRouterRepositoryLookup(
     (actor) => store.getRouterGithubGrant(actor),
     resolveSecret,
+    undefined,
+    {
+      auth: githubApp,
+      ref: (name) =>
+        store
+          .getSettings()
+          .settings.github.repositories.find(
+            (repo) => repo.name.toLowerCase() === name.toLowerCase(),
+          )?.githubAppRef,
+    },
+    (text) => core.secretFilter.filter(text),
   )
   const principals = new RouterJobPrincipals(store, repositories)
-  const checkout = createRouterCheckoutResolver(config.router?.codexCheckouts, zeroDir)
+  const ownerIdentity = createRouterOwnerIdentity(store, principals)
+  const { principalFor, contextScopes } = ownerIdentity
+  for (const actor of store.getSettings().settings.github.routerOperators ?? []) principalFor(actor)
+  store.tracking.setWorkflowAudience(() => principals.current('web', true))
+  const checkout = createRouterCheckoutResolver(
+    config.router?.codexCheckouts,
+    zeroDir,
+    principalFor,
+    {
+      isTracked: (name) =>
+        store
+          .getSettings()
+          .settings.github.repositories.some(
+            (repo) => repo.enabled && repo.name.toLowerCase() === name,
+          ),
+    },
+  )
+  const ownerRequest = createGithubOwnerRequest(
+    () => store.getSettings(),
+    githubApp,
+    (text) => core.secretFilter.filter(text),
+  )
+  const closeIssue = createGithubIssueCloser(() => store.getSettings(), githubApp)
+  const tracking = createRouterEventWorker(routerCore, store.tracking, {
+    archive: createRouterArchiveWorker(routerCore, store),
+    investigator,
+    ownerRequest,
+    closeIssue,
+    ownerCloseGrant(event) {
+      const row = store
+        .getSettings()
+        .settings.github.repositories.find(
+          (r) => r.name.toLowerCase() === event.scope.toLowerCase(),
+        )
+      const since = row?.allowOwnerIssueCloseSince
+      return row?.allowOwnerIssueClose &&
+        row.enabled &&
+        row.issueComments &&
+        row.githubAppRef &&
+        since &&
+        Date.parse(event.occurredAt) > Date.parse(since)
+        ? JSON.stringify([row.githubAppRef, since])
+        : null
+    },
+    resolveDuplicate: createResolvedDuplicatePolicy(
+      () => store.getSettings(),
+      githubApp,
+      closeIssue,
+    ),
+  })
+  const githubReplies = new RouterGithubReplies(store, githubApp, (text) =>
+    core.secretFilter.filter(text),
+  )
+  type RegisteredJob = Parameters<typeof tracking.authorized>[0]
+  const sourceAuthorized = (job: RegisteredJob) =>
+    principals.authorized(job.scope, job.audience, job.repository) &&
+    (!job.kind || tracking.authorized(job)) &&
+    workerSourcesAuthorized(store, job)
+  const transferAuthorized = (job: RegisteredJob) =>
+    sourceAuthorized(job) && handoffAuthorized(store, job, sourceAuthorized)
+  const currentJob = (job: RegisteredJob) => {
+    const link = store.ledger.workerLink(job.id)
+    const matter = link && store.ledger.getMatter(link.principal, link.matterId)
+    return (
+      store.jobs.get(job.scope, job.id)?.attempt === job.attempt &&
+      (!link || (!!matter && !['paused', 'cancelled'].includes(matter.state)))
+    )
+  }
+  const mayDeliverJob = (job: RegisteredJob) => currentJob(job) && transferAuthorized(job)
+  store.migrateRouterWork(sourceAuthorized)
   const delegatedJobs = new RouterJobs(store.jobs, {
+    executors: routerExecutors,
+    trace: routerCore.modelRouter.trace,
+    unifiedExecution: true,
+    current: currentJob,
+    handoffAuthorized: transferAuthorized,
+    tracking,
     authorized: (scope, audience, repository) => principals.authorized(scope, audience, repository),
     filter: (text) => core.secretFilter.filter(text),
     execute: createRouterJobExecutor({
-      modelRouter: core.modelRouter,
+      modelRouter: routerCore.modelRouter,
       secretFilter: core.secretFilter,
       codex: core.worker,
+      capabilitiesFor: createRouterWorkerCapabilities({
+        store,
+        investigator,
+        repositories,
+        closeIssue,
+        duplicateEvidence: createDuplicateEvidenceReader(() => store.getSettings(), githubApp),
+        cliProjectDir: dirname(resolve(zeroDir)),
+        replies: githubReplies,
+        ownerRequest,
+        authorized: mayDeliverJob,
+      }),
       async workspaceForRepository(job, repository) {
         const actor = jobActor(job)
         const directory = actor && (await checkout(repository, actor))
@@ -297,16 +437,67 @@ async function createStartupRuntimeShell({
         return repositories.latestFailure(actor, repository, signal, workflowFile)
       },
     }),
-    completed: createRouterJobDelivery(
-      routing,
-      (job) =>
-        store.jobs.get(job.scope, job.id)?.attempt === job.attempt &&
-        principals.authorized(job.scope, job.audience, job.repository),
-    ),
+    async completed(job, signal) {
+      const link = store.ledger.workerLink(job.id)
+      if (link?.principal === 'router-owner') {
+        if (!mayDeliverJob(job)) return 'unavailable'
+        const latestEvent = link.eventIds.at(-1)
+        store.ledger.receiveSignal({
+          key: `worker:${job.id}:${job.attempt}`,
+          principal: link.principal,
+          kind: 'worker_result',
+          scope: latestEvent ? String(latestEvent) : 'general',
+          payload: {
+            jobId: job.id,
+            attempt: job.attempt,
+            matterId: link.matterId,
+            status: job.status,
+          },
+        })
+        workspace.notifySignals()
+        return 'delivered'
+      }
+      return createRouterJobDelivery(
+        routing,
+        mayDeliverJob,
+        (actor) => repositories.accessKey(actor),
+        createGithubWorkDelivery(store, githubReplies, ownerRequest, mayDeliverJob),
+        (job) => {
+          const match = store.tracking.eventForJob(job.id, job.attempt)
+          return !!match?.active && !!githubWorkflowFollowupSubject(match.event)
+        },
+      )(job, signal)
+    },
   })
-  const workspace = new RouterWorkspaceService(store, routing, createRouterAgent(core), {
+  const workspace = new RouterWorkspaceService(store, routing, createRouterAgent(routerCore), {
+    sources: routerSources,
+    agentIntake: true,
+    documents: new RouterDocuments(store.ledger, platforms),
+    replay: createRouterReplay(routerCore, store.ledger),
     repositories,
     principals,
+    principalFor,
+    ownerIdentity,
+    resolveJobAccess(actor, jobId) {
+      const link = store.ledger.workerLink(jobId)
+      if (
+        !link ||
+        link.principal !== principalFor(actor) ||
+        (link.scope !== 'general' && !/^im-[a-f0-9]{64}$/.test(link.scope))
+      )
+        return null
+      const scope = link.scope as import('@zero-os/observe').RouterJobScope
+      const job = store.jobs.get(scope, jobId)
+      if (!job || !principals.authorized(scope, link.audience, job.repository)) return null
+      return { scope, audience: link.audience }
+    },
+    contextScopes,
+    trackRepository: createRouterRepositoryTracking({
+      store,
+      repositories,
+      principals,
+      changed: () => listeners.refreshGithubTracking(),
+    }),
     checkout,
     delegatedJobs,
     investigator,
@@ -314,21 +505,36 @@ async function createStartupRuntimeShell({
   })
   const bridge = createTaskBridge({
     store,
-    agent: createChannelTaskAgent(core),
+    agent: createChannelTaskAgent(routerCore),
     isLiveTarget: platforms.isLiveTarget,
     isPersonalTarget: (target) => routing.isPersonalTarget(target),
     commission,
     personalDialog: {
+      publication: (input) => workspace.publicationAction(input),
       authorize: (target) => routing.claimRouterImTarget(target),
-      handle: (input, authorized) => workspace.handleIm(input, authorized),
+      handle: (input, authorized, onReplyAccess) =>
+        workspace.handleIm(input, authorized, onReplyAccess),
     },
   })
-  return {
-    listeners: new ListenerRuntime(store, resolveSecret, routing, workspace, undefined, {
+  const listeners: ListenerRuntime = new ListenerRuntime(
+    store,
+    resolveSecret,
+    routing,
+    workspace,
+    undefined,
+    {
       runtime: taskRuntime,
       mandates,
       bridge,
-    }),
+      onGithubIntake: () => delegatedJobs.notify(),
+      mayReadTrackingResult: (job) =>
+        principals.authorized(job.scope, job.audience, job.repository),
+    },
+    githubApp,
+    githubReplies,
+  )
+  return {
+    listeners,
     channels,
     channelAdapters,
     channelDefinitions,

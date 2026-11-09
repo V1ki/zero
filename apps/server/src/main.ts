@@ -25,6 +25,8 @@ export async function startZeroOS(options?: StartOptions): Promise<ZeroOS> {
     projectRoot: resolveZeroProjectRoot(options),
     bus: globalBus,
     skipProcessExit: options?.skipProcessExit,
+    routerSources: options?.routerSources,
+    routerExecutors: options?.routerExecutors,
   })
 
   try {

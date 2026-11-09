@@ -72,6 +72,9 @@ function directReminder({ event, mandate }: MandateWork): string {
   const subject = githubEventSubject(event)
   if (subject?.kind === 'run')
     return `${repo} 的工作流运行 #${subject.run} 第 ${subject.attempt} 次尝试失败。`
+  if (subject?.kind === 'issue') return `${repo} 的 Issue 收到了一条新评论。`
+  if (subject?.kind === 'pull' && event.githubCommentKind && !event.githubCommentMention)
+    return `${repo} 的 PR 收到了一条新评论。`
   if (subject?.kind === 'pull')
     return `${repo} 的 PR 讨论评论 #${subject.comment} 提到了订阅中指定的账号。`
   if (event.eventId.startsWith('ci:')) return `${repo} 收到一条匹配的 CI 失败报告。`

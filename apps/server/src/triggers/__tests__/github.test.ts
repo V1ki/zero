@@ -98,6 +98,19 @@ describe('GitHub trigger source', () => {
     expect(cached.events).toEqual([])
   })
 
+  test('a polled workflow must belong to the pinned numeric repository before it can start work', async () => {
+    const start = time(-30)
+    for (const repository of [undefined, { id: 17 }]) {
+      await expect(
+        pollGithub(settings, null, undefined, signal, start, async (url) =>
+          url.pathname === endpoint
+            ? apiRepo()
+            : json({ workflow_runs: [{ ...run(1), repository }] }),
+        ),
+      ).rejects.toThrow('repository identity')
+    }
+  })
+
   test('reads subsequent pages and keeps following observed in-flight runs', async () => {
     const start = time(-4000)
     const first = await pollGithub(settings, null, undefined, signal, start, async (url) => {

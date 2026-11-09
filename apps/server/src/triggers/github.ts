@@ -1,10 +1,15 @@
 import type {
+  RouterOpenPullRequestsPage,
   TriggerEvent,
+  TriggerIgnoredDiscussion,
   TriggerGithubPermissionReport,
   TriggerGithubPermissionSelection,
   TriggerGithubRepository,
   TriggerRepositoryOption,
 } from '@zero-os/shared'
+import type { GithubAppAuth } from './github-app-auth'
+import { isUnsafeGithubComment } from './github-comment-safety'
+import { githubLifecycleEvent, scanGithubLifecycle } from './github-lifecycle'
 import { failedJobFacts } from './investigation'
 
 const API = 'https://api.github.com'
@@ -84,7 +89,7 @@ function githubHeaders(token: string | undefined): Record<string, string> {
 class GithubApi {
   constructor(
     private token: string | undefined,
-    private signal: AbortSignal,
+    readonly signal: AbortSignal,
     private fetcher: Fetch,
   ) {}
 
@@ -143,8 +148,9 @@ interface Comment {
   id: number
   body: string
   created_at: string
+  updated_at?: string
   html_url: string
-  user: { login: string } | null
+  user: { login: string; type?: string } | null
 }
 
 interface Cursor {
@@ -152,7 +158,7 @@ interface Cursor {
   scannedAt: string
   pending: number[]
   runsEtag?: string
-  comments?: { path: string; etag: string }
+  comments?: { path: string; etag: string; rules?: string }
 }
 
 async function repositoryNamesPage(api: GithubApi, path: string) {
@@ -213,6 +219,61 @@ export async function getGithubRepository(
   return { name: repo.full_name }
 }
 
+/** Read one page from the operator's connection. Use the base repository for forks as well. */
+export async function listGithubOpenPullRequests(
+  repository: string,
+  token: string,
+  signal: AbortSignal,
+  fetcher: Fetch,
+  page: number,
+  pageSize: 5 | 10,
+): Promise<RouterOpenPullRequestsPage> {
+  const repo = await repositoryAt(new GithubApi(token, signal, fetcher), repoPath(repository))
+  if (repo.full_name.toLowerCase() !== repository.toLowerCase())
+    throw new Error('GitHub repository name changed')
+  const path = `${repoPath(repo.full_name)}/pulls`
+  // A renamed repository can redirect within api.github.com. Do not read an unrelated destination.
+  const api = new GithubApi(token, signal, (url, init) => {
+    if (url.pathname !== path && url.pathname !== `/repositories/${repo.id}/pulls`)
+      throw new Error('GitHub pull request list moved to another repository')
+    return fetcher(url, init)
+  })
+  const result = await api.page<
+    {
+      number: number
+      title: string
+      state: string
+      draft?: boolean
+      html_url: string
+      base: { repo: Repository }
+    }[]
+  >(`${path}?state=open&per_page=${pageSize}&sort=created&direction=desc&page=${page}`)
+  if (!Array.isArray(result.data) || result.data.length > pageSize)
+    throw new Error('Invalid GitHub pull request list')
+  const pullRequests = result.data.map((pull) => {
+    const number = id(pull.number)
+    const url = `https://github.com/${repo.full_name}/pull/${number}`
+    if (
+      pull.state !== 'open' ||
+      pull.base?.repo?.id !== repo.id ||
+      pull.html_url?.toLowerCase() !== url.toLowerCase() ||
+      typeof pull.title !== 'string' ||
+      !pull.title.trim() ||
+      (pull.draft !== undefined && typeof pull.draft !== 'boolean')
+    )
+      throw new Error('Invalid GitHub pull request record')
+    const title = pull.title.replace(/[\p{Cc}\u202a-\u202e\u2066-\u2069]/gu, ' ').trim()
+    return { number, title, url, draft: pull.draft === true }
+  })
+  return {
+    repository: repo.full_name,
+    page,
+    pageSize,
+    pullRequests,
+    nextPage: result.next ? page + 1 : null,
+  }
+}
+
 type PermissionCheck = TriggerGithubPermissionReport['checks'][number]
 
 export async function checkGithubReadPermissions(
@@ -226,7 +287,11 @@ export async function checkGithubReadPermissions(
   const resources: [PermissionCheck['resource'], string][] = []
   if (selection.workflowFailures) resources.push(['actions', 'actions/runs'])
   if (selection.prComments) resources.push(['prComments', 'issues/comments'])
+  if (selection.issueComments) resources.push(['issueComments', 'issues/comments'])
+  if (selection.pullRequestComments) resources.push(['pullRequestComments', 'issues/comments'])
   if (selection.prBase) resources.push(['prBase', 'pulls'])
+  if (selection.issues) resources.push(['issues', 'issues'])
+  if (selection.pullRequests) resources.push(['pullRequests', 'pulls'])
   const headers = githubHeaders(token)
 
   async function probe([resource, suffix]: (typeof resources)[number]): Promise<PermissionCheck> {
@@ -254,9 +319,16 @@ export async function checkGithubReadPermissions(
       return { resource, status: 'unavailable' }
     }
   }
+  const requests = new Map<string, Promise<PermissionCheck>>()
   return {
     access: token ? 'credential' : 'anonymous',
-    checks: await Promise.all(resources.map(probe)),
+    checks: await Promise.all(
+      resources.map(async ([resource, path]) => {
+        const result = requests.get(path) ?? probe([resource, path])
+        requests.set(path, result)
+        return { ...(await result), resource }
+      }),
+    ),
   }
 }
 
@@ -298,7 +370,8 @@ async function scanRuns(
   const seenEvents = new Set<string>()
   function observe(run: Run) {
     id(run.id)
-    if (run.repository && run.repository.id !== cursor.repositoryId)
+    // The name in the polling URL may have been transferred or reused since the last cursor.
+    if (run.repository?.id !== cursor.repositoryId)
       throw new Error('GitHub repository identity changed; reconfigure this subscription')
     unseen.delete(run.id)
     if (!matchesWorkflow(repo, run)) return
@@ -361,20 +434,88 @@ function mentionPattern(login: string) {
   )
 }
 
-function prMention(
+type CommentKind = 'issue' | 'pr'
+
+/** Derive both transports' selection and durable identity from the same newly-created discussion comment. */
+function createCommentMatcher(
   repo: TriggerGithubRepository,
   repositoryId: number,
-  number: number,
-  login: string,
-  comment: Omit<Comment, 'html_url'>,
-): TriggerEvent {
+  readBase: (number: number) => Promise<string>,
+  signal: AbortSignal,
+  readIdentity: GithubAppAuth['getCommentIdentity'],
+  ignored: TriggerIgnoredDiscussion[],
+) {
+  const login = repo.mention.replace(/^@/, '')
+  const mention = login ? mentionPattern(login) : null
+  const bases = new Map<number, string>()
+  let botIdentity: Promise<string> | undefined
+  return async (
+    kind: CommentKind,
+    number: number,
+    comment: Omit<Comment, 'html_url'>,
+    allowMention = true,
+  ): Promise<TriggerEvent | undefined> => {
+    const ordinary = kind === 'issue' ? repo.issueComments : repo.pullRequestComments
+    let mentioned = kind === 'pr' && allowMention && !!mention?.test(comment.body)
+    if (mentioned && repo.branch) {
+      if (!bases.has(number)) bases.set(number, await readBase(number))
+      mentioned = bases.get(number) === repo.branch
+    }
+    if (!ordinary && !mentioned) return
+    const commentId = id(comment.id)
+    const reference = {
+      eventId: `${repositoryId}:comment:${commentId}`,
+      url: `https://github.com/${repo.name}/${kind === 'issue' ? 'issues' : 'pull'}/${number}#issuecomment-${commentId}`,
+      occurredAt: new Date(timestamp(comment.created_at)).toISOString(),
+    }
+    if (isUnsafeGithubComment(comment.body)) {
+      ignored.push({
+        ...reference,
+        kind: kind === 'issue' ? 'issue-comment' : 'pr-comment',
+        mentioned,
+        reason: '评论命中危险操作或敏感凭据过滤规则。',
+      })
+      return
+    }
+    let ownComment = false
+    if (repo.githubAppRef && comment.user?.type === 'Bot') {
+      if (!readIdentity) throw new Error('无法核验已绑定 GitHub App 的机器人身份。')
+      botIdentity ??= readIdentity(repo.githubAppRef, repo.name, signal)
+      ownComment = (await botIdentity).toLowerCase() === comment.user.login.toLowerCase()
+    }
+    return {
+      ...reference,
+      scope: repo.name,
+      title: `${kind === 'issue' ? 'Issue' : 'PR'} #${number} · ${mentioned ? `@${login}` : '新评论'}`,
+      summary: `${comment.user?.login ?? '未知作者'}：${comment.body.slice(0, 300)}`,
+      ...(ownComment && { githubOwnComment: true as const }),
+      ...(ordinary && {
+        githubCommentKind: kind === 'issue' ? ('issue-comment' as const) : ('pr-comment' as const),
+        ...(mentioned && { githubCommentMention: true as const }),
+      }),
+    }
+  }
+}
+
+function commentTarget(repo: TriggerGithubRepository, comment: Pick<Comment, 'id' | 'html_url'>) {
+  if (!URL.canParse(comment.html_url)) return
+  const url = new URL(comment.html_url)
+  const parts = url.pathname.split('/')
+  const [, owner, name, family, number] = parts
+  if (
+    url.origin !== 'https://github.com' ||
+    url.username ||
+    url.password ||
+    parts.length !== 5 ||
+    `${owner}/${name}`.toLowerCase() !== repo.name.toLowerCase() ||
+    (family !== 'pull' && family !== 'issues') ||
+    !/^[1-9]\d*$/.test(number) ||
+    url.hash !== `#issuecomment-${id(comment.id)}`
+  )
+    return
   return {
-    eventId: `${repositoryId}:comment:${id(comment.id)}`,
-    scope: repo.name,
-    title: `PR #${number} · @${login}`,
-    summary: `${comment.user?.login ?? '未知作者'}：${comment.body.slice(0, 300)}`,
-    occurredAt: comment.created_at,
-    url: `https://github.com/${repo.name}/pull/${number}#issuecomment-${comment.id}`,
+    kind: family === 'pull' ? ('pr' as const) : ('issue' as const),
+    number: id(Number(number)),
   }
 }
 
@@ -394,42 +535,66 @@ async function scanComments(
   repo: TriggerGithubRepository,
   path: string,
   cursor: Cursor,
-  since: number,
+  mentionSince: number,
+  ordinarySince: number,
   events: TriggerEvent[],
+  readIdentity: GithubAppAuth['getCommentIdentity'],
+  ignored: TriggerIgnoredDiscussion[],
 ) {
-  const login = repo.mention.replace(/^@/, '')
-  const mention = mentionPattern(login)
-  // Reuse conditional GET only for an identical page and query window.
-  const from = new Date(Math.floor(since / 60_000) * 60_000).toISOString()
+  const match = createCommentMatcher(
+    repo,
+    cursor.repositoryId,
+    (number) => prBase(api, path, number, cursor.repositoryId),
+    api.signal,
+    readIdentity,
+    ignored,
+  )
+  const ordinary = repo.issueComments || repo.pullRequestComments
+  const since = ordinary ? ordinarySince : mentionSince
+  // GitHub's update cutoff is exclusive. Include the activation second of a new comment watch.
+  const from = new Date(
+    Math.floor((ordinary ? since - 1000 : since) / 60_000) * 60_000,
+  ).toISOString()
   const firstPath = `${path}/issues/comments?per_page=100&sort=updated&direction=asc&since=${encodeURIComponent(from)}`
-  const filter = cursor.comments?.path === firstPath ? cursor.comments.etag : undefined
+  const rules = JSON.stringify([
+    !!repo.issueComments,
+    !!repo.pullRequestComments,
+    repo.mention,
+    repo.branch,
+  ])
+  const filter =
+    cursor.comments?.path === firstPath && cursor.comments.rules === rules
+      ? cursor.comments.etag
+      : undefined
   let next: string | null = firstPath
-  const bases = new Map<number, string>()
+  const visited = new Set<string>()
   while (next) {
+    const url = safeUrl(next)
+    if (
+      ![
+        `${path}/issues/comments`.toLowerCase(),
+        `/repositories/${cursor.repositoryId}/issues/comments`,
+      ].includes(url.pathname.toLowerCase()) ||
+      visited.has(url.href)
+    )
+      throw new Error('Invalid GitHub comment pagination')
+    visited.add(url.href)
     const page: Page<Comment[]> = await api.page(next, next === firstPath ? filter : undefined)
     if (!page.data) return
     if (next === firstPath) {
-      cursor.comments = !page.next && page.etag ? { path: firstPath, etag: page.etag } : undefined
+      cursor.comments =
+        !page.next && page.etag ? { path: firstPath, etag: page.etag, rules } : undefined
     }
     for (const comment of page.data) {
-      if (timestamp(comment.created_at) < since || !mention.test(comment.body)) continue
-      const url = new URL(comment.html_url)
-      const parts = url.pathname.split('/')
-      if (
-        url.origin !== 'https://github.com' ||
-        parts[3] !== 'pull' ||
-        parts.length !== 5 ||
-        !/^\d+$/.test(parts[4])
-      )
-        continue
-      const number = id(Number(parts[4]))
-      if (repo.branch) {
-        if (!bases.has(number)) {
-          bases.set(number, await prBase(api, path, number, cursor.repositoryId))
-        }
-        if (bases.get(number) !== repo.branch) continue
-      }
-      events.push(prMention(repo, cursor.repositoryId, number, login, comment))
+      const created = timestamp(comment.created_at)
+      if (created < since) continue
+      // The REST snapshot cannot recover the original body after an edit. Never emit
+      // an edited message as a new comment, including one previously rejected for safety.
+      if (comment.updated_at && timestamp(comment.updated_at) > created) continue
+      const target = commentTarget(repo, comment)
+      if (!target) continue
+      const event = await match(target.kind, target.number, comment, created >= mentionSince)
+      if (event) events.push(event)
     }
     next = page.next
   }
@@ -468,14 +633,70 @@ function payloadTime(value: unknown): string {
   return time
 }
 
+function lifecycleWebhook(
+  repo: TriggerGithubRepository,
+  repositoryId: number,
+  kind: 'issue' | 'pr',
+  body: Record<string, unknown>,
+): TriggerEvent[] {
+  const action = payloadText(body.action)
+  if (action !== 'opened' && action !== 'reopened' && action !== 'closed') return []
+  const item = payloadObject(kind === 'pr' ? body.pull_request : body.issue)
+  const number = payloadId(item.number)
+  if (kind === 'pr') {
+    const base = payloadObject(payloadObject(item.base).repo)
+    if (
+      payloadId(body.number) !== number ||
+      payloadId(base.id) !== repositoryId ||
+      (base.full_name !== undefined &&
+        payloadText(base.full_name).toLowerCase() !== repo.name.toLowerCase())
+    )
+      throw new GithubWebhookPayloadError()
+    if (
+      action === 'closed' &&
+      item.merged !== undefined &&
+      item.merged !== (item.merged_at != null)
+    )
+      throw new GithubWebhookPayloadError()
+  } else {
+    if (item.pull_request != null) throw new GithubWebhookPayloadError()
+    if (
+      item.repository_url !== undefined &&
+      payloadText(item.repository_url).toLowerCase() !== `${API}/repos/${repo.name.toLowerCase()}`
+    )
+      throw new GithubWebhookPayloadError()
+  }
+  const change = kind === 'pr' && action === 'closed' && item.merged_at != null ? 'merged' : action
+  const timeField = {
+    opened: 'created_at',
+    closed: 'closed_at',
+    merged: 'merged_at',
+    reopened: 'updated_at',
+  } as const
+  return [
+    githubLifecycleEvent(
+      repo.name,
+      repositoryId,
+      kind,
+      number,
+      change,
+      payloadTime(item[timeField[change]]),
+      payloadText(item.title),
+      item.body == null ? undefined : payloadText(item.body),
+    ),
+  ]
+}
+
 /** The HTTP receiver authenticates the original bytes before handing off the JSON here. */
 export async function normalizeGithubWebhook(
   repo: TriggerGithubRepository,
   event: string,
   payload: unknown,
-  getToken: () => string | undefined,
+  getToken: () => string | undefined | Promise<string | undefined>,
   signal: AbortSignal,
   fetcher: Fetch = fetch,
+  readIdentity?: GithubAppAuth['getCommentIdentity'],
+  ignored: TriggerIgnoredDiscussion[] = [],
 ): Promise<TriggerEvent[]> {
   const body = payloadObject(payload)
   const repository = payloadObject(body.repository)
@@ -483,6 +704,9 @@ export async function normalizeGithubWebhook(
   if (payloadText(repository.full_name).toLowerCase() !== repo.name.toLowerCase())
     throw new GithubWebhookPayloadError()
   if (!repo.enabled) return []
+  if (event === 'issues' && repo.issues) return lifecycleWebhook(repo, repositoryId, 'issue', body)
+  if (event === 'pull_request' && repo.pullRequests)
+    return lifecycleWebhook(repo, repositoryId, 'pr', body)
   if (
     event === 'workflow_run' &&
     repo.workflowFailures &&
@@ -507,28 +731,57 @@ export async function normalizeGithubWebhook(
     }
     return matchesWorkflow(repo, failure) ? [workflowFailure(repo, repositoryId, failure)] : []
   }
-  if (event !== 'issue_comment' || !repo.mention || payloadText(body.action) !== 'created')
+  if (
+    event !== 'issue_comment' ||
+    !(repo.mention || repo.issueComments || repo.pullRequestComments) ||
+    payloadText(body.action) !== 'created'
+  )
     return []
   const issue = payloadObject(body.issue)
-  if (issue.pull_request == null) return []
-  payloadObject(issue.pull_request)
+  const kind: CommentKind = issue.pull_request == null ? 'issue' : 'pr'
+  if (
+    (kind === 'issue' && !repo.issueComments) ||
+    (kind === 'pr' && !(repo.mention || repo.pullRequestComments))
+  )
+    return []
+  if (kind === 'pr') payloadObject(issue.pull_request)
   const number = payloadId(issue.number)
   const raw = payloadObject(body.comment)
-  const login = repo.mention.replace(/^@/, '')
-  const text = payloadText(raw.body)
-  if (!mentionPattern(login).test(text)) return []
+  const user = raw.user == null ? null : payloadObject(raw.user)
   const comment = {
     id: payloadId(raw.id),
-    body: text,
-    user: raw.user == null ? null : { login: payloadText(payloadObject(raw.user).login) },
+    body: payloadText(raw.body),
+    user: user && {
+      login: payloadText(user.login),
+      type: typeof user.type === 'string' ? user.type : undefined,
+    },
     created_at: payloadTime(raw.created_at),
   }
-  if (repo.branch) {
-    const api = new GithubApi(getToken(), signal, fetcher)
-    const branch = await prBase(api, repoPath(repo.name), number, repositoryId)
-    if (branch !== repo.branch) return []
+  if (
+    issue.repository_url != null &&
+    payloadText(issue.repository_url).toLowerCase() !== `${API}/repos/${repo.name}`.toLowerCase()
+  )
+    throw new GithubWebhookPayloadError()
+  if (raw.html_url != null) {
+    const target = commentTarget(repo, { ...comment, html_url: payloadText(raw.html_url) })
+    if (target?.kind !== kind || target.number !== number) throw new GithubWebhookPayloadError()
   }
-  return [prMention(repo, repositoryId, number, login, comment)]
+  const match = createCommentMatcher(
+    repo,
+    repositoryId,
+    async (n) =>
+      prBase(
+        new GithubApi(await getToken(), signal, fetcher),
+        repoPath(repo.name),
+        n,
+        repositoryId,
+      ),
+    signal,
+    readIdentity,
+    ignored,
+  )
+  const result = await match(kind, number, comment)
+  return result ? [result] : []
 }
 
 export async function pollGithub(
@@ -538,7 +791,13 @@ export async function pollGithub(
   signal: AbortSignal,
   enabledAt: string,
   fetcher: Fetch = fetch,
-): Promise<{ cursor: string; events: TriggerEvent[] }> {
+  pendingTrackingSince?: string | null,
+  readIdentity?: GithubAppAuth['getCommentIdentity'],
+): Promise<{
+  cursor: string
+  events: TriggerEvent[]
+  ignoredComments?: TriggerIgnoredDiscussion[]
+}> {
   const api = new GithubApi(token, signal, fetcher)
   const path = repoPath(repo.name)
   const now = new Date().toISOString()
@@ -552,22 +811,50 @@ export async function pollGithub(
   id(cursor.repositoryId)
   const since = Math.max(timestamp(enabledAt), timestamp(cursor.scannedAt) - OVERLAP_MS)
   const events: TriggerEvent[] = []
+  const ignoredComments: TriggerIgnoredDiscussion[] = []
   if (repo.workflowFailures) await scanRuns(api, repo, path, cursor, since, events)
-  if (repo.mention) {
-    const before = events.length
-    await scanComments(api, repo, path, cursor, since, events)
-    // Discussion records don't carry a repository ID. If a repository name
-    // was reused, refuse the new scope before admitting any of its messages.
+  const before = events.length
+  const start = pendingTrackingSince ? Math.min(since, timestamp(pendingTrackingSince)) : since
+  const trackingSince = Math.floor(start / 1000) * 1000
+  if (repo.mention || repo.issueComments || repo.pullRequestComments)
+    await scanComments(
+      api,
+      repo,
+      path,
+      cursor,
+      since,
+      trackingSince,
+      events,
+      readIdentity,
+      ignoredComments,
+    )
+  if (repo.issues || repo.pullRequests) {
+    const changes = await scanGithubLifecycle(api, repo, path, cursor.repositoryId, trackingSince)
+    for (const change of changes) events.push(change)
+  }
+  // Issue and discussion records don't carry a repository ID. If the name was reused,
+  // refuse the new scope before admitting any of its messages.
+  if (
+    (previousCursor ||
+      repo.issues ||
+      repo.pullRequests ||
+      repo.issueComments ||
+      repo.pullRequestComments) &&
+    (events.length > before || ignoredComments.length > 0)
+  ) {
+    const current = await repositoryAt(api, path)
     if (
-      previousCursor &&
-      events.length > before &&
-      (await repositoryAt(api, path)).id !== cursor.repositoryId
-    ) {
+      current.id !== cursor.repositoryId ||
+      current.full_name.toLowerCase() !== repo.name.toLowerCase()
+    )
       throw new Error('GitHub repository identity changed; reconfigure this subscription')
-    }
   }
   cursor.scannedAt = now
-  return { cursor: JSON.stringify(cursor), events }
+  return {
+    cursor: JSON.stringify(cursor),
+    events,
+    ...(ignoredComments.length && { ignoredComments }),
+  }
 }
 
 export function isWorkflowFile(value: unknown): value is string {

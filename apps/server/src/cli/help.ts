@@ -17,6 +17,16 @@ Commands:
   secret list        List all stored secret keys
   secret delete <k>  Delete a secret
   weixin login       Authenticate a Weixin channel via QR login
+  github identity --repo OWNER/REPO
+                     Read the configured GitHub App identity and installation permissions
+  github publish-branch --repo OWNER/REPO --source PATH --branch BRANCH --head SHA
+                     Push the reviewed commit from a checkout or bundle as the bound GitHub App
+  github open-pr --repo OWNER/REPO --head BRANCH --base BRANCH --title TEXT --body-file PATH
+                     Open a pull request as the bound GitHub App
+  github merge --repo OWNER/REPO --number N --head SHA
+                     Merge the reviewed pull request head using the bound GitHub App
+  github reply --repo OWNER/REPO --number N --body-file PATH
+                     Post one discussion comment as the repository's GitHub App
   provider login <provider> [--name name] Authenticate managed OAuth
   status             Show system status
 

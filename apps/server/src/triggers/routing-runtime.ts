@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { TriggerStore } from '@zero-os/observe'
+import type { RouterPresentation } from '@zero-os/shared'
 import {
   type MandatePlatform,
   type MandateTarget,
@@ -31,7 +32,9 @@ interface RoutingDependencies {
     ReturnType<typeof createMandatePlatforms>,
     'listPersonalBots' | 'listPersonalTargets' | 'sendPersonal'
   > &
-    Partial<Pick<ReturnType<typeof createMandatePlatforms>, 'sendDirect'>> & {
+    Partial<
+      Pick<ReturnType<typeof createMandatePlatforms>, 'sendDirect' | 'lookupDirectReceipt'>
+    > & {
       listPersonalDirectTargets(): readonly MandateTarget[]
     }
   onPolicyChange?(): void
@@ -245,6 +248,11 @@ export class TriggerRoutingRuntime {
     return !!this.selectedDirectClaim(target)
   }
 
+  directAudienceKey(target: MandateTarget): string | undefined {
+    const claim = this.selectedDirectClaim(target)
+    return claim && audienceKey(claim, this.getConfig().revision)
+  }
+
   /** Pin the verified private recipient and fence an in-flight conversation against rebinding. */
   claimRouterImTarget(target: MandateTarget): (() => boolean) | null {
     const revision = this.getConfig().revision
@@ -278,6 +286,27 @@ export class TriggerRoutingRuntime {
     return { channelId: bot.channelId, label: bot.label, audienceKey: audienceKey(claim, revision) }
   }
 
+  readDirectReceipt(
+    platform: MandatePlatform,
+    prepared: { channelId: string; audienceKey: string },
+    id: string,
+  ) {
+    const lookup = this.deps.personal?.lookupDirectReceipt
+    if (!lookup) return null
+    try {
+      const { bot, claim, revision } = this.directRecipient(platform)
+      if (
+        bot.channelId !== prepared.channelId ||
+        audienceKey(claim, revision) !== prepared.audienceKey
+      )
+        return null
+      return lookup(claim.target, id)
+    } catch (error) {
+      if (error instanceof DirectReminderUnavailableError) return null
+      throw error
+    }
+  }
+
   async sendDirectReminder(
     platform: MandatePlatform,
     prepared: { channelId: string; audienceKey: string },
@@ -285,6 +314,7 @@ export class TriggerRoutingRuntime {
     deliveryId: string,
     signal: AbortSignal,
     originAuthorized: () => boolean = () => true,
+    presentation?: RouterPresentation,
   ): Promise<MandateReceipt> {
     const cancelled = {
       status: 'rejected' as const,
@@ -322,7 +352,7 @@ export class TriggerRoutingRuntime {
       )
     if (!maySend()) return cancelled
     try {
-      return await send(claim.target, text, deliveryId, operation, maySend)
+      return await send(claim.target, text, deliveryId, operation, maySend, presentation)
     } catch {
       return { status: 'unknown', reason: '未能确认平台回执，请先在机器人私聊中核对。' }
     }
@@ -343,6 +373,7 @@ export class TriggerRoutingRuntime {
   private evaluateRoute(
     settings: TriggerRoutingSettings,
     presence: Awaited<ReturnType<TriggerRoutingRuntime['getPresenceContext']>>,
+    urgency: 'normal' | 'urgent' = 'normal',
   ) {
     const claims = this.selectedClaims(settings)
     const now = this.now()
@@ -352,15 +383,16 @@ export class TriggerRoutingRuntime {
       presence.lastPresenceAt,
       Object.fromEntries(Array.from(claims.keys(), (platform) => [platform, true])),
       presence.native,
+      urgency,
     )
     return { decision, claims, now }
   }
 
-  async previewCurrentRoute() {
+  async previewCurrentRoute(urgency: 'normal' | 'urgent' = 'normal') {
     const { settings, revision } = this.getConfig()
     const presence = await this.getPresenceContext(settings)
     if (this.getConfig().revision !== revision) throw new Error('通知设置刚刚变更，请重新查询。')
-    return this.evaluateRoute(settings, presence).decision
+    return this.evaluateRoute(settings, presence, urgency).decision
   }
 
   listRoutes(limit?: number) {

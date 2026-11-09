@@ -1,7 +1,8 @@
 import { setTimeout as sleep } from 'node:timers/promises'
-import type { TriggerStore } from '@zero-os/observe'
+import type { RouterJob, TriggerStore } from '@zero-os/observe'
 import type {
   TriggerGithubPermissionSelection,
+  TriggerGithubRepository,
   TriggerSettings,
   TriggerSettingsSnapshot,
   TriggerSource,
@@ -14,9 +15,11 @@ import {
   listGithubRepositories,
   pollGithub,
 } from './github'
+import { type GithubAppAuth, unavailableGithubAppAuth } from './github-app-auth'
 import type { TriggerMandateRuntime } from './mandate-runtime'
 import type { MandateService } from './mandate-service'
 import { type RepositoryWebhookProvider, acceptRepositoryWebhook } from './repository-webhook'
+import type { RouterGithubReplies } from './router-github-reply'
 import type { RouterWorkspaceService } from './router-workspace'
 import type { TriggerRoutingRuntime } from './routing-runtime'
 import type { TriggerTaskBridge } from './task-bridge'
@@ -54,7 +57,11 @@ export class ListenerRuntime {
       runtime: TriggerMandateRuntime
       mandates: MandateService
       bridge: TriggerTaskBridge
+      onGithubIntake?(): void
+      mayReadTrackingResult?(job: RouterJob): boolean
     },
+    private readonly githubApp: GithubAppAuth = unavailableGithubAppAuth,
+    readonly githubReplies?: RouterGithubReplies,
   ) {}
 
   get mandates() {
@@ -65,7 +72,15 @@ export class ListenerRuntime {
     return this.tasks?.bridge
   }
 
+  /** The subscription transaction has committed. Start or refresh the shared GitHub listener. */
+  refreshGithubTracking() {
+    this.request('github', true)
+    this.tasks?.onGithubIntake?.()
+  }
+
   private notifyIntake() {
+    this.workspace.notifySignals()
+    this.tasks?.onGithubIntake?.()
     this.routing.notify()
     this.tasks?.runtime.notify()
   }
@@ -75,8 +90,10 @@ export class ListenerRuntime {
     this.started = true
     this.sweepExpiredContent()
     this.workspace.start()
-    this.routing.start()
-    this.tasks?.runtime.start()
+    if (!this.workspace.ownsIntake) {
+      this.routing.start()
+      this.tasks?.runtime.start()
+    }
     for (const source of sources) this.request(source)
   }
 
@@ -102,6 +119,7 @@ export class ListenerRuntime {
       clearTimeout(this.retentionTimer)
       for (const job of Object.values(this.jobs)) clearTimeout(job.timer)
       this.stopping = Promise.allSettled([
+        this.githubReplies?.close(),
         this.tasks?.bridge.close(),
         this.tasks?.runtime.close(),
         this.workspace.close(),
@@ -146,9 +164,25 @@ export class ListenerRuntime {
         lastCheckedAt: null,
       }
     return [
-      ...settings.github.repositories.map((row) => state('github', row.name, row.enabled)),
+      ...settings.github.repositories.map((row) => ({
+        ...state('github', row.name, row.enabled),
+        lastIgnoredComment: this.store.lastIgnoredComment(this.key('github', row.name)),
+      })),
       ...settings.wxarc.sessions.map((row) => state('wxarc', row.id, row.enabled)),
     ]
+  }
+
+  listTrackingResults(limit?: number, beforeId?: number) {
+    const authorized = this.tasks?.mayReadTrackingResult
+    if (!authorized) return []
+    const count = Math.max(1, Math.min(100, limit ?? 30))
+    const cursor = beforeId ?? Number.MAX_SAFE_INTEGER
+    return [
+      ...this.store.tracking.listResults(count, cursor, authorized),
+      ...this.store.archive.listResults(count, cursor, authorized),
+    ]
+      .sort((a, b) => b.inboxId - a.inboxId)
+      .slice(0, count)
   }
 
   listInbox(limit?: number, beforeId?: number) {
@@ -160,22 +194,27 @@ export class ListenerRuntime {
   }
 
   async listGithubRepositories(signal: AbortSignal, credentialRef = '', name?: string) {
-    const token = this.githubToken(credentialRef)
+    const token = await this.githubToken(
+      credentialRef,
+      name ? this.repository(name) : undefined,
+      signal,
+    )
     if (name) return [await getGithubRepository(name, token, signal)]
     return listGithubRepositories(token, signal)
   }
 
-  checkGithubPermissions(
+  async checkGithubPermissions(
     name: string,
     credentialRef: string,
     selection: TriggerGithubPermissionSelection,
     signal: AbortSignal,
   ) {
+    const stop = AbortSignal.any([signal, this.controller.signal])
     return checkGithubReadPermissions(
       name,
-      this.githubToken(credentialRef),
+      await this.githubToken(credentialRef, this.repository(name), stop),
       selection,
-      AbortSignal.any([signal, this.controller.signal]),
+      stop,
     )
   }
 
@@ -183,7 +222,8 @@ export class ListenerRuntime {
     return acceptRepositoryWebhook(provider, scope, request, {
       store: this.store,
       resolveSecret: this.resolveSecret,
-      githubToken: (ref) => this.githubToken(ref),
+      githubToken: (ref, repo, signal) => this.githubToken(ref, repo, signal),
+      githubAppIdentity: this.githubApp.getCommentIdentity?.bind(this.githubApp),
       signal: this.controller.signal,
       accepted: (name, hasEvents) => {
         this.checked('github', name)
@@ -200,7 +240,15 @@ export class ListenerRuntime {
     for (const source of sources) this.request(source)
   }
 
-  private githubToken(ref: string) {
+  private repository(name: string) {
+    return this.getSettings().settings.github.repositories.find(
+      (repo) => repo.name.toLowerCase() === name.toLowerCase(),
+    )
+  }
+
+  private githubToken(ref: string, repo: TriggerGithubRepository | undefined, signal: AbortSignal) {
+    if (repo?.githubAppRef !== undefined)
+      return this.githubApp.getToken(repo.githubAppRef, repo.name, signal)
     if (!ref) return undefined
     if (!credentialPattern.test(ref)) throw new Error('无效的 GitHub 监听凭证引用')
     const token = this.resolveSecret(ref)
@@ -269,13 +317,25 @@ export class ListenerRuntime {
     const signal = this.controller.signal
     for (const repo of repos) {
       if (!this.current(revision) || this.jobs.github.retryAt > Date.now()) break
+      const selection = this.store.tracking.pollSelection(repo)
+      if (!selection) continue
       const stream = this.key('github', repo.name)
       const cursor = this.store.readCursor(stream)
       const start = this.store.getStreamStartedAt(stream)
       if (!start) continue
       try {
-        const token = this.githubToken(settings.github.credentialRef)
-        const batch = await this.connectors.pollGithub(repo, cursor, token, signal, start)
+        const token = await this.githubToken(settings.github.credentialRef, repo, signal)
+        if (!this.current(revision)) break
+        const batch = await this.connectors.pollGithub(
+          selection,
+          cursor,
+          token,
+          signal,
+          start,
+          undefined,
+          this.store.tracking.pendingSince(repo.name),
+          this.githubApp.getCommentIdentity?.bind(this.githubApp),
+        )
         if (!this.current(revision)) break
         if (
           this.store.commitBatch({
@@ -335,7 +395,13 @@ export class ListenerRuntime {
         const { cursor, rooms } = group
         const started = Date.now()
         try {
-          const batch = await this.connectors.pollWxarc(enabled, cursor, signal)
+          const batch = await this.connectors.pollWxarc(
+            enabled,
+            cursor,
+            signal,
+            undefined,
+            (scope) => this.store.archive.recent(scope),
+          )
           if (signal.aborted || !this.current(revision)) return
           // A nonconforming source can answer an idle request immediately. Bound reconnects.
           if (batch.cursor === cursor) {

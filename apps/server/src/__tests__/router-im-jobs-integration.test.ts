@@ -4,7 +4,7 @@ import { type RouterJob, TriggerStore } from '@zero-os/observe'
 import type { CommissionOperator, CompletionRequest } from '@zero-os/shared'
 import { createRouterAgent } from '../triggers/router-agent'
 import { createRouterJobExecutor } from '../triggers/router-job-executors'
-import { RouterJobPrincipals, jobActor } from '../triggers/router-job-principal'
+import { RouterJobPrincipals, jobActor, routerImScope } from '../triggers/router-job-principal'
 import { RouterJobs } from '../triggers/router-jobs'
 import { createRouterRepositoryLookup } from '../triggers/router-repositories'
 import { RouterWorkspaceService } from '../triggers/router-workspace'
@@ -105,6 +105,7 @@ test('a private Router can list repositories, delegate the numbered follow-up an
   const second = Promise.withResolvers<RouterJob>()
   const requests: CompletionRequest[] = []
   let tool = { name: '', input: {} as Record<string, unknown> }
+  let malformedProgressReply = false
   const adapter: ProviderAdapter = {
     apiType: 'fixture',
     healthCheck: async () => true,
@@ -118,7 +119,12 @@ test('a private Router can list repositories, delegate the numbered follow-up an
       const isWorker = req.meta?.sessionId?.startsWith('router-job-')
       const continued = isWorker && JSON.stringify(req.messages[0]).includes('失败步骤是 publish')
       const nextTool = isWorker ? { name: 'inspect_latest_github_failure', input: {} } : tool
-      let answer = '已核对工具回执。'
+      // The Agent owns the reply text. Echo the fixture tool result to check its visible scope.
+      let answer = toolDone ? last.content : ''
+      if (!isWorker && toolDone && tool.name === 'get_task_status' && !last.isError) {
+        const receipt = JSON.parse(last.content) as { result?: string }
+        answer = malformedProgressReply ? '{"text":' : (receipt.result ?? '已查询任务状态。')
+      }
       if (isWorker && toolDone) {
         expect(last.content).toContain('步骤 3 · publish')
         answer = '失败步骤是 publish'
@@ -204,9 +210,18 @@ test('a private Router can list repositories, delegate the numbered follow-up an
     expect(list.reply).toContain('fixture/first')
     expect(list.reply).toContain('fixture/second')
     expect(fetcher).toHaveBeenCalledTimes(1)
+    await receive(owner, '记录发布失败核查事项', 'create_matter', {
+      title: '核查发布失败',
+      goal: '找出失败步骤',
+      criteria: ['交付失败步骤与证据'],
+    })
+    const matter = store.ledger.searchMatters(routerImScope(owner))[0]
+    expect(matter?.title).toBe('核查发布失败')
     const task = await receive(owner, '帮我分析第二个仓库最近一次发布失败', 'delegate_task', {
       executor: 'zero',
       repository: 'fixture/second',
+      matterId: matter.id,
+      instruction: '核查最近一次发布失败，交付失败步骤与证据。',
     })
     expect(task.handled).toBe(true)
     expect(task.reply).toContain('1')
@@ -227,8 +242,16 @@ test('a private Router can list repositories, delegate the numbered follow-up an
     )
     const progress = await receive(owner, '刚才的执行任务进展如何', 'get_task_status', { jobId: 1 })
     expect(progress.reply).toContain('失败步骤是 publish')
+    malformedProgressReply = true
+    const malformed = await receive(owner, '这次调查的具体结论是什么？', 'get_task_status', {
+      jobId: 1,
+    })
+    expect(malformed.reply).toContain('未能整理本轮回答')
+    expect(malformed.reply).not.toContain('失败步骤是 publish')
+    malformedProgressReply = false
     const continued = await receive(owner, '继续执行任务 1，进一步分析修复方向', 'continue_task', {
       jobId: 1,
+      instruction: '承接已核实的失败步骤，分析修复方向。',
     })
     expect(continued.handled).toBe(true)
     const resumed = await second.promise

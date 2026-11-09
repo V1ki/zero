@@ -68,6 +68,78 @@ describe('startZeroOS Integration', () => {
     }
   })
 
+  test('exposes a host source and its registered executor to the normal Router', async () => {
+    const project = createTestProjectRoot('zero-router-extension-')
+    setIntegrationMasterKey()
+    writeIntegrationConfig(project.zeroDir)
+    writeIntegrationSecrets(project.zeroDir)
+    let emit: ((event: { id: string; data: Record<string, unknown> }) => number) | undefined
+    let lifetime: AbortSignal | undefined
+    const observed = Promise.withResolvers<void>()
+    let restore = () => {}
+    let runtime: ZeroOS | undefined
+    try {
+      runtime = await startZeroOS({
+        dataDir: project.zeroDir,
+        projectRoot: project.projectRoot,
+        skipProcessExit: true,
+        routerSources: [
+          {
+            name: 'station',
+            description: '测试站点回执',
+            subscribe(receive, signal) {
+              emit = receive
+              lifetime = signal
+            },
+          },
+        ],
+        routerExecutors: [
+          {
+            name: 'station-reader',
+            description: '读取站点原始记录',
+            execute: async () => ({ result: '完成' }),
+          },
+        ],
+        onCoreReady(zero) {
+          const model = zero.modelRouter.getDefaultModel()
+          if (!model) throw Error('Expected fixture model')
+          const complete = spyOn(model.adapter, 'complete').mockImplementation(async (req) => {
+            const dispatch = req.tools?.find((t) => t.name === 'delegate_task')
+            const text = JSON.stringify(req.messages)
+            if (
+              dispatch &&
+              JSON.stringify(dispatch).includes('station-reader') &&
+              dispatch.description.includes('读取站点原始记录') &&
+              text.includes('fixture-receipt')
+            )
+              observed.resolve()
+            else
+              observed.reject(
+                Error('Missing registered source, executor or capability description'),
+              )
+            return {
+              id: 'ack',
+              model: 'test',
+              stopReason: 'end_turn',
+              content: [{ type: 'text', text: '已记录站点回执。' }],
+              usage: { input: 1, output: 1 },
+            }
+          })
+          restore = () => complete.mockRestore()
+        },
+      })
+      if (!emit) throw Error('Source was not subscribed')
+      const input = emit({ id: 'fixture-receipt', data: { reading: 12 } })
+      expect(input).toBeGreaterThan(0)
+      await observed.promise
+    } finally {
+      if (runtime) await runtime.shutdown()
+      restore()
+      project.cleanup()
+    }
+    expect(lifetime?.aborted).toBe(true)
+  })
+
   test('registers an unconfigured Weixin channel without starting it', async () => {
     const weixinProject = createTestProjectRoot('zero-weixin-unconfigured-')
     const dataDir = weixinProject.zeroDir

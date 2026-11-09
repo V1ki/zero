@@ -2,19 +2,26 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
 import type { TriggerStore } from '@zero-os/observe'
 import {
   type TriggerEvent,
+  type TriggerIgnoredDiscussion,
   type TriggerGithubRepository,
   triggerWebhookSecretPatterns,
 } from '@zero-os/shared'
 import { GithubWebhookPayloadError, normalizeGithubWebhook } from './github'
+import type { GithubAppAuth } from './github-app-auth'
 
 export type RepositoryWebhookProvider = 'github' | 'ci'
 
 interface WebhookDependencies {
   store: Pick<TriggerStore, 'getSettings' | 'getStreamStartedAt' | 'commitPush'>
   resolveSecret(ref: string): string | undefined
-  githubToken(ref: string): string | undefined
+  githubToken(
+    ref: string,
+    repo: TriggerGithubRepository,
+    signal: AbortSignal,
+  ): string | undefined | Promise<string | undefined>
   accepted(scope: string, hasEvents: boolean): void
   signal: AbortSignal
+  githubAppIdentity?: GithubAppAuth['getCommentIdentity']
 }
 
 const maxBytes = 1024 * 1024
@@ -132,6 +139,7 @@ export async function acceptRepositoryWebhook(
       throw new WebhookError(400, 'Invalid JSON payload')
     }
     let events: TriggerEvent[]
+    const ignored: TriggerIgnoredDiscussion[] = []
     if (provider === 'github') {
       const delivery = request.headers.get('x-github-delivery') ?? ''
       const event = request.headers.get('x-github-event') ?? ''
@@ -140,12 +148,16 @@ export async function acceptRepositoryWebhook(
         !/^[a-z_]{1,64}$/.test(event)
       )
         throw new WebhookError(400, 'Invalid GitHub delivery headers')
+      const signal = AbortSignal.any([request.signal, deps.signal, AbortSignal.timeout(6500)])
       events = await normalizeGithubWebhook(
         repo,
         event,
         payload,
-        () => deps.githubToken(settings.github.credentialRef),
-        AbortSignal.any([request.signal, deps.signal, AbortSignal.timeout(6500)]),
+        () => deps.githubToken(settings.github.credentialRef, repo, signal),
+        signal,
+        undefined,
+        deps.githubAppIdentity,
+        ignored,
       )
     } else {
       events = ciFailure(repo, payload)
@@ -157,7 +169,15 @@ export async function acceptRepositoryWebhook(
     // GitHub timestamps are second-precision. Keep deliveries in the activation second.
     const since = Math.floor(Date.parse(start) / 1000) * 1000
     const currentEvents = events.filter((e) => Date.parse(e.occurredAt) >= since)
-    if (!deps.store.commitPush({ source: 'github', stream, revision, events: currentEvents }))
+    if (
+      !deps.store.commitPush({
+        source: 'github',
+        stream,
+        revision,
+        events: currentEvents,
+        ignoredComments: ignored.filter((c) => Date.parse(c.occurredAt) >= since),
+      })
+    )
       throw new WebhookError(503, 'Subscription changed; retry delivery')
     deps.accepted(repo.name, currentEvents.length > 0)
     return Response.json({ status: currentEvents.length ? 'accepted' : 'ignored' })

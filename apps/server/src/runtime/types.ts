@@ -22,6 +22,8 @@ import type { ChannelRecoveryController } from './channel-recovery'
 import type { ChannelRuntimeDefinition } from './channel-runtime/types'
 
 export interface StartOptions {
+  routerExecutors?: readonly import('../triggers/router-jobs').RouterExecutorAdapter[]
+  routerSources?: readonly import('../triggers/router-workspace').RouterSourceAdapter[]
   dataDir?: string
   projectRoot?: string
   skipProcessExit?: boolean

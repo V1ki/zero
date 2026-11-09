@@ -477,12 +477,17 @@ test('selected bots claim ordinary text, slash commands, recalls and media witho
   }
   for (const text of [dm.commandText, '/new']) {
     expect(await dispatchRouterCommand({ ...dm, commandText: text }, channel, bridge)).toBe(true)
-    expect(handle).toHaveBeenLastCalledWith(expect.objectContaining({ text }), expect.any(Function))
+    expect(handle).toHaveBeenLastCalledWith(
+      expect.objectContaining({ text }),
+      expect.any(Function),
+      expect.any(Function),
+    )
   }
   const media = { ...dm, commandText: '', metadata: { ...dm.metadata, messageId: 'image' } }
   expect(await dispatchRouterCommand(media, channel, bridge)).toBe(true)
   expect(handle).toHaveBeenLastCalledWith(
     expect.objectContaining({ text: '' }),
+    expect.any(Function),
     expect.any(Function),
   )
   for (const msg of [
@@ -496,6 +501,31 @@ test('selected bots claim ordinary text, slash commands, recalls and media witho
   expect(await dispatchRouterCommand(dm, { ...channel, channelName: 'another' }, bridge)).toBe(
     false,
   )
+})
+
+test('a private reply still requires access to its sources after the Router turn returns', async () => {
+  const { options, input, store } = setup(wx)
+  const config = store.routing.getSettings()
+  store.routing.saveSettings(
+    { ...config.settings, personalBots: { weixin: wx.channelId } },
+    config.revision,
+  )
+  let readable = true
+  const bridge = createTaskBridge({
+    ...options,
+    personalDialog: {
+      authorize: () => () => true,
+      async handle(_input, _authorized, onReplyAccess) {
+        onReplyAccess?.(() => readable)
+        return '已查到 0 项'
+      },
+    },
+  })
+  const result = await bridge.handle({ ...input, text: '查看这个项目的 PR' })
+  expect(result.reply).toBe('已查到 0 项')
+  expect(result.mayReply?.()).toBe(true)
+  readable = false
+  expect(result.mayReply?.()).toBe(false)
 })
 
 test('IM follows the referenced task across later events and cannot read local or sibling task turns', async () => {
@@ -535,4 +565,41 @@ test('IM follows the referenced task across later events and cannot read local o
     '关于研究',
   ])
   expect(store.conversations.list(inboxId)).toEqual([])
+})
+
+test('selected personal bot routes lifecycle and mention requests through the same private Router', async () => {
+  const { options, input, store } = setup(wx)
+  store.routing.saveSettings(
+    { ...store.routing.getSettings().settings, personalBots: { weixin: wx.channelId } },
+    store.routing.getSettings().revision,
+  )
+  const handle = mock(async () => 'Router 私聊')
+  const commission = { handleIm: mock(async () => '跟踪委托草案') }
+  const bridge = createTaskBridge({
+    ...options,
+    commission,
+    personalDialog: {
+      authorize: (target) => (sameTriggerRouteTarget(target, wx) ? () => true : null),
+      handle,
+    },
+  })
+  const lifecycle = { ...input, text: '帮我跟踪这个仓库的 issue 和 PR' }
+  expect((await bridge.handle(lifecycle)).reply).toBe('Router 私聊')
+  expect(handle).toHaveBeenCalledWith(lifecycle, expect.any(Function), expect.any(Function))
+  expect(commission.handleIm).not.toHaveBeenCalled()
+  const mention = {
+    ...input,
+    messageId: 'mention',
+    text: '跟踪 team/second 的 PR 评论中 @alice 的提醒',
+  }
+  expect((await bridge.handle(mention)).reply).toBe('Router 私聊')
+  expect(commission.handleIm).not.toHaveBeenCalled()
+  await bridge.handle({
+    ...lifecycle,
+    messageId: 'stranger',
+    actorId: 'another-user',
+    peerId: 'another-user',
+  })
+  expect(handle).toHaveBeenCalledTimes(2)
+  expect(commission.handleIm).not.toHaveBeenCalled()
 })

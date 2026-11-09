@@ -71,7 +71,7 @@ describe('GitHub native push event mapping', () => {
       repo,
       'issue_comment',
       mentioned,
-      () => 'local-fixture',
+      async () => 'local-fixture',
       signal,
       fetcher,
     )

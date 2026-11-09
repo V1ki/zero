@@ -1,6 +1,7 @@
 import type {
   RouterJobReceipt,
   RouterRepositoryPage,
+  RouterRepositoryTrackingReceipt,
   TriggerConversationTurn,
 } from '@zero-os/shared'
 import { TriggerAgentError } from './event-agent'
@@ -18,6 +19,51 @@ export function repositoryReply(list: RouterRepositoryPage): string {
   ].join('\n')
 }
 
+export function publicTrackingReceipt({
+  id,
+  repository,
+  issues,
+  pullRequests,
+  issueComments,
+  pullRequestComments,
+  deliveryMode,
+}: RouterRepositoryTrackingReceipt): RouterRepositoryTrackingReceipt {
+  return {
+    id,
+    repository,
+    issues,
+    pullRequests,
+    ...(issueComments !== undefined && { issueComments }),
+    ...(pullRequestComments !== undefined && { pullRequestComments }),
+    deliveryMode,
+  }
+}
+
+export function trackingReply(tracking: RouterRepositoryTrackingReceipt): string {
+  const comments = tracking.issueComments || tracking.pullRequestComments
+  const types = [
+    tracking.issues && 'Issue 状态变化',
+    tracking.pullRequests && 'PR 状态变化',
+    tracking.issueComments && 'Issue 普通评论',
+    tracking.pullRequestComments && 'PR 普通评论',
+  ]
+    .filter(Boolean)
+    .join('、')
+  const webhookEvents = [
+    tracking.issues && 'Issues',
+    tracking.pullRequests && 'Pull requests',
+    comments && 'Issue comments',
+  ]
+    .filter(Boolean)
+    .join('、')
+  const mode =
+    tracking.deliveryMode === 'webhook'
+      ? `沿用现有 GitHub webhook 推送。请在仓库 webhook 中勾选 ${webhookEvents}。`
+      : '已启动后台监听，每 5 分钟检查一次。如需实时推送，可在「监听与收件箱 → GitHub 仓库」切换为 webhook，然后在 GitHub 仓库配置回调。'
+  const policy = comments ? '新评论无需 @。命中危险操作过滤规则的评论会在入箱前跳过。' : ''
+  return `已将 ${tracking.repository} 的 ${types} 跟踪保存到 GitHub 仓库配置。${mode}${policy}进入收件箱的事件由后台 Worker 分析，结果可在 Router 网页查看。`
+}
+
 const jobStates: Record<RouterJobReceipt['status'], string> = {
   queued: '已排队',
   running: '执行中',
@@ -27,39 +73,86 @@ const jobStates: Record<RouterJobReceipt['status'], string> = {
 }
 
 export function jobReply(job: RouterJobReceipt): string {
-  const executor = job.executor === 'codex' ? 'Codex' : 'ZeRo'
+  const executor =
+    job.executor === 'codex' ? 'Codex' : job.executor === 'zero' ? 'ZeRo' : job.executor
   const target = job.repository ? ` · ${job.repository}` : ''
   return `派工 #${job.id}（${executor}${target}）${jobStates[job.status]}。${job.result ? `\n${job.result}` : ''}`
 }
 
-const ordinalWords = '一二三四五六七八九'
-function ordinalNumber(word: string): number {
+const ordinalWords = '零一二三四五六七八九'
+export function ordinalNumber(word: string): number {
   if (/^\d+$/u.test(word)) return Number(word)
-  if (word === '两') return 2
-  if (word === '十') return 10
-  if (word === '二十') return 20
-  if (word.startsWith('十') && word.length === 2 && ordinalWords.includes(word[1]))
-    return 11 + ordinalWords.indexOf(word[1])
-  return word.length === 1 ? ordinalWords.indexOf(word) + 1 : 0
+  const numeral = word.replace('两', '二')
+  if (numeral.length === 1 && ordinalWords.includes(numeral)) return ordinalWords.indexOf(numeral)
+  const tens = /^([一二三四五六七八九]?)十([一二三四五六七八九]?)$/u.exec(numeral)
+  if (!tens) return 0
+  return (
+    (tens[1] ? ordinalWords.indexOf(tens[1]) : 1) * 10 +
+    (tens[2] ? ordinalWords.indexOf(tens[2]) : 0)
+  )
 }
 
-/** Resolve references against the exact ordering the user saw, never against a fresh remote list. */
+const fullRepositoryName = /^[a-z0-9][a-z0-9-]{0,38}\/(?!\.{1,2}$)[a-z0-9._-]+$/iu
+function namedRepositories(question: string): string[] {
+  return [
+    ...question.matchAll(
+      /(?<![a-z0-9./_-])(?:https?:\/\/github\.com\/)?([a-z0-9-]+\/[a-z0-9._-]+)/giu,
+    ),
+  ]
+    .map((match) => match[1].replace(/\.$/u, ''))
+    .filter((name) => fullRepositoryName.test(name))
+}
+
+const topicChange =
+  /(?:另外?一?个|别的|其他|下一个)\s*(?:项目|仓库)|\b(?:another|a different|other)\s+(?:repo(?:sitory)?|project)\b/iu
+const excludedReference =
+  /(?:不是|不要|不想|不用|别|排除)\s*(?:再?看|再?查|用|跟踪|处理|分析)?\s*(?:这|那|该|本)|\b(?:except|excluding|not)\s+(?:this|that)\b/iu
+const projectReference =
+  /(?:这(?:一)?个|那(?:一)?个|该|本)\s*(?:GitHub\s*)?(?:仓库|项目)|(?:刚才|刚刚|上面|前面|之前)(?:所)?(?:跟踪|追踪|监听|提到|查看|看|说)(?:过|到)?的?\s*(?:那个|这个)?\s*(?:仓库|项目)|\b(?:this|that|the same)\s+(?:GitHub\s+)?(?:repo(?:sitory)?|project)\b/iu
+
+/** Only structured receipts from the caller's visible, scoped conversation can establish a repository. */
+export function repositoryReferences(history: readonly TriggerConversationTurn[]) {
+  const refs: { selected?: string; page?: RouterRepositoryPage }[] = []
+  for (const turn of history.slice(-8).reverse()) {
+    const answer = turn.status === 'completed' ? turn.answer : null
+    const selected = [
+      answer?.tracking?.repository,
+      answer?.job?.repository,
+      answer?.pullRequests?.repository,
+    ].filter((name): name is string => !!name && fullRepositoryName.test(name))
+    if (new Set(selected.map((name) => name.toLowerCase())).size > 1) break
+    if (selected.length || answer?.repositories) {
+      refs.push({ selected: selected[0], page: answer?.repositories })
+    } else if (namedRepositories(turn.question).length || topicChange.test(turn.question)) {
+      // A change of topic without a successful receipt cannot select a new target or revive an older one.
+      break
+    }
+  }
+  return refs
+}
+
+export function focusedRepository(refs: ReturnType<typeof repositoryReferences>) {
+  const last = refs[0]
+  return (
+    last?.selected ??
+    (last?.page?.repositories.length === 1 ? last.page.repositories[0] : undefined)
+  )
+}
+
+/** Resolve names, ordinals and references against what the user actually saw. */
 export function resolveJobRepository(
   question: string,
   supplied: unknown,
   displayed?: RouterRepositoryPage,
+  history: readonly TriggerConversationTurn[] = [],
+  useReadFocus = false,
 ): string | undefined {
-  const fullName = /^[a-z0-9-]+\/[a-z0-9._-]+$/iu
-  if (supplied !== undefined && (typeof supplied !== 'string' || !fullName.test(supplied)))
+  if (
+    supplied !== undefined &&
+    (typeof supplied !== 'string' || !fullRepositoryName.test(supplied))
+  )
     throw new TriggerAgentError('请提供仓库全名，例如 owner/repository。')
-  const names = [
-    ...question.matchAll(
-      /(?<![a-z0-9./_-])(?:https?:\/\/github\.com\/)?([a-z0-9-]+\/[a-z0-9._-]+)/giu,
-    ),
-  ].map((match) => match[1])
-  const mentioned =
-    typeof supplied === 'string' &&
-    names.some((name) => name.toLowerCase() === supplied.toLowerCase())
+  const names = namedRepositories(question)
   const ordinals = [
     ...question.matchAll(
       /第\s*([\d一二两三四五六七八九十百]+)\s*(?:个|项|条)(?!\s*(?:文件|问题|任务|步骤|作业|测试|版本|PR|工作流))/giu,
@@ -71,15 +164,38 @@ export function resolveJobRepository(
     if (
       indexes.size !== 1 ||
       !pinned ||
+      names.some((name) => name.toLowerCase() !== pinned.toLowerCase()) ||
       (supplied && pinned.toLowerCase() !== supplied.toLowerCase())
     )
       throw new TriggerAgentError('无法把这个序号对应到刚才显示的单个仓库，请指定仓库全名。')
     return pinned
   }
-  if (supplied && !mentioned)
-    throw new TriggerAgentError('请选择用户本轮点名的仓库，或按刚才列表中的序号选择。')
-  if (supplied) return supplied
-  if (names.length === 1 && /GitHub|仓库|repos?itory/iu.test(question)) return names[0]
+  if (new Set(names.map((name) => name.toLowerCase())).size > 1)
+    throw new TriggerAgentError('这条消息提到了多个仓库，请指定要处理的一个。')
+  let name = names[0]
+  if (!name && (topicChange.test(question) || excludedReference.test(question)))
+    throw new TriggerAgentError('请指定这次要查看的仓库全名。')
+  // A scoped read tool already identifies the resource type. Elliptical follow-ups
+  // can use its verified subject without matching another inventory phrase.
+  if (!name && (projectReference.test(question) || useReadFocus)) {
+    name = focusedRepository(repositoryReferences(history)) ?? ''
+    if (!name)
+      throw new TriggerAgentError(
+        '这段对话里没有可唯一确定的仓库，请告诉我仓库全名，或从刚才的列表中选一个。',
+      )
+  }
+  if (supplied && name?.toLowerCase() !== supplied.toLowerCase())
+    throw new TriggerAgentError(
+      '工具选取的仓库与这段对话不符，请指定仓库全名，或从刚才的列表中选一个。',
+    )
+  if (
+    name &&
+    (supplied ||
+      useReadFocus ||
+      projectReference.test(question) ||
+      /GitHub|仓库|repos?itory/iu.test(question))
+  )
+    return name
   return undefined
 }
 

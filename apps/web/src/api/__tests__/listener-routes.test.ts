@@ -13,11 +13,25 @@ import {
   type MandateService,
   createMandateService,
 } from '../../../../server/src/triggers/mandate-service'
+import type { RouterGithubReplies } from '../../../../server/src/triggers/router-github-reply'
+import {
+  createRouterOwnerIdentity,
+  RouterJobPrincipals,
+} from '../../../../server/src/triggers/router-job-principal'
 import { buildRouterSurface } from '../../../../server/src/triggers/router-surface'
-import { RouterWorkspaceError } from '../../../../server/src/triggers/router-workspace'
+import {
+  RouterWorkspaceError,
+  type RouterWorkspaceService,
+} from '../../../../server/src/triggers/router-workspace'
 import { createListenerRoutes } from '../listener-routes'
 
-function fixture(mandates?: MandateService) {
+function fixture(
+  mandates?: MandateService,
+  githubReplies?: Pick<RouterGithubReplies, 'preview' | 'send'>,
+  workspaceServices?: Partial<
+    Pick<RouterWorkspaceService, 'traces' | 'expiredTraceSources' | 'ownerIdentity'>
+  >,
+) {
   const repo = {
     name: 'acme/repo',
     enabled: true,
@@ -75,6 +89,7 @@ function fixture(mandates?: MandateService) {
       '/api/listeners',
       createListenerRoutes({
         mandates,
+        githubReplies,
         webNotifications: {
           latestId: () => 29,
           list(query = {}) {
@@ -109,6 +124,7 @@ function fixture(mandates?: MandateService) {
         },
         getStatus: () => [],
         listInbox: () => [],
+        listTrackingResults: () => [],
         listGithubRepositories: async (_signal, ref, name) => {
           if (ref !== 'github_listener_work') throw new Error('private upstream response')
           return [{ name: name ?? repo.name }]
@@ -127,8 +143,9 @@ function fixture(mandates?: MandateService) {
           scanned = true
         },
         workspace: {
-          listEvents(limit, beforeId) {
-            workspaceCalls.push(['events', limit, beforeId])
+          ...workspaceServices,
+          listEvents(limit, beforeId, includeOwn) {
+            workspaceCalls.push(['events', limit, beforeId, includeOwn])
             return []
           },
           get(scope) {
@@ -261,6 +278,59 @@ function fixture(mandates?: MandateService) {
   }
 }
 
+test('only the same-origin local owner can reply to the selected event, with a checked App identity and no destination fields', async () => {
+  const calls: unknown[][] = []
+  const target = {
+    kind: 'issue' as const,
+    repository: 'A/B',
+    url: 'https://github.com/A/B/issues/2',
+    number: 2,
+    author: 'test[bot]',
+  }
+  const { req } = fixture(undefined, {
+    preview: async () => ({ target }),
+    send: async (...args) => {
+      calls.push(args)
+      return {
+        status: 'sent' as const,
+        id: 91,
+        author: target.author,
+        url: `${target.url}#issuecomment-91`,
+      }
+    },
+  })
+  const endpoint = 'workspace/9/github-reply'
+  const body = { requestId: crypto.randomUUID(), body: 'Ready' }
+  const reply = (
+    data: unknown,
+    headers: Record<string, string> = {},
+    path = endpoint,
+    peer?: string,
+  ) =>
+    req(
+      path,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'If-Match': '"test[bot]"', ...headers },
+        body: JSON.stringify(data),
+      },
+      peer,
+    )
+  expect(await (await req(endpoint)).json()).toEqual({ target })
+  expect((await reply(body, {}, endpoint, '10.0.0.2')).status).toBe(403)
+  expect((await reply(body, { Origin: 'https://example.invalid' })).status).toBe(403)
+  expect((await reply(body, { 'Content-Type': 'text/plain' })).status).toBe(415)
+  for (const scope of ['general', 'task-1', '01'])
+    expect((await reply(body, {}, `workspace/${scope}/github-reply`)).status).toBe(400)
+  for (const field of ['repository', 'issueNumber', 'url', 'ref', 'retry'])
+    expect((await reply({ ...body, [field]: 'override' })).status).toBe(400)
+  expect((await reply({ ...body, requestId: '1' })).status).toBe(400)
+  expect((await reply(body, { 'If-Match': '*' })).status).toBe(412)
+  expect(calls).toHaveLength(0)
+  expect((await reply(body)).status).toBe(200)
+  expect(calls).toEqual([[9, body.requestId, 'Ready', 'test[bot]']])
+})
+
 test('web delivery changes have a loopback-only, content-free signal and cursor; bodies require explicit listing', async () => {
   const { req, noticeListeners } = fixture()
   for (const path of [
@@ -327,7 +397,7 @@ describe('listener control plane', () => {
     for (const scope of ['GENERAL', '0', '01', '-1', '1e3', '9007199254740992']) {
       expect((await req(`workspace/${scope}`)).status).toBe(400)
     }
-    for (const query of ['limit=101', 'beforeId=0']) {
+    for (const query of ['limit=101', 'beforeId=0', 'includeOwn=invalid']) {
       expect((await req(`workspace-events?${query}`)).status).toBe(400)
     }
     for (const payload of [
@@ -377,12 +447,14 @@ describe('listener control plane', () => {
     }
     expect((await post('workspace/2/actions', { requestId, action })).status).toBe(409)
     expect(workspaceCalls).toEqual([
-      ['events', 5, 60],
+      ['events', 5, 60, true],
       ['get', 'general'],
       ['get', 99],
       ['message', 'general', requestId, 'hi\nthere', true],
       ['action', 2, requestId, action, false],
     ])
+    expect((await req('workspace-events?includeOwn=false')).status).toBe(200)
+    expect(workspaceCalls.at(-1)).toEqual(['events', 30, undefined, false])
     expect((await post('workspace/general/messages', { requestId, text: 'busy' })).status).toBe(409)
     expect((await post('workspace/general/messages', { requestId, text: 'fail' })).status).toBe(502)
     const failure = await post('workspace/general/messages', { requestId, text: 'unexpected' })
@@ -422,6 +494,19 @@ describe('listener control plane', () => {
     expect(proxied.status).toBe(200)
     expect((await proxied.json()).sessions).toHaveLength(1)
     expect((await app.request('/api/other')).headers.get('Access-Control-Allow-Origin')).toBe('*')
+  })
+
+  test('serves tracking results only to the local Router page', async () => {
+    const { req } = fixture()
+    const local = await req('tracking-results?limit=20')
+    expect(local.status).toBe(200)
+    expect(await local.json()).toEqual({ items: [] })
+    expect(local.headers.get('Cache-Control')).toBe('no-store')
+    expect((await req('tracking-results?beforeId=-1')).status).toBe(400)
+    expect((await req('tracking-results', {}, '192.168.1.9')).status).toBe(403)
+    expect(
+      (await req('tracking-results', { headers: { Origin: 'https://unrelated.test' } })).status,
+    ).toBe(403)
   })
 
   test('requires JSON, validates nested settings and handles optimistic revisions', async () => {
@@ -529,6 +614,188 @@ describe('listener control plane', () => {
     expect((await connection(3, [operator])).status).toBe(400)
   })
 
+  test('scopes GitHub App bindings to a repository and preserves them for old editors', async () => {
+    const { put, settings } = fixture()
+    const source = settings.github.repositories[0]
+    const save = (revision: number, changes: Record<string, unknown>) =>
+      put({
+        revision,
+        settings: {
+          ...settings,
+          github: { ...settings.github, repositories: [{ ...source, ...changes }] },
+        },
+      })
+    for (const githubAppRef of ['github_listener_work', 'github_webhook_app', 'unrelated', null])
+      expect((await save(0, { githubAppRef })).status).toBe(400)
+    const ref = 'github_app_zero_router'
+    expect((await save(0, { githubAppRef: ref })).status).toBe(200)
+    const oldEditor = await save(1, { name: source.name.toUpperCase(), branch: 'main' })
+    expect((await oldEditor.json()).settings.github.repositories[0].githubAppRef).toBe(ref)
+    const newRepo = await save(2, { name: 'other/project' })
+    expect((await newRepo.json()).settings.github.repositories[0].githubAppRef).toBeUndefined()
+    expect((await save(3, { githubAppRef: ref })).status).toBe(200)
+    const cleared = await save(4, { githubAppRef: '' })
+    expect((await cleared.json()).settings.github.repositories[0].githubAppRef).toBeUndefined()
+  })
+
+  test('requires an enabled, bound comment listener for owner replies and rejects client-supplied backdating', async () => {
+    const { put, settings } = fixture()
+    const source = settings.github.repositories[0]
+    const save = (revision: number, changes: Record<string, unknown>) =>
+      put({
+        revision,
+        settings: {
+          ...settings,
+          github: { ...settings.github, repositories: [{ ...source, ...changes }] },
+        },
+      })
+    const valid = {
+      githubAppRef: 'github_app_first',
+      enabled: true,
+      issueComments: true,
+      ownerMentionReplies: true,
+    }
+    for (const changes of [
+      { enabled: false },
+      { githubAppRef: '' },
+      { issueComments: false },
+      { ownerMentionReplies: 'yes' },
+      { ownerMentionRepliesSince: '2000-01-01T00:00:00.000Z' },
+    ])
+      expect((await save(0, { ...valid, ...changes })).status).toBe(400)
+    expect((await save(0, valid)).status).toBe(200)
+    expect(
+      (await (await save(1, { issueComments: true })).json()).settings.github.repositories[0]
+        .ownerMentionReplies,
+    ).toBe(true)
+    expect((await save(2, { ...valid, githubAppRef: 'github_app_second' })).status).toBe(400)
+    const paused = await save(2, { enabled: false })
+    expect(
+      (await paused.json()).settings.github.repositories[0].ownerMentionReplies,
+    ).toBeUndefined()
+  })
+
+  test.each([
+    ['closeResolvedDuplicates', 'issues'],
+    ['allowOwnerIssueClose', 'issueComments'],
+  ] as const)(
+    '%s requires the matching listener and a bound App; older editors cannot move its grant or change the start time',
+    async (flag, listen) => {
+      const { put, settings } = fixture()
+      const source = settings.github.repositories[0]
+      const save = (revision: number, changes: Record<string, unknown>) =>
+        put({
+          revision,
+          settings: {
+            ...settings,
+            github: { ...settings.github, repositories: [{ ...source, ...changes }] },
+          },
+        })
+      const valid = { githubAppRef: 'github_app_first', [listen]: true, [flag]: true }
+      for (const changes of [
+        { enabled: false },
+        { githubAppRef: '' },
+        { [listen]: false },
+        { [flag]: 'yes' },
+        { [`${flag}Since`]: '2000-01-01T00:00:00Z' },
+      ])
+        expect((await save(0, { ...valid, ...changes })).status).toBe(400)
+      expect((await save(0, valid)).status).toBe(200)
+      expect((await (await save(1, {})).json()).settings.github.repositories[0][flag]).toBe(true)
+      expect((await save(2, { ...valid, githubAppRef: 'github_app_other' })).status).toBe(400)
+      expect(
+        (await (await save(2, { [listen]: false })).json()).settings.github.repositories[0][flag],
+      ).toBeUndefined()
+    },
+  )
+
+  test.each([
+    ['issues', 'pullRequests'],
+    ['issueComments', 'pullRequestComments'],
+  ])('saves %s and %s independently and preserves both for old editors', async (issue, pull) => {
+    const { put, req, settings } = fixture()
+    const source = { ...settings.github.repositories[0], workflowFailures: false, mention: '' }
+    const save = (revision: number, row: Record<string, unknown>) =>
+      put({
+        revision,
+        settings: { ...settings, github: { ...settings.github, repositories: [row] } },
+      })
+    expect((await save(0, source)).status).toBe(400)
+    expect((await save(0, { ...source, [issue]: 'yes' })).status).toBe(400)
+    expect((await save(0, { ...source, [pull]: 'yes' })).status).toBe(400)
+    expect((await save(0, { ...source, [issue]: true })).status).toBe(200)
+    // An old editor doesn't submit either field, even when reading updated settings.
+    const legacyResult = await save(1, { ...source, name: 'ACME/repo', branch: '' })
+    expect(legacyResult.status).toBe(200)
+    expect((await legacyResult.json()).settings.github.repositories[0][issue]).toBe(true)
+    expect((await save(2, { ...source, [issue]: false, [pull]: true })).status).toBe(200)
+    expect((await save(3, source)).status).toBe(200)
+    expect((await (await req('config')).json()).settings.github.repositories[0]).toMatchObject({
+      [issue]: false,
+      [pull]: true,
+      workflowFailures: false,
+      mention: '',
+    })
+    expect((await save(4, { ...source, [issue]: false, [pull]: false })).status).toBe(400)
+  })
+
+  test('tracking is one Router switch on the GitHub connection, independent of bot read grants', async () => {
+    const { settings, target, routingWrite, routingSettings, put, req, unbindTarget } = fixture()
+    const operator = { platform: 'weixin', ...target, operatorId: target.peerId }
+    const save = (revision: number, access: Record<string, unknown>) =>
+      put({
+        revision,
+        settings: { ...settings, github: { ...settings.github, ...access } },
+      })
+    const current = async () => (await (await req('config')).json()).settings.github
+    expect((await current()).routerTrackingEnabled ?? false).toBe(false)
+    expect((await save(0, { routerTrackingEnabled: 'yes' })).status).toBe(400)
+    expect((await save(0, { credentialRef: '', routerTrackingEnabled: true })).status).toBe(400)
+    await routingWrite('preferences', {
+      revision: 0,
+      settings: { ...routingSettings, personalBots: { weixin: target.channelId } },
+    })
+    expect((await save(0, { routerOperators: [operator] })).status).toBe(200)
+    expect((await current()).routerTrackingEnabled ?? false).toBe(false)
+    expect((await save(1, { routerTrackingEnabled: true })).status).toBe(200)
+    expect(await current()).toMatchObject({
+      routerOperators: [operator],
+      routerTrackingEnabled: true,
+    })
+    unbindTarget()
+    // Old clients that only edit sources, and removal of an offline bot, keep the Router's ability.
+    expect((await save(2, {})).status).toBe(200)
+    expect((await current()).routerTrackingEnabled).toBe(true)
+    expect((await save(3, { routerOperators: [] })).status).toBe(200)
+    expect(await current()).toMatchObject({ routerOperators: [], routerTrackingEnabled: true })
+    expect((await save(4, { routerTrackingEnabled: false })).status).toBe(200)
+    expect((await current()).routerTrackingEnabled ?? false).toBe(false)
+  })
+
+  test('replacing or clearing the GitHub connection cannot transfer an existing tracking authorization', async () => {
+    const { settings, put, req } = fixture()
+    const save = (revision: number, access: Record<string, unknown>) =>
+      put({
+        revision,
+        settings: { ...settings, github: { ...settings.github, ...access } },
+      })
+    expect((await save(0, { routerTrackingEnabled: true })).status).toBe(200)
+    const newConnection = { credentialRef: 'github_listener_other' }
+    const staleClient = await save(1, { ...newConnection, routerTrackingEnabled: true })
+    expect(staleClient.status).toBe(400)
+    const switched = await save(1, newConnection)
+    expect(switched.status).toBe(200)
+    expect((await switched.json()).settings.github.routerTrackingEnabled ?? false).toBe(false)
+    expect((await save(2, { ...newConnection, routerTrackingEnabled: true })).status).toBe(200)
+    expect((await save(3, { credentialRef: '' })).status).toBe(200)
+    expect(
+      (await (await req('config')).json()).settings.github.routerTrackingEnabled ?? false,
+    ).toBe(false)
+    const initial = await save(4, { ...newConnection, routerTrackingEnabled: true })
+    expect(initial.status).toBe(200)
+    expect((await initial.json()).settings.github.routerTrackingEnabled).toBe(true)
+  })
+
   test('a credential switch from a legacy client drops the previous connection grants', async () => {
     const { req, put, settings, target, routingWrite, routingSettings } = fixture()
     await routingWrite('preferences', {
@@ -574,6 +841,8 @@ describe('listener control plane', () => {
     expect((await check({}, '203.0.113.2')).status).toBe(403)
     for (const change of [
       { credentialRef: 'github_webhook' },
+      { credentialRef: 'github_app_zero_router' },
+      { githubAppRef: 'github_app_zero_router' },
       { name: 'draft/repo/../other' },
       { workflowFailures: false },
       { prBase: true },
@@ -588,6 +857,14 @@ describe('listener control plane', () => {
       checks: [{ resource: 'actions', status: 'readable' }],
     })
     expect(permissionChecks).toEqual([{ name: 'draft/repo', credentialRef: '', selection }])
+    for (const field of ['issues', 'pullRequests', 'issueComments', 'pullRequestComments']) {
+      expect((await check({ workflowFailures: false, [field]: true })).status).toBe(200)
+      expect(permissionChecks.at(-1)?.selection).toMatchObject({
+        workflowFailures: false,
+        [field]: true,
+      })
+      expect((await check({ [field]: 'yes' })).status).toBe(400)
+    }
     const missing = await check({ credentialRef: 'github_listener_missing' })
     expect(missing.status).toBe(502)
     expect(await missing.text()).not.toContain('private credential details')
@@ -926,4 +1203,156 @@ test('source updates validate and forward an optional mandate version without ch
   expect(getMandateRevision()).toBe(12)
   expect((await put({ revision: 1, settings })).status).toBe(200)
   expect(getMandateRevision()).toBeUndefined()
+})
+
+test('trace APIs keep expired source bodies, missing runs and denied access distinct; filters and export find the same run', async () => {
+  const store = new TriggerStore(':memory:')
+  try {
+    const revision = store.saveSettings(
+      {
+        github: { credentialRef: '', repositories: [] },
+        wxarc: { sessions: [{ id: 'lab', name: 'lab', enabled: true, keyword: '' }] },
+      },
+      0,
+    )
+    const config = store.routing.getSettings()
+    const routeRevision = store.routing.saveSettings(
+      { ...config.settings, enabled: true, retentionDays: 7 },
+      config.revision,
+    )
+    store.commitPush({
+      source: 'wxarc',
+      stream: 'wxarc:lab',
+      revision,
+      events: [
+        {
+          eventId: 'a',
+          scope: 'lab',
+          summary: 'sample',
+          title: 'sample',
+          occurredAt: new Date().toISOString(),
+        },
+      ],
+    })
+    const event = store.listInbox()[0]
+    expect(store.routing.claimAgent(event.id, 'fixture')).toBe(true)
+    expect(store.routing.finishAgent(event.id, 'fixture', { summary: 'sample' })).toBe(true)
+    expect(
+      store.routing.applyDecision(
+        event.id,
+        { destination: 'web', reason: 'sample' },
+        routeRevision,
+        new Date().toISOString(),
+      ),
+    ).toBe(true)
+    const ledger = store.ledger
+    const sessionId = `router-event-${event.id}`
+    const run = ledger.begin(sessionId, '检查样本', {
+      context: { platform: 'wxarc', eventId: event.id },
+    })
+    ledger.append(run, 'tool_result', {
+      name: 'read_source',
+      id: 'fixture-call-31',
+      result: { success: false, output: 'SAMPLE-31' },
+    })
+    ledger.end(run, 'failed')
+    const { req } = fixture(undefined, undefined, {
+      traces: ledger,
+      expiredTraceSources: (event, worker) => store.retention.expiredTraceSources(event, worker),
+    })
+    const started = ledger.getRun(run)!.startedAt
+    for (const search of [
+      `eventId=${event.id}`,
+      `startedAfter=${encodeURIComponent(started)}&startedBefore=${encodeURIComponent(started)}`,
+      'q=SAMPLE-31',
+      'toolCallId=fixture-call-31',
+    ]) {
+      expect(
+        (await (await req('router-traces?' + search)).json()).items.map(
+          (r: { id: string }) => r.id,
+        ),
+      ).toEqual([run])
+    }
+    expect(
+      (await (await req(`router-traces/${run}/export`)).json()).entries.at(-1).data.result.output,
+    ).toBe('SAMPLE-31')
+    expect(await (await req('router-traces?toolCallId=fixture-call-3')).json()).toEqual({
+      items: [],
+    })
+    expect(store.retention.sweep(new Date(Date.now() + 9 * 86400_000)).events).toBe(1)
+    const expired = await (await req(`router-traces?sessionId=${sessionId}`)).json()
+    expect(expired.expiredSources).toEqual(['event'])
+    expect(expired.items[0].id).toBe(run)
+    expect(await (await req('router-traces?eventId=999')).json()).toEqual({ items: [] })
+    expect((await req('router-traces/missing')).status).toBe(404)
+    expect((await req(`router-traces/${run}/export`, {}, '192.0.2.5')).status).toBe(403)
+  } finally {
+    store.close()
+  }
+})
+
+test('local owner sharing uses an already verified private bot, invalidates stale bindings and needs no GitHub grant', async () => {
+  const store = new TriggerStore(':memory:')
+  try {
+    const principals = new RouterJobPrincipals(store, { accessKey: () => null })
+    const identity = createRouterOwnerIdentity(store, principals)
+    const { req, routingWrite, routingSettings, target, unbindTarget } = fixture(
+      undefined,
+      undefined,
+      { ownerIdentity: identity },
+    )
+    const actor = { platform: 'weixin' as const, ...target, operatorId: target.peerId }
+    const config = store.routing.getSettings()
+    const revision = store.routing.saveSettings(
+      { ...config.settings, personalBots: { weixin: actor.channelId } },
+      config.revision,
+    )
+    store.routing.claimDirectBotBinding(actor, null, revision)
+    await routingWrite('config', {
+      revision: 0,
+      settings: { ...routingSettings, personalBots: { weixin: actor.channelId } },
+    })
+    expect(
+      (
+        await routingWrite('bot-bindings', {
+          revision: 0,
+          platform: actor.platform,
+          channelId: actor.channelId,
+          target: actor,
+        })
+      ).status,
+    ).toBe(200)
+    const initial = identity.sharing(actor.platform, actor.channelId)!
+    const write = (payload: unknown, host?: string) =>
+      req(
+        'routing/owner-sharing',
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        },
+        host,
+      )
+    const request = {
+      platform: 'weixin',
+      channelId: actor.channelId,
+      revision: initial.revision,
+      shared: true,
+    }
+    expect((await write(request, '192.0.2.4')).status).toBe(403)
+    expect((await write({ ...request, peerId: 'someone-else' })).status).toBe(400)
+    expect((await write(request)).status).toBe(200)
+    const pinned = principals.current(actor, false)
+    expect(identity.principalFor(actor)).toBe('router-owner')
+    expect(principals.current(actor, true)).toBeNull()
+    expect((await write(request)).status).toBe(409)
+    unbindTarget()
+    const active = identity.sharing(actor.platform, actor.channelId)!
+    expect((await write({ ...request, revision: active.revision })).status).toBe(409)
+    expect((await write({ ...request, revision: active.revision, shared: false })).status).toBe(200)
+    expect(identity.principalFor(actor)).toBeNull()
+    expect(principals.current(actor, false)).not.toBe(pinned)
+  } finally {
+    store.close()
+  }
 })

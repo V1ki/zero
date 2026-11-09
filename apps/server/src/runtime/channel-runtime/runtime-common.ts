@@ -95,12 +95,17 @@ export async function dispatchRouterCommand(
     channelId,
     peerId,
     messageId,
-    text,
+    text:
+      selected && direct && metadata?.routerDirect === true ? (message.dialogText ?? text) : text,
+    ...(selected && direct && message.reference && { reference: message.reference }),
     actorId: message.senderId,
     isDirect: direct && (!selected || metadata?.routerDirect === true),
   })
-  if (result.reply && peerId && messageId && (!result.mayReply || result.mayReply()))
-    await channelAdapter.reply(peerId, result.reply, messageId)
+  if (result.reply && peerId && messageId && (!result.mayReply || result.mayReply())) {
+    if (result.mayReply && channelAdapter.replyRouter)
+      await channelAdapter.replyRouter(peerId, result.reply, messageId, result.mayReply)
+    else await channelAdapter.reply(peerId, result.reply, messageId)
+  }
   return true
 }
 

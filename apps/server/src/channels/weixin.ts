@@ -27,6 +27,15 @@ export class WeixinAdapter implements ChannelAdapter {
     await this.channel.sendToChat(chatId, text)
   }
 
+  async replyRouter(
+    chatId: string,
+    text: string,
+    messageId: string,
+    mayReply?: () => boolean,
+  ): Promise<void> {
+    await this.channel.replyPlainText(chatId, text, messageId, mayReply)
+  }
+
   async showTyping(chatId: string): Promise<TypingHandle | null> {
     await this.channel.sendTypingIndicator(chatId).catch(() => {})
     const keepaliveMs = this.typingKeepaliveMs

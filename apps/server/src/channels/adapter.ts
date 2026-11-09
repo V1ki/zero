@@ -16,6 +16,13 @@ export interface ImageUploadResult {
 export interface ChannelAdapter {
   /** Send a text reply (new message or reply to messageId) */
   reply(chatId: string, text: string, replyToMessageId?: string | number): Promise<void>
+  /** Deliver the Router's final answer in the platform's native format. */
+  replyRouter?(
+    chatId: string,
+    text: string,
+    replyToMessageId: string,
+    mayReply?: () => boolean,
+  ): Promise<void>
   /** Show typing / processing indicator */
   showTyping(chatId: string, messageId?: string | number): Promise<TypingHandle | null>
   /** Create a streaming session (null if not supported) */

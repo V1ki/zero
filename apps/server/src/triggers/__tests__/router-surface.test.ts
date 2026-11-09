@@ -3,6 +3,7 @@ import {
   ROUTER_A2UI_VERSION,
   type RouterActionName,
   type RouterSurfaceMessages,
+  type RouterTrackingResult,
   type TriggerInboxItem,
   type TriggerRouteRecord,
   type TriggerRoutingSettings,
@@ -52,6 +53,23 @@ const deferred: TriggerRouteRecord = {
   updatedAt: '2026-10-15T03:26:00Z',
 }
 
+test('the event surface distinguishes own comments and shows live intake instead of notification status', () => {
+  const surface = buildRouterSurface(
+    7,
+    { ...item, githubOwnComment: true },
+    { ...deferred, status: 'pending' },
+    cfg,
+    [],
+    undefined,
+    undefined,
+    undefined,
+    { state: 'running', kind: 'worker_result', error: null },
+  )
+  expect(JSON.stringify(surface)).toContain('自身产生')
+  expect(JSON.stringify(surface)).toContain('Router 正在处理 Worker 结果')
+  expect(JSON.stringify(surface)).not.toContain('等待 Agent')
+})
+
 function click(messages: RouterSurfaceMessages, name: RouterActionName) {
   return {
     version: ROUTER_A2UI_VERSION,
@@ -87,6 +105,46 @@ test('surfaces describe the actual scope, routing decision and deferral', () => 
       click(pending, 'process_event'),
     ),
   ).toBe(false)
+})
+
+test('worker actions stay bound to the displayed event and attempt, independently of notification routing', () => {
+  const receipt: RouterTrackingResult = {
+    id: 13,
+    attempt: 1,
+    inboxId: item.id,
+    repository: item.scope,
+    title: item.title,
+    occurredAt: item.occurredAt,
+    kind: 'issue-comment',
+    status: 'completed',
+    needsAttention: false,
+    result: 'Previous summary',
+  }
+  const card = (tracking?: RouterTrackingResult) =>
+    buildRouterSurface(
+      item.id,
+      item,
+      null,
+      { ...cfg, enabled: false },
+      [],
+      undefined,
+      undefined,
+      tracking,
+    )
+  const shown = card(receipt)
+  const act = click(shown, 'work_on_event')
+  const confirm = { ...act, action: { ...act.action, sourceComponentId: 'btn-work_on_event-1' } }
+  expect(matchesRouterSurfaceAction(shown, confirm)).toBe(true)
+  expect(matchesRouterSurfaceAction(shown, click(shown, 'process_event'))).toBe(false)
+  for (const changed of [
+    undefined,
+    { ...receipt, attempt: 2 },
+    { ...receipt, inboxId: 8 },
+    { ...receipt, repository: 'other/repo' },
+    { ...receipt, status: 'queued' as const },
+  ]) {
+    expect(matchesRouterSurfaceAction(card(changed), confirm)).toBe(false)
+  }
 })
 
 test('model facts become bound text; preference changes require their original version and turn', () => {

@@ -1,7 +1,12 @@
 import { expect, test } from 'bun:test'
 import type { ProviderAdapter } from '@zero-os/model'
 import type { CompletionResponse, ToolUseBlock, TriggerInboxItem } from '@zero-os/shared'
-import { TriggerAgentError, createTriggerAgent, runTriggerModel } from '../event-agent'
+import {
+  TriggerAgentError,
+  createTriggerAgent,
+  runTriggerModel,
+  triggerEventContext,
+} from '../event-agent'
 
 const item: TriggerInboxItem = {
   id: 1,
@@ -14,6 +19,14 @@ const item: TriggerInboxItem = {
   receivedAt: '2026-11-01T01:00:02Z',
 }
 const filter = { filter: (text: string) => text.replaceAll('example-secret', '[REDACTED]') }
+test('verified own-comment metadata reaches the model without treating user-authored comments as self echoes', () => {
+  expect(
+    triggerEventContext({ ...item, source: 'github', githubOwnComment: true }, filter),
+  ).toMatchObject({ githubOwnComment: true })
+  expect(triggerEventContext({ ...item, source: 'github' }, filter)).not.toHaveProperty(
+    'githubOwnComment',
+  )
+})
 const answer: CompletionResponse = {
   id: 'answer',
   model: 'test-model',
@@ -60,7 +73,7 @@ test('runs the configured model on one event without tools, private peer IDs, or
   expect(invoked).toBe(1)
 })
 
-test('tool calls, truncated output and empty reasoning-only responses are never deliverable', async () => {
+test('unexpected tool calls and empty reasoning-only responses are never deliverable', async () => {
   const cases: Array<[Partial<CompletionResponse>, string]> = [
     [
       {
@@ -71,7 +84,6 @@ test('tool calls, truncated output and empty reasoning-only responses are never 
       },
       '工具请求',
     ],
-    [{ stopReason: 'max_tokens' }, '输出上限'],
     [{ content: [{ type: 'thinking', thinking: 'internal reasoning' }] }, '没有返回'],
   ]
   for (const [patch, message] of cases) {
@@ -191,36 +203,24 @@ test('feeds scoped tool results and recoverable errors back to the model and ret
   ])
 })
 
-test('rejects an oversized or duplicate batch before the first call and reserves the last step for a final answer', async () => {
+test('rejects a duplicate tool batch before executing any effect', async () => {
   let executions = 0
-  const toolset = {
-    definitions: [lookup],
-    async execute() {
-      executions++
-      return 'ok'
-    },
-  }
-  for (const [batch, error] of [
-    [Array.from({ length: 9 }, (_, i) => use(`id-${i}`, 'missing')), '上限'],
-    [[use('same'), use('same')], '重复'],
-  ] as const) {
-    await expect(
-      runTriggerModel(
-        modelRouter(async () => requestsTools(...batch)),
-        { ...command, toolset },
-      ),
-    ).rejects.toThrow(error)
-  }
-  expect(executions).toBe(0)
-  let requests = 0
   await expect(
     runTriggerModel(
-      modelRouter(async () => requestsTools(use(`step-${++requests}`))),
-      { ...command, toolset },
+      modelRouter(async () => requestsTools(use('same'), use('same'))),
+      {
+        ...command,
+        toolset: {
+          definitions: [lookup],
+          async execute() {
+            executions++
+            return 'ok'
+          },
+        },
+      },
     ),
-  ).rejects.toThrow('上限')
-  expect(requests).toBe(6)
-  expect(executions).toBe(5)
+  ).rejects.toThrow('重复')
+  expect(executions).toBe(0)
 })
 
 test('cancelling a tool round prevents the rest of its batch and further model requests', async () => {
@@ -256,4 +256,135 @@ test('cancelling a tool round prevents the rest of its batch and further model r
   released.resolve('late result')
   await Bun.sleep(0)
   expect([calls, requests]).toEqual([1, 1])
+})
+
+test('continues provider-truncated text and preserves the whole answer without a Router output cap', async () => {
+  let calls = 0
+  const chunks = ['第一部分\n', '  保留缩进和边界\n', '结尾证据链接']
+  const result = await runTriggerModel(
+    modelRouter(async (request) => {
+      expect(request.maxTokens).toBeUndefined()
+      if (calls) expect(JSON.stringify(request.messages)).toContain(chunks[calls - 1].trim())
+      const index = calls++
+      return {
+        ...answer,
+        stopReason: index < 2 ? 'max_tokens' : 'end_turn',
+        content: [{ type: 'text', text: chunks[index] }],
+      }
+    }),
+    command,
+  )
+  expect(result).toBe(chunks.join(''))
+  expect(calls).toBe(3)
+})
+
+test('uses configured model output capacity and never executes a truncated tool call', async () => {
+  let calls = 0
+  let effects = 0
+  const models = modelRouter(async (request) => {
+    expect(request.maxTokens).toBe(64000)
+    calls++
+    if (calls === 1)
+      return {
+        ...requestsTools(use('partial', 'lookup', { __parse_error: 'cut' })),
+        stopReason: 'max_tokens',
+      }
+    if (calls === 2) {
+      expect(JSON.stringify(request.messages)).not.toContain('partial')
+      return requestsTools(use('complete'))
+    }
+    return answer
+  })
+  const getCurrentModel = models.getCurrentModel
+  const result = await runTriggerModel(
+    {
+      ...models,
+      getCurrentModel: () => ({ ...getCurrentModel(), modelConfig: { maxOutput: 64000 } }),
+    },
+    {
+      ...command,
+      toolset: {
+        definitions: [lookup],
+        execute: async () => {
+          effects++
+          return '完整参数已执行'
+        },
+      },
+    },
+  )
+  expect(effects).toBe(1)
+  expect(calls).toBe(3)
+  expect(result).toBe('会话中提到了 example-secret。')
+})
+
+test('cancellation during output continuation prevents a partial result being delivered', async () => {
+  const controller = new AbortController()
+  let calls = 0
+  await expect(
+    runTriggerModel(
+      modelRouter(async () => {
+        if (++calls === 2) controller.abort()
+        return {
+          ...answer,
+          stopReason: 'max_tokens',
+          content: [{ type: 'text', text: '部分结果' }],
+        }
+      }),
+      { ...command, signal: controller.signal },
+    ),
+  ).rejects.toThrow('取消')
+  expect(calls).toBe(2)
+})
+
+test('oversized receipts stay recoverable without rerunning the action or exposing the previous turn', async () => {
+  const original = 'x'.repeat(12000) + '签收位置 Q7'
+  const history = [
+    {
+      id: 'history',
+      sessionId: command.sessionId,
+      role: 'user' as const,
+      messageType: 'message' as const,
+      content: [{ type: 'text' as const, text: '已撤回对外发送授权' }],
+      createdAt: new Date().toISOString(),
+    },
+  ]
+  let step = 0
+  let executions = 0
+  const { adapter } = modelRouter(async (req) => {
+    expect(req.messages[0]).toEqual(history[0])
+    switch (++step) {
+      case 1:
+        expect(req.tools).toEqual([lookup])
+        return requestsTools(use('original'))
+      case 2:
+        expect(JSON.stringify(req.messages)).not.toContain('Q7')
+        expect(req.tools?.map((tool) => tool.name)).toContain('read_context_excerpt')
+        return requestsTools(use('wrong', 'read_context_excerpt', { callId: 'previous-run' }))
+      case 3:
+        expect(JSON.stringify(req.messages.at(-1))).toContain('本轮没有')
+        return requestsTools(
+          use('read', 'read_context_excerpt', { callId: 'original', find: '签收位置' }),
+        )
+      default:
+        expect(JSON.stringify(req.messages.at(-1))).toContain('签收位置 Q7')
+        return answer
+    }
+  }).getCurrentModel()
+  const model = { adapter, modelConfig: { maxContext: 1600, maxOutput: 300 } }
+  await runTriggerModel(
+    { getDefaultModel: () => model, getCurrentModel: () => model },
+    {
+      ...command,
+      history,
+      toolset: {
+        definitions: [lookup],
+        execute: async () => {
+          executions++
+          return original
+        },
+      },
+    },
+  )
+  expect(executions).toBe(1)
+  expect(step).toBe(4)
 })

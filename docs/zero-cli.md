@@ -21,6 +21,7 @@ bun zero <command>
 - 日志查看：`logs`
 - Secret 管理：`secret set`、`secret list`、`secret delete`
 - 微信接入：`weixin login`
+- GitHub App：`github identity`、`github reply`、`github open-pr`、`github merge`
 - macOS 守护进程：`launchctl install`、`launchctl status`、`launchctl uninstall`
 
 ## 运行控制
@@ -95,6 +96,26 @@ bun zero restart
 ```bash
 bun zero status
 ```
+
+## 在 GitHub 上回复 Issue 或 PR
+
+从 ZeRo 项目目录执行，目标仓库须已开启监听并绑定 GitHub App。先在文本文件中写好完整评论，再指定仓库和 Issue 或 PR 编号发送。
+
+```bash
+bun zero github reply --repo V1ki/dsh-plugin-subscriptions --number 157 --body-file ./reply.md
+```
+
+命令以该仓库的 App 身份在讨论区发布一条普通评论，并打印作者和评论链接。发出后如果显示投递结果不确定，先打开该讨论核对，避免重复发送。Issue 评论使用安装的 Issues 写权限；PR 讨论评论还需安装已批准的 Pull requests 写权限，ZeRo 会把该权限一并放入评论令牌。日常监听使用只读令牌。`identity` 显示的是安装权限，具体写请求仍以 GitHub 回执为准。
+
+### 核对身份与合并 PR
+
+从 ZeRo 项目目录运行 `bun zero github identity --repo OWNER/REPO` 可读取该仓库安装的机器人名称，以及发表评论、合并 PR 所需的安装权限。分支保护、审核状态和待合并版本还需在具体 PR 上核对。
+
+已推送的分支可以用 `bun zero github open-pr --repo OWNER/REPO --head BRANCH --base BASE --title TITLE --body-file PATH` 创建 PR。PR 由仓库绑定的 GitHub App 署名，安装需要 Pull requests 写权限。若同一分支已有开放 PR，返回现有链接和实际作者。
+
+本地已验证的提交可用 `bun zero github publish-branch --repo OWNER/REPO --source PATH --branch BRANCH --head SHA` 发布到目标仓库的 PR 分支。PATH 可指向 Git 工作副本或包含该提交的 bundle。工具使用绑定 App 的 Contents 写权限，保留原提交和作者，并回读远端提交号。贡献者分支不可写时，可以在目标仓库发布候选，替代 PR 应链接原讨论并保留贡献者署名。
+
+审阅当前改动和验证结果后，已获准的简单 PR 可以使用 `bun zero github merge --repo OWNER/REPO --number N --head SHA` 合并，SHA 填入已审查的完整提交号。复杂 PR 先由用户确认具体提交。命令以安装身份向 GitHub 提交版本条件，随后回读合并者、提交和链接。已合并的 PR 返回原回执。缺少 Contents 写权限时，向 Router 说明该仓库 App 的权限缺口。
 
 ## 日志查看
 
@@ -335,18 +356,33 @@ bun zero status
 
 ## Router 的 Codex 工作目录
 
-在本机 `.zero/config.yaml` 中列出允许 Codex 修改的仓库。每个仓库对应一个专用的本地 Git 签出目录。修改后重启 ZeRo 生效。
+已启用监听的仓库在第一次收到工程任务时，会通过本机 gh 创建专用工作副本，保存在 `~/.local/share/zero/router-checkouts/OWNER/REPO`。已有本地工作区时，可在 `.zero/config.yaml` 指定绝对路径；显式配置优先。修改配置后重启 ZeRo 生效。
 
 ```yaml
 router:
   codex_checkouts:
     example/service:
       path: /Users/me/Projects/service-worker
-      im_channels:
-        - platform: weixin
-          channel_id: v1ki-bot
 ```
 
-Web Router 可使用清单中的目录。要从机器人私聊派工程任务，另在 `im_channels` 中填写平台和所选机器人账号标识，并在网页授权对应操作者使用 GitHub 连接。省略 `im_channels` 时该仓库只向 Web 开放。未配置仓库时仍可使用只读查询和 ZeRo 分析。
+网页和已验证为同一操作者的微信、钉钉、飞书私聊共用这份仓库配置。旧配置中的 `im_channels` 可移除。
 
 启动或继续 Codex 工作前，ZeRo 会重新核对目录和本地 Git 配置中的 `origin`。使用 GitHub 的 HTTPS 或 SSH 地址和绝对目录，目录需为 Git 工作树根目录，并与 ZeRo 的运行数据分开。请为会写文件、执行项目代码的工程任务提供可信的专用工作副本。
+
+
+Router 工程 Worker 在已映射工作区沿用本机 Codex 当前权限和工具配置，启动与恢复时均应用当前配置；不再额外禁用网络、MCP、插件和技能，或强制 `.git` 只读。配置的实际权限仍须与具体任务授权配合使用。
+
+
+### Codex Worker 账号回退
+
+`worker.codex_command` 和 `worker.codex_fallback_command` 接受程序及参数数组；程序直接启动，不经过 shell。默认入口返回明确的 `usageLimitExceeded` 时，使用备用入口继续原线程；普通 `rateLimitExceeded`、模型不支持、认证失败和连接中断不会触发账号回退。备用账号也没有额度时返回实际错误，不循环切号。配置同时用于普通 Worker 和 Router 工程 Worker，切换记录在 `worker_account_fallback` 日志中，按原 thread/turn 记录用量。
+
+本机 `codex-ys` 是 `cm cli ys` 的 shell alias，`cm` 使用已安装的 account-kit Python 启动器。配置示意如下，路径应使用本机真实安装位置：
+
+```yaml
+worker:
+  codex_command: ["/path/to/python3", "/path/to/account.py", "cli", "default"]
+  codex_fallback_command: ["/path/to/python3", "/path/to/account.py", "cli", "ys"]
+```
+
+这两个入口需能访问同一份会话存储。切换使用原线程继续已有上下文，不复制凭据、不重建任务；若备用入口不能恢复线程，原样报告失败。已有 shell alias 不能直接当作可执行文件路径。

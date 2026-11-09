@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto'
 import type { TriggerStore } from '@zero-os/observe'
 import type {
+  ChannelMessageReference,
   MandatePlatform,
   MandateTarget,
   MandateTaskDetail,
+  RouterPublicationAction,
   TriggerConversationTurn,
 } from '@zero-os/shared'
 import { getTriggerRouteBot, sameTriggerRouteTarget } from '@zero-os/shared'
@@ -18,6 +20,7 @@ export interface TaskMessage {
   messageId: string
   isDirect: boolean
   text: string
+  reference?: ChannelMessageReference
 }
 
 export interface TaskCardAction extends Omit<TaskMessage, 'text' | 'isDirect'> {
@@ -66,8 +69,15 @@ interface TaskBridgeOptions {
   isLiveTarget(target: MandateTarget): boolean
   isPersonalTarget(target: MandateTarget): boolean
   personalDialog?: {
+    publication?(
+      input: RouterPublicationAction & { platform: MandatePlatform; channelId: string },
+    ): Promise<boolean>
     authorize(target: MandateTarget): (() => boolean) | null
-    handle(input: TaskMessage, authorized: () => boolean): Promise<string | null>
+    handle(
+      input: TaskMessage,
+      authorized: () => boolean,
+      onReplyAccess?: (mayRead: () => boolean) => void,
+    ): Promise<string | null>
   }
   commission?: {
     handleIm(
@@ -198,22 +208,27 @@ export function createTaskBridge({
     mayReply?: () => boolean
   }> {
     const text = input.text.trim()
-    const command = taskReference.exec(text)
     const target = identity(input)
     const trusted =
       target &&
       (target.platform !== 'weixin' || (input.isDirect && target.operatorId === target.peerId))
-    if (!command && !isCommissionCommand(text)) {
-      if (!isSelectedBot(input.platform, input.channelId)) return { handled: false }
-      if (!personalDialog || !trusted || !input.isDirect || stop.signal.aborted)
-        return { handled: true }
+    // All private input on a Router-owned bot enters the same Agent, including
+    // task references and rule changes. Legacy dispatch remains for other bots.
+    if (personalDialog && input.isDirect && isSelectedBot(input.platform, input.channelId)) {
+      if (!trusted || stop.signal.aborted) return { handled: true }
       const authorized = personalDialog.authorize(target)
       if (!authorized) return { handled: true }
-      const mayReply = () => !stop.signal.aborted && authorized()
-      if (!mayReply()) return { handled: true }
-      const reply = await personalDialog.handle(input, mayReply)
+      const mayUseDialog = () => !stop.signal.aborted && authorized()
+      if (!mayUseDialog()) return { handled: true }
+      let canRead: (() => boolean) | undefined
+      const reply = await personalDialog.handle(input, mayUseDialog, (check) => {
+        canRead = check
+      })
+      const mayReply = () => mayUseDialog() && (canRead?.() ?? true)
       return reply && mayReply() ? { handled: true, reply, mayReply } : { handled: true }
     }
+    const command = taskReference.exec(text)
+    if (!command && !isCommissionCommand(text)) return { handled: false }
     if (!trusted || stop.signal.aborted) return { handled: true, reply: denied }
     const messageKey = hash(
       input.platform,
@@ -342,6 +357,14 @@ export function createTaskBridge({
   }
 
   return {
+    publication: async (
+      input: RouterPublicationAction & { platform: MandatePlatform; channelId: string },
+    ) => {
+      if (stop.signal.aborted || !isSelectedBot(input.platform, input.channelId)) return false
+      const target = identity({ ...input, messageId: input.messageId })
+      if (!target || !personalDialog?.authorize(target)) return false
+      return personalDialog.publication?.(input) ?? false
+    },
     isSelectedBot,
     handle(input: TaskMessage) {
       const work = handle(input)

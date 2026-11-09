@@ -2,8 +2,10 @@ import {
   type GithubInvestigationAction,
   ROUTER_A2UI_CATALOG,
   type RouterActionName,
+  type RouterEventActivity,
   type RouterSurfaceComponent,
   type RouterSurfaceMessages,
+  type RouterTrackingResult,
   type RouterWorkspaceTask,
   type TriggerConversationAnswer,
   type TriggerConversationScope,
@@ -13,6 +15,7 @@ import {
   type TriggerRoutingSettings,
   getTriggerRouteBot,
   isTriggerRoutePlatform,
+  routerEventActivityLabel,
   triggerRoutePlatforms,
   ROUTER_A2UI_VERSION as version,
 } from '@zero-os/shared'
@@ -21,15 +24,18 @@ import type { RouterBot } from './router-agent'
 export { isRouterSurfaceAction, matchesRouterSurfaceAction } from '@zero-os/shared'
 
 const labels: Record<RouterActionName, string> = {
+  router_input: '继续处理',
   explain_route: '解释这次路由',
   suggest_next: '建议下一步',
-  process_event: '交给 Agent 处理',
+  process_event: '分析并路由通知',
+  work_on_event: '让 Worker 处理',
   apply_preference: '确认应用偏好',
   confirm_mandate: '确认此委托变更',
   prepare_reminder: '准备这条通知',
   send_reminder: '发送通知',
   inspect_github: '查看 GitHub 事件详情',
   compare_runs: '对比此前的运行',
+  find_related_issues: '查找相关历史 Issue',
 }
 const statuses: Record<TriggerRouteStatus, string> = {
   pending: '等待 Agent',
@@ -70,6 +76,7 @@ function buildSurface(
   facts: Fact[],
   actions: RouterActionName[],
   retry = false,
+  tracking?: RouterTrackingResult,
 ): RouterSurfaceMessages {
   const components: RouterSurfaceComponent[] = [
     { id: 'heading', component: 'Text', text: { path: '/heading' }, variant: 'h3' },
@@ -90,17 +97,29 @@ function buildSurface(
       children.push(key)
     } else children.push(valueId)
   }
+  const buttons: string[] = []
   for (const name of actions) {
+    const work = name === 'work_on_event'
+    const button = work ? `btn-work_on_event-${tracking?.attempt ?? 1}` : `btn-${name}`
+    buttons.push(button)
     components.push(
       {
         id: `label-${name}`,
         component: 'Text',
-        text: name === 'process_event' && retry ? '重新处理' : labels[name],
+        text:
+          work && tracking?.work?.outcome === 'resolved'
+            ? '重新办理此事'
+            : name === 'process_event' && retry
+              ? '重试通知路由'
+              : labels[name],
       },
       {
-        id: `btn-${name}`,
+        id: button,
         component: 'Button',
-        ...(name === 'apply_preference' || name === 'confirm_mandate' || name === 'send_reminder'
+        ...(work ||
+        name === 'apply_preference' ||
+        name === 'confirm_mandate' ||
+        name === 'send_reminder'
           ? { variant: 'primary' as const }
           : {}),
         child: `label-${name}`,
@@ -109,7 +128,7 @@ function buildSurface(
     )
   }
   components.push(
-    { id: 'actions', component: 'Row', children: actions.map((name) => `btn-${name}`) },
+    { id: 'actions', component: 'Row', children: buttons },
     { id: 'root', component: 'Column', children: [...children, 'actions'] },
   )
   return [
@@ -127,6 +146,8 @@ export function buildRouterSurface(
   investigationActions: GithubInvestigationAction[] = [],
   task?: RouterWorkspaceTask,
   bots?: readonly RouterBot[],
+  tracking?: RouterTrackingResult,
+  activity?: RouterEventActivity,
 ): RouterSurfaceMessages {
   const actions: RouterActionName[] = ['explain_route', 'suggest_next']
   if (scope === 'general') {
@@ -202,6 +223,14 @@ export function buildRouterSurface(
   }
   if (!event || event.id !== scope || (route && route.inboxId !== scope))
     throw new Error('Router surface event mismatch')
+  if (
+    event.source === 'github' &&
+    tracking?.inboxId === scope &&
+    tracking.repository.toLowerCase() === event.scope.toLowerCase() &&
+    tracking.status !== 'queued' &&
+    tracking.status !== 'running'
+  )
+    actions.unshift('work_on_event')
   const clock = (iso: string) =>
     new Date(iso).toLocaleString('zh-CN', { timeZone: settings.timeZone, hour12: false })
   const facts: Fact[] = [
@@ -210,6 +239,12 @@ export function buildRouterSurface(
       value: route?.agent?.summary || event.summary || event.title,
     },
   ]
+  if (event.githubOwnComment)
+    facts.unshift({
+      label: '事件来源',
+      value: '自身产生 · 已核验为绑定 GitHub App 的评论或本机已发送评论的回流。',
+    })
+  if (activity?.error) facts.push({ label: '处理记录', value: activity.error })
   if (route?.decision) {
     facts.push({
       label: '路由决定',
@@ -232,10 +267,17 @@ export function buildRouterSurface(
   if (settings.enabled && (!route || retry)) actions.push('process_event')
   return buildSurface(
     surfaceId(scope),
-    route ? statuses[route.status] : '事件已入箱',
+    activity
+      ? routerEventActivityLabel(activity)
+      : event.githubOwnComment
+        ? '自身产生 · 已记录'
+        : route
+          ? statuses[route.status]
+          : '事件已入箱',
     facts,
     actions,
     retry,
+    tracking,
   )
 }
 
@@ -278,6 +320,8 @@ export function buildRouterReplySurface(
   commissionStatus: 'pending' | 'expired' | 'applied' = 'expired',
   canPrepareReminder = false,
 ): RouterSurfaceMessages | null {
+  if (answer.generatedUI) return answer.generatedUI.messages
+  if (answer.toolSteps) return null
   const id = `${surfaceId(scope)}-turn-${turnId}`
   if (scope === 'general' && answer.reminder) {
     const reminder = answer.reminder
@@ -322,9 +366,13 @@ export function buildRouterReplySurface(
   }
   const evidence = answer.investigation
   if (evidence) {
-    const heading = { jobs: '失败作业与步骤', history: '历史运行对比', pull: 'PR 与原评论' }[
-      evidence.kind
-    ]
+    const heading = {
+      jobs: '失败作业与步骤',
+      history: '历史运行对比',
+      'related-issues': '相关历史 Issue · GitHub 检索记录',
+      pull: 'PR 与原评论',
+      issue: 'Issue 与原评论',
+    }[evidence.kind]
     const facts = [
       ...evidence.facts,
       { label: '获取时间 · GitHub REST', value: evidence.observedAt },

@@ -4,6 +4,15 @@ import type { ChannelAdapter, ImageUploadResult, StreamAdapter, TypingHandle } f
 export class DingtalkAdapter implements ChannelAdapter {
   constructor(private readonly dingtalkChannel: DingtalkChannel) {}
 
+  async replyRouter(
+    chatId: string,
+    text: string,
+    messageId: string,
+    mayReply?: () => boolean,
+  ): Promise<void> {
+    await this.dingtalkChannel.reply(chatId, text, messageId, mayReply)
+  }
+
   async reply(chatId: string, text: string, replyToMessageId?: string | number): Promise<void> {
     await this.dingtalkChannel.reply(chatId, text, replyToMessageId)
   }

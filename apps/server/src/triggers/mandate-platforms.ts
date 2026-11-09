@@ -1,6 +1,7 @@
 import { DingtalkChannel, FeishuChannel, WeixinChannel } from '@zero-os/channel'
 import {
   type MandateTarget,
+  type RouterPresentation,
   type TriggerAgentResult,
   type TriggerInboxItem,
   isTriggerRoutePlatform,
@@ -19,8 +20,9 @@ async function sendWeixinText(
   peerId: string,
   text: string,
   deliveryId?: string,
+  maySend?: () => boolean,
 ): Promise<MandateReceipt> {
-  const receipt = await channel.sendReminderWithReceipt(peerId, text, deliveryId)
+  const receipt = await channel.sendReminderWithReceipt(peerId, text, deliveryId, maySend)
   if (receipt.status === 'accepted') return receipt
   return { status: receipt.status === 'uncertain' ? 'unknown' : 'rejected', reason: receipt.reason }
 }
@@ -95,6 +97,7 @@ export function createMandatePlatforms(
     deliveryId: string,
     signal: AbortSignal,
     maySend: () => boolean,
+    presentation?: RouterPresentation,
   ): Promise<MandateReceipt> {
     const channel = host.channels.get(target.channelId)
     const authorized = () =>
@@ -104,8 +107,25 @@ export function createMandatePlatforms(
       maySend()
     if (!target.operatorId || !authorized())
       return { status: 'rejected', reason: '机器人的个人私聊已变更或发送已取消。' }
+    if (presentation && target.platform === 'feishu' && channel instanceof FeishuChannel)
+      return channel.router.sendPresentation(
+        target.peerId,
+        deliveryId,
+        presentation,
+        signal,
+        authorized,
+      )
+    if (presentation && target.platform === 'dingtalk' && channel instanceof DingtalkChannel)
+      return channel.taskCards.sendPresentation(
+        target.peerId,
+        target.operatorId,
+        deliveryId,
+        presentation,
+        signal,
+        authorized,
+      )
     if (target.platform === 'weixin' && channel instanceof WeixinChannel)
-      return sendWeixinText(channel, target.peerId, text, deliveryId)
+      return sendWeixinText(channel, target.peerId, text, deliveryId, authorized)
     if (target.platform === 'feishu' && channel instanceof FeishuChannel)
       return channel.router.sendDirectReminder(target.peerId, deliveryId, text, signal, authorized)
     if (target.platform === 'dingtalk' && channel instanceof DingtalkChannel)
@@ -202,8 +222,17 @@ export function createMandatePlatforms(
     isLiveTarget,
     sendPersonal,
     sendDirect,
+    lookupDirectReceipt(target: MandateTarget, deliveryId: string) {
+      const channel = host.channels.get(target.channelId)
+      return target.platform === 'dingtalk' &&
+        target.operatorId &&
+        channel instanceof DingtalkChannel
+        ? channel.taskCards.publicationReceipt(target.peerId, target.operatorId, deliveryId)
+        : null
+    },
     send,
     archive: feishu.archive,
+    appendDocument: feishu.appendDocument,
     listArchiveChannels: feishu.listArchiveChannels,
     probeArchive: feishu.probeArchive,
   }
