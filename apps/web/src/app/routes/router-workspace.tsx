@@ -16,44 +16,40 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query'
-import { Link, useSearch } from '@tanstack/react-router'
+import { Link, useLocation, useNavigate, useSearch } from '@tanstack/react-router'
+import { isStandalonePullRequestAnswer, routerEventActivityLabel } from '@zero-os/shared'
 import type {
+  RouterOpenPullRequestsPage,
   RouterSurfaceAction,
   RouterWorkspaceSnapshot,
   TriggerConversationAnswer,
   TriggerConversationScope,
+  TriggerRouteDecision,
+  TriggerRouteRecord,
   TriggerRouteStatus,
   TriggerWorkspaceEvent,
 } from '@zero-os/shared'
 import { Fragment, useLayoutEffect, useRef, useState } from 'react'
+import { RouterMessage } from '../components/RouterMessage'
 import { RouterSurface } from '../components/RouterSurface'
 import { apiFetch, apiPost } from '../lib/api'
 import { ListenerRoutingSettings, useListenerRoutingConfig } from './config-listener-routing'
 import { RoutingPreview } from './config-routing-preview'
+import { RouterCommentSubscription } from './router-comment-subscription'
+import { RouterGithubReply } from './router-github-reply'
 import { EventMandateMatches, RouterMandateTasks } from './router-mandate-tasks'
+import { RouterMatterList, RouterPublicationFeed } from './router-matters'
+import { EventWorkerActivity, RouterTrackingResults } from './router-tracking-results'
 import { RouterWebNotifications } from './router-web-notifications'
 import './config-listeners-tab.css'
 import './router-workspace.css'
 
+import { workspaceTraceLink, restoreWorkspaceAnchor } from '../lib/router-trace-navigation'
+import { toolLabels } from '../lib/router-tool-labels'
+
 const api = '/api/listeners'
 const pageSize = 25
 const eventsKey = ['router-workspace-events']
-const toolLabels: Record<string, string> = {
-  preview_current_route: '预演当前去向',
-  get_routing_context: '查看路由状态',
-  list_notification_bots: '查询通知机器人',
-  prepare_personal_reminder: '准备个人通知',
-  send_personal_reminder: '发送个人通知',
-  prepare_routing_preference: '准备通知偏好变更',
-  prepare_bot_selection: '准备更换机器人',
-  prepare_commission: '准备跟踪委托',
-  inspect_github: '检查 GitHub 事件',
-  list_github_repositories: '列出可访问的 GitHub 仓库',
-  delegate_task: '派发工作',
-  get_task_status: '查询派工进度',
-  continue_task: '继续派工',
-  unknown: '工具未识别',
-}
 const statuses: Record<TriggerRouteStatus, string> = {
   pending: '等待分析',
   analyzing: '分析中',
@@ -77,13 +73,55 @@ function Time({ value }: { value: string }) {
   return <time dateTime={value}>{dateFormat.format(new Date(value))}</time>
 }
 
+const destinationLabels: Record<TriggerRouteDecision['destination'], string> = {
+  web: '网页',
+  weixin: '微信',
+  dingtalk: '钉钉',
+  feishu: '飞书',
+  defer: '延后提醒',
+}
+function NotificationActivity({
+  request,
+  route,
+}: {
+  request: NonNullable<RouterWorkspaceSnapshot['notificationRequest']>
+  route: TriggerRouteRecord | null
+}) {
+  return (
+    <article className="rw-turn rw-activity" aria-label="通知处理记录">
+      <div className="rw-activity-heading">
+        <b>你的操作 · 分析并路由通知</b>
+        {request.submittedAt && <Time value={request.submittedAt} />}
+      </div>
+      <div className="rw-reply">
+        <b className="rw-router-name">
+          <GitBranch size={14} />
+          Router
+        </b>
+        <p className="rw-answer">
+          {route ? statuses[route.status] : '已收到通知处理请求。'}
+          {route?.decision &&
+            ` · ${destinationLabels[route.decision.destination]}：${route.decision.reason}`}
+        </p>
+        {route?.error && <p className="rw-error">{route.error}</p>}
+        {route && (
+          <small className="rw-hint">
+            状态更新于 <Time value={route.updatedAt} />
+          </small>
+        )}
+      </div>
+    </article>
+  )
+}
+
 function EventRail({ scope }: { scope: TriggerConversationScope }) {
+  const [includeOwn, setIncludeOwn] = useState(false)
   const events = useInfiniteQuery({
-    queryKey: eventsKey,
+    queryKey: [...eventsKey, includeOwn],
     initialPageParam: undefined as number | undefined,
     queryFn: ({ pageParam, signal }) =>
       apiFetch<{ items: TriggerWorkspaceEvent[] }>(
-        `${api}/workspace-events?limit=${pageSize}${pageParam ? `&beforeId=${pageParam}` : ''}`,
+        `${api}/workspace-events?limit=${pageSize}&includeOwn=${includeOwn}${pageParam ? `&beforeId=${pageParam}` : ''}`,
         { signal },
       ),
     getNextPageParam: (last) =>
@@ -120,6 +158,14 @@ function EventRail({ scope }: { scope: TriggerConversationScope }) {
           <ArrowClockwise size={17} />
         </button>
       </div>
+      <label className="rw-own-filter">
+        <input
+          type="checkbox"
+          checked={includeOwn}
+          onChange={(e) => setIncludeOwn(e.target.checked)}
+        />
+        显示自身产生的事件
+      </label>
       <div className="rw-rail-list">
         {events.isLoading && <p className="rw-hint">正在读取事件…</p>}
         {events.error && (
@@ -128,7 +174,11 @@ function EventRail({ scope }: { scope: TriggerConversationScope }) {
           </p>
         )}
         {events.isSuccess && !rows.length && (
-          <p className="rw-hint">暂无事件。可以先配置一个仓库或微信会话。</p>
+          <p className="rw-hint">
+            {includeOwn
+              ? '暂无事件。可以先配置一个仓库或微信会话。'
+              : '暂无外部事件。自身产生的事件可勾选上方选项查看。'}
+          </p>
         )}
         {rows.map((row) => (
           <Link
@@ -146,8 +196,15 @@ function EventRail({ scope }: { scope: TriggerConversationScope }) {
               <Time value={row.receivedAt} />
             </span>
             <strong>{row.title}</strong>
+            {row.githubOwnComment && <span className="rw-own-badge">自身产生</span>}
             <small className="rw-event-state" data-state={row.status ?? 'received'}>
-              {row.status ? statuses[row.status] : '已入箱'}
+              {row.activity
+                ? routerEventActivityLabel(row.activity)
+                : row.githubOwnComment
+                  ? '已记录'
+                  : row.status
+                    ? statuses[row.status]
+                    : '已入箱'}
             </small>
           </Link>
         ))}
@@ -170,6 +227,35 @@ type Operation =
   | { requestId: string; text: string; retry?: boolean }
   | { requestId: string; action: RouterSurfaceAction; retry?: boolean }
 
+function OpenPullRequests({ page }: { page: RouterOpenPullRequestsPage }) {
+  const count = page.pullRequests.length
+  return (
+    <section className="rw-pr-list" aria-label={`${page.repository} 的开放 PR`}>
+      <header>
+        <strong>{page.repository}</strong>
+        <span>
+          开放 PR · 第 {page.page} 页 · 本页 {count} 项
+        </span>
+      </header>
+      {count ? (
+        <ul>
+          {page.pullRequests.map((pr) => (
+            <li key={pr.number}>
+              <a href={pr.url} target="_blank" rel="noreferrer">
+                <span className="rw-pr-number">#{pr.number}</span>
+                <span>{pr.title}</span>
+              </a>
+              {pr.draft && <span className="rw-pr-draft">草稿</span>}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p>{page.page === 1 ? '当前没有开放的 PR。' : '本页没有结果。'}</p>
+      )}
+    </section>
+  )
+}
+
 function RouterAnswer({
   answer,
   disabled,
@@ -179,37 +265,68 @@ function RouterAnswer({
   disabled: boolean
   ask: (text: string) => void
 }) {
-  const { repositories, job } = answer
+  const { repositories, pullRequests, job } = answer
   const nextPage = repositories?.nextPage
-  const text = repositories
-    ? answer.text.split('\n').map((line, index) => {
-        const entry = /^(\d+)\. ([a-z\d-]+\/[a-z\d_.-]+)$/i.exec(line)
-        const name = entry?.[2]
-        const verified =
-          entry &&
-          name &&
-          !/\/\.{1,2}$/.test(name) &&
-          name === repositories.repositories[Number(entry[1]) - 1]
-        return (
-          <Fragment key={`${index}-${line}`}>
-            {index > 0 && '\n'}
-            {verified ? (
-              <>
-                {entry[1]}.{' '}
-                <a href={`https://github.com/${name}`} target="_blank" rel="noreferrer">
-                  {name}
+  const prRepository =
+    pullRequests &&
+    /^[a-z\d-]+\/[a-z\d_.-]+$/i.test(pullRequests.repository) &&
+    !/\/\.{1,2}$/.test(pullRequests.repository)
+      ? pullRequests.repository
+      : undefined
+  const prLinks = new Set<string>()
+  if (prRepository && pullRequests) {
+    for (const pr of pullRequests.pullRequests) {
+      const url = `https://github.com/${prRepository}/pull/${pr.number}`
+      if (Number.isSafeInteger(pr.number) && pr.number > 0 && pr.url === url) prLinks.add(url)
+    }
+  }
+  const prPage =
+    prRepository &&
+    pullRequests &&
+    prLinks.size === pullRequests.pullRequests.length &&
+    isStandalonePullRequestAnswer(answer)
+      ? pullRequests
+      : null
+  const text =
+    repositories || pullRequests
+      ? answer.text.split('\n').map((line, index) => {
+          const entry = /^(\d+)\. ([a-z\d-]+\/[a-z\d_.-]+)$/i.exec(line)
+          const name = entry?.[2]
+          const verified =
+            entry &&
+            name &&
+            !/\/\.{1,2}$/.test(name) &&
+            name === repositories?.repositories[Number(entry[1]) - 1]
+          return (
+            <Fragment key={`${index}-${line}`}>
+              {index > 0 && '\n'}
+              {verified ? (
+                <>
+                  {entry[1]}.{' '}
+                  <a href={`https://github.com/${name}`} target="_blank" rel="noreferrer">
+                    {name}
+                  </a>
+                </>
+              ) : prLinks.has(line) ? (
+                <a href={line} target="_blank" rel="noreferrer">
+                  {line}
                 </a>
-              </>
-            ) : (
-              line
-            )}
-          </Fragment>
-        )
-      })
-    : answer.text
+              ) : (
+                line
+              )}
+            </Fragment>
+          )
+        })
+      : answer.text
   return (
     <>
-      <p className="rw-answer">{text}</p>
+      {prPage ? (
+        <OpenPullRequests page={prPage} />
+      ) : typeof text === 'string' ? (
+        <RouterMessage text={text} />
+      ) : (
+        <p className="rw-answer">{text}</p>
+      )}
       {nextPage != null && (
         <button
           type="button"
@@ -218,6 +335,16 @@ function RouterAnswer({
           onClick={() => ask(`列出我可访问的 GitHub 仓库第 ${nextPage} 页`)}
         >
           查看第 {nextPage} 页
+        </button>
+      )}
+      {prRepository && pullRequests?.nextPage != null && (
+        <button
+          type="button"
+          className="rw-inline-button rw-work-action"
+          disabled={disabled}
+          onClick={() => ask(`查看 ${prRepository} 的开放 PR 第 ${pullRequests.nextPage} 页`)}
+        >
+          查看第 {pullRequests.nextPage} 页 PR
         </button>
       )}
       {job && (job.status === 'queued' || job.status === 'running') && (
@@ -246,11 +373,18 @@ function Conversation({
   clearSubmitted: (text: string) => void
 }) {
   const cache = useQueryClient()
+  const hash = useLocation({ select: (location) => location.hash })
+  const showSource = hash === 'rw-source-text'
+  const requestedTurn = Number(/^rw-turn-([1-9]\d*)(?:-\d+)?$/u.exec(hash)?.[1])
+  const navigate = useNavigate({ from: '/router' })
   const key = ['router-workspace', scope]
   const mutationKey = ['router-workspace-write', scope]
   const sending = useIsMutating({ mutationKey, exact: true }) > 0
   const lock = useRef(false)
-  const scrollArea = useRef<HTMLDivElement>(null)
+  const dialogEnd = useRef<HTMLDivElement>(null)
+  const notificationEntry = useRef<HTMLDivElement>(null)
+  const workEntry = useRef<HTMLDivElement>(null)
+  const composerInput = useRef<HTMLTextAreaElement>(null)
   const followReply = useRef(false)
   const url = `${api}/workspace/${scope}`
   const workspace = useQuery({
@@ -264,25 +398,61 @@ function Conversation({
       return data.turns.some(
         (t) =>
           t.status === 'pending' ||
+          t.status === 'queued' ||
           t.answer?.reminder?.status === 'sending' ||
           t.answer?.job?.status === 'queued' ||
           t.answer?.job?.status === 'running',
-      ) || ['pending', 'analyzing', 'ready', 'sending'].includes(data.route?.status ?? '')
+      ) ||
+        data.trackingResult?.status === 'queued' ||
+        data.trackingResult?.status === 'running' ||
+        data.eventActivity?.state === 'pending' ||
+        data.eventActivity?.state === 'running' ||
+        data.eventActivity?.worker?.status === 'queued' ||
+        data.eventActivity?.worker?.status === 'running' ||
+        ['pending', 'analyzing', 'ready', 'sending'].includes(data.route?.status ?? '')
         ? 2000
         : 30_000
     },
   })
+  const historical =
+    Number.isSafeInteger(requestedTurn) &&
+    !!workspace.data &&
+    !workspace.data.turns.some((turn) => turn.id === requestedTurn)
+  const older = useQuery({
+    queryKey: [...key, 'throughTurn', requestedTurn],
+    queryFn: ({ signal }) =>
+      apiFetch<RouterWorkspaceSnapshot>(url + '?throughTurn=' + requestedTurn, { signal }),
+    enabled: historical,
+    retry: false,
+    staleTime: 0,
+    refetchInterval: historical ? 30_000 : false,
+  })
+  useLayoutEffect(() => {
+    if (!Number.isSafeInteger(requestedTurn)) return
+    const node = document.getElementById(hash)
+    if (node) {
+      delete node.dataset.restored
+      restoreWorkspaceAnchor(node)
+    }
+  }, [hash, requestedTurn])
   const send = useMutation({
     mutationKey,
     mutationFn: (op: Operation) =>
-      apiPost<RouterWorkspaceSnapshot>(`${url}/${'action' in op ? 'actions' : 'messages'}`, op),
+      apiPost<RouterWorkspaceSnapshot>(
+        `${url}/${'action' in op ? 'actions' : 'messages'}`,
+        'text' in op ? { ...op, background: true } : op,
+      ),
     onMutate: () => cache.cancelQueries({ queryKey: key, exact: true }),
     onSuccess: async (snapshot, op) => {
       await cache.cancelQueries({ queryKey: key, exact: true })
       cache.setQueryData(key, snapshot)
+      if (historical) await navigate({ search: true, hash: '' })
       if ('text' in op && !op.retry) clearSubmitted(op.text)
       if ('action' in op) {
         void cache.invalidateQueries({ queryKey: eventsKey })
+        if (op.action.action.name === 'work_on_event') {
+          void cache.invalidateQueries({ queryKey: ['listeners', 'tracking-results'] })
+        }
         if (op.action.action.name === 'confirm_mandate') {
           void cache.invalidateQueries({ queryKey: ['listeners', 'mandates'] })
           void cache.invalidateQueries({ queryKey: ['listeners', 'commission-grants'] })
@@ -303,22 +473,37 @@ function Conversation({
     },
   })
   const data = workspace.data
+  const reading = historical ? older.data : data
   const readOnly = data?.task?.active === false
-  const busy = sending || !!data?.turns.some((t) => t.status === 'pending')
+  const busy = sending || !!data?.turns.some((t) => t.status === 'pending' || t.status === 'queued')
+  const routingRequested =
+    send.variables &&
+    'action' in send.variables &&
+    send.variables.action.action.name === 'process_event'
+  const workRequested =
+    send.variables &&
+    'action' in send.variables &&
+    send.variables.action.action.name === 'work_on_event'
   useLayoutEffect(() => {
-    const area = scrollArea.current
-    if (area && followReply.current && window.matchMedia('(min-width: 801px)').matches) {
-      area.scrollTop = area.scrollHeight
+    if (followReply.current) {
+      const entry =
+        !busy &&
+        (routingRequested ? notificationEntry.current : workRequested ? workEntry.current : null)
+      const target = entry || dialogEnd.current
+      target?.scrollIntoView({ block: 'nearest' })
     }
     if (!busy) followReply.current = false
-  }, [busy])
+  }, [busy, routingRequested, workRequested])
   function submit(op: Operation) {
-    if (lock.current || busy || readOnly || !data) return
+    if (lock.current || ('text' in op ? sending : busy) || readOnly || !data) return
     lock.current = true
     followReply.current =
       'text' in op ||
       op.action.action.name === 'explain_route' ||
       op.action.action.name === 'suggest_next' ||
+      op.action.action.name === 'process_event' ||
+      op.action.action.name === 'work_on_event' ||
+      op.action.action.name === 'find_related_issues' ||
       op.action.action.name === 'inspect_github' ||
       op.action.action.name === 'compare_runs'
     send.mutate(op)
@@ -377,6 +562,63 @@ function Conversation({
   }
   const repositoryUrl =
     data.event?.source === 'github' ? `https://github.com/${data.event.scope}/` : null
+  const tracked =
+    typeof scope === 'number' && data.trackingResult?.inboxId === scope
+      ? data.trackingResult
+      : undefined
+  const requested = typeof scope === 'number' ? data.notificationRequest : undefined
+  const eventActivity = !!(tracked || requested)
+  const context = (
+    <div className="rw-context">
+      {eventActivity && <h3>事件操作</h3>}
+      <RouterSurface
+        messages={data.surface}
+        onAction={action}
+        disabled={busy || readOnly}
+        actionSlot={tracked ? { omit: 'work_on_event' } : undefined}
+      />
+      {scope === 'general' && (
+        <RouterCommentSubscription
+          busy={busy}
+          ask={(text) => submit({ requestId: crypto.randomUUID(), text })}
+        />
+      )}
+      {send.isSuccess &&
+        'action' in send.variables &&
+        send.variables.action.action.name === 'apply_preference' && (
+          <output className="rw-hint">通知偏好已更新，可展开情境预演查看当前规则。</output>
+        )}
+      {data.event && !data.task && <EventMandateMatches inboxId={data.event.id} />}
+      {typeof scope === 'number' && data.event && (
+        <RouterGithubReply key={data.event.id} event={data.event} />
+      )}
+      {data.event && (
+        <details className="rw-original" open={showSource || undefined}>
+          <summary>{data.task ? '查看最近命中事件' : '查看原始事件'}</summary>
+          <p id="rw-source-text">{data.event.summary}</p>
+          <small>
+            {data.event.source === 'github' && <>{data.event.scope} · </>}发生于{' '}
+            <Time value={data.event.occurredAt} />
+          </small>
+          {data.task && (
+            <Link to="/router" search={{ event: data.event.id }} className="rw-inline-button">
+              打开原始事件 #{data.event.id}
+            </Link>
+          )}
+          {data.event.source === 'github' && data.event.url?.startsWith('https://github.com/') && (
+            <a href={data.event.url} target="_blank" rel="noreferrer">
+              在 GitHub 打开
+            </a>
+          )}
+        </details>
+      )}
+      {!data.task && (
+        <div className="listeners-panel rw-preview">
+          <RoutingPreview settings={data.settings.settings} saved />
+        </div>
+      )}
+    </div>
+  )
   return (
     <section
       className="rw-panel"
@@ -384,11 +626,11 @@ function Conversation({
     >
       <div
         className="rw-thread-scroll"
-        ref={scrollArea}
-        onScroll={(e) => {
-          const area = e.currentTarget
-          if (area.scrollHeight - area.scrollTop - area.clientHeight > 100)
-            followReply.current = false
+        onWheel={() => {
+          followReply.current = false
+        }}
+        onPointerDown={() => {
+          followReply.current = false
         }}
       >
         <header className="rw-thread-heading">
@@ -405,6 +647,7 @@ function Conversation({
                   : '查询仓库、安排工作、跟进派工，或调整提醒与跟踪委托。'}
             </p>
             {data.task && <p>{data.task.purpose}</p>}
+            {data.event?.githubOwnComment && <span className="rw-own-badge">自身产生</span>}
           </div>
         </header>
         {workspace.error && (
@@ -419,58 +662,82 @@ function Conversation({
             </button>
           </p>
         )}
-        <div className="rw-context">
-          <RouterSurface messages={data.surface} onAction={action} disabled={busy || readOnly} />
-          {send.isSuccess &&
-            'action' in send.variables &&
-            send.variables.action.action.name === 'apply_preference' && (
-              <output className="rw-hint">通知偏好已更新，可展开情境预演查看当前规则。</output>
-            )}
-          {data.event && !data.task && <EventMandateMatches inboxId={data.event.id} />}
-          {data.event && (
-            <details className="rw-original">
-              <summary>{data.task ? '查看最近命中事件' : '查看原始事件'}</summary>
-              <p>{data.event.summary}</p>
-              <small>
-                {data.event.source === 'github' && <>{data.event.scope} · </>}发生于{' '}
-                <Time value={data.event.occurredAt} />
-              </small>
-              {data.task && (
-                <Link to="/router" search={{ event: data.event.id }} className="rw-inline-button">
-                  打开原始事件 #{data.event.id}
-                </Link>
-              )}
-              {data.event.source === 'github' &&
-                data.event.url?.startsWith('https://github.com/') && (
-                  <a href={data.event.url} target="_blank" rel="noreferrer">
-                    在 GitHub 打开
-                  </a>
-                )}
-            </details>
-          )}
-          {!data.task && (
-            <div className="listeners-panel rw-preview">
-              <RoutingPreview settings={data.settings.settings} saved />
-            </div>
-          )}
-        </div>
+        {scope === 'general' && <RouterTrackingResults />}
+        <RouterPublicationFeed scope={String(scope)} />
+        {!eventActivity && context}
         <section className="rw-dialog" aria-label="对话记录">
           <h3>
             <ChatCircleDots size={17} />
             对话记录
           </h3>
-          {!data.turns.length && !optimistic && (
+          {(reading?.previousTurnId || historical) && (
+            <nav className="rw-evidence-links" aria-label="对话历史">
+              {reading?.previousTurnId && (
+                <Link to="/router" search={true} hash={'rw-turn-' + reading.previousTurnId}>
+                  查看更早对话
+                </Link>
+              )}
+              {historical && (
+                <Link to="/router" search={true} hash="">
+                  返回最新对话
+                </Link>
+              )}
+            </nav>
+          )}
+          {historical && !reading && (
+            <p role={older.error ? 'alert' : 'status'}>
+              {older.error?.message ?? '正在打开较早的对话…'}
+            </p>
+          )}
+          {tracked && (
+            <div ref={workEntry}>
+              <EventWorkerActivity
+                row={tracked}
+                workAction={
+                  <RouterSurface
+                    messages={data.surface}
+                    onAction={action}
+                    disabled={busy || readOnly}
+                    actionSlot={{ only: 'work_on_event' }}
+                  />
+                }
+                focusQuestion={(prefix) => {
+                  if (prefix && !draft.trimStart().startsWith(prefix)) changeDraft(prefix + draft)
+                  composerInput.current?.focus()
+                }}
+              />
+            </div>
+          )}
+          {requested && (
+            <div ref={notificationEntry}>
+              <NotificationActivity request={requested} route={data.route} />
+            </div>
+          )}
+          {!eventActivity && reading && !reading.turns.length && !optimistic && (
             <p className="rw-hint">
               {data.event
                 ? '从卡片选择一个问题，或写下你想了解的细节。'
                 : '你可以问「我离开电脑后，通知会去哪里？」'}
             </p>
           )}
-          {data.turns.map((turn) => (
-            <article className="rw-turn" key={turn.id}>
+          {reading?.turns.map((turn) => (
+            <article
+              className="rw-turn"
+              key={turn.id}
+              id={`rw-turn-${turn.id}`}
+              tabIndex={-1}
+              ref={restoreWorkspaceAnchor}
+            >
               <div className="rw-speaker">
                 <b>{turn.requestId.startsWith('im-') ? '来自 IM 的提问' : '你'}</b>
-                <Time value={turn.createdAt} />
+                <Link
+                  to="/router"
+                  search={true}
+                  hash={`rw-turn-${turn.id}`}
+                  title="打开这条对话的固定链接"
+                >
+                  <Time value={turn.createdAt} />
+                </Link>
               </div>
               <p className="rw-question">{turn.question}</p>
               <div className="rw-reply">
@@ -483,6 +750,9 @@ function Conversation({
                     <CircleNotch size={15} />
                     正在回复…
                   </output>
+                )}
+                {turn.status === 'queued' && (
+                  <output className="rw-busy">已排队，上一条处理结束后继续。</output>
                 )}
                 {turn.status === 'failed' && (
                   <div role="alert" className="rw-failure">
@@ -510,9 +780,29 @@ function Conversation({
                     ask={(text) => submit({ requestId: crypto.randomUUID(), text })}
                   />
                 )}
+                {turn.publications?.map((publication) => (
+                  <a
+                    key={publication.id}
+                    className="rw-inline-button"
+                    href={`/router?view=notifications#rw-publication-${publication.id}`}
+                  >
+                    打开「{publication.title}」
+                  </a>
+                ))}
+                {turn.traceRunIds?.map((runId, index, runs) => (
+                  <a
+                    key={runId}
+                    className="rw-inline-button"
+                    id={`rw-turn-${turn.id}-${index}`}
+                    ref={restoreWorkspaceAnchor}
+                    href={workspaceTraceLink({ selected: runId }, `rw-turn-${turn.id}-${index}`)}
+                  >
+                    {runs.length === 1 ? '查看本轮轨迹' : `查看第 ${index + 1} 次处理轨迹`}
+                  </a>
+                ))}
                 {!!turn.answer?.toolSteps?.length && (
                   <details className="rw-tool-steps">
-                    <summary>本轮调用了 {turn.answer.toolSteps.length} 次工具</summary>
+                    <summary>查看处理过程（{turn.answer.toolSteps.length} 次工具调用）</summary>
                     <ol>
                       {turn.answer.toolSteps.map((step, index) => (
                         <li key={`${index}-${step.name}`}>
@@ -562,7 +852,9 @@ function Conversation({
               </p>
             </div>
           )}
+          <div ref={dialogEnd} />
         </section>
+        {eventActivity && context}
       </div>
       {readOnly ? (
         <p className="rw-hint">这项委托已停用，可以查看已有对话。</p>
@@ -592,6 +884,7 @@ function Conversation({
           </label>
           <textarea
             rows={2}
+            ref={composerInput}
             id="router-message"
             aria-label="给 Router 发消息"
             placeholder={
@@ -609,7 +902,7 @@ function Conversation({
           />
           <div className="rw-compose-foot">
             <small>Ctrl / ⌘ + Enter 发送</small>
-            <button type="submit" className="rw-send" disabled={busy || !draft.trim()}>
+            <button type="submit" className="rw-send" disabled={sending || !draft.trim()}>
               <ArrowUp size={16} />
               发送
             </button>
@@ -621,7 +914,7 @@ function Conversation({
 }
 
 export function RouterWorkspacePage() {
-  const { event, view, task } = useSearch({ from: '/router' })
+  const { event, view, task, matterId } = useSearch({ from: '/router' })
   const showWebNotices = view === 'notifications' && task === undefined
   const showTasks = view === 'tasks' || task !== undefined
   const scope = event ?? 'general'
@@ -649,6 +942,9 @@ export function RouterWorkspacePage() {
         <div className="rw-heading">
           <GitBranch size={32} weight="duotone" aria-hidden="true" />
           <h1>Router 工作台</h1>
+          <Link to="/router/traces" className="rw-inline-button">
+            处理轨迹
+          </Link>
         </div>
         <button
           type="button"
@@ -680,7 +976,7 @@ export function RouterWorkspacePage() {
           对话与事件
         </Link>
         <Link to="/router" search={{ view: 'tasks' }} aria-current={showTasks ? 'page' : undefined}>
-          持续任务
+          跟进事项
         </Link>
         <Link
           to="/router"
@@ -691,13 +987,22 @@ export function RouterWorkspacePage() {
         </Link>
       </nav>
       {showWebNotices ? (
-        <RouterWebNotifications />
+        <>
+          <RouterPublicationFeed />
+          <RouterWebNotifications />
+        </>
       ) : showTasks ? (
-        <RouterMandateTasks
-          selected={task}
-          chat={view === 'chat'}
-          renderConversation={(taskId) => conversation(`task-${taskId}`)}
-        />
+        <>
+          <RouterMatterList selectedId={matterId} />
+          <details>
+            <summary>已有的长期规则与任务</summary>
+            <RouterMandateTasks
+              selected={task}
+              chat={view === 'chat'}
+              renderConversation={(taskId) => conversation(`task-${taskId}`)}
+            />
+          </details>
+        </>
       ) : (
         <div className="rw-layout">
           <EventRail scope={scope} />

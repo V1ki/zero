@@ -12,7 +12,12 @@ test('checks only selected repository reads, distinguishes inconclusive results 
     workflow: 'ci',
     mention: 'reviewer',
   }
-  const another = { ...repo, name: 'example/research', mention: '' }
+  const another = {
+    ...repo,
+    name: 'example/research',
+    mention: '',
+    githubAppRef: 'github_app_zero_router',
+  }
   const config: TriggerSettingsSnapshot = {
     revision: 1,
     settings: {
@@ -39,6 +44,14 @@ test('checks only selected repository reads, distinguishes inconclusive results 
           { resource: 'actions', status: 'readable' },
           { resource: 'prComments', status: 'not_found' },
           { resource: 'prBase', status: 'rate_limited', retryAfterMs: 61_001 },
+        ],
+      }
+    } else if (requests.length === 4) {
+      report = {
+        access: 'credential',
+        checks: [
+          { resource: 'issueComments', status: 'readable' },
+          { resource: 'pullRequestComments', status: 'readable' },
         ],
       }
     } else {
@@ -70,6 +83,8 @@ test('checks only selected repository reads, distinguishes inconclusive results 
   await expect(button).toBeEnabled()
   await expect(card.getByRole('checkbox', { name: '启用监听' })).not.toBeChecked()
   await expect(second).not.toContainText('PR 目标分支')
+  await expect(second).toContainText('github_app_zero_router')
+  await expect(first).not.toContainText('github_app_zero_router')
   await button.click()
   await expect(first).toContainText('匿名访问结果')
   await expect(first).toContainText('返回 404，无法确认仓库或该资源的可见范围')
@@ -111,5 +126,24 @@ test('checks only selected repository reads, distinguishes inconclusive results 
   await expect(button).toBeDisabled()
   await expect(card.getByRole('checkbox', { name: '启用监听' })).not.toBeChecked()
   expect(requests).toHaveLength(3)
+
+  const otherCard = page.locator('.listener-item').filter({ has: second })
+  await credential.fill('github_listener_team')
+  await otherCard.getByLabel('分支（PR 按目标分支）').fill('')
+  await otherCard.getByRole('checkbox', { name: 'Actions 工作流失败' }).uncheck()
+  await otherCard.getByRole('checkbox', { name: 'Issue 普通评论', exact: true }).check()
+  await otherCard.getByRole('checkbox', { name: 'PR 普通评论', exact: true }).check()
+  await second.getByRole('button', { name: '检查读取权限' }).click()
+  await expect(second.getByRole('listitem')).toHaveCount(2)
+  await expect(second.getByRole('listitem').filter({ hasText: '可读取' })).toHaveCount(2)
+  expect(requests[3]).toEqual({
+    name: another.name,
+    credentialRef: 'github_listener_team',
+    workflowFailures: false,
+    prComments: false,
+    prBase: false,
+    issueComments: true,
+    pullRequestComments: true,
+  })
   expect(configWrites).toBe(0)
 })

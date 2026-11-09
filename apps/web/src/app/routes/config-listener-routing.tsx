@@ -60,6 +60,19 @@ function PersonalDeliveryBots({
   update,
 }: { settings: TriggerRoutingSettings; update: (patch: Partial<TriggerRoutingSettings>) => void }) {
   const choices = useRoutingBots()
+  const [ownerChange, setOwnerChange] = useState<{ platform: string; shared: boolean } | null>(null)
+  const sharing = useMutation({
+    mutationFn: (input: {
+      platform: (typeof triggerRoutePlatforms)[number]
+      channelId: string
+      revision: number
+      shared: boolean
+    }) => apiPut<{ revision: number; shared: boolean }>(`${base}/owner-sharing`, input),
+    onSettled: async () => {
+      await choices.refetch()
+      setOwnerChange(null)
+    },
+  })
   return (
     <div className="listener-stack">
       <div className="listener-actions">
@@ -76,10 +89,12 @@ function PersonalDeliveryBots({
           const selected = getTriggerRouteBot(settings, platform)
           const options = choices.data?.bots.filter((bot) => bot.platform === platform) ?? []
           const current = options.find((bot) => bot.channelId === selected)
+          const owner = current?.ownerSharing
           return (
-            <label className="listener-field" key={platform}>
-              {destinations[platform]}机器人
+            <div className="listener-field" key={platform}>
+              <label htmlFor={`router-bot-${platform}`}>{destinations[platform]}机器人</label>
               <select
+                id={`router-bot-${platform}`}
                 aria-label={`${destinations[platform]}机器人`}
                 value={selected ?? ''}
                 onChange={(event) =>
@@ -111,10 +126,36 @@ function PersonalDeliveryBots({
               {selected && !current && choices.data && (
                 <small>这个机器人已移除。请选择其他机器人。</small>
               )}
-            </label>
+              {current && owner && (
+                <label className="listener-row">
+                  <input
+                    type="checkbox"
+                    aria-label={`允许${destinations[platform]}本人私聊继续网页事项`}
+                    checked={ownerChange?.platform === platform ? ownerChange.shared : owner.shared}
+                    disabled={ownerChange !== null || (!current.ready && !owner.shared)}
+                    onChange={(e) => {
+                      const shared = e.target.checked
+                      setOwnerChange({ platform, shared })
+                      sharing.mutate({
+                        platform,
+                        channelId: current.channelId,
+                        revision: owner.revision,
+                        shared,
+                      })
+                    }}
+                  />
+                  此机器人的本人私聊可查询和继续网页事项
+                </label>
+              )}
+            </div>
           )
         })}
       </div>
+      {sharing.error && (
+        <p className="listener-error" role="alert">
+          {sharing.error.message}
+        </p>
+      )}
       {choices.error && (
         <p className="listener-error" role="alert">
           {choices.error.message}
@@ -151,8 +192,11 @@ export function ListenerRoutingSettings({
   const missingBots = settings
     ? triggerRoutePlatforms.filter(
         (platform) =>
-          [...periods.map(([key]) => settings[key]), settings.awayFallback].includes(platform) &&
-          !getTriggerRouteBot(settings, platform),
+          [
+            ...periods.map(([key]) => settings[key]),
+            settings.awayFallback,
+            ...(settings.notificationMode === 'contextual' ? [settings.urgentDestination] : []),
+          ].includes(platform) && !getTriggerRouteBot(settings, platform),
       )
     : []
   return (
@@ -164,8 +208,8 @@ export function ListenerRoutingSettings({
         )}
       </div>
       <p className="listener-muted">
-        启用后，ZeRo 会把新入箱的命中片段交给当前配置的模型生成摘要，其中包括所选 WXARC
-        会话中的匹配消息。保存规则后按时段和在场状态投递。历史事件可在收件箱中逐条提交。
+        GitHub 和所选 WXARC 会话的新线索会进入 Router。Router 判断它属于哪件事，按需要继续原
+        Worker，并把进展发到已配置的渠道。下方可以预演工作时段和在场状态对通知选择的影响。
       </p>
       {config.error && (
         <div className="listener-row">
@@ -252,6 +296,46 @@ export function ListenerRoutingSettings({
               ))}
             </fieldset>
             <PersonalDeliveryBots settings={settings} update={update} />
+            <div className="listener-fields">
+              <label className="listener-field">
+                进展通知方式
+                <select
+                  value={settings.notificationMode ?? 'all'}
+                  onChange={(e) =>
+                    update({
+                      notificationMode: e.target
+                        .value as TriggerRoutingSettings['notificationMode'],
+                    })
+                  }
+                >
+                  <option value="all">同步网页和已选机器人</option>
+                  <option value="contextual">按时段、在场和紧急程度通知</option>
+                </select>
+              </label>
+              {settings.notificationMode === 'contextual' && (
+                <label className="listener-field">
+                  紧急提醒首选
+                  <select
+                    value={settings.urgentDestination ?? 'period'}
+                    onChange={(e) =>
+                      update({
+                        urgentDestination:
+                          e.target.value === 'period'
+                            ? null
+                            : (e.target.value as TriggerRoutingSettings['urgentDestination']),
+                      })
+                    }
+                  >
+                    <option value="period">沿用时段偏好</option>
+                    {Object.entries(destinations).map(([id, label]) => (
+                      <option key={id} value={id}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            </div>
             <div className="listener-fields">
               {periods.map(([key, label]) => (
                 <label key={key} className="listener-field">
@@ -359,13 +443,10 @@ export function ProcessInboxEvent({
         disabled={process.isPending || (!retry && process.isSuccess)}
         onClick={() => process.mutate()}
       >
-        {process.isPending ? '正在提交…' : retry ? '重新处理' : '交给 Agent'}
+        {process.isPending ? '正在提交…' : retry ? '重试通知路由' : '分析并路由通知'}
       </button>
       {!retry && process.isSuccess && (
-        <output>
-          {process.data.accepted ? '已加入处理队列' : '已有处理记录'} ·{' '}
-          <a href="#routing-records">查看路由记录</a>
-        </output>
+        <output>{process.data.accepted ? '已提交通知路由' : '已有通知路由记录'}</output>
       )}
       {process.error && (
         <span role="alert" className="listener-error">

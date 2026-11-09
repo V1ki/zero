@@ -36,6 +36,7 @@ function outcome(
   available: Partial<Record<MandatePlatform, boolean>>,
   native: NativeScenario,
   botLabels: Partial<Record<MandatePlatform, string>>,
+  urgency: 'normal' | 'urgent',
 ) {
   const at = new Date(instant)
   if (!Number.isFinite(at.getTime()) || asLocalInput(at) !== instant)
@@ -67,7 +68,7 @@ function outcome(
   const presence: TriggerPresence =
     scenario === 'draft' ? draft.presence : scenario === 'inactive' ? 'auto' : scenario
   const decision = decideTriggerRoute(
-    { ...draft, enabled: true, presence },
+    { ...draft, enabled: draft.notificationMode === 'contextual' ? draft.enabled : true, presence },
     at,
     scenario === 'inactive' ? undefined : at,
     available,
@@ -84,6 +85,7 @@ function outcome(
             : 0,
       bluetoothConnected: native === 'bluetooth',
     },
+    urgency,
   )
   const exception = draft.dateOverrides?.[getTriggerTimeContext(draft, at).localDate]
   return (
@@ -96,8 +98,8 @@ function outcome(
       <small>
         {draft.timeZone} · {dateFormat.format(at)}
         {exception && (exception === 'off' ? '，日历指定休息' : '，日历指定上班')}
-        {decision.destination === 'defer' &&
-          `，将在 ${dateFormat.format(new Date(decision.recheckAt))} 复核`}
+        {decision.destination === 'defer' && (draft.enabled || draft.notificationMode !== 'contextual') &&
+          `，建议在 ${dateFormat.format(new Date(decision.recheckAt))} 复核`}
       </small>
     </>
   )
@@ -111,6 +113,7 @@ export function RoutingPreview({
   const [scenario, setScenario] = useState<PresenceScenario>('draft')
   const [native, setNative] = useState<NativeScenario>('active')
   const [open, setOpen] = useState(false)
+  const [urgency, setUrgency] = useState<'normal' | 'urgent'>('normal')
   const [scenarios, setScenarios] = useState<Partial<Record<MandatePlatform, BotScenario>>>({})
   const bots = useRoutingBots(open)
   const selectedBots = triggerRoutePlatforms.flatMap((platform) => {
@@ -132,8 +135,11 @@ export function RoutingPreview({
     <details className="listener-item" onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary>情境预演</summary>
       <p className="listener-muted">
-        假设已启用{saved ? '已保存的规则' : '当前草稿'}
-        ，在浏览器中试算一条提醒的去向。预演不会发送消息或写入收件箱。
+        {saved ? '使用已保存的偏好。' : '使用当前草稿。'}
+        {settings.notificationMode === 'contextual'
+          ? '已选择情境通知。'
+          : '当前选择同步通知。下方展示改用情境通知时的建议。'}
+        预演不会发送消息或写入收件箱。
       </p>
       <div className="listener-fields">
         <label className="listener-field">
@@ -156,6 +162,16 @@ export function RoutingPreview({
             <option value="present">手动 · 在电脑前</option>
             <option value="away">手动 · 已离开</option>
             <option value="inactive">自动 · 无近期网页活动</option>
+          </select>
+        </label>
+        <label className="listener-field">
+          模拟紧急程度
+          <select
+            value={urgency}
+            onChange={(e) => setUrgency(e.target.value as 'normal' | 'urgent')}
+          >
+            <option value="normal">普通</option>
+            <option value="urgent">紧急</option>
           </select>
         </label>
         {settings.nativePresence?.enabled && (
@@ -193,7 +209,7 @@ export function RoutingPreview({
         ))}
       </div>
       <output className="listener-stack" aria-live="polite">
-        {outcome(settings, instant, scenario, available, native, botLabels)}
+        {outcome(settings, instant, scenario, available, native, botLabels, urgency)}
       </output>
     </details>
   )
