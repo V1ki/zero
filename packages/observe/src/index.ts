@@ -40,6 +40,8 @@ export type {
   UsageTotals,
 } from './metrics'
 export { SessionDB } from './session-db'
+export { RouterFollowupStore, type RouterFollowupInput } from './router-followup-store'
+export { RouterTrackingError } from './router-tracking-store'
 export { RouterJobConflictError } from './router-job-store'
 export type {
   RouterJob,
@@ -50,6 +52,7 @@ export type {
   RouterJobStore,
 } from './router-job-store'
 export type { RouterConversationStoreScope, RouterImScope } from './trigger-conversation-store'
+export type { GithubReplyClaim, GithubReplyOutcome } from './github-reply-store'
 export { TriggerSettingsConflictError, TriggerStore } from './trigger-store'
 export type { TriggerBatch, TriggerPush } from './trigger-store'
 export type { SessionRow } from './session-db'
@@ -99,3 +102,10 @@ export function filterLogEntry<T extends Record<string, unknown>>(
   }
   return filtered
 }
+
+export { RouterLedgerStore, RouterLedgerConflict } from './router-ledger-store'
+
+export { RouterPublicationStore, RouterPublicationConflict } from './router-publication-store'
+
+export { RouterOperationStore, RouterOperationConflict } from './router-operation-store'
+export type { RouterOperation } from './router-operation-store'

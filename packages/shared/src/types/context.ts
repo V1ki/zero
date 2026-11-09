@@ -29,9 +29,13 @@ export interface BootstrapFile {
   content: string
 }
 
-/**
- * Channel capability hints — tells agents what the channel supports.
- */
+/** The source message referenced by a user's reply. */
+export interface ChannelMessageReference {
+  messageId?: string
+  text?: string
+}
+
+/** Channel capability hints — tells agents what the channel supports. */
 export interface ChannelCapabilities {
   /** Channel supports streaming output (e.g. typing effect) */
   streaming?: boolean

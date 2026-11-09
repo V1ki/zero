@@ -3,11 +3,14 @@
 export const ROUTER_A2UI_VERSION = 'v0.9.1'
 export const ROUTER_A2UI_CATALOG = 'https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json'
 export type RouterActionName =
+  | 'router_input'
   | 'explain_route'
   | 'suggest_next'
   | 'process_event'
+  | 'work_on_event'
   | 'inspect_github'
   | 'compare_runs'
+  | 'find_related_issues'
   | 'confirm_mandate'
   | 'apply_preference'
   | 'prepare_reminder'
@@ -22,10 +25,17 @@ export type RouterSurfaceComponent =
     }
   | {
       id: string
+      component: 'TextField'
+      label: string
+      value: { path: string }
+      variant?: 'shortText' | 'longText'
+    }
+  | {
+      id: string
       component: 'Button'
       variant?: 'primary'
       child: string
-      action: { event: { name: RouterActionName } }
+      action: { event: { name: RouterActionName; context?: Record<string, { path: string }> } }
     }
 
 type Version = typeof ROUTER_A2UI_VERSION
@@ -48,7 +58,7 @@ export interface RouterSurfaceAction {
     surfaceId: string
     sourceComponentId: string
     timestamp: string
-    context: Record<string, never>
+    context: Record<string, string>
   }
 }
 
@@ -62,18 +72,34 @@ function fields(value: unknown, keys: string[]): value is Record<string, unknown
 function id(value: unknown): value is string {
   return typeof value === 'string' && identifier.test(value)
 }
+function dataPath(value: unknown): value is { path: string } {
+  return (
+    fields(value, ['path']) &&
+    typeof value.path === 'string' &&
+    value.path.startsWith('/') &&
+    id(value.path.slice(1))
+  )
+}
 function name(value: unknown): value is RouterActionName {
   return (
+    value === 'router_input' ||
     value === 'explain_route' ||
     value === 'suggest_next' ||
     value === 'process_event' ||
+    value === 'work_on_event' ||
     value === 'inspect_github' ||
     value === 'compare_runs' ||
+    value === 'find_related_issues' ||
     value === 'confirm_mandate' ||
     value === 'prepare_reminder' ||
     value === 'send_reminder' ||
     value === 'apply_preference'
   )
+}
+
+export interface RouterGeneratedUI {
+  messages: RouterSurfaceMessages
+  actions: Record<string, { instruction: string; matterId?: string; matterVersion?: number }>
 }
 
 function supportedComponent(c: unknown): c is RouterSurfaceComponent {
@@ -82,7 +108,6 @@ function supportedComponent(c: unknown): c is RouterSurfaceComponent {
     return (
       fields(c, ['id', 'component', 'children']) &&
       Array.isArray(c.children) &&
-      c.children.length <= 64 &&
       c.children.every(id)
     )
   if (c.component === 'Text')
@@ -92,10 +117,15 @@ function supportedComponent(c: unknown): c is RouterSurfaceComponent {
         c.variant === 'body' ||
         c.variant === 'h3' ||
         c.variant === 'caption') &&
-      (typeof c.text === 'string' ||
-        (fields(c.text, ['path']) &&
-          typeof c.text.path === 'string' &&
-          /^\/[A-Za-z][\w-]{0,80}$/.test(c.text.path)))
+      (typeof c.text === 'string' || dataPath(c.text))
+    )
+  if (c.component === 'TextField')
+    return (
+      fields(c, ['id', 'component', 'label', 'value', 'variant']) &&
+      typeof c.label === 'string' &&
+      !!c.label.trim() &&
+      dataPath(c.value) &&
+      (c.variant === undefined || c.variant === 'shortText' || c.variant === 'longText')
     )
   return (
     c.component === 'Button' &&
@@ -103,8 +133,12 @@ function supportedComponent(c: unknown): c is RouterSurfaceComponent {
     (c.variant === undefined || c.variant === 'primary') &&
     id(c.child) &&
     fields(c.action, ['event']) &&
-    fields(c.action.event, ['name']) &&
-    name(c.action.event.name)
+    fields(c.action.event, ['name', 'context']) &&
+    name(c.action.event.name) &&
+    (c.action.event.context === undefined ||
+      (c.action.event.name === 'router_input' &&
+        record(c.action.event.context) &&
+        Object.entries(c.action.event.context).every(([key, value]) => id(key) && dataPath(value))))
   )
 }
 
@@ -132,8 +166,7 @@ export function readRouterSurface(messages: unknown) {
     model.surfaceId !== surfaceId ||
     model.path !== '/' ||
     !record(model.value) ||
-    !Array.isArray(update.components) ||
-    update.components.length > 96
+    !Array.isArray(update.components)
   )
     return null
 
@@ -147,17 +180,34 @@ export function readRouterSurface(messages: unknown) {
     if (!supportedComponent(c) || nodes.has(c.id)) return null
     nodes.set(c.id, c)
   }
+  const editablePaths = new Set(
+    [...nodes.values()].filter((c) => c.component === 'TextField').map((c) => c.value.path),
+  )
   const seen = new Set<string>()
-  function visit(key: string): boolean {
+  const pending = ['root']
+  while (pending.length) {
+    const key = pending.pop()!
     const c = nodes.get(key)
-    if (!c || seen.has(key)) return false
+    if (!c || seen.has(key)) return null
     seen.add(key)
-    if (c.component === 'Text')
-      return typeof c.text === 'string' || values.has(c.text.path.slice(1))
-    if (c.component === 'Button') return nodes.get(c.child)?.component === 'Text' && visit(c.child)
-    return c.children.every(visit)
+    if (c.component === 'Text') {
+      if (typeof c.text !== 'string' && !values.has(c.text.path.slice(1))) return null
+    } else if (c.component === 'TextField') {
+      if (!values.has(c.value.path.slice(1))) return null
+    } else if (c.component === 'Button') {
+      if (
+        nodes.get(c.child)?.component !== 'Text' ||
+        !Object.values(c.action.event.context ?? {}).every((binding) =>
+          editablePaths.has(binding.path),
+        )
+      )
+        return null
+      pending.push(c.child)
+    } else {
+      for (const child of c.children) pending.push(child)
+    }
   }
-  return visit('root') && seen.size === nodes.size ? { surfaceId, nodes, values } : null
+  return seen.size === nodes.size ? { surfaceId, nodes, values } : null
 }
 
 export function isRouterSurfaceAction(raw: unknown): raw is RouterSurfaceAction {
@@ -171,8 +221,16 @@ export function isRouterSurfaceAction(raw: unknown): raw is RouterSurfaceAction 
   if (
     !name(action.name) ||
     !id(action.surfaceId) ||
-    action.sourceComponentId !== `btn-${action.name}` ||
-    !fields(action.context, []) ||
+    (action.name === 'router_input'
+      ? !id(action.sourceComponentId)
+      : action.name === 'work_on_event'
+        ? typeof action.sourceComponentId !== 'string' ||
+          !/^btn-work_on_event-[1-9]\d{0,14}$/u.test(action.sourceComponentId)
+        : action.sourceComponentId !== `btn-${action.name}`) ||
+    !(action.name === 'router_input'
+      ? record(action.context) &&
+        Object.entries(action.context).every(([key, value]) => id(key) && typeof value === 'string')
+      : fields(action.context, [])) ||
     typeof action.timestamp !== 'string' ||
     !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/.test(action.timestamp) ||
     !Number.isFinite(Date.parse(action.timestamp))
@@ -190,5 +248,19 @@ export function matchesRouterSurfaceAction(
   const surface = readRouterSurface(messages)
   if (!surface || action.surfaceId !== surface.surfaceId) return false
   const node = surface.nodes.get(action.sourceComponentId)
-  return node?.component === 'Button' && node.action.event.name === action.name
+  return (
+    node?.component === 'Button' &&
+    node.action.event.name === action.name &&
+    !routerActionInputError(node, action.context)
+  )
+}
+
+export function routerActionInputError(
+  button: Extract<RouterSurfaceComponent, { component: 'Button' }>,
+  context: Record<string, string>,
+): string | undefined {
+  const keys = Object.keys(button.action.event.context ?? {})
+  if (Object.keys(context).some((key) => !keys.includes(key))) return '提交的字段与原卡片不符。'
+  if (keys.some((key) => !Object.hasOwn(context, key) || !context[key].trim()))
+    return '请填写此操作需要的内容。'
 }

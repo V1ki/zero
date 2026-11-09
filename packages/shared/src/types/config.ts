@@ -142,6 +142,7 @@ export interface DingtalkChannelInstanceConfig extends BaseChannelInstanceConfig
   clientSecretRef: string
   robotCodeRef?: string
   cardTemplateId?: string
+  cardStreamingKey?: string
   debug?: boolean
   keepAlive?: boolean
 }
@@ -209,6 +210,7 @@ export interface RuntimeRecoveryConfig {
 /** Owner-approved writable checkout. IM use also requires a private GitHub grant. */
 export interface RouterCodexCheckout {
   path: string
+  /** @deprecated Verified Router owners share this checkout across their entrances. */
   imChannels?: Array<{ platform: MandatePlatform; channelId: string }>
 }
 
@@ -225,6 +227,10 @@ export interface SystemConfig {
   contextCompactionModel?: string
   embedding?: EmbeddingModelConfig
   recovery?: RuntimeRecoveryConfig
+  worker?: {
+    codexCommand?: [string, ...string[]]
+    codexFallbackCommand?: [string, ...string[]]
+  }
   router?: { codexCheckouts: Record<string, RouterCodexCheckout> }
 }
 

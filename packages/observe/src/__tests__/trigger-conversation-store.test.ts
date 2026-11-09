@@ -488,3 +488,24 @@ test('a historical plain answer gets one prepared reminder without overwriting a
     )
   }
 })
+
+test('matter history pages past unrelated conversations without including them', () => {
+  const store = open()
+  for (let index = 0; index < 130; index++) {
+    const id = `history-${index}`
+    const claimed = store.conversations.begin('general', id, '输入')
+    if (claimed.kind !== 'started') throw Error('failed to claim')
+    store.conversations.finish('general', id, claimed.attempt, {
+      text: `答复 ${index}`,
+      matterIds: index < 3 ? ['relevant'] : ['unrelated'],
+    })
+  }
+  const page = store.conversations.listForMatter('general', 'relevant', 2)
+  expect(page.map((t) => t.answer?.text)).toEqual(['答复 1', '答复 2'])
+  expect(
+    store.conversations
+      .listForMatter('general', 'relevant', 2, page[0].id)
+      .map((t) => t.answer?.text),
+  ).toEqual(['答复 0'])
+  expect(store.conversations.listForMatter('general', 'missing')).toEqual([])
+})

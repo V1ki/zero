@@ -124,7 +124,7 @@ export class TriggerRoutingStore {
       );
       CREATE TABLE IF NOT EXISTS trigger_routes (
         inbox_id INTEGER PRIMARY KEY REFERENCES trigger_inbox(id),
-        origin TEXT NOT NULL,
+        origin TEXT NOT NULL, manual_requested_at TEXT,
         status TEXT NOT NULL DEFAULT 'pending',
         session_id TEXT, agent TEXT,
         decision TEXT, settings_revision INTEGER, weixin_target TEXT, delivery_target TEXT, due_at TEXT,
@@ -139,7 +139,7 @@ export class TriggerRoutingStore {
       const columns = db
         .query<{ name: string }, []>("SELECT name FROM pragma_table_info('trigger_routes')")
         .all()
-      for (const name of ['first_deferred', 'delivery_target']) {
+      for (const name of ['first_deferred', 'delivery_target', 'manual_requested_at']) {
         if (!columns.some((column) => column.name === name))
           db.exec(`ALTER TABLE trigger_routes ADD COLUMN ${name} TEXT`)
       }
@@ -304,6 +304,26 @@ export class TriggerRoutingStore {
     return true
   }
 
+  /** Changing who may use owner context invalidates work pinned to the former private binding. */
+  renewBotIdentity(target: MandateTarget, expectedRevision: number, saveIdentity: () => void) {
+    this.db
+      .transaction(() => {
+        const current = this.getPersonalBotBinding(target.platform, target.channelId)
+        if (
+          !current ||
+          current.revision !== expectedRevision ||
+          !sameTriggerRouteTarget(current.target, target)
+        )
+          throw new TriggerSettingsConflictError()
+        this.db.run(
+          'UPDATE trigger_route_bot_bindings SET revision=? WHERE platform=? AND channel_id=?',
+          [this.bindingsRevision() + 1, target.platform, target.channelId],
+        )
+        saveIdentity()
+      })
+      .immediate()
+  }
+
   saveBotBinding(
     platform: MandatePlatform,
     channelId: string,
@@ -347,6 +367,11 @@ export class TriggerRoutingStore {
         // Older clients omit newer settings. An explicit null still clears a selected recipient.
         const next = {
           ...settings,
+          notificationMode: settings.notificationMode ?? current.settings.notificationMode,
+          urgentDestination:
+            settings.urgentDestination === undefined
+              ? current.settings.urgentDestination
+              : settings.urgentDestination,
           retentionDays:
             settings.retentionDays === undefined
               ? current.settings.retentionDays
@@ -394,22 +419,33 @@ export class TriggerRoutingStore {
           return false
         const now = nowIso()
         const added = this.db.run(
-          `INSERT INTO trigger_routes(inbox_id, origin, updated_at)
-           SELECT id, 'manual', ? FROM trigger_visible_inbox WHERE id = ? ON CONFLICT(inbox_id) DO NOTHING`,
-          [now, inboxId],
+          `INSERT INTO trigger_routes(inbox_id, origin, manual_requested_at, updated_at)
+           SELECT id, 'manual', ?, ? FROM trigger_visible_inbox WHERE id = ? ON CONFLICT(inbox_id) DO NOTHING`,
+          [now, now, inboxId],
         )
         if (added.changes === 1) return true
         const previous = this.get(inboxId)
         if (!previous) return false
         this.db.run(
-          `UPDATE trigger_routes SET origin = 'manual', due_at = CASE WHEN status = 'deferred' THEN ? ELSE due_at END
+          `UPDATE trigger_routes SET origin = 'manual', manual_requested_at = ?,
+           due_at = CASE WHEN status = 'deferred' THEN ? ELSE due_at END
            WHERE inbox_id = ? AND status IN ('pending','ready','deferred','cancelled','failed')`,
-          [now, inboxId],
+          [now, now, inboxId],
         )
         if (previous.status === 'cancelled') this.resume(inboxId, 'cancelled')
         return true
       })
       .immediate()
+  }
+
+  /** Older manual routes prove a submission occurred but have no trustworthy submission time. */
+  notificationRequest(inboxId: number) {
+    return this.db
+      .query<{ submittedAt: string | null }, [number]>(
+        `SELECT manual_requested_at AS submittedAt FROM trigger_routes
+         WHERE inbox_id=? AND origin='manual' AND inbox_id IN (SELECT id FROM trigger_visible_inbox)`,
+      )
+      .get(inboxId)
   }
 
   get(inboxId: number): TriggerRouteRecord | null {

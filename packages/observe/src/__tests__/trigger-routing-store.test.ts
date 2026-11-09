@@ -98,6 +98,25 @@ test('phase-one inbox upgrades in place without auto-enrolling history; intake i
   ])
 })
 
+test('legacy manual notification requests survive migration without guessing a click time from delivery', () => {
+  const path = tempPath()
+  const prior = open(path)
+  prior.saveSettings(source, 0)
+  configure(prior, { enabled: true })
+  receive(prior, 'manual')
+  receive(prior, 'automatic')
+  expect(prior.routing.enqueue(1)).toBe(true)
+  expect(prior.routing.notificationRequest(1)?.submittedAt).toEqual(expect.any(String))
+  close(prior)
+
+  const old = new Database(path)
+  old.exec('ALTER TABLE trigger_routes DROP COLUMN manual_requested_at')
+  old.close()
+  const current = open(path)
+  expect(current.routing.notificationRequest(1)).toEqual({ submittedAt: null })
+  expect(current.routing.notificationRequest(2)).toBeNull()
+})
+
 test('pending and deferred work respects source pause, explicit request and current version when claiming a destination', () => {
   const store = open()
   store.saveSettings(source, 0)

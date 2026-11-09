@@ -1,4 +1,6 @@
+import type { RouterEventActivity } from './router-event-activity'
 import type { RouterSurfaceMessages } from './router-surface'
+import type { RouterTrackingResult } from './types/router-tracking-result'
 import type { TriggerInboxItem, TriggerSource } from './types/trigger'
 import type {
   TriggerConversationScope,
@@ -32,11 +34,21 @@ export interface RouterWorkspaceTask {
 }
 
 export interface RouterWorkspaceSnapshot {
+  eventActivity?: RouterEventActivity
+  previousTurnId?: number
   task?: RouterWorkspaceTask
+  /** A local user's request to route this event; legacy submissions have no recorded timestamp. */
+  notificationRequest?: { submittedAt: string | null }
+  /** Background analysis of this selected event, visible under the current repository grant. */
+  trackingResult?: RouterTrackingResult
   scope: TriggerConversationScope
   event: TriggerInboxItem | null
   route: TriggerRouteRecord | null
   settings: TriggerRoutingSettingsSnapshot
   surface: RouterSurfaceMessages
-  turns: (TriggerConversationTurn & { surface: RouterSurfaceMessages | null })[]
+  turns: (TriggerConversationTurn & {
+    surface: RouterSurfaceMessages | null
+    traceRunIds?: string[]
+    publications?: { id: string; title: string }[]
+  })[]
 }

@@ -97,6 +97,46 @@ test('one intake atomically hands off to every matching purpose, or to the legac
   expect(store.routing.list()).toHaveLength(1)
 })
 
+test('ordinary comments enabled in settings reach the inbox without broadening an existing mention mandate', () => {
+  const store = setup([{ ...config, keyword: '', processing: 'direct' }])
+  const current = store.getSettings()
+  const settings = current.settings
+  const repo = settings.github.repositories[0]
+  store.saveSettings(
+    {
+      ...settings,
+      github: {
+        ...settings.github,
+        repositories: [{ ...repo, issueComments: true, pullRequestComments: true }],
+      },
+    },
+    current.revision,
+  )
+  const at = new Date().toISOString()
+  const issue: TriggerEvent = {
+    ...event(1),
+    githubCommentKind: 'issue-comment',
+    url: 'https://github.com/Owner/App/issues/5#issuecomment-1',
+    occurredAt: at,
+  }
+  const pull: TriggerEvent = { ...event(2), githubCommentKind: 'pr-comment', occurredAt: at }
+  const mention: TriggerEvent = {
+    ...event(3),
+    githubCommentKind: 'pr-comment',
+    githubCommentMention: true,
+    occurredAt: at,
+  }
+  expect(push(store, [issue, pull, mention], store.getSettings().revision)).toBe(true)
+  expect(store.listInbox().map((item) => item.eventId)).toEqual([
+    mention.eventId,
+    pull.eventId,
+    issue.eventId,
+  ])
+  const matches = store.mandates.listMatches()
+  expect(matches).toHaveLength(1)
+  expect(store.getInboxItem(matches[0].inboxId)?.eventId).toBe(mention.eventId)
+})
+
 test('analysis uses a task session and claim token. Authenticated PR identity and optional mandate-wide grouping drive coalescing', () => {
   const store = setup()
   push(store, [

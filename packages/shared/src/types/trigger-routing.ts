@@ -44,9 +44,12 @@ export interface TriggerRoutingBot {
   online: boolean
   ready: boolean
   deliveryState: 'ready' | 'offline' | 'awaiting_private' | 'ambiguous' | 'unavailable'
+  ownerSharing?: { revision: number; shared: boolean }
 }
 
 export interface TriggerRoutingSettings {
+  notificationMode?: 'all' | 'contextual'
+  urgentDestination?: TriggerRouteDestination | null
   retentionDays?: TriggerRetentionDays | null
   enabled: boolean
   timeZone: string

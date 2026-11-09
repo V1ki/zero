@@ -232,6 +232,8 @@ export class TriggerMandateStore extends MandateEffectStore {
 
   /** Called once per newly inserted inbox row, inside its intake transaction. */
   match(event: TriggerInboxItem) {
+    // Enabling ordinary comments must not expand the audience of an existing mandate.
+    if (event.githubCommentKind && !event.githubCommentMention) return
     const stream = streamFor(event)
     const mandates = this.db
       .query<{ definition: string }, [string]>(

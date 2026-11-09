@@ -15,6 +15,9 @@ const openTurn = `(c.status != 'completed' OR
     SELECT 1 FROM trigger_commission_drafts draft WHERE draft.code=json_extract(c.answer,'$.commission.code')
     AND (draft.applied=1 OR (draft.expires_at > 0 AND draft.expires_at <= unixepoch(?1)*1000)))))`
 
+const activeMatterTurn = `EXISTS (SELECT 1 FROM json_each(c.answer,'$.matterIds') linked
+  JOIN router_matters m ON m.id=linked.value WHERE m.state NOT IN ('completed','cancelled'))`
+
 export class TriggerRetentionStore {
   constructor(private readonly db: Database) {
     db.exec(`
@@ -43,6 +46,22 @@ export class TriggerRetentionStore {
     `)
   }
 
+  expiredTraceSources(eventId?: number, workerId?: number): ('event' | 'worker')[] {
+    const expired: ('event' | 'worker')[] = []
+    if (eventId && this.db.query('SELECT 1 FROM trigger_retired_inbox WHERE id=?').get(eventId))
+      expired.push('event')
+    if (
+      workerId &&
+      this.db
+        .query(
+          'SELECT job_id FROM router_job_steps WHERE job_id=? GROUP BY job_id HAVING MIN(retired)=1',
+        )
+        .get(workerId)
+    )
+      expired.push('worker')
+    return expired
+  }
+
   /** One bounded write transaction. De-duplication and monotonically allocated ids outlive the body. */
   sweep(now = new Date()): { events: number; turns: number; more: boolean } {
     return this.db
@@ -64,8 +83,18 @@ export class TriggerRetentionStore {
         this.db.run(
           `INSERT INTO retention_events
         SELECT i.id FROM trigger_visible_inbox i WHERE i.received_at <= ?1
+        AND NOT EXISTS(SELECT 1 FROM router_github_replies r WHERE r.inbox_id=i.id AND r.touched_at > ?1)
         AND (EXISTS(SELECT 1 FROM trigger_routes r WHERE r.inbox_id=i.id)
-          OR EXISTS(SELECT 1 FROM mandate_matches m WHERE m.inbox_id=i.id))
+          OR EXISTS(SELECT 1 FROM mandate_matches m WHERE m.inbox_id=i.id)
+          OR EXISTS(SELECT 1 FROM router_watch_events e WHERE e.inbox_id=i.id)
+          OR EXISTS(SELECT 1 FROM router_followup_inputs f WHERE f.event_key='inbox:' || i.id))
+        AND NOT EXISTS(SELECT 1 FROM router_watch_events e JOIN router_job_steps j ON j.job_id=e.job_id
+          WHERE e.inbox_id=i.id AND (j.updated_at>?1 OR j.status IN ('queued','running')
+            OR j.return_state IN ('pending','sending')))
+        AND NOT EXISTS(SELECT 1 FROM router_followup_inputs f WHERE f.event_key='inbox:' || i.id
+          AND (EXISTS(SELECT 1 FROM router_followup_inputs pending WHERE pending.job_id=f.job_id AND pending.attempt IS NULL)
+            OR EXISTS(SELECT 1 FROM router_job_steps j WHERE j.job_id=f.job_id AND
+              (j.updated_at>?1 OR j.status IN ('queued','running') OR j.return_state IN ('pending','sending')))))
         AND NOT EXISTS(SELECT 1 FROM trigger_routes r WHERE r.inbox_id=i.id
           AND (r.status NOT IN ('web','sent','cancelled') OR r.updated_at > ?1))
         AND NOT EXISTS(SELECT 1 FROM mandate_matches m JOIN mandate_tasks t ON t.id=m.task_id
@@ -73,7 +102,9 @@ export class TriggerRetentionStore {
             OR EXISTS(SELECT 1 FROM trigger_visible_turns c WHERE c.thread='task-' || t.id
               AND (c.updated_at > ?1 OR ${openTurn}))))
         AND NOT EXISTS(SELECT 1 FROM trigger_visible_turns c WHERE c.thread=i.id
-          AND (c.updated_at > ?1 OR ${openTurn}))
+          AND (c.updated_at > ?1 OR ${openTurn} OR ${activeMatterTurn}))
+        AND i.id NOT IN (SELECT s.event_id FROM router_matter_evidence s JOIN router_matters m ON m.id=s.matter_id
+          WHERE m.state NOT IN ('completed','cancelled'))
         ORDER BY i.received_at,i.id LIMIT ?2`,
           [cutoff, batchSize],
         )
@@ -83,7 +114,7 @@ export class TriggerRetentionStore {
           `INSERT INTO retention_tasks SELECT t.id FROM mandate_tasks t
           WHERE t.id NOT IN (SELECT id FROM trigger_retired_task_threads) AND NOT ${taskStillOpen}
           AND NOT EXISTS(SELECT 1 FROM trigger_visible_turns c WHERE c.thread='task-' || t.id
-            AND (c.updated_at > ?1 OR ${openTurn}))
+            AND (c.updated_at > ?1 OR ${openTurn} OR ${activeMatterTurn}))
           ORDER BY t.id LIMIT ?2`,
           [cutoff, batchSize],
         ).changes
@@ -97,6 +128,7 @@ export class TriggerRetentionStore {
         WHERE (c.thread='0' OR c.thread GLOB 'im-*') AND c.updated_at <= ?1 AND NOT ${openTurn}
         AND NOT EXISTS (SELECT 1 FROM trigger_conversation_turns pending
           WHERE pending.thread=c.thread AND pending.status='pending')
+        AND NOT ${activeMatterTurn}
         ORDER BY c.id LIMIT ?2`,
           [cutoff, batchSize],
         )
@@ -112,10 +144,13 @@ export class TriggerRetentionStore {
           INSERT INTO trigger_retired_turns SELECT id FROM retention_turns;
           INSERT OR IGNORE INTO trigger_conversation_actions(thread,request_id,identity)
             SELECT thread,request_id,'expired' FROM trigger_conversation_turns WHERE id IN retention_turns;
-          UPDATE trigger_conversation_turns SET question='',answer=NULL,error=NULL WHERE id IN retention_turns;
+          UPDATE trigger_conversation_turns SET question='',answer=NULL,error=NULL,queue_origin=NULL WHERE id IN retention_turns;
           UPDATE trigger_conversation_actions SET identity='expired' WHERE thread IN (SELECT CAST(id AS TEXT) FROM retention_events)
             OR thread IN (SELECT 'task-' || id FROM retention_tasks);
           UPDATE trigger_inbox SET title='',summary='',url=NULL WHERE id IN retention_events;
+          DELETE FROM trigger_github_comments WHERE inbox_id IN retention_events;
+          DELETE FROM router_github_reply_requests WHERE inbox_id IN retention_events;
+          DELETE FROM router_github_replies WHERE inbox_id IN retention_events;
           UPDATE trigger_routes SET agent=NULL,session_id=NULL,decision=NULL,first_deferred=NULL,
             weixin_target=NULL,delivery_target=NULL,error=NULL WHERE inbox_id IN retention_events;
           UPDATE mandate_tasks SET title='正文已到期',session_id=NULL WHERE id IN retention_tasks;
@@ -132,9 +167,13 @@ export class TriggerRetentionStore {
         )
         // Keep request IDs for at-most-once execution after the private job body expires.
         const jobSteps = this.db.run(
-          `UPDATE router_job_steps SET instruction='',result=NULL,thread_id=NULL,audience=NULL,
+          `UPDATE router_job_steps SET instruction='',result=NULL,attention_question=NULL,work_json=NULL,thread_id=NULL,audience=NULL,
             repository=NULL,retired=1 WHERE job_id IN (
-            SELECT job_id FROM router_job_steps WHERE retired=0 GROUP BY job_id
+            SELECT j.job_id FROM router_job_steps j WHERE retired=0
+              AND NOT EXISTS (SELECT 1 FROM router_worker_links w JOIN router_matters m ON m.id=w.matter_id
+                WHERE w.job_id=j.job_id AND m.state NOT IN ('completed','cancelled'))
+              AND NOT EXISTS (SELECT 1 FROM router_followup_inputs f WHERE f.job_id=j.job_id AND f.attempt IS NULL)
+              GROUP BY j.job_id
             HAVING max(updated_at)<=? AND max(CASE WHEN status IN ('queued','running')
               OR return_state IN ('pending','sending') THEN 1 ELSE 0 END)=0
             ORDER BY job_id LIMIT ?)`,
