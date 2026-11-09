@@ -1,0 +1,414 @@
+.ip-demo-banner {
+  position: sticky;
+  top: 0;
+  z-index: 60;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 24px;
+  background: #603b13;
+  color: #fff8e9;
+}
+.ip-demo-banner button {
+  background: #fff8e9;
+  color: #603b13;
+  padding: 8px 14px;
+  border: 0;
+  cursor: pointer;
+}
+/* The real workspace inherits the original studio layout and palette from ip-video.css. */
+.ip-live select {
+  border: 1px solid var(--ip-line);
+  border-radius: 3px;
+  background: var(--ip-paper);
+  padding: 8px;
+  max-width: 100%;
+  min-width: 0;
+  color: var(--ip-ink);
+  font: inherit;
+  font-size: 12px;
+}
+.ip-live .ip-project-switcher select {
+  width: min(100%, 420px);
+}
+.ip-live button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none;
+}
+.ip-live button:focus-visible,
+.ip-live summary:focus-visible,
+.ip-live select:focus-visible,
+.ip-live input:focus-visible {
+  outline: 2px solid var(--ip-red);
+  outline-offset: 3px;
+}
+.ip-live .ip-status-dot.is-offline {
+  background: var(--ip-soft);
+  box-shadow: none;
+}
+.ip-live-error,
+.ip-live-notice {
+  padding: 12px 16px;
+  margin: 0 0 16px;
+  font-size: 12px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.ip-live-error {
+  color: #912c1d;
+  background: #fbe9e1;
+  border-left: 3px solid var(--ip-red);
+}
+.ip-live-error .ip-button {
+  margin-left: 12px;
+}
+.ip-live-notice {
+  display: block;
+  background: #f3eee0;
+  color: #6d604a;
+}
+.ip-live-empty {
+  padding: 65px 24px;
+  text-align: center;
+  color: var(--ip-muted);
+}
+.ip-live-empty h2,
+.ip-live-empty h3 {
+  color: var(--ip-ink);
+  font: 28px Georgia, "Songti SC", serif;
+}
+.ip-live-empty p {
+  font-size: 13px;
+  line-height: 1.8;
+}
+.ip-live .ip-live-muted {
+  color: var(--ip-muted);
+  font-size: 11px;
+  line-height: 1.7;
+}
+.ip-live .ip-live-project {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+}
+.ip-live-book {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 32px;
+  background: #365c6d;
+  color: #e4edf1;
+}
+.ip-live-book span {
+  font-size: 10px;
+  letter-spacing: .12em;
+}
+.ip-live-project .ip-actions {
+  justify-content: flex-start;
+  margin-top: 24px;
+}
+.ip-live-project h2 {
+  overflow-wrap: anywhere;
+}
+.ip-live .ip-overview-grid {
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+}
+.ip-live-progress {
+  padding: 24px;
+}
+.ip-live-progress-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+.ip-live-progress h3 {
+  margin: 6px 0;
+  font: 24px Georgia, "Songti SC", serif;
+}
+.ip-live-percent {
+  color: var(--ip-red-dark);
+  font: 38px Georgia, serif;
+}
+.ip-live-percent small {
+  font-size: 16px;
+}
+.ip-live-progress progress {
+  display: block;
+  width: 100%;
+  height: 6px;
+  margin: 20px 0 16px;
+  accent-color: var(--ip-red);
+}
+.ip-live-progress p {
+  font-size: 12px;
+  line-height: 1.8;
+}
+.ip-live-progress .ip-actions {
+  justify-content: flex-start;
+  margin-top: 18px;
+}
+.ip-live-source {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #40453f;
+  font: 16px / 2 Georgia, "Songti SC", serif;
+  padding-bottom: 32px;
+}
+.ip-live-source mark {
+  background: #f4d58b;
+  color: var(--ip-ink);
+  scroll-margin: 160px;
+}
+.ip-live [data-status="failed"],
+.ip-live [data-status="interrupted"] {
+  color: #912c1d;
+}
+.ip-live [data-status="running"] {
+  color: var(--ip-red-dark);
+}
+.ip-live-asset-controls {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.ip-live-asset-controls .ip-asset-tabs {
+  margin: 0;
+  flex-wrap: wrap;
+}
+.ip-live-asset-controls .ip-chapter-search {
+  margin: 0;
+  min-width: 220px;
+}
+.ip-live .ip-tab span {
+  margin-left: 5px;
+  font-size: 10px;
+  color: var(--ip-muted);
+}
+.ip-live .ip-asset-body p {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  font-size: 12px;
+  line-height: 1.7;
+  height: 3.4em;
+  overflow-wrap: anywhere;
+}
+.ip-live .ip-asset-body h3 {
+  overflow-wrap: anywhere;
+}
+.ip-live .ip-asset-footer > span:last-child {
+  font-size: 11px;
+  color: var(--ip-muted);
+}
+.ip-live-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 18px 0;
+  font-size: 12px;
+  color: var(--ip-muted);
+}
+.ip-live .ip-asset-detail {
+  grid-template-columns: 180px minmax(0, 1fr) 215px;
+  scroll-margin-top: 88px;
+}
+.ip-live .ip-asset-detail-visual {
+  min-height: 210px;
+}
+.ip-live .ip-asset-detail-copy,
+.ip-live .ip-asset-detail-side {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ip-live .ip-asset-detail-side .ip-button {
+  margin-top: 14px;
+  width: 100%;
+}
+.ip-live .ip-live-aliases {
+  color: var(--ip-ink);
+}
+.ip-live summary {
+  cursor: pointer;
+  padding: 10px 0;
+  font-size: 12px;
+  color: var(--ip-ink);
+}
+.ip-live-description p {
+  font-size: 12px;
+  color: var(--ip-muted);
+  line-height: 1.8;
+}
+.ip-live-description[open] {
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 8px;
+}
+.ip-live-evidence {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--ip-line);
+}
+.ip-live-evidence details[open] {
+  max-height: 540px;
+  overflow-y: auto;
+}
+.ip-live-evidence blockquote {
+  border-left: 2px solid var(--ip-yellow);
+  margin: 16px 0;
+  padding: 0 16px;
+}
+.ip-live-evidence p {
+  white-space: pre-wrap;
+  font: 14px / 1.9 Georgia, "Songti SC", serif;
+  overflow-wrap: anywhere;
+}
+.ip-live-evidence small {
+  display: block;
+  color: var(--ip-muted);
+  margin-top: 8px;
+  font-size: 10px;
+}
+.ip-live .ip-live-requests {
+  margin-top: 18px;
+  padding: 24px;
+}
+.ip-live-requests article {
+  padding: 12px 0 20px;
+  border-bottom: 1px solid var(--ip-line);
+}
+.ip-live-requests h4 {
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.ip-live-requests p {
+  font-size: 12px;
+  line-height: 1.8;
+}
+.ip-live-requests pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.ip-live-settings > div {
+  margin: 14px 0;
+}
+.ip-live-settings dt {
+  color: var(--ip-muted);
+  font-size: 11px;
+}
+.ip-live-settings dd {
+  margin: 6px 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.ip-live .ip-settings-panel p {
+  color: var(--ip-muted);
+  font-size: 13px;
+  line-height: 1.8;
+}
+@media (max-width: 1180px) {
+  .ip-live .ip-overview-grid {
+    grid-template-columns: 1fr;
+  }
+  .ip-live .ip-asset-detail {
+    grid-template-columns: 150px minmax(0, 1fr);
+  }
+  .ip-live .ip-asset-detail-side {
+    grid-column: 1 / -1;
+    padding: 16px 0 0;
+    border-left: 0;
+    border-top: 1px solid var(--ip-line);
+  }
+  .ip-live .ip-asset-detail-side .ip-button {
+    width: auto;
+    margin-right: 8px;
+  }
+}
+@media (max-width: 900px) {
+  .ip-live .ip-topbar {
+    height: auto;
+    min-height: 72px;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 14px 18px;
+    position: static;
+  }
+  .ip-live .ip-project-switcher {
+    display: flex;
+    flex-basis: 100%;
+    order: 3;
+  }
+  .ip-live .ip-project-switcher select {
+    width: 100%;
+  }
+  .ip-live .ip-rail {
+    position: static;
+  }
+  .ip-live .ip-top-status {
+    display: none;
+  }
+  .ip-live .ip-asset-detail {
+    grid-template-columns: 1fr;
+  }
+  .ip-live .ip-asset-detail-visual {
+    min-height: 142px;
+  }
+}
+@media (max-width: 620px) {
+  .ip-live .ip-live-project {
+    grid-template-columns: 1fr;
+  }
+  .ip-live-book {
+    min-height: 160px;
+    gap: 15px;
+  }
+  .ip-live .ip-reading-scroll {
+    max-height: 65dvh;
+  }
+  .ip-live .ip-reading-pane {
+    min-height: 0;
+  }
+  .ip-live .ip-library-layout {
+    min-height: 0;
+  }
+  .ip-live .ip-live-progress,
+  .ip-live .ip-live-requests {
+    padding: 18px;
+  }
+  .ip-live .ip-panel-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .ip-live-pagination {
+    flex-wrap: wrap;
+  }
+  .ip-live .ip-nav-count {
+    display: inline;
+  }
+  .ip-live .ip-brand-copy strong {
+    font-size: 15px;
+  }
+  .ip-demo-banner {
+    align-items: flex-start;
+    flex-direction: column;
+    font-size: 12px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ip-live *,
+  .ip-live *::before,
+  .ip-live *::after {
+    transition: none !important;
+    animation: none !important;
+    scroll-behavior: auto !important;
+  }
+}
