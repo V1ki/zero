@@ -139,3 +139,26 @@ test('unknown delivery receipt is never marked delivered and a long result is bo
   expect(await deliver({ ...job, result: '多'.repeat(3000) }, signal)).toBe('unknown')
   expect(send.mock.calls[0][2].length).toBeLessThan(2000)
 })
+
+test('a reported step sends its short report with numbered options; a long raw result is truncated', async () => {
+  const { send, deliver, signal } = fixture()
+  const report = {
+    verdict: '令牌过期导致发布失败。',
+    done: [],
+    decision: { question: '重新发布吗？', options: ['重新发布', '先不发布'], recommended: 0 },
+  }
+  const long = '工作记录'.repeat(1000)
+  await deliver(
+    { ...job, result: long, report: JSON.stringify(report), reportState: 'ready' },
+    signal,
+  )
+  const body = send.mock.calls[0][2]
+  expect(body).toContain('令牌过期导致发布失败。')
+  expect(body).toContain('1. 重新发布（推荐）')
+  expect(body).toContain('回复「继续派工 #31：选 1」')
+  expect(body).not.toContain('工作记录')
+  await deliver({ ...job, result: long, reportState: 'none' }, signal)
+  const fallback = send.mock.calls[1][2]
+  expect(fallback.length).toBeLessThanOrEqual(1800)
+  expect(fallback).toEndWith('可在此查询派工 #31 查看完整结果。')
+})

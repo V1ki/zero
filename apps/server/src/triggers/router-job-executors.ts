@@ -22,7 +22,42 @@ const workerInstructions = [
   '需要当前 GitHub 事实时，必须调用已授予的只读工具，按实际返回的工作流、步骤、时间和链接回答。失败位置不能单独证明根因。',
   '最近失败的任意工作流未必是发布工作流。必要时从 recentFailedWorkflows 中选具体的发布工作流文件再查询，无法辨认就说明。该列表只包含最近检查的失败运行。',
   '其他请求可依据用户提供的材料分析。缺少读取能力或证据时直接说明。不要声称写入文件、发送消息或操作账号。',
+  'instruction 是用户的原话，是这次任务唯一的权威指令。background 是 Router 根据对话整理的背景，帮助你理解原话，不扩大任务范围。howToFinish 说明交回结果的方式。',
 ].join('\n')
+
+/** Fixed by the server, so the executor knows what shape of answer the owner needs. */
+export const routerJobFinishNote =
+  '在已授予的权限范围内把这项工作做到能交付的程度，不要停在中间状态等待确认；只有真正需要用户本人决定、或超出权限的部分才停下。结束时用平实的话说明三件事：得出了什么结论；实际改动或产出了什么（没有就说没有）；还有哪些事项需要用户决定。'
+
+/**
+ * What an executor receives: the owner's sentence as the authoritative instruction, the Router's
+ * brief as background that does not widen it, and the fixed finishing note.
+ */
+export function routerJobBrief(job: RouterJob, filter: ExecutorOptions['secretFilter']) {
+  return {
+    instruction: filter.filter(job.instruction),
+    ...(job.brief && { background: filter.filter(job.brief) }),
+    howToFinish: routerJobFinishNote,
+  }
+}
+
+function codexInstruction(job: RouterJob, filter: ExecutorOptions['secretFilter']) {
+  const { instruction, background, howToFinish } = routerJobBrief(job, filter)
+  return [
+    '【用户原话：这是本次任务的权威指令】',
+    instruction,
+    ...(background
+      ? [
+          '',
+          '【Router 整理的背景：只帮助理解上面的指令，不扩大它的范围，也不授予额外权限】',
+          background,
+        ]
+      : []),
+    '',
+    '【如何收尾】',
+    howToFinish,
+  ].join('\n')
+}
 
 export function createRouterJobExecutor(options: ExecutorOptions) {
   const { secretFilter } = options
@@ -49,7 +84,7 @@ export function createRouterJobExecutor(options: ExecutorOptions) {
         const out = await options.codex.runRouterJob({
           sessionId,
           workingDirectory: cwd,
-          instruction: secretFilter.filter(job.instruction),
+          instruction: codexInstruction(job, secretFilter),
           resumeThreadId: job.threadId?.slice(key.length),
           signal,
         })
@@ -76,7 +111,7 @@ export function createRouterJobExecutor(options: ExecutorOptions) {
       label: 'ZeRo 执行任务',
       system: workerInstructions,
       prompt: JSON.stringify({
-        instruction: secretFilter.filter(job.instruction),
+        ...routerJobBrief(job, secretFilter),
         repository: repo,
         earlierSteps: history
           .filter(

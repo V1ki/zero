@@ -126,9 +126,15 @@ test('retention scrubs a settled body, preserving replay protection and queued w
   const path = join(dir, 'jobs.sqlite')
   const store = open(path)
   const { jobs } = store
-  const job = jobs.submit(owner, 'secret-request', input)
+  const job = jobs.submit(owner, 'secret-request', { ...input, brief: 'private brief' })
   jobs.claimNext()
-  jobs.finish(job.id, 1, { status: 'completed', result: 'private result', threadId: 'internal' })
+  jobs.finish(job.id, 1, {
+    status: 'completed',
+    result: 'private result',
+    threadId: 'internal',
+    report: true,
+  })
+  expect(jobs.saveReport(job.id, 1, '{"verdict":"private verdict","done":[]}')).toBe(true)
   const untouched = jobs.submit(other, 'queued', input)
   const settings = store.routing.getSettings()
   store.routing.saveSettings({ ...settings.settings, retentionDays: 7 }, settings.revision)
@@ -147,11 +153,79 @@ test('retention scrubs a settled body, preserving replay protection and queued w
     expect(
       db
         .query(
-          'SELECT instruction,repository,audience,result,thread_id FROM router_job_steps WHERE job_id=?',
+          'SELECT instruction,brief,repository,audience,result,report,thread_id FROM router_job_steps WHERE job_id=?',
         )
         .get(job.id),
-    ).toEqual({ instruction: '', repository: null, audience: null, result: null, thread_id: null })
+    ).toEqual({
+      instruction: '',
+      brief: null,
+      repository: null,
+      audience: null,
+      result: null,
+      report: null,
+      thread_id: null,
+    })
   } finally {
     db.close()
   }
+})
+
+test('a brief is bounded and stored per step; a report holds back the return until it is saved', () => {
+  const jobs = open().jobs
+  expect(() => jobs.submit(owner, 'long', { ...input, brief: 'x'.repeat(4001) })).toThrow(
+    RouterJobConflictError,
+  )
+  expect(() => jobs.submit(owner, 'blank', { ...input, brief: ' ' })).toThrow(
+    RouterJobConflictError,
+  )
+  const job = jobs.submit(owner, 'a', { ...input, brief: 'background' })
+  // A retried turn may write another brief; the request still replays to the stored step.
+  expect(jobs.submit(owner, 'a', { ...input, brief: 'reworded' })).toEqual(job)
+  expect(job).toMatchObject({ instruction: input.instruction, brief: 'background', report: null })
+  jobs.claimNext()
+  jobs.finish(job.id, 1, { status: 'completed', result: 'done', report: true })
+  expect(jobs.get(owner, job.id)?.reportState).toBe('pending')
+  expect(jobs.claimReturn()).toBeNull()
+  expect(jobs.nextReturnAt()).toBeNull()
+  expect(jobs.saveReport(job.id, 1, '{"verdict":"ok","done":[]}')).toBe(true)
+  expect(jobs.saveReport(job.id, 1, null)).toBe(false)
+  expect(jobs.get(owner, job.id)).toMatchObject({ reportState: 'ready', result: 'done' })
+  expect(jobs.claimReturn()?.id).toBe(job.id)
+  jobs.settleReturn(job.id, 1, 'delivered')
+  // An answer applies only to the step it was given for.
+  expect(() => jobs.continue(owner, job.id, 'stale', 'option', { expectedAttempt: 2 })).toThrow(
+    RouterJobConflictError,
+  )
+  const next = jobs.continue(owner, job.id, 'b', 'option', { brief: 'next', expectedAttempt: 1 })
+  expect(next).toMatchObject({ attempt: 2, brief: 'next', report: null, reportState: null })
+  expect(jobs.get(owner, job.id, 1)?.brief).toBe('background')
+})
+
+test('an existing table gains the brief and report columns in place', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'zero-job-migrate-'))
+  dirs.push(dir)
+  const path = join(dir, 'jobs.sqlite')
+  const db = new Database(path)
+  db.exec(`CREATE TABLE router_job_steps (
+    job_id INTEGER NOT NULL, attempt INTEGER NOT NULL, scope TEXT NOT NULL, request_id TEXT NOT NULL,
+    executor TEXT NOT NULL CHECK(executor IN ('zero','codex')), instruction TEXT NOT NULL,
+    repository TEXT, audience TEXT, thread_id TEXT, result TEXT,
+    status TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed','unknown')),
+    return_state TEXT CHECK(return_state IN ('pending','sending','delivered','unavailable','unknown')),
+    return_due_at TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, retired INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(job_id,attempt), UNIQUE(scope,request_id));
+    INSERT INTO router_job_steps VALUES(1,1,'general','old','zero','legacy',NULL,NULL,NULL,
+      'legacy result','completed','pending',NULL,'2026-01-01','2026-01-01',0);`)
+  db.close()
+  const jobs = open(path).jobs
+  expect(jobs.get('general', 1)).toMatchObject({
+    instruction: 'legacy',
+    result: 'legacy result',
+    brief: null,
+    report: null,
+    reportState: null,
+  })
+  expect(jobs.claimReturn()?.id).toBe(1)
+  open(path)
 })

@@ -6,13 +6,18 @@ export class RouterJobConflictError extends Error {}
 export type RouterJobScope = 'general' | RouterImScope
 export type RouterJobExecutor = 'zero' | 'codex'
 export type RouterJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'unknown'
+/** `pending` holds delivery back until the report is saved or given up (`none`). */
+export type RouterJobReportState = 'pending' | 'ready' | 'none'
 
 export interface RouterJob {
   id: number
   scope: RouterJobScope
   requestId: string
   executor: RouterJobExecutor
+  /** The owner's own sentence, stored unchanged. */
   instruction: string
+  /** Background written by the Router model. Never consulted for authorization. */
+  brief?: string | null
   repository: string | null
   /** Opaque authorization snapshot supplied by the server, not by the model. */
   audience: string | null
@@ -20,6 +25,9 @@ export interface RouterJob {
   attempt: number
   result: string | null
   threadId: string | null
+  /** JSON written by the server after validating a model report; read it through a validator. */
+  report?: string | null
+  reportState?: RouterJobReportState | null
   createdAt: string
   updatedAt: string
 }
@@ -27,26 +35,42 @@ export type RouterJobStep = RouterJob
 type JobInput = Pick<RouterJob, 'executor' | 'instruction'> & {
   repository?: string
   audience?: string
+  brief?: string
 }
 type Outcome = {
   status: 'completed' | 'failed' | 'unknown'
   result: string
   threadId?: string
+  /** Hold delivery until `saveReport` records a report or gives up. Completed steps only. */
+  report?: boolean
+}
+interface Continuation {
+  brief?: string
+  /** Refuse unless this is still the latest attempt, so one answer cannot apply twice. */
+  expectedAttempt?: number
 }
 
-const columns = `job_id AS id, scope, request_id AS requestId, executor, instruction,
-  repository, audience, status, attempt, result, thread_id AS threadId,
-  created_at AS createdAt, updated_at AS updatedAt`
+export const ROUTER_JOB_BRIEF_LIMIT = 4000
+
+const columns = `job_id AS id, scope, request_id AS requestId, executor, instruction, brief,
+  repository, audience, status, attempt, result, thread_id AS threadId, report,
+  report_state AS reportState, created_at AS createdAt, updated_at AS updatedAt`
 const now = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 
-function validateRequest(scope: RouterJobScope, requestId: string, instruction: string) {
+function validateRequest(
+  scope: RouterJobScope,
+  requestId: string,
+  instruction: string,
+  brief?: string,
+) {
   if (scope !== 'general' && !/^im-[a-f0-9]{64}$/.test(scope))
     throw new RouterJobConflictError('当前对话无法派发任务。')
   if (
     !requestId.trim() ||
     requestId.length > 256 ||
     !instruction.trim() ||
-    instruction.length > 8192
+    instruction.length > 8192 ||
+    (brief !== undefined && (!brief.trim() || brief.length > ROUTER_JOB_BRIEF_LIMIT))
   )
     throw new RouterJobConflictError('执行任务的请求无效或内容过长。')
 }
@@ -65,6 +89,21 @@ export class RouterJobStore {
       PRIMARY KEY(job_id,attempt), UNIQUE(scope,request_id));
       CREATE INDEX IF NOT EXISTS router_jobs_queued ON router_job_steps(created_at,job_id) WHERE status='queued';
       CREATE INDEX IF NOT EXISTS router_jobs_return ON router_job_steps(updated_at,job_id) WHERE return_state='pending';`)
+    // Added in place on existing installations; rows from before have no brief and no report.
+    db.transaction(() => {
+      const present = new Set(
+        db
+          .query<{ name: string }, []>("SELECT name FROM pragma_table_info('router_job_steps')")
+          .all()
+          .map((row) => row.name),
+      )
+      if (!present.has('brief')) db.exec('ALTER TABLE router_job_steps ADD COLUMN brief TEXT')
+      if (!present.has('report')) db.exec('ALTER TABLE router_job_steps ADD COLUMN report TEXT')
+      if (!present.has('report_state'))
+        db.exec(
+          "ALTER TABLE router_job_steps ADD COLUMN report_state TEXT CHECK(report_state IN ('pending','ready','none'))",
+        )
+    }).immediate()
   }
 
   get(scope: RouterJobScope, id: number, attempt?: number): RouterJob | null {
@@ -101,12 +140,13 @@ export class RouterJobStore {
   }
 
   submit(scope: RouterJobScope, requestId: string, input: JobInput): RouterJob {
-    validateRequest(scope, requestId, input.instruction)
+    validateRequest(scope, requestId, input.instruction, input.brief)
     return this.db
       .transaction(() => {
         const prior = this.replay(scope, requestId)
         const repository = input.repository ?? null
         const audience = input.audience ?? null
+        // A retried turn may phrase its brief differently; the first stored brief stands.
         if (prior) {
           if (
             prior.attempt !== 1 ||
@@ -121,21 +161,43 @@ export class RouterJobStore {
         const inserted = this.db
           .query<
             RouterJob,
-            [RouterJobScope, string, RouterJobExecutor, string, string | null, string | null]
+            [
+              RouterJobScope,
+              string,
+              RouterJobExecutor,
+              string,
+              string | null,
+              string | null,
+              string | null,
+            ]
           >(
-            `INSERT INTO router_job_steps(job_id,attempt,scope,request_id,executor,instruction,repository,audience,status,created_at,updated_at)
-         VALUES((SELECT COALESCE(MAX(job_id),0)+1 FROM router_job_steps),1,?,?,?,?,?,?,'queued',${now},${now})
+            `INSERT INTO router_job_steps(job_id,attempt,scope,request_id,executor,instruction,brief,repository,audience,status,created_at,updated_at)
+         VALUES((SELECT COALESCE(MAX(job_id),0)+1 FROM router_job_steps),1,?,?,?,?,?,?,?,'queued',${now},${now})
          RETURNING ${columns}`,
           )
-          .get(scope, requestId, input.executor, input.instruction, repository, audience)
+          .get(
+            scope,
+            requestId,
+            input.executor,
+            input.instruction,
+            input.brief ?? null,
+            repository,
+            audience,
+          )
         if (!inserted) throw new Error('Failed to create Router job')
         return inserted
       })
       .immediate()
   }
 
-  continue(scope: RouterJobScope, id: number, requestId: string, instruction: string): RouterJob {
-    validateRequest(scope, requestId, instruction)
+  continue(
+    scope: RouterJobScope,
+    id: number,
+    requestId: string,
+    instruction: string,
+    options: Continuation = {},
+  ): RouterJob {
+    validateRequest(scope, requestId, instruction, options.brief)
     return this.db
       .transaction(() => {
         const prior = this.replay(scope, requestId)
@@ -148,17 +210,19 @@ export class RouterJobStore {
         if (!job) throw new RouterJobConflictError('当前对话没有这项任务。')
         if (job.status === 'queued' || job.status === 'running')
           throw new RouterJobConflictError('任务仍在处理中。')
+        if (options.expectedAttempt !== undefined && job.attempt !== options.expectedAttempt)
+          throw new RouterJobConflictError('这个问题已经回答过，或任务已有新的进展。')
         this.db.run(
           "UPDATE router_job_steps SET return_state='unavailable' WHERE job_id=? AND return_state='pending'",
           [id],
         )
         const inserted = this.db
-          .query<RouterJob, [string, string, number, number]>(
-            `INSERT INTO router_job_steps(job_id,attempt,scope,request_id,executor,instruction,repository,audience,thread_id,status,created_at,updated_at)
-         SELECT job_id,attempt+1,scope,?,executor,?,repository,audience,thread_id,'queued',${now},${now}
+          .query<RouterJob, [string, string, string | null, number, number]>(
+            `INSERT INTO router_job_steps(job_id,attempt,scope,request_id,executor,instruction,brief,repository,audience,thread_id,status,created_at,updated_at)
+         SELECT job_id,attempt+1,scope,?,executor,?,?,repository,audience,thread_id,'queued',${now},${now}
          FROM router_job_steps WHERE job_id=? AND attempt=? RETURNING ${columns}`,
           )
-          .get(requestId, instruction, id, job.attempt)
+          .get(requestId, instruction, options.brief ?? null, id, job.attempt)
         if (!inserted) throw new Error('Failed to continue Router job')
         return inserted
       })
@@ -179,8 +243,27 @@ export class RouterJobStore {
     return (
       this.db.run(
         `UPDATE router_job_steps SET status=?,result=?,thread_id=COALESCE(?,thread_id),
-        return_state='pending',updated_at=${now} WHERE job_id=? AND attempt=? AND status='running'`,
-        [outcome.status, outcome.result.slice(0, 12000), outcome.threadId ?? null, id, attempt],
+        report_state=?,return_state='pending',updated_at=${now}
+        WHERE job_id=? AND attempt=? AND status='running'`,
+        [
+          outcome.status,
+          outcome.result.slice(0, 12000),
+          outcome.threadId ?? null,
+          outcome.report && outcome.status === 'completed' ? 'pending' : null,
+          id,
+          attempt,
+        ],
+      ).changes === 1
+    )
+  }
+
+  /** Ends the report step. `null` gives up, and the step is delivered with its raw result. */
+  saveReport(id: number, attempt: number, report: string | null): boolean {
+    return (
+      this.db.run(
+        `UPDATE router_job_steps SET report=?,report_state=?
+        WHERE job_id=? AND attempt=? AND report_state='pending'`,
+        [report, report === null ? 'none' : 'ready', id, attempt],
       ).changes === 1
     )
   }
@@ -192,6 +275,8 @@ export class RouterJobStore {
         this.db.run(
           `UPDATE router_job_steps SET return_state='unknown',updated_at=${now} WHERE return_state='sending'`,
         )
+        // A report cut off by shutdown is not retried; the stored result is delivered without it.
+        this.db.run("UPDATE router_job_steps SET report_state='none' WHERE report_state='pending'")
         return this.db.run(`UPDATE router_job_steps SET status='unknown',return_state='pending',
          result='执行中断，结果待核对。',updated_at=${now} WHERE status='running'`).changes
       })
@@ -202,6 +287,7 @@ export class RouterJobStore {
     return this.db
       .query<RouterJob, []>(`UPDATE router_job_steps SET return_state='sending',updated_at=${now}
        WHERE rowid=(SELECT rowid FROM router_job_steps WHERE return_state='pending'
+         AND (report_state IS NULL OR report_state<>'pending')
          AND (return_due_at IS NULL OR return_due_at<=${now}) ORDER BY updated_at,job_id LIMIT 1)
        RETURNING ${columns}`)
       .get()
@@ -224,7 +310,8 @@ export class RouterJobStore {
     return (
       this.db
         .query<{ dueAt: string | null }, []>(
-          "SELECT min(return_due_at) AS dueAt FROM router_job_steps WHERE return_state='pending'",
+          `SELECT min(return_due_at) AS dueAt FROM router_job_steps WHERE return_state='pending'
+          AND (report_state IS NULL OR report_state<>'pending')`,
         )
         .get()?.dueAt ?? null
     )

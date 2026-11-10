@@ -40,10 +40,11 @@ export type {
   UsageTotals,
 } from './metrics'
 export { SessionDB } from './session-db'
-export { RouterJobConflictError } from './router-job-store'
+export { ROUTER_JOB_BRIEF_LIMIT, RouterJobConflictError } from './router-job-store'
 export type {
   RouterJob,
   RouterJobExecutor,
+  RouterJobReportState,
   RouterJobScope,
   RouterJobStatus,
   RouterJobStep,
