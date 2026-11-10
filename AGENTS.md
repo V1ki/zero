@@ -5,6 +5,7 @@
 - `apps/server`：启动、CLI 和运行时；`apps/web`：React/Vite UI 与 Web 服务；`apps/supervisor`：监督进程。
 - `packages/*`：核心领域模块；`e2e/`：Playwright 测试。
 - `.zero/` 是本地运行数据，包括日志、记忆、密钥和 agent 工作区，不按普通产品源码处理。
+- 修改 `apps/server/src/triggers/`（Router、收件箱、委托、通知）前先读 `docs/router-design.md`，按其中的目的和取舍原则决定方案。
 
 ## 修改边界
 - 按用户要求完成工作。执行请求包括实现与验证；分析请求保持分析范围。
