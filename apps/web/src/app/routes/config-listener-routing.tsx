@@ -43,6 +43,7 @@ const statuses: Record<TriggerRouteStatus, string> = {
   cancelled: '已撤销',
   failed: '处理失败',
   uncertain: '投递待确认',
+  filtered: '分诊已过滤',
 }
 
 export function useListenerRoutingConfig(enabled = true) {
@@ -194,6 +195,18 @@ export function ListenerRoutingSettings({
               />
               启用 Agent 与通知路由
             </label>
+            <label className="listener-row">
+              <input
+                type="checkbox"
+                checked={settings.triage !== false}
+                onChange={(e) => update({ triage: e.target.checked })}
+              />
+              过滤重复和没有新信息的事件
+            </label>
+            <small className="listener-muted">
+              分析时由模型判断事件是否值得通知；被过滤的事件不会提醒你，仍可在 Router
+              中查看原因并选择仍然通知。
+            </small>
             <div className="listener-fields">
               <label className="listener-field">
                 时区
@@ -346,7 +359,8 @@ export function ListenerRoutingSettings({
 export function ProcessInboxEvent({
   inboxId,
   retry = false,
-}: { inboxId: number; retry?: boolean }) {
+  label,
+}: { inboxId: number; retry?: boolean; label?: string }) {
   const cache = useQueryClient()
   const process = useMutation({
     mutationFn: () => apiPost<{ accepted: boolean }>(`${base}/process`, { inboxId }),
@@ -359,7 +373,7 @@ export function ProcessInboxEvent({
         disabled={process.isPending || (!retry && process.isSuccess)}
         onClick={() => process.mutate()}
       >
-        {process.isPending ? '正在提交…' : retry ? '重新处理' : '交给 Agent'}
+        {process.isPending ? '正在提交…' : (label ?? (retry ? '重新处理' : '交给 Agent'))}
       </button>
       {!retry && process.isSuccess && (
         <output>
@@ -448,8 +462,16 @@ function RoutingEntry({
       {route.status === 'cancelled' && (
         <small>来源监听已暂停或筛选已变更。如需处理这条历史事件，可以手动重新提交。</small>
       )}
+      {route.status === 'filtered' && (
+        <p>
+          <b>分诊理由</b>　{route.agent?.triage?.reason || '分诊判断无需通知。'}
+        </p>
+      )}
       {(route.status === 'failed' || route.status === 'cancelled') && routingEnabled && (
         <ProcessInboxEvent retry inboxId={event.id} />
+      )}
+      {route.status === 'filtered' && routingEnabled && (
+        <ProcessInboxEvent retry label="仍然通知" inboxId={event.id} />
       )}
       <small>
         {route.origin === 'manual' ? '手动提交' : '自动监听'} · 更新于{' '}

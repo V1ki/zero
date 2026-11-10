@@ -118,7 +118,9 @@ test('analysis uses a task session and claim token. Authenticated PR identity an
   if (!second) throw new Error('expected second claim')
   expect(second.task.id).toBe(first.task.id)
   expect(second.task.sessionId).toBe('first')
-  expect(ledger.getPriorSummaries(second.task.id, second.match.id)).toEqual(['earlier'])
+  expect(ledger.getPriorSummaries(second.task.id, second.match.id)).toEqual([
+    { summary: 'earlier', at: expect.any(String), outcome: 'not_notified' },
+  ])
   store.mandates.saveSettings({ projects: [], mandates: [{ ...config, groupBy: 'mandate' }] }, 1)
   push(store, [event(6, 9), event(7, 12)])
   const [grouped] = ledger.listTasks()

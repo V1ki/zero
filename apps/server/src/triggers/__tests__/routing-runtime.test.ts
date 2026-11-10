@@ -7,6 +7,7 @@ import type {
   TriggerRoutingSettings,
   TriggerWeixinTarget,
 } from '@zero-os/shared'
+import type { TriggerAnalysisContext } from '../event-agent'
 import type { NativePresenceProbe } from '../native-presence'
 import { RouterWorkspaceService } from '../router-workspace'
 import { TriggerRoutingRuntime } from '../routing-runtime'
@@ -20,6 +21,7 @@ const stream = `github:${scope.toLowerCase()}`
 function fixture(
   options: {
     analyze?: () => Promise<void>
+    triage?: (event: TriggerInboxItem) => TriggerAgentResult['triage']
     send?: () => Promise<void>
     nativePresence?: NativePresenceProbe
     personal?: NonNullable<ConstructorParameters<typeof TriggerRoutingRuntime>[1]['personal']>
@@ -46,10 +48,18 @@ function fixture(
     0,
   )
   let clock = new Date('2030-01-07T12:00:00Z') // Monday in the configured time zone.
-  const analyze = mock(async (event: TriggerInboxItem, sessionId: string) => {
-    await options.analyze?.()
-    return { summary: `分析 ${event.eventId}`, sessionId }
-  })
+  const analyze = mock(
+    async (
+      event: TriggerInboxItem,
+      sessionId: string,
+      _signal?: AbortSignal,
+      _context?: TriggerAnalysisContext,
+    ): Promise<TriggerAgentResult> => {
+      await options.analyze?.()
+      const triage = options.triage?.(event)
+      return { summary: `分析 ${event.eventId}`, sessionId, ...(triage && { triage }) }
+    },
+  )
   const send = mock(
     async (_target: TriggerWeixinTarget, _event: TriggerInboxItem, _agent: TriggerAgentResult) => {
       await options.send?.()
@@ -896,6 +906,150 @@ test('explicit private reminders use a pinned selected bot without an event, aut
     f.bind(group)
     expect(() => f.runtime.prepareDirectReminder('feishu')).toThrow('个人私聊')
     expect(writes).toHaveLength(2)
+  } finally {
+    await f.close()
+  }
+})
+
+const skipRepeats = (event: TriggerInboxItem): TriggerAgentResult['triage'] =>
+  event.eventId.startsWith('repeat')
+    ? { decision: 'skip', reason: '与上次已通知的失败相同。' }
+    : { decision: 'notify', reason: '新的失败。' }
+
+test('triage filters a repeat without delivery, shows earlier events, and notify anyway reuses the summary', async () => {
+  const f = fixture({ triage: skipRepeats })
+  const onWeb = mock(() => {})
+  const unsubscribe = f.store.webNotifications.subscribe(onWeb)
+  try {
+    f.configure({ enabled: true })
+    f.runtime.start()
+    const first = f.receive('first')
+    f.runtime.notify()
+    await flush()
+    expect(f.store.routing.get(first)?.status).toBe('web')
+    const repeat = f.receive('repeat-1')
+    f.runtime.notify()
+    await flush()
+    expect(f.store.routing.get(repeat)).toMatchObject({
+      status: 'filtered',
+      decision: null,
+      agent: { summary: '分析 repeat-1', triage: { decision: 'skip' } },
+    })
+    expect(f.analyze.mock.calls[1][3]).toEqual({
+      previous: [
+        { title: '构建失败', at: expect.any(String), summary: '分析 first', outcome: 'notified' },
+      ],
+    })
+    expect(f.runtime.listWeb().map((w) => w.event.id)).toEqual([first])
+    expect(onWeb).toHaveBeenCalledTimes(1)
+    // A later event sees the filtered one as filtered, not as something the owner was told.
+    f.receive('third')
+    f.runtime.notify()
+    await flush()
+    expect(f.analyze.mock.calls[2][3]?.previous.map((p) => p.outcome)).toEqual([
+      'notified',
+      'filtered',
+    ])
+
+    expect(f.runtime.process(repeat)).toBe('accepted')
+    await flush()
+    expect(f.store.routing.get(repeat)).toMatchObject({ origin: 'manual', status: 'web' })
+    expect(f.analyze).toHaveBeenCalledTimes(3)
+    expect(f.runtime.process(repeat)).toBe('already_processed')
+  } finally {
+    unsubscribe()
+    await f.close()
+  }
+})
+
+test('a manual request is never filtered, and a restart keeps a filtered route terminal', async () => {
+  const f = fixture({ triage: () => ({ decision: 'skip', reason: '无新信息。' }) })
+  try {
+    f.runtime.start()
+    const history = f.receive('historic')
+    f.configure({ enabled: true })
+    expect(f.runtime.process(history)).toBe('accepted')
+    await flush()
+    expect(f.store.routing.get(history)).toMatchObject({
+      origin: 'manual',
+      status: 'web',
+      agent: { triage: { decision: 'notify', reason: '手动提交的事件不做筛选。' } },
+    })
+    const subscribed = f.receive('subscribed')
+    f.runtime.notify()
+    await flush()
+    expect(f.store.routing.get(subscribed)?.status).toBe('filtered')
+    f.store.routing.recoverInterrupted()
+    f.runtime.notify()
+    await flush()
+    expect(f.store.routing.get(subscribed)?.status).toBe('filtered')
+    expect(f.runtime.listWeb().map((w) => w.event.id)).toEqual([history])
+    expect(f.send).not.toHaveBeenCalled()
+  } finally {
+    await f.close()
+  }
+})
+
+test('with triage off a skip judgement is ignored and no earlier events are gathered', async () => {
+  const f = fixture({ triage: () => ({ decision: 'skip', reason: '重复。' }) })
+  try {
+    f.configure({ enabled: true, triage: false })
+    f.runtime.start()
+    f.receive('first')
+    const second = f.receive('second')
+    f.runtime.notify()
+    await flush()
+    expect(f.store.routing.get(second)).toMatchObject({ status: 'web' })
+    expect(f.store.routing.get(second)?.agent).toEqual({
+      summary: '分析 second',
+      sessionId: expect.any(String),
+    })
+    expect(f.analyze.mock.calls.map((call) => call[3])).toEqual([undefined, undefined])
+  } finally {
+    await f.close()
+  }
+})
+
+test('turning triage off during analysis delivers the event instead of filtering it', async () => {
+  const entered = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  const f = fixture({
+    triage: () => ({ decision: 'skip', reason: '重复。' }),
+    analyze: async () => {
+      entered.resolve()
+      await release.promise
+    },
+  })
+  try {
+    f.configure({ enabled: true })
+    f.runtime.start()
+    const id = f.receive('first')
+    f.runtime.notify()
+    await entered.promise
+    f.configure({ triage: false })
+    release.resolve()
+    await flush()
+    await flush()
+    expect(f.store.routing.get(id)?.status).toBe('web')
+    expect(f.store.routing.get(id)?.agent?.triage).toBeUndefined()
+  } finally {
+    release.resolve()
+    await f.close()
+  }
+})
+
+test('a stored result without a triage field is routed as notify', async () => {
+  const f = fixture()
+  try {
+    f.configure({ enabled: true })
+    const id = f.receive('legacy')
+    // Simulate a result analysed by an older version and left ready across an upgrade.
+    expect(f.store.routing.claimAgent(id, 'old-session')).toBe(true)
+    expect(f.store.routing.finishAgent(id, 'old-session', { summary: '旧版摘要' })).toBe(true)
+    f.runtime.start()
+    await flush()
+    expect(f.store.routing.get(id)?.status).toBe('web')
+    expect(f.analyze).not.toHaveBeenCalled()
   } finally {
     await f.close()
   }

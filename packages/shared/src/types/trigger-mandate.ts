@@ -98,6 +98,8 @@ export interface MandateEffect {
   reason: string | null
   dueAt: string | null
   receipt: string | null
+  /** Set on a notify effect that triage skipped. Only such a skip may be re-opened by a retry. */
+  triaged?: boolean
 }
 export interface MandateMatch {
   id: number

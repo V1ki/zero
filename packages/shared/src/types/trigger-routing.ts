@@ -62,6 +62,8 @@ export interface TriggerRoutingSettings {
   offDay: TriggerRouteDestination
   /** Router preferences select only the bot. Its channel resolves the recipient. */
   personalBots?: Partial<Record<MandatePlatform, string | null>>
+  /** Triage filters repeated or no-news events before delivery. Absent means on. */
+  triage?: boolean
   /** Original Weixin API field retained for older configuration clients. */
   weixinTarget: TriggerWeixinTarget | null
 }
@@ -76,9 +78,24 @@ export interface TriggerRoutingSettingsSnapshot {
   settings: TriggerRoutingSettings
 }
 
+/** The analysis model's judgement. A result without it, e.g. from an older version, means notify. */
+export interface TriggerTriage {
+  decision: 'notify' | 'skip'
+  reason: string
+}
+
 export interface TriggerAgentResult {
   summary: string
   sessionId?: string
+  triage?: TriggerTriage
+}
+
+/** An earlier event shown to triage. Only `notified` means the owner was actually told. */
+export interface TriggerPriorEvent {
+  summary: string
+  outcome: 'notified' | 'filtered' | 'not_notified'
+  title?: string
+  at?: string
 }
 
 export type TriggerRouteDecision =
@@ -96,6 +113,8 @@ export type TriggerRouteStatus =
   | 'failed'
   | 'uncertain'
   | 'cancelled'
+  /** Triage judged it not worth a notification. Terminal until the owner asks to notify anyway. */
+  | 'filtered'
 
 export interface TriggerRouteRecord {
   inboxId: number

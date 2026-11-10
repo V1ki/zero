@@ -59,6 +59,7 @@ const statuses: Record<TriggerRouteStatus, string> = {
   uncertain: '等待核对',
   failed: '处理失败',
   cancelled: '已撤销',
+  filtered: '已过滤',
 }
 const dateFormat = new Intl.DateTimeFormat('zh-CN', {
   month: 'numeric',

@@ -12,7 +12,7 @@ import {
   isTriggerRoutePlatform,
   sameTriggerRouteTarget,
 } from '@zero-os/shared'
-import { TriggerAgentError } from './event-agent'
+import { TriggerAgentError, type TriggerAnalysisContext } from './event-agent'
 import type { createMandatePlatforms } from './mandate-platforms'
 import type { MandateReceipt } from './mandate-runtime'
 import type { MandateTargetOption } from './mandate-service'
@@ -25,6 +25,7 @@ interface RoutingDependencies {
     item: TriggerInboxItem,
     sessionId: string,
     signal?: AbortSignal,
+    context?: TriggerAnalysisContext,
   ): Promise<TriggerAgentResult>
   weixin: Pick<ReturnType<typeof createTriggerWeixin>, 'listTargets' | 'send'>
   personal?: Pick<
@@ -45,6 +46,21 @@ type BotBinding = ReturnType<TriggerStore['routing']['getPersonalBotBinding']>
 type DeliveryState = TriggerRoutingBot['deliveryState']
 type BotClaim = { target: MandateTarget; bindingRevision: number | null; automatic: boolean }
 export class DirectReminderUnavailableError extends Error {}
+
+/** How far back triage looks for earlier events of the same stream. */
+const triageWindowMs = 7 * 86_400_000
+
+/** Program rules the model cannot override: only a subscription route with triage on may be filtered. */
+function applyTriageRules(agent: TriggerAgentResult, triage: boolean, manual: boolean) {
+  const { triage: judgement, ...result } = agent
+  if (!triage || !judgement) return result
+  if (judgement.decision === 'skip' && manual)
+    return {
+      ...result,
+      triage: { decision: 'notify' as const, reason: '手动提交的事件不做筛选。' },
+    }
+  return { ...result, triage: judgement }
+}
 
 const directUnavailable: Record<Exclude<DeliveryState, 'ready'>, string> = {
   offline: '所选机器人离线，请在它重新连接后发送。',
@@ -441,9 +457,19 @@ export class TriggerRoutingRuntime {
     let agent = route.agent
     if (route.status === 'pending') {
       const sessionId = route.sessionId ?? `trigger-${crypto.randomUUID()}`
+      const triage = this.getConfig().settings.triage !== false
+      const context = triage
+        ? {
+            previous: this.store.listRecentInStream(
+              event.id,
+              new Date(Date.parse(event.receivedAt) - triageWindowMs).toISOString(),
+            ),
+          }
+        : undefined
       if (!this.store.claimAgent(event.id, sessionId)) return
+      let result: TriggerAgentResult
       try {
-        agent = await this.deps.analyze(event, sessionId, this.controller.signal)
+        result = await this.deps.analyze(event, sessionId, this.controller.signal, context)
       } catch (error) {
         this.store.failAgent(
           event.id,
@@ -451,6 +477,13 @@ export class TriggerRoutingRuntime {
           error instanceof TriggerAgentError ? error.message : 'Agent 分析失败，可手动重试。',
         )
         return
+      }
+      agent = applyTriageRules(result, triage, route.origin === 'manual')
+      if (agent.triage?.decision === 'skip') {
+        // Filtered is terminal: nothing is routed or delivered, not even to the Web.
+        if (this.store.filterAgent(event.id, sessionId, agent)) return
+        // A manual request or turning triage off won the race. Continue as without triage.
+        agent = applyTriageRules(agent, false, false)
       }
       if (!this.store.finishAgent(event.id, sessionId, agent)) return
     }

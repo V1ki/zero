@@ -132,6 +132,7 @@ function modelContext(input: RouterAgentInput, filter: Filter) {
       duringWork: settings.duringWork,
       afterWork: settings.afterWork,
       offDay: settings.offDay,
+      triage: settings.triage !== false,
       weixinTargetConfigured: getTriggerRouteBot(settings, 'weixin') !== null,
       ...(!task && {
         bots: (input.personalBots ?? []).map((bot) => ({
@@ -153,6 +154,10 @@ function modelContext(input: RouterAgentInput, filter: Filter) {
       settingsRevision: recorded.settingsRevision,
       updatedAt: recorded.updatedAt,
       summary: recorded.agent && filter.filter(recorded.agent.summary).slice(0, 600),
+      triage: recorded.agent?.triage && {
+        decision: recorded.agent.triage.decision,
+        reason: filter.filter(recorded.agent.triage.reason).slice(0, 300),
+      },
       decision: recorded.decision,
       firstDeferred: recorded.firstDeferred,
       error: recorded.error && filter.filter(recorded.error).slice(0, 300),

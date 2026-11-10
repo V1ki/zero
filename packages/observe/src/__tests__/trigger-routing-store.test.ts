@@ -606,3 +606,67 @@ test('reopen a router database without first-defer history, then preserve first 
   expect(store.routing.get(1)?.firstDeferred).toEqual({ at: now, reason: 'away' })
   expect(store.routing.listWeb()[0].route.decision?.reason).toBe('back')
 })
+
+test('triage filters only a subscription route while triage is on; notify anyway resumes with its summary', () => {
+  const path = tempPath()
+  const store = open(path)
+  store.saveSettings(source, 0)
+  configure(store, { enabled: true })
+  const skip = {
+    summary: '重复',
+    sessionId: 's',
+    triage: { decision: 'skip' as const, reason: '同上' },
+  }
+  receive(store, 'first')
+  receive(store, 'second')
+  receive(store, 'third')
+  const [first, second, third] = store.routing
+    .list()
+    .map(({ event }) => event.id)
+    .sort()
+  expect(store.routing.filterAgent(first, 's', skip)).toBe(false)
+  expect(store.routing.claimAgent(first, 's')).toBe(true)
+  expect(store.routing.filterAgent(first, 'other-session', skip)).toBe(false)
+  expect(store.routing.filterAgent(first, 's', skip)).toBe(true)
+  expect(store.routing.get(first)).toMatchObject({ status: 'filtered', agent: skip })
+  expect(store.routing.listReady(later)).toHaveLength(2)
+
+  // Older clients omit the switch and keep it; an explicit false turns triage off.
+  const { triage: _, ...oldClient } = store.routing.getSettings().settings
+  store.routing.saveSettings(oldClient, store.routing.getSettings().revision)
+  expect(store.routing.getSettings().settings.triage).toBeUndefined()
+  configure(store, { triage: false })
+  expect(store.routing.claimAgent(second, 's')).toBe(true)
+  expect(store.routing.filterAgent(second, 's', skip)).toBe(false)
+  store.routing.saveSettings(
+    { ...store.routing.getSettings().settings, triage: undefined },
+    store.routing.getSettings().revision,
+  )
+  expect(store.routing.getSettings().settings.triage).toBe(false)
+  configure(store, { triage: true })
+
+  // A manual request made before analysis is never filtered.
+  expect(store.routing.enqueue(third)).toBe(true)
+  expect(store.routing.claimAgent(third, 's')).toBe(true)
+  expect(store.routing.filterAgent(third, 's', skip)).toBe(false)
+
+  // Only analysed earlier events of the stream within the window are listed.
+  expect(
+    store.routing
+      .listRecentInStream(third, '2000-01-01T00:00:00.000Z')
+      .map((e) => [e.summary, e.outcome]),
+  ).toEqual([['重复', 'filtered']])
+  expect(store.routing.listRecentInStream(third, '2999-01-01T00:00:00.000Z')).toEqual([])
+
+  close(store)
+  const reopened = open(path)
+  reopened.routing.recoverInterrupted()
+  expect(reopened.routing.get(first)?.status).toBe('filtered')
+  expect(reopened.routing.enqueue(first)).toBe(true)
+  expect(reopened.routing.get(first)).toMatchObject({
+    origin: 'manual',
+    status: 'ready',
+    sessionId: 's',
+    agent: skip,
+  })
+})

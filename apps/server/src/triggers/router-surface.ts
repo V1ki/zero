@@ -37,6 +37,7 @@ const statuses: Record<TriggerRouteStatus, string> = {
   failed: '处理失败',
   uncertain: '投递结果待确认',
   cancelled: '来源规则已撤销',
+  filtered: '分诊已过滤，未发送通知',
 }
 const destination = {
   web: '网页',
@@ -64,7 +65,7 @@ function buildSurface(
   title: string,
   facts: Fact[],
   actions: RouterActionName[],
-  retry = false,
+  processLabel?: string,
 ): RouterSurfaceMessages {
   const components: RouterSurfaceComponent[] = [
     { id: 'heading', component: 'Text', text: { path: '/heading' }, variant: 'h3' },
@@ -90,7 +91,7 @@ function buildSurface(
       {
         id: `label-${name}`,
         component: 'Text',
-        text: name === 'process_event' && retry ? '重新处理' : labels[name],
+        text: (name === 'process_event' && processLabel) || labels[name],
       },
       {
         id: `btn-${name}`,
@@ -218,16 +219,19 @@ export function buildRouterSurface(
         value: clock(route.decision.recheckAt),
       })
   }
+  const filtered = route?.status === 'filtered'
+  if (filtered)
+    facts.push({ label: '分诊理由', value: route.agent?.triage?.reason || '分诊判断无需通知。' })
   if (route?.error) facts.push({ label: '处理记录', value: route.error })
   actions.push(...investigationActions)
   const retry = route?.status === 'failed' || route?.status === 'cancelled'
-  if (settings.enabled && (!route || retry)) actions.push('process_event')
+  if (settings.enabled && (!route || retry || filtered)) actions.push('process_event')
   return buildSurface(
     surfaceId(scope),
     route ? statuses[route.status] : '事件已入箱',
     facts,
     actions,
-    retry,
+    filtered ? '仍然通知' : retry ? '重新处理' : undefined,
   )
 }
 

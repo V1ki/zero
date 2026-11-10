@@ -205,7 +205,10 @@ export function createMandateService({
     retry(matchId: number, kind: RetryKind) {
       if (!records.getMatch(matchId)) throw new MandateInputError(404, '找不到这条处理记录。')
       if (!runtime.retry(matchId, kind))
-        throw new MandateInputError(409, '只可重试已明确失败的步骤。请核对处理记录。')
+        throw new MandateInputError(
+          409,
+          '只可重试已明确失败的步骤或被分诊过滤的提醒。请核对处理记录。',
+        )
       return { accepted: true as const }
     },
   }

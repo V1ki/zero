@@ -288,3 +288,16 @@ test('a retired task expires independently of its active sibling and their share
       .get(oldScope),
   ).toEqual({ question: '', answer: null })
 })
+
+test('a filtered route is finished history and expires like a delivered one', () => {
+  const { store, receive } = fixture()
+  config(store, { enabled: true, retentionDays: 7 })
+  const id = receive('filtered')
+  expect(store.routing.claimAgent(id, 'synthetic-session')).toBe(true)
+  const skip = { decision: 'skip' as const, reason: 'private reason' }
+  expect(
+    store.routing.filterAgent(id, 'synthetic-session', { summary: 'private', triage: skip }),
+  ).toBe(true)
+  expect(store.retention.sweep(future()).events).toBe(1)
+  expect(store.routing.get(id)).toBeNull()
+})

@@ -62,7 +62,7 @@ export class TriggerRetentionStore {
         AND (EXISTS(SELECT 1 FROM trigger_routes r WHERE r.inbox_id=i.id)
           OR EXISTS(SELECT 1 FROM mandate_matches m WHERE m.inbox_id=i.id))
         AND NOT EXISTS(SELECT 1 FROM trigger_routes r WHERE r.inbox_id=i.id
-          AND (r.status NOT IN ('web','sent','cancelled') OR r.updated_at > ?1))
+          AND (r.status NOT IN ('web','sent','cancelled','filtered') OR r.updated_at > ?1))
         AND NOT EXISTS(SELECT 1 FROM mandate_matches m JOIN mandate_tasks t ON t.id=m.task_id
           WHERE m.inbox_id=i.id AND (${taskStillOpen}
             OR EXISTS(SELECT 1 FROM trigger_visible_turns c WHERE c.thread='task-' || t.id

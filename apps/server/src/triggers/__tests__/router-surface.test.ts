@@ -160,3 +160,21 @@ test('rejects unsupported catalogs, mixed surfaces, missing data, unknown compon
     if (root?.component === 'Column') root.children.push('root')
   })
 })
+
+test('a filtered event shows the triage reason and offers to notify anyway', () => {
+  const filtered: TriggerRouteRecord = {
+    ...deferred,
+    origin: 'subscription',
+    status: 'filtered',
+    decision: null,
+    firstDeferred: null,
+    agent: { summary: 'known facts', triage: { decision: 'skip', reason: '与上次相同' } },
+  }
+  const surface = buildRouterSurface(7, item, filtered, cfg)
+  expect(matchesRouterSurfaceAction(surface, click(surface, 'process_event'))).toBe(true)
+  const text = JSON.stringify(surface)
+  for (const detail of ['分诊已过滤', '分诊理由', '与上次相同', '仍然通知'])
+    expect(text).toContain(detail)
+  const paused = buildRouterSurface(7, item, filtered, { ...cfg, enabled: false })
+  expect(matchesRouterSurfaceAction(paused, click(paused, 'process_event'))).toBe(false)
+})
