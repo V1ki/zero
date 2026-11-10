@@ -128,6 +128,23 @@ test('analysis uses a task session and claim token. Authenticated PR identity an
   expect(grouped.eventCount).toBe(2)
 })
 
+test('switching to or from investigation revokes undelivered work decided under the previous mode', () => {
+  const store = setup()
+  const ledger = store.mandates
+  let revision = 1
+  for (const processing of ['investigate', 'agent'] as const) {
+    push(store, [event(revision)])
+    const work = ledger.claimAnalysis('session')
+    if (!work) throw new Error('expected a claim')
+    expect(ledger.finishAnalysis(work.match.id, 'summary', work.claimToken)).toBe(true)
+    const notify = () => ledger.getMatch(work.match.id)?.effects.find((e) => e.kind === 'notify')
+    expect(notify()?.status).toBe('pending')
+    ledger.saveSettings({ projects: [], mandates: [{ ...config, processing }] }, revision++)
+    expect(notify()?.status).toBe('revoked')
+    expect(ledger.getTask(work.task.id)?.active).toBe(false)
+  }
+})
+
 test('recipient identity, revocation generations and source release protect historical task details', () => {
   const store = setup()
   push(store, [event(1)])
