@@ -11,8 +11,23 @@ import type {
 } from '@zero-os/shared'
 import { TriggerAgentError, type TriggerAnalysisContext } from './event-agent'
 import { githubEventSubject } from './investigation'
+import type {
+  MandateInvestigationContext,
+  MandateInvestigationResult,
+} from './mandate-investigation'
 import { decideMandateNotification } from './mandate-policy'
 import { TRIGGER_PRESENCE_TTL_MS } from './routing-policy'
+
+/** Appended to the triage summary when the reading the mandate asked for did not back it. */
+export const investigationFallback = {
+  unread: '（未能读取 GitHub 详情，以上仅依据事件标题和摘录。）',
+  unfinished: '（GitHub 调查未完成，以上仅依据事件标题和摘录。）',
+} as const
+
+function withFallback(summary: string, kind: keyof typeof investigationFallback) {
+  const clause = investigationFallback[kind]
+  return `${summary.slice(0, 600 - clause.length)}${clause}`
+}
 
 export interface MandateDelivery {
   /** Stable across definite failures and retries of the same authorized effect. */
@@ -48,6 +63,13 @@ interface MandateDependencies {
     signal: AbortSignal,
     context: Required<TriggerAnalysisContext>,
   ): Promise<TriggerAgentResult>
+  /** Reads the event's own GitHub records for `processing: 'investigate'` mandates. */
+  investigate?(
+    item: TriggerInboxItem,
+    sessionId: string,
+    signal: AbortSignal,
+    context: MandateInvestigationContext,
+  ): Promise<MandateInvestigationResult>
   platforms: MandatePlatforms
   getPresenceContext?(settings: TriggerRoutingSettings): Promise<{
     lastPresenceAt?: Date
@@ -56,6 +78,10 @@ interface MandateDependencies {
 }
 
 type EffectKind = 'archive' | 'notify'
+interface AnalysisLane {
+  promise: Promise<void>
+  settled?: PromiseSettledResult<boolean>
+}
 type PolicyVersion = { mandateRevision: number; routingRevision: number }
 
 function keyForTarget(target: MandateTarget | MandateArchive | null) {
@@ -123,6 +149,8 @@ export class TriggerMandateRuntime {
   private timer?: ReturnType<typeof setTimeout>
   private running?: Promise<void>
   private requested = false
+  private analysis?: AnalysisLane
+  private wake = Promise.withResolvers<void>()
 
   constructor(
     private readonly store: TriggerStore,
@@ -141,6 +169,7 @@ export class TriggerMandateRuntime {
     this.stop.abort()
     clearTimeout(this.timer)
     await this.running
+    await this.analysis?.promise
   }
 
   heartbeat() {
@@ -191,18 +220,47 @@ export class TriggerMandateRuntime {
     return { decision, archive: mandate.archive }
   }
 
+  /** One analysis at a time. The lane promise never rejects; its outcome is read by the loop. */
+  private startAnalysis(): AnalysisLane {
+    const lane: AnalysisLane = { promise: Promise.resolve() }
+    lane.promise = this.analyzeOne().then(
+      (value) => {
+        lane.settled = { status: 'fulfilled', value }
+      },
+      (reason: unknown) => {
+        lane.settled = { status: 'rejected', reason }
+      },
+    )
+    return lane
+  }
+
+  /** Records the finished analysis pass, if any, and rethrows its failure into the loop. */
+  private consumeAnalysis() {
+    const settled = this.analysis?.settled
+    if (!settled) return
+    this.analysis = undefined
+    if (settled.status === 'rejected') throw settled.reason
+    if (settled.value) this.requested = true
+  }
+
   notify() {
     if (!this.started || this.stop.signal.aborted) return
     clearTimeout(this.timer)
     this.requested = true
+    // New work does not wait for an analysis that is still in flight.
+    this.wake.resolve()
+    this.wake = Promise.withResolvers<void>()
     if (this.running) return
     this.running = Promise.resolve()
       .then(async () => {
         do {
           this.requested = false
+          // An analysis can take minutes with an investigation. It stays in flight across passes
+          // so archive and notification work keep moving; the loop waits for it only when idle.
+          const analysis = this.analysis ?? this.startAnalysis()
+          this.analysis = analysis
           // Each lane has its own durable claim: a document rejection cannot suppress a notification.
           const advanced = await Promise.allSettled([
-            this.analyzeOne(),
             this.advanceArchive(),
             this.advanceNotification(),
           ])
@@ -210,7 +268,11 @@ export class TriggerMandateRuntime {
             if (result.status === 'rejected') throw result.reason
             if (result.value) this.requested = true
           }
+          if (!this.requested) await Promise.race([analysis.promise, this.wake.promise])
+          this.consumeAnalysis()
         } while (this.requested && !this.stop.signal.aborted)
+        await this.analysis?.promise
+        this.consumeAnalysis()
         const next = this.store.mandates.nextDueAt()
         if (next) this.schedule(Date.parse(next) - this.now().getTime())
       })
@@ -277,13 +339,37 @@ export class TriggerMandateRuntime {
       result.triage?.decision === 'skip' &&
       !work.mandate.urgent &&
       this.store.routing.getSettings().settings.triage !== false
+    let summary = result.summary
+    if (!skip && work.mandate.processing === 'investigate' && work.event.source === 'github') {
+      // The claim stays held; a revocation meanwhile clears its token and the finish is refused.
+      summary = await this.investigate(work, work.task.sessionId ?? session, result.summary)
+      if (this.stop.signal.aborted) return true
+    }
     db.finishAnalysis(
       work.match.id,
-      result.summary,
+      summary,
       work.claimToken,
       skip ? `分诊判断无需提醒：${result.triage?.reason}` : undefined,
     )
     return true
+  }
+
+  /** Never fails the match: the notification goes out with a visible note instead. */
+  private async investigate(work: MandateWork, sessionId: string, triage: string) {
+    const run = this.deps.investigate
+    if (!run) return withFallback(triage, 'unread')
+    try {
+      const result = await run(work.event, sessionId, this.stop.signal, {
+        purpose: work.mandate.purpose,
+        triage,
+      })
+      return result.status === 'read' ? result.summary : withFallback(triage, 'unread')
+    } catch {
+      // Model, tool budget, timeout or output failures. Content is not logged.
+      if (!this.stop.signal.aborted)
+        console.warn(`[Mandates] Investigation of match ${work.match.id} did not finish.`)
+      return withFallback(triage, 'unfinished')
+    }
   }
 
   private async advanceArchive(): Promise<boolean> {

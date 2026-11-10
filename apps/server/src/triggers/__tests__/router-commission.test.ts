@@ -313,6 +313,18 @@ test('edited fields preserve other parts of the confirmed mandate and support pe
   })
 })
 
+test('reading GitHub details is refused for a WeChat mandate drafted from IM', async () => {
+  const f = fixture()
+  await f.grant()
+  const draft = await f.commission.prepare(actor, 'create', '跟踪构建失败')
+  await f.commission.confirm(actor, draftCode(draft))
+  f.modelOutput({ mandate: 'M1', patch: { processing: 'investigate' } })
+  const question = '把发布委托的处理方式改为读取 GitHub 详情后提醒'
+  expect(commissionIntent(question)).toBe('edit')
+  await expect(f.commission.prepare(actor, 'edit', question)).rejects.toThrow('只有 GitHub 委托')
+  expect(f.registry.getConfig().settings.mandates[0].processing).toBeUndefined()
+})
+
 test('ordering is previewed and confirmed without modifying any other rule or policy field', async () => {
   const f = fixture()
   const quiet = {

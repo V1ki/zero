@@ -43,8 +43,12 @@ export interface TriggerMandate {
   purpose: string
   source: TriggerSource
   scope: string
-  /** Existing mandates use the model unless the owner explicitly chooses a factual reminder. */
-  processing?: 'agent' | 'direct'
+  /**
+   * Existing mandates use the model unless the owner explicitly chooses a factual reminder.
+   * `investigate` (GitHub only) also reads the event's own Actions or PR records, read-only,
+   * after triage lets the event through and before the notification is sent.
+   */
+  processing?: 'agent' | 'direct' | 'investigate'
   groupBy?: 'thread' | 'mandate' | 'event'
   keyword: string
   projectId: string | null

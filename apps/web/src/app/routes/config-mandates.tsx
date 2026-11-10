@@ -152,9 +152,16 @@ function MandateEditor({
           委托来源
           <select
             value={value.source}
-            onChange={(e) =>
-              onChange({ source: e.target.value === 'github' ? 'github' : 'wxarc', scope: '' })
-            }
+            onChange={(e) => {
+              const source = e.target.value === 'github' ? 'github' : 'wxarc'
+              onChange({
+                source,
+                scope: '',
+                // Reading GitHub details applies only to GitHub mandates.
+                ...(source !== 'github' &&
+                  value.processing === 'investigate' && { processing: 'agent' }),
+              })
+            }}
           >
             <option value="github">GitHub</option>
             <option value="wxarc">WXARC 微信</option>
@@ -194,11 +201,20 @@ function MandateEditor({
           <select
             value={value.processing ?? 'agent'}
             aria-describedby="mandate-processing-description"
-            onChange={(e) =>
-              onChange({ processing: e.target.value === 'direct' ? 'direct' : 'agent' })
-            }
+            onChange={(e) => {
+              const mode = e.target.value
+              onChange({
+                processing:
+                  mode === 'direct' || (mode === 'investigate' && value.source === 'github')
+                    ? mode
+                    : 'agent',
+              })
+            }}
           >
             <option value="agent">Agent 归纳</option>
+            {value.source === 'github' && (
+              <option value="investigate">读取 GitHub 详情后提醒</option>
+            )}
             <option value="direct">直接生成事实提醒</option>
           </select>
         </label>
@@ -248,7 +264,9 @@ function MandateEditor({
       <small id="mandate-processing-description">
         {value.processing === 'direct'
           ? '按固定格式整理命中事件，无需调用模型。提醒时间和去向仍由 Router 按偏好决定。'
-          : 'Agent 会结合跟踪目的归纳每次命中的事件。'}
+          : value.processing === 'investigate'
+            ? '分诊决定提醒后，Agent 先用监听凭证只读查看该仓库自身的 Actions 失败记录或 PR 记录，在提醒中写明出了什么问题、是否需要你处理，不做任何更改，提醒最多可能因此晚约一分半钟。'
+            : 'Agent 会结合跟踪目的归纳每次命中的事件。'}
       </small>
       <details className="listener-item">
         <summary>提醒受众与成果归档</summary>

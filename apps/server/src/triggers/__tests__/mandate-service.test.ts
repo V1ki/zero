@@ -134,6 +134,46 @@ test('processing remains optional for older clients and both explicit modes roun
   }
 })
 
+test('investigation is accepted and round-trips for GitHub mandates and is rejected elsewhere', async () => {
+  const { service, store } = fixture()
+  const wxarc = snapshot()
+  wxarc.settings.mandates[0].processing = 'investigate'
+  await expect(service.saveConfig(wxarc)).rejects.toThrow('只有 GitHub 委托')
+  const sources = store.getSettings()
+  store.saveSettings(
+    {
+      ...sources.settings,
+      github: {
+        credentialRef: '',
+        repositories: [
+          {
+            name: 'example/release',
+            enabled: true,
+            branch: '',
+            workflow: '',
+            workflowFailures: true,
+            mention: '',
+          },
+        ],
+      },
+    },
+    sources.revision,
+  )
+  const github = snapshot()
+  Object.assign(github.settings.mandates[0], {
+    source: 'github',
+    scope: 'example/release',
+    processing: 'investigate',
+  })
+  const saved = await service.saveConfig(github)
+  expect(saved.settings.mandates[0].processing).toBe('investigate')
+  expect(service.getConfig().settings.mandates[0].processing).toBe('investigate')
+  saved.settings.mandates[0].source = 'wxarc'
+  saved.settings.mandates[0].scope = 'selected'
+  await expect(service.saveConfig(saved)).rejects.toBeInstanceOf(MandateInputError)
+  expect(service.getConfig().revision).toBe(1)
+})
+
 test('rejects a target forged for another operator, platform, or chat, and denies arbitrary sources or archive capabilities', async () => {
   const f = fixture()
   for (const patch of [

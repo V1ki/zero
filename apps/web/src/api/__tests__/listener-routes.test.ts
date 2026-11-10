@@ -918,6 +918,55 @@ test('mandate routes share the control plane guard and body limit, and expose pa
     expect(await (await call('records?inboxId=1')).json()).toEqual({ items: [] })
     expect(await (await call('tasks')).json()).toEqual({ items: [] })
     expect((await (await call('audit')).json()).items).toHaveLength(1)
+    store.saveSettings(
+      {
+        github: {
+          credentialRef: '',
+          repositories: [
+            {
+              name: 'example/release',
+              enabled: true,
+              branch: '',
+              workflow: '',
+              workflowFailures: true,
+              mention: '',
+            },
+          ],
+        },
+        wxarc: { sessions: [{ id: 'room', name: '项目组', enabled: true, keyword: '' }] },
+      },
+      store.getSettings().revision,
+    )
+    const rule = {
+      id: 'release',
+      enabled: true,
+      name: '发布',
+      purpose: '发布是否受阻',
+      source: 'github',
+      scope: 'example/release',
+      processing: 'investigate',
+      keyword: '',
+      projectId: null,
+      targets: [],
+      archive: null,
+      policy: {},
+      deadline: null,
+      urgent: false,
+    }
+    const investigated = {
+      ...config,
+      revision: 1,
+      settings: { ...config.settings, mandates: [rule] },
+    }
+    expect((await call('config', 'PUT', investigated)).status).toBe(200)
+    expect((await (await call('config')).json()).settings.mandates[0].processing).toBe(
+      'investigate',
+    )
+    const chat = { ...investigated, revision: 2 }
+    chat.settings = { ...chat.settings, mandates: [{ ...rule, source: 'wxarc', scope: 'room' }] }
+    const rejected = await call('config', 'PUT', chat)
+    expect(rejected.status).toBe(400)
+    expect(JSON.stringify(await rejected.json())).toContain('只有 GitHub 委托')
   } finally {
     store.close()
   }

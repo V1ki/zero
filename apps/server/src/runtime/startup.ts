@@ -24,6 +24,7 @@ import { writeRestartTrigger } from '../system/restart-trigger'
 import { rebuildWebBundleAsync } from '../system/runtime'
 import { TriggerAgentError, createTriggerAgent } from '../triggers/event-agent'
 import { createGithubInvestigator } from '../triggers/investigation'
+import { createMandateInvestigation } from '../triggers/mandate-investigation'
 import { createMandatePlatforms } from '../triggers/mandate-platforms'
 import { TriggerMandateRuntime } from '../triggers/mandate-runtime'
 import { createMandateService } from '../triggers/mandate-service'
@@ -254,8 +255,16 @@ async function createStartupRuntimeShell({
     onPresence: () => taskRuntime.heartbeat(),
     onWebDelivery: () => store.webNotifications.changed(),
   })
+  const resolveSecret = (ref: string) => core.vault.get(ref)
+  // Built before the mandate runtime: it reads only the listener settings and the vault.
+  const investigator = createGithubInvestigator(
+    () => store.getSettings(),
+    resolveSecret,
+    (text) => core.secretFilter.filter(text),
+  )
   const taskRuntime = new TriggerMandateRuntime(store, {
     analyze,
+    investigate: createMandateInvestigation(core, investigator),
     platforms,
     getPresenceContext: (settings) => routing.getPresenceContext(settings),
   })
@@ -267,12 +276,6 @@ async function createStartupRuntimeShell({
     probeArchive: platforms.probeArchive,
   })
   const commission = new RouterCommissionService(store, mandates, core)
-  const resolveSecret = (ref: string) => core.vault.get(ref)
-  const investigator = createGithubInvestigator(
-    () => store.getSettings(),
-    resolveSecret,
-    (text) => core.secretFilter.filter(text),
-  )
   const repositories = createRouterRepositoryLookup(
     (actor) => store.getRouterGithubGrant(actor),
     resolveSecret,
