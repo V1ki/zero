@@ -11,6 +11,7 @@ import {
   type TriggerMandate,
   type TriggerMandateSettings,
   type TriggerMandateSnapshot,
+  type TriggerPriorEvent,
   TriggerSettingsConflictError,
 } from '@zero-os/shared'
 import { MandateEffectStore } from './trigger-mandate-effects'
@@ -23,7 +24,10 @@ const matchFields = `id, task_id AS taskId, mandate_id AS mandateId, inbox_id AS
   status, summary, error`
 type TaskRow = Omit<MandateTask, 'paused' | 'active'> & { paused: number; active: number }
 type MatchRow = Omit<MandateMatch, 'effects'>
-type EffectRow = Omit<MandateEffect, 'target'> & { target: string | null }
+type EffectRow = Omit<MandateEffect, 'target' | 'triaged'> & {
+  target: string | null
+  triaged: number
+}
 const decodeTask = (row: TaskRow): MandateTask => ({
   ...row,
   paused: !!row.paused,
@@ -134,6 +138,8 @@ export class TriggerMandateStore extends MandateEffectStore {
     `)
     // Replace the previous unconditional enqueue atomically on existing installations.
     db.transaction(() => {
+      if (!db.query("SELECT 1 FROM pragma_table_info('mandate_effects') WHERE name='triage'").get())
+        db.exec('ALTER TABLE mandate_effects ADD COLUMN triage INTEGER NOT NULL DEFAULT 0')
       db.exec(`
         DROP TRIGGER IF EXISTS trigger_inbox_enqueue_route;
         CREATE TRIGGER IF NOT EXISTS trigger_inbox_enqueue_ungoverned_route AFTER INSERT ON trigger_inbox
@@ -358,14 +364,15 @@ export class TriggerMandateStore extends MandateEffectStore {
       .query<
         EffectRow,
         [number]
-      >(`SELECT kind,status,destination,target,reason,due_at AS dueAt,receipt
+      >(`SELECT kind,status,destination,target,reason,due_at AS dueAt,receipt,triage AS triaged
       FROM mandate_effects WHERE match_id=? ORDER BY kind`)
       .all(row.id)
     return {
       ...row,
-      effects: effects.map((e) => ({
+      effects: effects.map(({ triaged, ...e }) => ({
         ...e,
         target: e.target ? (JSON.parse(e.target) as MandateEffect['target']) : null,
+        ...(triaged === 1 && { triaged: true }),
       })),
     }
   }
@@ -413,14 +420,29 @@ export class TriggerMandateStore extends MandateEffectStore {
     }
   }
 
-  getPriorSummaries(taskId: number, beforeMatchId: number): string[] {
+  /** Earlier analysed matches of a task, oldest first, with whether each notification went out. */
+  getPriorSummaries(taskId: number, beforeMatchId: number): TriggerPriorEvent[] {
     return this.db
-      .query<{ summary: string }, [number, number]>(`SELECT summary FROM mandate_matches
-      WHERE task_id=? AND id<? AND id IN (SELECT id FROM mandate_eligible_matches) AND status='ready' AND summary IS NOT NULL
-      ORDER BY id DESC LIMIT 4`)
+      .query<
+        { summary: string; at: string | null; effect: string | null; triage: number | null },
+        [number, number]
+      >(`SELECT m.summary, i.received_at AS at, e.status AS effect, e.triage FROM mandate_matches m
+      LEFT JOIN trigger_visible_inbox i ON i.id=m.inbox_id
+      LEFT JOIN mandate_effects e ON e.match_id=m.id AND e.kind='notify'
+      WHERE m.task_id=? AND m.id<? AND m.id IN (SELECT id FROM mandate_eligible_matches) AND m.status='ready' AND m.summary IS NOT NULL
+      ORDER BY m.id DESC LIMIT 4`)
       .all(taskId, beforeMatchId)
       .reverse()
-      .map((row) => row.summary)
+      .map(({ summary, at, effect, triage }) => ({
+        summary,
+        ...(at && { at }),
+        outcome:
+          effect === 'done'
+            ? 'notified'
+            : effect === 'skipped' && triage === 1
+              ? 'filtered'
+              : 'not_notified',
+      }))
   }
 
   claimAnalysis(sessionId: string): MandateWork | null {
@@ -452,14 +474,32 @@ export class TriggerMandateStore extends MandateEffectStore {
       .immediate()
   }
 
-  finishAnalysis(id: number, summary: string, claimToken?: string): boolean {
-    return (
-      this.db.run(
-        `UPDATE mandate_matches SET status='ready',summary=?,claim_token=NULL
+  /**
+   * With `triageSkip`, the same transaction marks the notify effect skipped, so a restart can
+   * never deliver it. Urgent mandates and triage turned off meanwhile keep the notification.
+   */
+  finishAnalysis(id: number, summary: string, claimToken?: string, triageSkip?: string): boolean {
+    return this.db
+      .transaction(() => {
+        const finished =
+          this.db.run(
+            `UPDATE mandate_matches SET status='ready',summary=?,claim_token=NULL
       WHERE id=? AND status='analyzing' AND claim_token=?`,
-        [summary, id, claimToken ?? null],
-      ).changes > 0
-    )
+            [summary, id, claimToken ?? null],
+          ).changes > 0
+        if (finished && triageSkip)
+          this.db.run(
+            `UPDATE mandate_effects SET status='skipped',destination='none',target=NULL,due_at=NULL,
+          reason=?,receipt=NULL,triage=1 WHERE match_id=? AND kind='notify' AND status='pending'
+          AND (SELECT COALESCE(json_extract(json,'$.triage'),1) FROM trigger_route_settings WHERE id=1)=1
+          AND NOT EXISTS(SELECT 1 FROM mandate_matches m JOIN mandates d ON d.id=m.mandate_id
+            WHERE m.id=mandate_effects.match_id AND (json_extract(d.definition,'$.urgent')=1
+              OR json_extract(d.definition,'$.processing')='direct'))`,
+            [triageSkip, id],
+          )
+        return finished
+      })
+      .immediate()
   }
   failAnalysis(id: number, error: string, claimToken?: string): boolean {
     return (

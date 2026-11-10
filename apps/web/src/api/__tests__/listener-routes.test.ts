@@ -625,6 +625,8 @@ describe('listener control plane', () => {
       { weixinTarget: { ...target, peerId: 'stranger' } },
       { weixinTarget: { ...target, token: 'raw credential' } },
       { token: 'raw credential' },
+      { triage: 'off' },
+      { triage: null },
     ])
       expect((await save(changes)).status).toBe(400)
     const changed = {
@@ -643,6 +645,10 @@ describe('listener control plane', () => {
       (await save({ weixinTarget: { ...target, channelId: 'different-account' } }, 2)).status,
     ).toBe(400)
     expect((await save({ weixinTarget: null }, 2)).status).toBe(200)
+    const off = await save({ triage: false }, 3)
+    expect(off.status).toBe(200)
+    expect((await off.json()).settings.triage).toBe(false)
+    expect((await (await req('routing/preferences')).json()).settings.triage).toBe(false)
   })
 
   test('Router can choose an attached robot without a delivery address and never returns a legacy peer', async () => {

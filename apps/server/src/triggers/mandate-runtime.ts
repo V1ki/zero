@@ -9,7 +9,7 @@ import type {
   TriggerNativePresence,
   TriggerRoutingSettings,
 } from '@zero-os/shared'
-import { TriggerAgentError, type TriggerMandateAnalysisContext } from './event-agent'
+import { TriggerAgentError, type TriggerAnalysisContext } from './event-agent'
 import { githubEventSubject } from './investigation'
 import { decideMandateNotification } from './mandate-policy'
 import { TRIGGER_PRESENCE_TTL_MS } from './routing-policy'
@@ -46,7 +46,7 @@ interface MandateDependencies {
     item: TriggerInboxItem,
     sessionId: string,
     signal: AbortSignal,
-    context: TriggerMandateAnalysisContext,
+    context: Required<TriggerAnalysisContext>,
   ): Promise<TriggerAgentResult>
   platforms: MandatePlatforms
   getPresenceContext?(settings: TriggerRoutingSettings): Promise<{
@@ -257,7 +257,7 @@ export class TriggerMandateRuntime {
         this.stop.signal,
         {
           purpose: work.mandate.purpose,
-          previousSummaries: db.getPriorSummaries(work.task.id, work.match.id),
+          previous: db.getPriorSummaries(work.task.id, work.match.id),
         },
       )
     } catch (error) {
@@ -271,7 +271,18 @@ export class TriggerMandateRuntime {
       }
       return true
     }
-    if (!this.stop.signal.aborted) db.finishAnalysis(work.match.id, result.summary, work.claimToken)
+    if (this.stop.signal.aborted) return true
+    // Urgent mandates are never filtered. Archiving was configured explicitly and is untouched.
+    const skip =
+      result.triage?.decision === 'skip' &&
+      !work.mandate.urgent &&
+      this.store.routing.getSettings().settings.triage !== false
+    db.finishAnalysis(
+      work.match.id,
+      result.summary,
+      work.claimToken,
+      skip ? `分诊判断无需提醒：${result.triage?.reason}` : undefined,
+    )
     return true
   }
 

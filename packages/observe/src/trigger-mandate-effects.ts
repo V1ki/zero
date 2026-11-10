@@ -259,11 +259,13 @@ export abstract class MandateEffectStore {
     )
   }
 
+  /** Re-opens a failed effect, or a notification that triage skipped. Policy skips stay final. */
   retryEffect(matchId: number, kind: Kind): boolean {
     return (
       this.db.run(
         `UPDATE mandate_effects SET status = 'pending', destination = NULL, target = NULL,
-      reason = NULL, due_at = NULL, receipt = NULL WHERE match_id = ? AND kind = ? AND status = 'failed'
+      reason = NULL, due_at = NULL, receipt = NULL, triage = 0 WHERE match_id = ? AND kind = ?
+      AND (status = 'failed' OR (status = 'skipped' AND kind = 'notify' AND triage = 1))
       AND match_id IN (SELECT id FROM mandate_eligible_matches)
       AND match_id IN (SELECT id FROM mandate_matches WHERE status = 'ready')`,
         [matchId, kind],

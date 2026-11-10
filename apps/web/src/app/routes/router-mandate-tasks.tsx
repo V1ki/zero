@@ -90,6 +90,16 @@ function EffectRow({
           重试{label}
         </button>
       )}
+      {effect.status === 'skipped' && effect.triaged && (
+        <button
+          type="button"
+          className="rw-inline-button"
+          disabled={busy}
+          onClick={() => retry(effect.kind)}
+        >
+          仍然提醒
+        </button>
+      )}
     </section>
   )
 }

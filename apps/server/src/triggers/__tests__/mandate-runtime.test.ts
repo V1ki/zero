@@ -2,7 +2,13 @@ import { expect, mock, test } from 'bun:test'
 import * as lark from '@larksuiteoapi/node-sdk'
 import { FeishuChannel } from '@zero-os/channel'
 import { TriggerStore } from '@zero-os/observe'
-import type { MandateTarget, TriggerInboxItem, TriggerMandate } from '@zero-os/shared'
+import type {
+  MandateTarget,
+  TriggerAgentResult,
+  TriggerInboxItem,
+  TriggerMandate,
+  TriggerPriorEvent,
+} from '@zero-os/shared'
 import {
   type MandateDelivery,
   type MandateReceipt,
@@ -47,6 +53,7 @@ function fixture(
       maySend: () => boolean,
     ) => Promise<MandateReceipt>
     analyze?: () => Promise<void>
+    triage?: (event: TriggerInboxItem) => TriggerAgentResult['triage']
     now?: () => Date
   } = {},
 ) {
@@ -91,10 +98,15 @@ function fixture(
       event: TriggerInboxItem,
       sessionId: string,
       _signal: AbortSignal,
-      context: { purpose: string },
-    ) => {
+      context: { purpose: string; previous: TriggerPriorEvent[] },
+    ): Promise<TriggerAgentResult> => {
       await options.analyze?.()
-      return { summary: `${context.purpose} - ${event.summary}`, sessionId }
+      const triage = options.triage?.(event)
+      return {
+        summary: `${context.purpose} - ${event.summary}`,
+        sessionId,
+        ...(triage && { triage }),
+      }
     },
   )
   const send = mock(
@@ -288,9 +300,9 @@ test('related runs reuse just their own authorized task summaries and session', 
     for (const purpose of [mandate.purpose, '研究观点']) {
       const calls = f.analyze.mock.calls.filter((call) => call[3].purpose === purpose)
       expect(calls[0][1]).toBe(calls[1][1])
-      expect(calls[0][3]).toMatchObject({ previousSummaries: [] })
+      expect(calls[0][3]).toMatchObject({ previous: [] })
       expect(calls[1][3]).toMatchObject({
-        previousSummaries: [`${purpose} - sensitive-fixture-body`],
+        previous: [{ summary: `${purpose} - sensitive-fixture-body` }],
       })
     }
     const sessions = new Set(f.analyze.mock.calls.map((c) => c[1]))
@@ -611,3 +623,97 @@ for (const receipt of ['accepted', 'unknown'] as const) {
     }
   })
 }
+
+const skipAll = () => ({ decision: 'skip' as const, reason: '与上次相同。' })
+
+test('triage skips only the notify effect, keeps archiving, and notify anyway re-opens it', async () => {
+  const f = fixture([{ ...mandate, archive: document }], { triage: skipAll })
+  try {
+    f.ingest('github', 'event-1')
+    f.runtime.start()
+    await f.flush()
+    const [match] = f.store.mandates.listMatches()
+    expect(match.status).toBe('ready')
+    expect(match.summary).toContain(mandate.purpose)
+    expect(match.effects).toEqual([
+      expect.objectContaining({ kind: 'archive', status: 'done' }),
+      expect.objectContaining({
+        kind: 'notify',
+        status: 'skipped',
+        reason: '分诊判断无需提醒：与上次相同。',
+        triaged: true,
+      }),
+    ])
+    expect(f.archive).toHaveBeenCalledTimes(1)
+    expect(f.send).not.toHaveBeenCalled()
+    expect(f.runtime.retry(match.id, 'archive')).toBe(false)
+    expect(f.runtime.retry(match.id, 'notify')).toBe(true)
+    await f.flush()
+    expect(f.send).toHaveBeenCalledTimes(1)
+    expect(f.store.mandates.getMatch(match.id)?.effects[1]).toMatchObject({
+      kind: 'notify',
+      status: 'done',
+    })
+    expect(f.store.mandates.getMatch(match.id)?.effects[1].triaged).toBeUndefined()
+    expect(f.analyze).toHaveBeenCalledTimes(1)
+  } finally {
+    await f.close()
+  }
+})
+
+test('a policy skip cannot be re-opened by retry', async () => {
+  const f = fixture([{ ...mandate, policy: { duringWork: 'none' } }])
+  try {
+    f.ingest('github', 'event-1')
+    f.runtime.start()
+    await f.flush()
+    const [match] = f.store.mandates.listMatches()
+    expect(match.effects[1]).toMatchObject({ kind: 'notify', status: 'skipped' })
+    expect(match.effects[1].triaged).toBeUndefined()
+    expect(f.runtime.retry(match.id, 'notify')).toBe(false)
+  } finally {
+    await f.close()
+  }
+})
+
+test('urgent mandates, direct reminders and triage turned off are never filtered', async () => {
+  for (const [rule, triageOn] of [
+    [{ ...mandate, urgent: true }, true],
+    [{ ...mandate, processing: 'direct' as const }, true],
+    [mandate, false],
+  ] as const) {
+    const f = fixture([rule], { triage: skipAll })
+    try {
+      if (!triageOn) {
+        const current = f.store.routing.getSettings()
+        f.store.routing.saveSettings({ ...current.settings, triage: false }, current.revision)
+      }
+      f.ingest('github', 'event-1')
+      f.runtime.start()
+      await f.flush()
+      expect(f.send).toHaveBeenCalledTimes(1)
+      expect(f.analyze).toHaveBeenCalledTimes(rule.processing === 'direct' ? 0 : 1)
+      expect(f.store.mandates.listMatches()[0].effects[1]).toMatchObject({ status: 'done' })
+    } finally {
+      await f.close()
+    }
+  }
+})
+
+test('a skipped match drops out of a digest, still counts as prior context and is marked filtered', async () => {
+  const f = fixture(
+    [{ ...mandate, groupBy: 'mandate', policy: { duringWork: 'dingtalk', digestMinutes: 60 } }],
+    { triage: (event) => (event.eventId === 'event-b' ? skipAll() : undefined) },
+  )
+  try {
+    f.ingest('github', 'event-a', 'event-b', 'event-c')
+    f.runtime.start()
+    await f.flush()
+    expect(f.send).toHaveBeenCalledTimes(1)
+    expect(f.send.mock.calls[0][1].entries.map((entry) => entry.matchId)).toEqual([1, 3])
+    const last = f.analyze.mock.calls[2][3].previous
+    expect(last.map((prior) => prior.outcome)).toEqual(['not_notified', 'filtered'])
+  } finally {
+    await f.close()
+  }
+})

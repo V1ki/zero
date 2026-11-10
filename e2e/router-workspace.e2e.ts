@@ -66,12 +66,13 @@ async function mockWorkspace(
   page: Page,
   reply: (submitted: Submission) => Promise<TriggerConversationAnswer | { error: string }>,
   settings = prefs,
+  record = () => routeRecord,
 ) {
   const history = new Map<TriggerConversationScope, TriggerConversationTurn[]>()
   const submissions: Submission[] = []
   function snapshot(scope: TriggerConversationScope): RouterWorkspaceSnapshot {
     const event = scope === item.id ? item : null
-    const route = event ? routeRecord : null
+    const route = event ? record() : null
     return {
       scope,
       event,
@@ -99,7 +100,7 @@ async function mockWorkspace(
             source: item.source,
             title: item.title,
             receivedAt: item.receivedAt,
-            status: 'web',
+            status: record().status,
           },
         ],
       },
@@ -370,4 +371,35 @@ test('an interrupted IM turn remains visible with its original reply channel', a
   await expect(chat).toContainText('来自 IM 的提问')
   await expect(chat).toContainText('请在原会话中重新发送问题。')
   await expect(chat.getByRole('button', { name: '重新提问' })).toHaveCount(0)
+})
+
+test('a filtered event shows the triage reason and can be notified anyway', async ({ page }) => {
+  let route: TriggerRouteRecord = {
+    ...routeRecord,
+    status: 'filtered',
+    decision: null,
+    agent: {
+      summary: '资源检查再次失败，与上次相同。',
+      triage: { decision: 'skip', reason: '与一小时前已通知的失败相同。' },
+    },
+  }
+  const submissions = await mockWorkspace(
+    page,
+    async ({ action }) => {
+      expect(action?.action.name).toBe('process_event')
+      route = { ...routeRecord, origin: 'manual' }
+      return { text: '已提交。' }
+    },
+    prefs,
+    () => route,
+  )
+  await page.goto('/router?event=41')
+  const rail = page.getByRole('navigation', { name: 'Router 对话与事件' })
+  await expect(rail.getByRole('link', { name: new RegExp(item.title) })).toContainText('已过滤')
+  await expect(page.getByText('分诊已过滤，未发送通知')).toBeVisible()
+  await expect(page.getByText('与一小时前已通知的失败相同。')).toBeVisible()
+  await page.getByRole('button', { name: '仍然通知', exact: true }).click()
+  await expect(page.getByText('已投递到网页')).toBeVisible()
+  await expect(page.getByRole('button', { name: '仍然通知', exact: true })).toHaveCount(0)
+  expect(submissions.map((s) => s.action?.action.name)).toEqual(['process_event'])
 })

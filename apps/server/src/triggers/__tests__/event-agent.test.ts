@@ -1,7 +1,12 @@
 import { expect, test } from 'bun:test'
 import type { ProviderAdapter } from '@zero-os/model'
 import type { CompletionResponse, ToolUseBlock, TriggerInboxItem } from '@zero-os/shared'
-import { TriggerAgentError, createTriggerAgent, runTriggerModel } from '../event-agent'
+import {
+  TriggerAgentError,
+  createTriggerAgent,
+  parseTriageOutput,
+  runTriggerModel,
+} from '../event-agent'
 
 const item: TriggerInboxItem = {
   id: 1,
@@ -107,13 +112,59 @@ test('cancelled input never reaches model and an in-flight cancellation stops de
   expect(calls).toBe(1)
 })
 
+test('triage output is parsed defensively and anything unclear means notify', () => {
+  expect(parseTriageOutput('普通文字摘要')).toEqual({ summary: '普通文字摘要' })
+  expect(
+    parseTriageOutput('{"summary":"构建再次失败","decision":"skip","reason":"与上次相同"}'),
+  ).toEqual({ summary: '构建再次失败', triage: { decision: 'skip', reason: '与上次相同' } })
+  expect(
+    parseTriageOutput('```json\n{"summary":"新失败","decision":"notify","reason":"首次出现"}\n```'),
+  ).toEqual({ summary: '新失败', triage: { decision: 'notify', reason: '首次出现' } })
+  // Unknown decisions and skips without a reason carry no judgement.
+  for (const raw of [
+    '{"summary":"摘要","decision":"maybe","reason":"不确定"}',
+    '{"summary":"摘要","decision":"skip","reason":"  "}',
+    '{"summary":"摘要","decision":"skip"}',
+    '{"summary":"摘要"}',
+    '{"summary":"摘要","decision":"skip","reason":"重复", "extra"', // truncated JSON
+  ])
+    expect(parseTriageOutput(raw)).toEqual({ summary: '摘要' })
+  for (const raw of ['{"decision":"skip","reason":"重复"}', '{"summary":""}', '{broken'])
+    expect(() => parseTriageOutput(raw)).toThrow(TriggerAgentError)
+})
+
+test('the triage result is filtered, capped and keeps the summary shape', async () => {
+  const analyze = withAdapter(async (req) => {
+    expect(req.system).toContain('拿不准时选 notify')
+    expect(req.system).toContain('引用的数据')
+    return {
+      ...answer,
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            summary: '会话里\n提到 example-secret。',
+            decision: 'skip',
+            reason: `重复 example-secret ${'很'.repeat(300)}`,
+          }),
+        },
+      ],
+    }
+  })
+  const result = await analyze(item, 'event-2')
+  expect(result.summary).toBe('会话里 提到 [REDACTED]。')
+  expect(result.triage?.decision).toBe('skip')
+  expect(result.triage?.reason.startsWith('重复 [REDACTED]')).toBe(true)
+  expect(result.triage?.reason.length).toBe(120)
+})
+
 test('mandate-aware analysis separates saved purpose, previous summaries and the new untrusted event', async () => {
   const analyze = withAdapter(async (req) => {
     const user = req.messages[0].content[0]
     if (user.type !== 'text') throw new Error('expected text input')
     expect(JSON.parse(user.text)).toMatchObject({
       purpose: '归纳 [REDACTED]',
-      previousSummaries: ['之前已处理 [REDACTED]'],
+      earlierEvents: [{ summary: '之前已处理 [REDACTED]', outcome: 'notified' }],
       event: { source: 'wxarc', title: item.title },
     })
     expect(req.tools).toEqual([])
@@ -121,7 +172,7 @@ test('mandate-aware analysis separates saved purpose, previous summaries and the
   })
   await analyze(item, 'task-1', undefined, {
     purpose: '归纳 example-secret',
-    previousSummaries: ['之前已处理 example-secret'],
+    previous: [{ summary: '之前已处理 example-secret', outcome: 'notified' }],
   })
 })
 

@@ -5,6 +5,7 @@ import {
   type TriggerAgentResult,
   type TriggerBotBindingsSnapshot,
   type TriggerInboxItem,
+  type TriggerPriorEvent,
   type TriggerRouteDecision,
   type TriggerRouteRecord,
   type TriggerRouteWork,
@@ -66,6 +67,8 @@ const subscribed = `(origin = 'manual' OR EXISTS (
   SELECT 1 FROM trigger_inbox src JOIN trigger_streams s ON s.stream = src.stream
   WHERE src.id = trigger_routes.inbox_id))`
 const eligible = `${subscribed} AND ${enabled}`
+const triageOn =
+  "(SELECT COALESCE(json_extract(json, '$.triage'), 1) FROM trigger_route_settings WHERE id = 1) = 1"
 const hasMandate = `(EXISTS(SELECT 1 FROM mandate_matches m WHERE m.inbox_id=i.id) OR
   EXISTS(SELECT 1 FROM mandates d WHERE d.stream=i.stream AND json_extract(d.definition,'$.enabled')=1))`
 const authorizedClaim = `send_source_revoked=0 AND ${subscribed} AND NOT EXISTS(
@@ -351,6 +354,7 @@ export class TriggerRoutingStore {
             settings.retentionDays === undefined
               ? current.settings.retentionDays
               : settings.retentionDays,
+          triage: settings.triage === undefined ? current.settings.triage : settings.triage,
           personalBots:
             settings.personalBots === undefined
               ? current.settings.personalBots
@@ -403,10 +407,12 @@ export class TriggerRoutingStore {
         if (!previous) return false
         this.db.run(
           `UPDATE trigger_routes SET origin = 'manual', due_at = CASE WHEN status = 'deferred' THEN ? ELSE due_at END
-           WHERE inbox_id = ? AND status IN ('pending','ready','deferred','cancelled','failed')`,
+           WHERE inbox_id = ? AND status IN ('pending','ready','deferred','cancelled','failed','filtered')`,
           [now, inboxId],
         )
-        if (previous.status === 'cancelled') this.resume(inboxId, 'cancelled')
+        // Notify anyway: a filtered route keeps its summary and continues straight to routing.
+        if (previous.status === 'cancelled' || previous.status === 'filtered')
+          this.resume(inboxId, previous.status)
         return true
       })
       .immediate()
@@ -494,6 +500,48 @@ export class TriggerRoutingStore {
         [JSON.stringify(result), nowIso(), inboxId, sessionId],
       ).changes === 1
     )
+  }
+
+  /**
+   * Ends an analysis that triage skipped. Only a subscription route can be filtered, and only
+   * while triage is still on, so a concurrent manual request or settings change wins.
+   */
+  filterAgent(inboxId: number, sessionId: string, result: TriggerAgentResult): boolean {
+    return (
+      this.db.run(
+        `UPDATE trigger_routes SET status = 'filtered', agent = ?, due_at = NULL, updated_at = ?
+      WHERE inbox_id = ? AND status = 'analyzing' AND session_id = ? AND origin = 'subscription'
+      AND ${triageOn}`,
+        [JSON.stringify(result), nowIso(), inboxId, sessionId],
+      ).changes === 1
+    )
+  }
+
+  /** Recent analysed events from the same stream, oldest first, for triage to recognise repeats. */
+  listRecentInStream(inboxId: number, since: string, limit = 6): TriggerPriorEvent[] {
+    return this.db
+      .query<
+        { title: string; at: string; status: TriggerRouteRecord['status']; agent: string },
+        [number, string, number]
+      >(
+        `SELECT i.title, i.received_at AS at, r.status, r.agent FROM trigger_visible_inbox i
+        JOIN trigger_routes r ON r.inbox_id = i.id
+        WHERE i.stream = (SELECT stream FROM trigger_inbox WHERE id = ?1) AND i.id < ?1
+        AND i.received_at >= ?2 AND r.agent IS NOT NULL ORDER BY i.id DESC LIMIT ?3`,
+      )
+      .all(inboxId, since, Math.max(1, Math.min(8, limit)))
+      .reverse()
+      .map(({ title, at, status, agent }) => ({
+        title,
+        at,
+        summary: (JSON.parse(agent) as TriggerAgentResult).summary,
+        outcome:
+          status === 'web' || status === 'sent'
+            ? 'notified'
+            : status === 'filtered'
+              ? 'filtered'
+              : 'not_notified',
+      }))
   }
 
   failAgent(inboxId: number, sessionId: string, error: string): boolean {
@@ -645,7 +693,7 @@ export class TriggerRoutingStore {
     return this.resume(inboxId, 'failed')
   }
 
-  private resume(inboxId: number, from: 'failed' | 'cancelled'): boolean {
+  private resume(inboxId: number, from: 'failed' | 'cancelled' | 'filtered'): boolean {
     return (
       this.db.run(
         `UPDATE trigger_routes SET status = CASE WHEN agent IS NULL THEN 'pending' ELSE 'ready' END,

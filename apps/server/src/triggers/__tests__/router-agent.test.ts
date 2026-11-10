@@ -478,3 +478,26 @@ test('model prose cannot mint job receipts', async () => {
   expect(answer.job).toBeUndefined()
   expect(answer.text).not.toBe(prose)
 })
+
+test('routing context reports a filtered event with its triage reason and the triage switch', async () => {
+  const { ask, requests } = setup(call('get_routing_context'), '已过滤。')
+  await ask({
+    ...input,
+    settings: { ...input.settings, triage: false },
+    route: {
+      ...input.route,
+      status: 'filtered',
+      decision: null,
+      agent: {
+        summary: '一次群内提醒',
+        triage: { decision: 'skip', reason: '与上次 secret-code 相同' },
+      },
+    } as RouterAgentInput['route'],
+  })
+  const evidence = JSON.parse(toolResult(requests[1]).content)
+  expect(evidence.recordedRoute).toMatchObject({
+    status: 'filtered',
+    triage: { decision: 'skip', reason: '与上次 [redacted] 相同' },
+  })
+  expect(evidence.preferences.triage).toBe(false)
+})

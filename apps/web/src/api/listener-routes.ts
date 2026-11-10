@@ -286,6 +286,7 @@ function parseRouting(raw: unknown, botOnly: boolean): TriggerRoutingSettingsSna
     'offDay',
     'weixinTarget',
     'personalBots',
+    'triage',
   ])
   const retentionDays = settings.retentionDays
   if (
@@ -350,6 +351,7 @@ function parseRouting(raw: unknown, botOnly: boolean): TriggerRoutingSettingsSna
         peerId: fieldText(target.peerId, '微信目标', 256, true),
       },
       ...('personalBots' in settings && { personalBots: parsePersonalBots(settings.personalBots) }),
+      ...(settings.triage !== undefined && { triage: checked(settings.triage) }),
     },
   }
 }
