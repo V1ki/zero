@@ -290,6 +290,34 @@
 .rw-work-action {
   justify-self: start;
 }
+.rw-job-report {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.rw-verdict {
+  font-weight: 550;
+}
+.rw-job-done {
+  margin: 0;
+  padding-inline-start: 20px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}
+.rw-job-full summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.rw-job-full > p {
+  margin-block: 8px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.65;
+}
 .rw-tool-steps ol {
   padding-inline-start: 20px;
   margin-block: 5px;

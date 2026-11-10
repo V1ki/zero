@@ -9,10 +9,51 @@ const jobStates: Record<RouterJobReceipt['status'], string> = {
   unknown: '执行结果待核对',
 }
 
+/** What the owner sends to answer an open decision. It must pass `authorizeRouterJobContinuation`. */
+export function decisionAnswer(jobId: number, option: number) {
+  return `继续派工 #${jobId}：选 ${option}`
+}
+
+/** How to see the full result once a report replaces it. Read through `get_task_status`. */
+export function fullResultRequest(jobId: number) {
+  return `查看派工 #${jobId} 的完整结果`
+}
+
 export function jobReply(job: RouterJobReceipt): string {
   const executor = job.executor === 'codex' ? 'Codex' : 'ZeRo'
   const target = job.repository ? ` · ${job.repository}` : ''
-  return `派工 #${job.id}（${executor}${target}）${jobStates[job.status]}。${job.result ? `\n${job.result}` : ''}`
+  const status = `派工 #${job.id}（${executor}${target}）${jobStates[job.status]}。`
+  if (job.status === 'completed' && job.reportPending) return `${status}正在整理结果。`
+  const report = job.status === 'completed' ? job.report : undefined
+  if (!report) return `${status}${job.result ? `\n${job.result}` : ''}`
+  const decision = !job.continued && report.decision
+  return [
+    status,
+    report.verdict,
+    ...(decision
+      ? [
+          `需要你决定：${decision.question}`,
+          ...decision.options.map(
+            (option, index) =>
+              `${index + 1}. ${option}${index === decision.recommended ? '（推荐）' : ''}`,
+          ),
+          `回复「${decisionAnswer(job.id, decision.recommended + 1)}」即可按所选继续，换成其他选项的编号也可以。`,
+        ]
+      : []),
+    `完整结果：发送「${fullResultRequest(job.id)}」。`,
+  ].join('\n')
+}
+
+/** The option an owner picked by number in a sentence such as `decisionAnswer` prints. */
+export function chosenOption(question: string, job: RouterJobReceipt) {
+  const decision = job.status === 'completed' && !job.continued && job.report?.decision
+  if (!decision) return undefined
+  const picks = [...question.matchAll(/选(?:择)?\s*(?:第\s*)?([1-9])(?!\d)/gu)].map((m) =>
+    Number(m[1]),
+  )
+  if (picks.length !== 1) return undefined
+  const option = decision.options[picks[0] - 1]
+  return option === undefined ? undefined : { question: decision.question, option }
 }
 
 /** Accept only a full repository name that the user wrote in the current message. */

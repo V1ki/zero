@@ -175,6 +175,40 @@ function RouterAnswer({
   ask: (text: string) => void
 }) {
   const { job } = answer
+  if (job?.status === 'completed' && (job.report || job.reportPending)) {
+    const report = job.report
+    return (
+      <div className="rw-job-report">
+        <p className="rw-answer">
+          派工 #{job.id}（{job.executor === 'codex' ? 'Codex' : 'ZeRo'}
+          {job.repository ? ` · ${job.repository}` : ''}）已完成。
+        </p>
+        {!report ? (
+          <output className="rw-busy">
+            <CircleNotch size={15} />
+            整理结果中…
+          </output>
+        ) : (
+          <>
+            <p className="rw-answer rw-verdict">{report.verdict}</p>
+            {report.done.length > 0 && (
+              <ul className="rw-job-done" aria-label="实际改动">
+                {report.done.map((item, index) => (
+                  <li key={`${index}-${item}`}>{item}</li>
+                ))}
+              </ul>
+            )}
+            {job.result && (
+              <details className="rw-job-full">
+                <summary>完整结果</summary>
+                <p>{job.result}</p>
+              </details>
+            )}
+          </>
+        )}
+      </div>
+    )
+  }
   return (
     <>
       <p className="rw-answer">{answer.text}</p>
@@ -223,7 +257,8 @@ function Conversation({
         (t) =>
           t.status === 'pending' ||
           t.answer?.job?.status === 'queued' ||
-          t.answer?.job?.status === 'running',
+          t.answer?.job?.status === 'running' ||
+          !!t.answer?.job?.reportPending,
       ) || ['pending', 'analyzing', 'ready', 'sending'].includes(data.route?.status ?? '')
         ? 2000
         : 30_000
@@ -268,7 +303,8 @@ function Conversation({
       op.action.action.name === 'explain_route' ||
       op.action.action.name === 'suggest_next' ||
       op.action.action.name === 'inspect_github' ||
-      op.action.action.name === 'compare_runs'
+      op.action.action.name === 'compare_runs' ||
+      op.action.action.name === 'choose_option'
     send.mutate(op)
   }
   function ask() {

@@ -2,6 +2,7 @@ import {
   type GithubInvestigationAction,
   ROUTER_A2UI_CATALOG,
   type RouterActionName,
+  type RouterJobReport,
   type RouterSurfaceComponent,
   type RouterSurfaceMessages,
   type RouterWorkspaceTask,
@@ -25,6 +26,7 @@ const labels: Record<RouterActionName, string> = {
   process_event: '交给 Agent 处理',
   inspect_github: '查看 GitHub 事件详情',
   compare_runs: '对比此前的运行',
+  choose_option: '选择这个选项',
 }
 const statuses: Record<TriggerRouteStatus, string> = {
   pending: '等待 Agent',
@@ -235,12 +237,51 @@ export function buildRouterSurface(
   )
 }
 
+/** One button per option; option text is untrusted and only ever rendered as text. */
+function buildDecisionSurface(
+  id: string,
+  decision: NonNullable<RouterJobReport['decision']>,
+): RouterSurfaceMessages {
+  const components: RouterSurfaceComponent[] = [
+    { id: 'heading', component: 'Text', text: { path: '/heading' }, variant: 'h3' },
+  ]
+  const values: Record<string, string> = { heading: decision.question }
+  const buttons = decision.options.slice(0, 3).map((option, index) => {
+    const button = `btn-choose_option-${index}`
+    values[`option-${index}`] = index === decision.recommended ? `${option}（推荐）` : option
+    components.push(
+      { id: `label-option-${index}`, component: 'Text', text: { path: `/option-${index}` } },
+      {
+        id: button,
+        component: 'Button',
+        child: `label-option-${index}`,
+        ...(index === decision.recommended && { variant: 'primary' as const }),
+        action: { event: { name: 'choose_option' } },
+      },
+    )
+    return button
+  })
+  components.push(
+    { id: 'actions', component: 'Row', children: buttons },
+    { id: 'root', component: 'Column', children: ['heading', 'actions'] },
+  )
+  return [
+    { version, createSurface: { surfaceId: id, catalogId: ROUTER_A2UI_CATALOG } },
+    { version, updateComponents: { surfaceId: id, components } },
+    { version, updateDataModel: { surfaceId: id, path: '/', value: values } },
+  ]
+}
+
 export function buildRouterReplySurface(
   scope: TriggerConversationScope,
   turnId: number,
   answer: TriggerConversationAnswer,
 ): RouterSurfaceMessages | null {
   const id = `${surfaceId(scope)}-turn-${turnId}`
+  const job = answer.job
+  // Only the latest completed step of a job in the general conversation can still be answered.
+  if (scope === 'general' && job?.status === 'completed' && !job.continued && job.report?.decision)
+    return buildDecisionSurface(id, job.report.decision)
   const evidence = answer.investigation
   if (evidence) {
     const heading = { jobs: '失败作业与步骤', history: '历史运行对比', pull: 'PR 与原评论' }[

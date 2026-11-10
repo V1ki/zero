@@ -127,8 +127,8 @@ export class TriggerRetentionStore {
         )
         // Keep request IDs for at-most-once execution after the private job body expires.
         const jobSteps = this.db.run(
-          `UPDATE router_job_steps SET instruction='',result=NULL,thread_id=NULL,audience=NULL,
-            repository=NULL,retired=1 WHERE job_id IN (
+          `UPDATE router_job_steps SET instruction='',brief=NULL,result=NULL,report=NULL,
+            thread_id=NULL,audience=NULL,repository=NULL,retired=1 WHERE job_id IN (
             SELECT job_id FROM router_job_steps WHERE retired=0 GROUP BY job_id
             HAVING max(updated_at)<=? AND max(CASE WHEN status IN ('queued','running')
               OR return_state IN ('pending','sending') THEN 1 ELSE 0 END)=0

@@ -8,6 +8,7 @@ export type RouterActionName =
   | 'process_event'
   | 'inspect_github'
   | 'compare_runs'
+  | 'choose_option'
 export type RouterSurfaceComponent =
   | { id: string; component: 'Column' | 'Row'; children: string[] }
   | {
@@ -64,7 +65,8 @@ function name(value: unknown): value is RouterActionName {
     value === 'suggest_next' ||
     value === 'process_event' ||
     value === 'inspect_github' ||
-    value === 'compare_runs'
+    value === 'compare_runs' ||
+    value === 'choose_option'
   )
 }
 
@@ -163,7 +165,10 @@ export function isRouterSurfaceAction(raw: unknown): raw is RouterSurfaceAction 
   if (
     !name(action.name) ||
     !id(action.surfaceId) ||
-    action.sourceComponentId !== `btn-${action.name}` ||
+    // A decision carries one button per option; the server reads the option from its own record.
+    (action.name === 'choose_option'
+      ? !/^btn-choose_option-[0-2]$/.test(String(action.sourceComponentId))
+      : action.sourceComponentId !== `btn-${action.name}`) ||
     !fields(action.context, []) ||
     typeof action.timestamp !== 'string' ||
     !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/.test(action.timestamp) ||

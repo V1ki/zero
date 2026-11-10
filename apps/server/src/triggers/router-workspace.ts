@@ -20,6 +20,7 @@ import type { RouterAgentInput, createRouterAgent } from './router-agent'
 import type { RouterCommissionService } from './router-commission'
 import { routerImScope } from './router-job-principal'
 import { buildRouterReplySurface, buildRouterSurface } from './router-surface'
+import { jobReply } from './router-work-reply'
 import {
   type RouterWorkIntegrations,
   createRouterWorkTurn,
@@ -43,6 +44,13 @@ const inspectionQuestions = {
 } satisfies Record<GithubInvestigationAction, string>
 
 type Scope = TriggerConversationScope
+type CardAction = GithubInvestigationAction | 'explain_route' | 'suggest_next' | 'choose_option'
+/** An option of a decision on one job step, as rendered by this server. */
+interface DecisionChoice {
+  jobId: number
+  attempt: number
+  option: number
+}
 interface ImTurn {
   scope: RouterImScope
   actor: CommissionOperator
@@ -282,7 +290,8 @@ export class RouterWorkspaceService {
     requestId: string,
     question: string,
     retry: boolean,
-    cardAction?: GithubInvestigationAction | 'explain_route' | 'suggest_next',
+    cardAction?: CardAction,
+    choice?: DecisionChoice,
   ) {
     this.requireReady()
     const context = this.context(scope)
@@ -293,7 +302,9 @@ export class RouterWorkspaceService {
       throw new RouterWorkspaceError(409, '这段对话还有一条正在处理的提问。')
     if (claim.kind === 'conflict') throw new RouterWorkspaceError(409, '请求编号已用于其他操作。')
     if (claim.kind === 'started')
-      await this.track(this.answer(context, claim.turn, claim.attempt, cardAction))
+      await this.track(
+        this.answer(context, claim.turn, claim.attempt, cardAction, undefined, choice),
+      )
     return this.get(scope)
   }
 
@@ -301,8 +312,9 @@ export class RouterWorkspaceService {
     context: ReturnType<RouterWorkspaceService['context']>,
     turn: TriggerConversationTurn,
     attempt: number,
-    cardAction?: GithubInvestigationAction | 'explain_route' | 'suggest_next',
+    cardAction?: CardAction,
     im?: ImTurn,
+    choice?: DecisionChoice,
   ) {
     const { event, route, settings, task } = context
     const scope = im?.scope ?? context.scope
@@ -325,6 +337,15 @@ export class RouterWorkspaceService {
           )
         : undefined
     try {
+      if (cardAction === 'choose_option') {
+        // The click is answered from stored records alone; no Router model call is made.
+        if (!work || !choice || im) throw new TriggerAgentError('这项操作不属于当前对话。')
+        const job = await work.chooseOption(choice, this.stop.signal)
+        const answer = work.protect({ job, text: jobReply(job) })
+        if (!conversations.finish(scope, turn.requestId, attempt, answer))
+          throw new RouterWorkspaceError(409, '本次操作已失效，请刷新对话。')
+        return
+      }
       if (!task && (cardAction === 'inspect_github' || cardAction === 'compare_runs') && event) {
         const investigator = this.integrations.investigator
         if (!investigator) throw new InvestigationError('GitHub 调查当前不可用。')
@@ -435,6 +456,10 @@ export class RouterWorkspaceService {
       if (saved !== receipt) throw new RouterWorkspaceError(409, '请求编号已用于其他操作。')
       return this.get(scope)
     }
+    // An answered decision no longer renders its buttons; replaying the same click returns its turn.
+    const answered = name === 'choose_option' && this.store.conversations.get(scope, requestId)
+    if (answered && answered.status !== 'failed' && answered.question.startsWith('选择：'))
+      return this.get(scope)
     const snapshot = this.get(scope)
     if (snapshot.task && !snapshot.task.active)
       throw new RouterWorkspaceError(409, '此任务已归档，只能查看已有对话。')
@@ -445,6 +470,19 @@ export class RouterWorkspaceService {
     if (!matchesRouterSurfaceAction(surface, raw))
       throw new RouterWorkspaceError(409, '这张卡片上的操作已失效，请刷新后重试。')
 
+    if (name === 'choose_option') {
+      const job = turn?.answer?.job
+      const index = Number(sourceComponentId.slice('btn-choose_option-'.length))
+      const decision = job?.status === 'completed' && !job.continued && job.report?.decision
+      const option = decision ? decision.options[index] : undefined
+      if (scope !== 'general' || !job || option === undefined)
+        throw new RouterWorkspaceError(409, '这个问题已经回答过或已失效，请刷新后查看。')
+      return this.runTurn(scope, requestId, `选择：${option}`, retry, name, {
+        jobId: job.id,
+        attempt: job.attempt,
+        option: index,
+      })
+    }
     if (name === 'inspect_github' || name === 'compare_runs') {
       return this.runTurn(scope, requestId, inspectionQuestions[name], retry, name)
     }

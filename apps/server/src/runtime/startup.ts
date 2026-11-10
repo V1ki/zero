@@ -33,6 +33,7 @@ import { RouterCommissionService } from '../triggers/router-commission'
 import { createRouterJobDelivery } from '../triggers/router-job-delivery'
 import { createRouterJobExecutor } from '../triggers/router-job-executors'
 import { RouterJobPrincipals, jobActor } from '../triggers/router-job-principal'
+import { createRouterJobReporter } from '../triggers/router-job-report'
 import { RouterJobs } from '../triggers/router-jobs'
 import { createRouterRepositoryLookup } from '../triggers/router-repositories'
 import { RouterWorkspaceService } from '../triggers/router-workspace'
@@ -297,6 +298,7 @@ async function createStartupRuntimeShell({
         return repositories.latestFailure(actor, repository, signal, workflowFile)
       },
     }),
+    report: createRouterJobReporter(core),
     completed: createRouterJobDelivery(
       routing,
       (job) =>

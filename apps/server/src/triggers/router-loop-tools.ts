@@ -24,17 +24,33 @@ export interface RouterTurnActions {
     signal: AbortSignal,
   ): Promise<GithubInvestigation>
   delegateTask?(
-    target: { executor: RouterJobReceipt['executor']; repository?: string },
+    target: { executor: RouterJobReceipt['executor']; repository?: string; brief?: string },
     signal: AbortSignal,
   ): Promise<RouterJobReceipt>
   getTaskStatus?(jobId: number, signal: AbortSignal): Promise<RouterJobReceipt>
-  continueTask?(jobId: number, signal: AbortSignal): Promise<RouterJobReceipt>
+  continueTask?(jobId: number, signal: AbortSignal, brief?: string): Promise<RouterJobReceipt>
   previewRoute?(): Promise<TriggerRouteDecision>
   onToolStep?(name: string, ok: boolean): void
 }
 
 function reject(message: string): never {
   throw new TriggerAgentError(message)
+}
+
+const briefLimit = 3000
+const briefParam = {
+  type: 'string',
+  maxLength: briefLimit,
+  description:
+    '写给执行者的背景，执行者看不到这段对话：目标、用户为什么要做、本对话中相关的事实和已排除的方向、做到什么程度算完成。不扩大用户原话的范围。',
+}
+
+/** Background for the executor. It never decides whether, where or by whom work may run. */
+function readBrief(value: unknown, filter: AgentDependencies['secretFilter']) {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || !value.trim() || value.length > briefLimit)
+    reject(`brief 需为不超过 ${briefLimit} 字的文字。`)
+  return filter.filter(value.trim()).slice(0, briefLimit + 1000)
 }
 
 function choice<T extends string>(value: unknown, choices: readonly T[]): T {
@@ -124,6 +140,7 @@ export function createRouterToolset(
       return value
     }
     const captureJob = (receipt: RouterJobReceipt) => {
+      const report = receipt.report
       job = {
         id: receipt.id,
         executor: receipt.executor,
@@ -131,6 +148,21 @@ export function createRouterToolset(
         attempt: receipt.attempt,
         ...(receipt.repository && { repository: filter.filter(receipt.repository) }),
         ...(receipt.result && { result: filter.filter(receipt.result) }),
+        ...(report && {
+          report: {
+            verdict: filter.filter(report.verdict),
+            done: report.done.map((item) => filter.filter(item)),
+            ...(report.decision && {
+              decision: {
+                question: filter.filter(report.decision.question),
+                options: report.decision.options.map((option) => filter.filter(option)),
+                recommended: report.decision.recommended,
+              },
+            }),
+          },
+        }),
+        ...(receipt.reportPending && { reportPending: true }),
+        ...(receipt.continued && { continued: true }),
       }
       workError = undefined
       return job
@@ -138,19 +170,31 @@ export function createRouterToolset(
     if (delegateTask)
       register(
         'delegate_task',
-        '将本轮用户原话派成一次独立工作。多步分析用 zero；用户明确要求执行工程修改或跑测试才选 codex。repository 只填写用户本轮写明的 owner/name 全名。不要为查询进度或持续跟踪新建派工。',
-        { executor: { type: 'string', enum: ['zero', 'codex'] }, repository: { type: 'string' } },
-        async ({ executor, repository }, signal) => {
+        '将本轮用户原话派成一次独立工作，并用 brief 写明执行者需要的背景。多步分析用 zero；用户明确要求执行工程修改或跑测试才选 codex。repository 只填写用户本轮写明的 owner/name 全名。不要为查询进度或持续跟踪新建派工。',
+        {
+          executor: { type: 'string', enum: ['zero', 'codex'] },
+          repository: { type: 'string' },
+          brief: briefParam,
+        },
+        async ({ executor, repository, brief }, signal) => {
           const selected = choice(executor, ['zero', 'codex'] as const)
           authorizeRouterJobSubmission(input.question, selected)
           const name = resolveJobRepository(input.question, repository)
           if (selected === 'codex' && !name) reject('请指定工程仓库的完整名称。')
+          const background = readBrief(brief, filter)
           claim()
           return captureJob(
-            await delegateTask({ executor: selected, ...(name && { repository: name }) }, signal),
+            await delegateTask(
+              {
+                executor: selected,
+                ...(name && { repository: name }),
+                ...(background && { brief: background }),
+              },
+              signal,
+            ),
           )
         },
-        ['repository'],
+        ['repository', 'brief'],
       )
     const taskId = (value: unknown): number => {
       const requested = [
@@ -180,16 +224,17 @@ export function createRouterToolset(
     if (continueTask)
       register(
         'continue_task',
-        '把本轮用户的实际补充要求交给同一项独立派工。查询状态或结果只用 get_task_status。',
-        jobParam,
-        async ({ jobId }, signal) => {
+        '把本轮用户的实际补充要求交给同一项独立派工，并用 brief 写明执行者需要的新背景。查询状态或结果只用 get_task_status。',
+        { ...jobParam, brief: briefParam },
+        async ({ jobId, brief }, signal) => {
           const id = taskId(jobId)
           const previous = prior.findLast((turn) => turn.answer?.job?.id === id)?.answer?.job
           authorizeRouterJobContinuation(input.question, previous?.executor)
+          const background = readBrief(brief, filter)
           claim()
-          return captureJob(await continueTask(id, signal))
+          return captureJob(await continueTask(id, signal, background))
         },
-        ['jobId'],
+        ['jobId', 'brief'],
       )
   }
   if (!task && event?.source === 'github' && inspectGithub)
@@ -237,8 +282,13 @@ export function createRouterToolset(
     },
     workReply(): TriggerConversationAnswer | undefined {
       if (general && (job || workError)) {
+        // A status read is how the owner asks for the full result once a report replaces it.
+        const full =
+          job && statusRead && job.result && (job.report || job.reportPending)
+            ? `完整结果：\n${job.result}`
+            : undefined
         return {
-          text: [job && jobReply(job), workError].filter(Boolean).join('\n\n'),
+          text: [job && jobReply(job), full, workError].filter(Boolean).join('\n\n'),
           ...(job && { job }),
         }
       }

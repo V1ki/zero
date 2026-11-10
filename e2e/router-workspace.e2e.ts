@@ -173,6 +173,58 @@ test('follows a delegated job from the same conversation', async ({ page }) => {
   expect(submissions.map((submission) => submission.scope)).toEqual(Array(2).fill('general'))
 })
 
+test('shows a delegated result as a report and answers its decision with one click', async ({
+  page,
+}) => {
+  const job = { id: 8, executor: 'codex' as const, attempt: 1, repository: 'example/tools' }
+  const receipt: TriggerConversationAnswer = {
+    text: '派工 #8（Codex · example/tools）已完成。正在整理结果。',
+    job: { ...job, status: 'completed', result: '原始工作记录：校验通过。', reportPending: true },
+  }
+  const submissions = await mockWorkspace(page, async ({ text, action }) => {
+    if (text === '修复 example/tools 的发布脚本') return receipt
+    expect(action?.action).toMatchObject({
+      name: 'choose_option',
+      sourceComponentId: 'btn-choose_option-1',
+    })
+    if (receipt.job) receipt.job = { ...receipt.job, continued: true }
+    return {
+      text: '派工 #8（Codex · example/tools）已排队。',
+      job: { ...job, attempt: 2, status: 'queued' },
+    }
+  })
+  await page.goto('/router')
+  const chat = page.getByRole('region', { name: '对话记录' })
+  await page
+    .getByRole('textbox', { name: '给 Router 发消息' })
+    .fill('修复 example/tools 的发布脚本')
+  await page.getByRole('button', { name: '发送', exact: true }).click()
+  await expect(chat).toContainText('整理结果中')
+  await expect(chat).not.toContainText('原始工作记录')
+  receipt.job = {
+    ...job,
+    status: 'completed',
+    result: '原始工作记录：校验通过。',
+    report: {
+      verdict: '发布脚本已修好，草稿尚未发布。',
+      done: ['修改了 release.yml'],
+      decision: { question: '现在发布吗？', options: ['发布这份草稿', '先不发布'], recommended: 0 },
+    },
+  }
+  await expect(chat).toContainText('发布脚本已修好，草稿尚未发布。')
+  await expect(chat.getByRole('list', { name: '实际改动' })).toContainText('修改了 release.yml')
+  const full = chat.getByText('原始工作记录：校验通过。')
+  await expect(full).toBeHidden()
+  await chat.getByText('完整结果').click()
+  await expect(full).toBeVisible()
+  const recommended = chat.getByRole('button', { name: '发布这份草稿（推荐）' })
+  await expect(recommended).toHaveAttribute('data-variant', 'primary')
+  await chat.getByRole('button', { name: '先不发布' }).click()
+  await expect(chat).toContainText('派工 #8（Codex · example/tools）已排队。')
+  await expect(chat.getByRole('button', { name: '先不发布' })).toHaveCount(0)
+  expect(submissions.map((submission) => !!submission.action)).toEqual([false, true])
+})
+
 test('opens the Router from the main navigation, handles A2UI actions and restores the selected conversation', async ({
   page,
 }) => {

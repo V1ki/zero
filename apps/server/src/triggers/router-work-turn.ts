@@ -4,7 +4,7 @@ import { TriggerAgentError } from './event-agent'
 import { type RouterActor, type RouterJobPrincipals, fingerprint } from './router-job-principal'
 import type { RouterJobs } from './router-jobs'
 import type { RouterTurnActions } from './router-loop-tools'
-import { authorizeRouterJobContinuation, jobReply } from './router-work-reply'
+import { authorizeRouterJobContinuation, chosenOption, jobReply } from './router-work-reply'
 
 export interface RouterWorkIntegrations {
   delegatedJobs?: RouterJobs
@@ -90,10 +90,14 @@ export function createRouterWorkTurn(
     if (!stored) throw new TriggerAgentError('在当前 Router 对话中找不到这个工作任务。')
     return pin(!!stored.repository, signal)
   }
+  async function requireCheckout(job: { executor: string; repository?: string }) {
+    if (job.executor === 'codex' && (!job.repository || !(await checkout?.(job.repository, actor))))
+      throw new TriggerAgentError('此入口的 Codex 工作区授权已变更。')
+  }
   const actions: RouterTurnActions = {
     ...(delegatedJobs &&
       principals && {
-        delegateTask: async (target, signal) => {
+        delegateTask: async ({ brief, ...target }, signal) => {
           const audience = pin(!!target.repository, signal)
           if (
             target.executor === 'codex' &&
@@ -107,6 +111,7 @@ export function createRouterWorkTurn(
             ...target,
             audience,
             instruction: turn.question,
+            ...(brief && { brief }),
           })
           record(job)
           return job
@@ -116,24 +121,61 @@ export function createRouterWorkTurn(
           record(job)
           return job
         },
-        continueTask: async (id, signal) => {
+        continueTask: async (id, signal, brief) => {
           const audience = jobAudience(id, signal)
           const original = delegatedJobs.get(scope, id, audience)
           authorizeRouterJobContinuation(turn.question, original.executor)
-          if (
-            original.executor === 'codex' &&
-            (!original.repository || !(await checkout?.(original.repository, actor)))
-          )
-            throw new TriggerAgentError('此入口的 Codex 工作区授权已变更。')
+          await requireCheckout(original)
           guard(signal)
-          const job = delegatedJobs.continue(scope, id, turn.requestId, turn.question, audience)
+          // "选 2" alone means nothing to the executor; name the option the owner picked.
+          const picked = chosenOption(turn.question, original)
+          const instruction = picked
+            ? `${turn.question}\n（用户选择的是上一步提出的问题「${picked.question}」的选项：「${picked.option}」）`
+            : turn.question
+          const job = delegatedJobs.continue(scope, id, turn.requestId, instruction, audience, {
+            ...(brief && { brief }),
+          })
           record(job)
           return job
         },
       }),
   }
+
+  /**
+   * The owner clicked an option of a decision this server rendered. The click is their explicit
+   * instruction, so the sentence guard does not apply; every other continuation check does.
+   */
+  async function chooseOption(
+    choice: { jobId: number; attempt: number; option: number },
+    signal: AbortSignal,
+  ) {
+    if (!delegatedJobs || !principals) throw new TriggerAgentError('执行服务尚未就绪。')
+    const audience = jobAudience(choice.jobId, signal)
+    const original = delegatedJobs.get(scope, choice.jobId, audience)
+    const decision = original.status === 'completed' ? original.report?.decision : undefined
+    const option = decision?.options[choice.option]
+    if (original.attempt !== choice.attempt || !decision || option === undefined)
+      throw new TriggerAgentError('这个问题已经回答过，或任务已有新的进展。')
+    await requireCheckout(original)
+    guard(signal)
+    // One answer per decision, recorded with the request that gave it.
+    const once = store.conversations.applyActionOnce(
+      scope,
+      `decision-${choice.jobId}-${choice.attempt}`,
+      JSON.stringify([turn.requestId, choice.option]),
+      () => {},
+    )
+    if (once === 'conflict') throw new TriggerAgentError('这个问题已经回答过。')
+    const instruction = `用户在网页上回答了这项派工上一步提出的问题「${decision.question}」，选择了：「${option}」。请按这个选择继续。`
+    const job = delegatedJobs.continue(scope, choice.jobId, turn.requestId, instruction, audience, {
+      expectedAttempt: choice.attempt,
+    })
+    record(job)
+    return job
+  }
   return {
     actions,
+    chooseOption,
     verified: (result?: TriggerConversationAnswer) => {
       if (!verified) return undefined
       // Router Agent formats multi-tool successes/errors; only host callbacks can attach receipts.
