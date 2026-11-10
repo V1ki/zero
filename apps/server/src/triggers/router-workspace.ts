@@ -5,27 +5,19 @@ import {
   type GithubInvestigation,
   type GithubInvestigationAction,
   type MandatePlatform,
-  type RouterDirectReminder,
   type RouterWorkspaceSnapshot,
   type RouterWorkspaceTask,
   type TriggerConversationAnswer,
   type TriggerConversationScope,
   type TriggerConversationTurn,
-  type TriggerPreferenceChange,
-  type TriggerRoutingSettings,
-  type TriggerRoutingSettingsSnapshot,
   botRoutingPreferences,
-  getTriggerRouteBot,
   isRouterSurfaceAction,
-  isTriggerRoutePlatform,
   matchesRouterSurfaceAction,
 } from '@zero-os/shared'
 import { TriggerAgentError } from './event-agent'
 import { type GithubInvestigator, InvestigationError } from './investigation'
-import { MandateInputError } from './mandate-input'
-import type { RouterAgentInput, RouterBot, createRouterAgent } from './router-agent'
+import type { RouterAgentInput, createRouterAgent } from './router-agent'
 import type { RouterCommissionService } from './router-commission'
-import { parseDirectReminder } from './router-direct-reminder'
 import { routerImScope } from './router-job-principal'
 import { buildRouterReplySurface, buildRouterSurface } from './router-surface'
 import {
@@ -33,7 +25,7 @@ import {
   createRouterWorkTurn,
   visibleWorkTurn,
 } from './router-work-turn'
-import { DirectReminderUnavailableError, type TriggerRoutingRuntime } from './routing-runtime'
+import type { TriggerRoutingRuntime } from './routing-runtime'
 import type { TaskMessage } from './task-bridge'
 
 export class RouterWorkspaceError extends Error {
@@ -57,50 +49,29 @@ interface ImTurn {
   platform: MandatePlatform
   authorized: () => boolean
 }
-type Routing = Pick<
-  TriggerRoutingRuntime,
-  | 'getConfig'
-  | 'saveConfig'
-  | 'listPersonalBots'
-  | 'process'
-  | 'prepareDirectReminder'
-  | 'sendDirectReminder'
-> &
+type Routing = Pick<TriggerRoutingRuntime, 'getConfig' | 'listPersonalBots' | 'process'> &
   Partial<Pick<TriggerRoutingRuntime, 'previewCurrentRoute'>>
 
-const reminderStatusText: Record<RouterDirectReminder['status'], string> = {
-  draft: '已准备好这条一次性提醒。核对下方的机器人和正文后即可发送。',
-  sending: '正在提交这条提醒。',
-  accepted: '平台已受理这条提醒。',
-  rejected: '这条提醒未发出。可在下方查看原因。',
-  unknown: '这条提醒的发送结果尚未确认，请到机器人私聊中核对。',
-}
-
+/**
+ * Turns leave the server only with the fields the current Router still renders. Stored answers
+ * from removed chat features (reminders, preference proposals, mandate drafts, repository pages)
+ * and server-only fields such as `workAccess` and `reminder.audienceKey` are dropped here, so such
+ * a turn reads as its stored text.
+ */
 function publicTurn(turn: TriggerConversationTurn): TriggerConversationTurn {
-  const answer = turn.answer
-  if (!answer?.reminder) return turn
-  const { audienceKey: _private, ...reminder } = answer.reminder
-  return { ...turn, answer: { ...answer, text: reminderStatusText[reminder.status], reminder } }
-}
-
-function canUseProposal(
-  proposal: TriggerPreferenceChange | undefined,
-  settings: TriggerRoutingSettings,
-  bots: readonly RouterBot[],
-) {
-  if (!proposal) return false
-  if (proposal.key === 'personalBot')
-    return bots.some(
-      (bot) => bot.platform === proposal.platform && bot.channelId === proposal.value,
-    )
-  const platform = proposal.value
-  return (
-    !isTriggerRoutePlatform(platform) ||
-    bots.some(
-      (bot) =>
-        bot.platform === platform && bot.channelId === getTriggerRouteBot(settings, platform),
-    )
-  )
+  if (!turn.answer) return turn
+  const { toolSteps, investigation, job, text, intent, points } = turn.answer
+  return {
+    ...turn,
+    answer: {
+      text,
+      ...(toolSteps && { toolSteps }),
+      ...(investigation && { investigation }),
+      ...(job && { job }),
+      ...(intent && { intent }),
+      ...(points && { points }),
+    },
+  }
 }
 
 export class RouterWorkspaceService {
@@ -204,10 +175,7 @@ export class RouterWorkspaceService {
           scope === 'general' ? visibleWorkTurn(entry, 'web', scope, this.integrations) : entry,
         ),
       )
-    const bots =
-      !context.task && (scope === 'general' || turns.some((turn) => turn.answer?.proposal))
-        ? this.routing.listPersonalBots()
-        : []
+    const bots = scope === 'general' ? this.routing.listPersonalBots() : []
     const settings = botRoutingPreferences(context.settings.settings)
     return {
       ...context,
@@ -226,20 +194,7 @@ export class RouterWorkspaceService {
       ),
       turns: turns.map((turn) => ({
         ...turn,
-        surface: turn.answer
-          ? buildRouterReplySurface(
-              scope,
-              turn.id,
-              turn.answer,
-              context.settings.revision,
-              canUseProposal(turn.answer.proposal, settings, bots),
-              turn.answer.commission && this.commission?.status('web', turn.answer.commission.code),
-              scope === 'general' &&
-                !turn.answer.toolSteps &&
-                !turn.answer.reminder &&
-                !!parseDirectReminder(turn.question),
-            )
-          : null,
+        surface: turn.answer ? buildRouterReplySurface(scope, turn.id, turn.answer) : null,
       })),
     }
   }
@@ -255,20 +210,6 @@ export class RouterWorkspaceService {
       return await work
     } finally {
       this.jobs.delete(work)
-    }
-  }
-
-  private prepareReminder(command: {
-    platform: MandatePlatform
-    text: string
-  }): RouterDirectReminder {
-    const bot = this.routing.prepareDirectReminder(command.platform)
-    return {
-      ...command,
-      channelId: bot.channelId,
-      audienceKey: bot.audienceKey,
-      botLabel: bot.label,
-      status: 'draft',
     }
   }
 
@@ -325,11 +266,6 @@ export class RouterWorkspaceService {
       const saved = conversations.get(scope, requestId)
       const answer = saved && visibleWorkTurn(saved, actor, scope, this.integrations).answer
       if (!answer) return null
-      const reminder = answer.reminder
-      if (reminder?.status === 'draft')
-        return `提醒草稿（${reminder.botLabel}）：${reminder.text}\n要发送请回复「把上一条草稿发出去」。`
-      if (reminder?.status === 'rejected') return reminder.reason ?? '这条提醒未发出。'
-      if (reminder) return reminder.reason ?? reminderStatusText[reminder.status]
       return [answer.text, ...(answer.points ?? [])].join('\n')
     }
     const job = prior ? prior.then(run, run) : run()
@@ -407,9 +343,7 @@ export class RouterWorkspaceService {
         return
       }
       const sources = this.store.getSettings().settings
-      let draft: TriggerConversationAnswer | undefined
       let investigation: GithubInvestigation | undefined
-      const commission = mainUserTurn && !im ? this.commission : undefined
       const previewRoute = !task && this.routing.previewCurrentRoute?.bind(this.routing)
       const investigator = !task && event && this.integrations.investigator
       const actions: NonNullable<RouterAgentInput['actions']> = {
@@ -418,64 +352,6 @@ export class RouterWorkspaceService {
           if (toolSteps.length < 8) toolSteps.push({ name, ok })
         },
         ...(previewRoute && { previewRoute }),
-        ...(mainUserTurn && {
-          prepareReminder: (platform, text) => {
-            if (im && !im.authorized()) throw new TriggerAgentError('机器人授权已变更。')
-            const reminder = this.prepareReminder({ platform, text })
-            draft = { text: reminderStatusText.draft, reminder }
-            return { platform, botLabel: reminder.botLabel, text }
-          },
-          sendReminder: async (platform, text, signal, draftTurnId) => {
-            if (signal.aborted || this.stop.signal.aborted || (im && !im.authorized()))
-              throw new TriggerAgentError('已取消发送。')
-            const source =
-              draftTurnId === undefined
-                ? undefined
-                : history.find((entry) => entry.id === draftTurnId)
-            const original = source?.answer?.reminder
-            if (
-              draftTurnId !== undefined &&
-              (!original ||
-                original.status !== 'draft' ||
-                original.platform !== platform ||
-                original.text !== text)
-            )
-              throw new DirectReminderUnavailableError('这条提醒草稿已失效。')
-            const reminder = original ?? this.prepareReminder({ platform, text })
-            if (
-              !reminder.audienceKey ||
-              !conversations.reserveToolReminder(
-                scope,
-                turn.requestId,
-                attempt,
-                reminder,
-                draftTurnId,
-              )
-            )
-              throw new DirectReminderUnavailableError('这条提醒已在处理或草稿已失效。')
-            const outcome = await this.deliverReminder(
-              turn.requestId,
-              reminder,
-              reminder.audienceKey,
-              signal,
-              source?.requestId,
-              im,
-            )
-            return { platform, botLabel: reminder.botLabel, text, ...outcome }
-          },
-        }),
-        ...(commission && {
-          prepareCommission: async (intent, signal) => {
-            const result = await commission.prepareFromIntent(
-              turn.requestId,
-              turn.question,
-              intent,
-              signal,
-            )
-            if (result.commission) draft = result
-            return result
-          },
-        }),
         ...(investigator &&
           event &&
           investigator.available(event).length > 0 && {
@@ -511,26 +387,17 @@ export class RouterWorkspaceService {
         this.stop.signal,
       )
       if (im && !im.authorized()) throw new TriggerAgentError('机器人授权已变更。')
-      // Model output cannot mint receipts, drafts, investigation findings or tool history.
-      const reply: TriggerConversationAnswer = draft ??
-        work?.verified(result) ?? {
-          text: result.text,
-          ...(result.intent && { intent: result.intent }),
-          ...(result.points && { points: result.points }),
-          ...(result.proposal && { proposal: result.proposal }),
-          ...(investigation && { investigation }),
-        }
+      // Model output cannot mint receipts, investigation findings or tool history.
+      const answer: TriggerConversationAnswer = work?.verified(result) ?? {
+        text: result.text,
+        ...(result.intent && { intent: result.intent }),
+        ...(result.points && { points: result.points }),
+        ...(investigation && { investigation }),
+      }
       if (task && !this.context(context.scope).task?.active) {
         conversations.fail(scope, turn.requestId, attempt, '这项任务的委托或来源授权已撤销。')
         throw new RouterWorkspaceError(409, '这项任务的委托或来源授权已撤销。')
       }
-      // Pin confirmation to the snapshot the Agent actually saw, even if preferences changed mid-turn.
-      const answer =
-        task && (reply.proposal || reply.commission)
-          ? { text: '任务对话用于跟进当前委托。若要修改全局设置，请打开 Router 主对话。' }
-          : reply.proposal
-            ? { ...reply, proposalRevision: settings.revision }
-            : reply
       if (
         !conversations.finish(scope, turn.requestId, attempt, {
           ...(work?.protect(answer) ?? answer),
@@ -539,18 +406,6 @@ export class RouterWorkspaceService {
       )
         throw new RouterWorkspaceError(409, '本次回答已失效，请刷新对话。')
     } catch (error) {
-      // Keep the truthful receipt and dispatched steps if only the model's follow-up failed.
-      const receipt = conversations.get(scope, turn.requestId)?.answer?.reminder
-      if (
-        receipt &&
-        receipt.status !== 'sending' &&
-        receipt.status !== 'draft' &&
-        conversations.finish(scope, turn.requestId, attempt, {
-          text: reminderStatusText[receipt.status],
-          toolSteps,
-        })
-      )
-        return
       if (error instanceof RouterWorkspaceError) throw error
       const completedWork = work?.verified()
       if (work && completedWork && (!im || im.authorized())) {
@@ -562,20 +417,11 @@ export class RouterWorkspaceService {
         }
       }
       const detail =
-        error instanceof TriggerAgentError ||
-        error instanceof MandateInputError ||
-        error instanceof InvestigationError ||
-        error instanceof DirectReminderUnavailableError
+        error instanceof TriggerAgentError || error instanceof InvestigationError
           ? error.message
           : 'Router 未能完成回答，请重试。'
       conversations.fail(scope, turn.requestId, attempt, detail)
-      // An external send may already have finished even if the model's next step failed.
-      const sealed = conversations.get(scope, turn.requestId)
-      if (sealed?.status === 'completed' && sealed.answer?.reminder) return
-      throw new RouterWorkspaceError(
-        error instanceof DirectReminderUnavailableError ? 409 : 502,
-        detail,
-      )
+      throw new RouterWorkspaceError(502, detail)
     }
   }
 
@@ -599,34 +445,6 @@ export class RouterWorkspaceService {
     if (!matchesRouterSurfaceAction(surface, raw))
       throw new RouterWorkspaceError(409, '这张卡片上的操作已失效，请刷新后重试。')
 
-    if (name === 'prepare_reminder' || name === 'send_reminder') {
-      if (scope !== 'general' || !turn)
-        throw new RouterWorkspaceError(409, '此提醒不属于当前对话。')
-      const conversations = this.store.conversations
-      const reminder = conversations.get(scope, turn.requestId)?.answer?.reminder
-      const result = conversations.applyActionOnce(scope, requestId, receipt, () => {
-        if (name === 'prepare_reminder') {
-          // Older turns could only explain an explicit send request. A click may prepare them.
-          const command = !turn.answer?.toolSteps && parseDirectReminder(turn.question)
-          if (!command) throw new RouterWorkspaceError(409, '这条历史记录没有可准备的提醒。')
-          try {
-            if (conversations.attachReminder(scope, turn.requestId, this.prepareReminder(command)))
-              return
-          } catch (error) {
-            if (error instanceof DirectReminderUnavailableError)
-              throw new RouterWorkspaceError(409, error.message)
-            throw error
-          }
-        } else if (reminder?.audienceKey && conversations.claimReminder(scope, turn.requestId))
-          return
-        throw new RouterWorkspaceError(409, '这条提醒的状态已变更，请刷新对话。')
-      })
-      if (result === 'conflict') throw new RouterWorkspaceError(409, '请求编号已用于其他操作。')
-      if (result === 'applied' && name === 'send_reminder' && reminder?.audienceKey) {
-        await this.track(this.deliverReminder(turn.requestId, reminder, reminder.audienceKey))
-      }
-      return this.get(scope)
-    }
     if (name === 'inspect_github' || name === 'compare_runs') {
       return this.runTurn(scope, requestId, inspectionQuestions[name], retry, name)
     }
@@ -642,23 +460,7 @@ export class RouterWorkspaceService {
           : '根据目前已知的信息，接下来可以怎么做？'
       return this.runTurn(scope, requestId, subject + question, retry, name)
     }
-    if (name === 'confirm_mandate') {
-      if (scope !== 'general' || !turn?.answer?.commission || !this.commission)
-        throw new RouterWorkspaceError(409, '没有可确认的委托草案。')
-      await this.commission.confirm('web', turn.answer.commission.code, () => {
-        if (
-          this.store.conversations.applyActionOnce(scope, requestId, receipt, () => {}) ===
-          'conflict'
-        )
-          throw new RouterWorkspaceError(409, '请求编号已用于其他操作。')
-      })
-      return this.get(scope)
-    }
     const result = this.store.conversations.applyActionOnce(scope, requestId, receipt, () => {
-      if (name === 'apply_preference') {
-        this.applyPreference(scope, this.routing.getConfig(), turn)
-        return
-      }
       if (
         typeof scope !== 'number' ||
         name !== 'process_event' ||
@@ -668,61 +470,5 @@ export class RouterWorkspaceService {
     })
     if (result === 'conflict') throw new RouterWorkspaceError(409, '请求编号已用于其他操作。')
     return this.get(scope)
-  }
-
-  private async deliverReminder(
-    turnId: string,
-    reminder: RouterDirectReminder,
-    audienceKey: string,
-    signal: AbortSignal = this.stop.signal,
-    deliveryId: string = turnId,
-    im?: ImTurn,
-  ) {
-    let result: Awaited<ReturnType<Routing['sendDirectReminder']>>
-    try {
-      result = await this.routing.sendDirectReminder(
-        reminder.platform,
-        { channelId: reminder.channelId, audienceKey },
-        reminder.text,
-        deliveryId,
-        signal,
-        im?.authorized,
-      )
-    } catch {
-      // A transport that unwinds after taking the request may already have sent it.
-      result = { status: 'unknown', reason: '未能确认平台回执，请在机器人私聊中核对。' }
-    }
-    if (!this.store.conversations.finishReminder(im?.scope ?? 'general', turnId, result))
-      throw new RouterWorkspaceError(409, '提醒回执已更新，请刷新对话。')
-    return result
-  }
-
-  private applyPreference(
-    scope: Scope,
-    previous: TriggerRoutingSettingsSnapshot,
-    turn?: TriggerConversationTurn,
-  ) {
-    const answer = turn?.answer
-    const proposal = answer?.proposal
-    if (
-      !turn ||
-      !proposal ||
-      answer.proposalAppliedAt ||
-      answer.proposalRevision !== previous.revision
-    )
-      throw new RouterWorkspaceError(409, '通知规则已更新，请重新提出修改。')
-    if (!canUseProposal(proposal, previous.settings, this.routing.listPersonalBots()))
-      throw new RouterWorkspaceError(409, '机器人账号已变更。请在 Router 通知设置中重新选择。')
-    const settings = previous.settings
-    this.routing.saveConfig(
-      proposal.key === 'personalBot'
-        ? {
-            ...settings,
-            personalBots: { ...settings.personalBots, [proposal.platform]: proposal.value },
-          }
-        : { ...settings, [proposal.key]: proposal.value },
-      previous.revision,
-    )
-    this.store.conversations.markProposalApplied(scope, turn.requestId, new Date().toISOString())
   }
 }

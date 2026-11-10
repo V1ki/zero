@@ -40,25 +40,27 @@ function fixture(ref = 'github_listener_account') {
   return { service, snapshot, resolve, fetcher, save }
 }
 
-test('lists a bounded page of the fixed connection, independent of listeners', async () => {
+/** Minimal GitHub responses for a repository with no failed workflow runs. */
+function github(url: URL) {
+  return url.pathname.endsWith('/runs')
+    ? Response.json({ workflow_runs: [] })
+    : Response.json({ id: 5, full_name: 'org/project' })
+}
+const read = (
+  service: ReturnType<typeof fixture>['service'],
+  actor: CommissionOperator | 'web' = owner,
+) => service.latestFailure(actor, 'org/project', signal)
+const empty = { repository: 'org/project', latestFailure: null }
+
+test('reads through the fixed connection, independent of listeners', async () => {
   const { service, fetcher } = fixture()
   fetcher.mockImplementation(async (url, init) => {
     expect(url.origin).toBe('https://api.github.com')
-    expect(url.pathname).toBe('/user/repos')
-    expect(url.searchParams.get('per_page')).toBe('20')
-    expect(url.searchParams.get('sort')).toBe('full_name')
-    expect(url.searchParams.get('page')).toBe('2')
     expect(new Headers(init.headers).get('authorization')).toBe('Bearer fixture-token')
-    return Response.json([{ full_name: 'org/project' }, { full_name: 'user/second' }], {
-      headers: { link: '<https://api.github.com/user/repos?page=3>; rel="next"' },
-    })
+    return github(url)
   })
-  expect(await service.list(owner, signal, 2)).toEqual({
-    page: 2,
-    repositories: ['org/project', 'user/second'],
-    nextPage: 3,
-  })
-  expect(fetcher).toHaveBeenCalledTimes(1)
+  expect(await read(service)).toEqual(empty)
+  expect(fetcher).toHaveBeenCalledTimes(2)
 })
 
 test('legacy settings allow the local owner only; access is pinned to all four IM identity fields', async () => {
@@ -71,26 +73,27 @@ test('legacy settings allow the local owner only; access is pinned to all four I
     { operatorId: '' },
   ]) {
     expect(service.accessKey({ ...owner, ...changed })).toBeNull()
-    await expect(service.list({ ...owner, ...changed }, signal)).rejects.toThrow('授权')
+    await expect(read(service, { ...owner, ...changed })).rejects.toThrow('授权')
   }
   snapshot.settings.github.routerOperators = undefined
   save()
-  await expect(service.list(owner, signal)).rejects.toThrow('授权')
+  await expect(read(service)).rejects.toThrow('授权')
   expect(resolve).not.toHaveBeenCalled()
   expect(fetcher).not.toHaveBeenCalled()
-  expect(await service.list('web', signal)).toEqual({ page: 1, repositories: [], nextPage: null })
+  fetcher.mockImplementation(async (url) => github(url))
+  expect(await read(service, 'web')).toEqual(empty)
 })
 
-test('missing or invalid connection never simulates an empty repository list', async () => {
+test('missing or invalid connection never reads GitHub', async () => {
   for (const ref of ['', 'other_vault_item']) {
     const f = fixture(ref)
-    await expect(f.service.list('web', signal)).rejects.toThrow('配置 GitHub 凭证')
+    await expect(read(f.service, 'web')).rejects.toThrow('配置 GitHub 凭证')
     expect(f.resolve).not.toHaveBeenCalled()
     expect(f.fetcher).not.toHaveBeenCalled()
   }
   const f = fixture()
   f.resolve.mockReturnValue(undefined)
-  await expect(f.service.list(owner, signal)).rejects.toThrow('连接授权')
+  await expect(read(f.service)).rejects.toThrow('连接授权')
   expect(f.fetcher).not.toHaveBeenCalled()
 })
 
@@ -99,52 +102,50 @@ test('withholds results if the grant is revoked or the connection changes during
     const { service, snapshot, resolve, fetcher, save } = fixture()
     const key = service.accessKey(owner)
     expect(key).toMatch(/^[a-f0-9]{64}$/)
-    fetcher.mockImplementation(async () => {
+    fetcher.mockImplementation(async (url) => {
       if (change === 'rotate') resolve.mockReturnValue('replacement')
       if (change === 'remove') snapshot.settings.github.routerOperators = []
       if (change === 'switch') snapshot.settings.github.credentialRef = 'github_listener_new'
       save()
-      return Response.json([{ full_name: 'private/sensitive-project' }])
+      return github(url)
     })
-    await expect(service.list(owner, signal)).rejects.toThrow('授权已变化')
+    await expect(read(service)).rejects.toThrow('授权已变化')
     expect(service.accessKey(owner)).not.toBe(key)
   }
 })
 
-test('rejects invalid pages and sanitizes upstream errors', async () => {
+test('sanitizes upstream errors', async () => {
   const { service, fetcher } = fixture()
-  await expect(service.list(owner, signal, -2)).rejects.toThrow('页码')
-  expect(fetcher).not.toHaveBeenCalled()
   fetcher.mockImplementation(async () => new Response('private context', { status: 401 }))
-  await expect(service.list(owner, signal)).rejects.toThrow('HTTP 401')
+  await expect(read(service)).rejects.toThrow('HTTP 401')
   fetcher.mockImplementation(async () => new Response('', { status: 429 }))
-  await expect(service.list(owner, signal)).rejects.toThrow('限制查询频率')
+  await expect(read(service)).rejects.toThrow('限制查询频率')
 })
 
 test('unrelated settings changes preserve in-flight access while removing and restoring the same grant does not', async () => {
   const { service, snapshot, fetcher, save } = fixture()
   const original = service.accessKey(owner)
-  fetcher.mockImplementation(async () => {
+  fetcher.mockImplementation(async (url) => {
     snapshot.settings.wxarc.sessions.push({
-      id: 'whole-room',
+      id: `room-${snapshot.revision}`,
       name: 'Room',
       enabled: false,
       keyword: '',
     })
     snapshot.settings.github.routerOperators?.push({ ...owner, operatorId: 'second' })
     save()
-    return Response.json([{ full_name: 'org/accessible' }])
+    return github(url)
   })
-  expect((await service.list(owner, signal)).repositories).toEqual(['org/accessible'])
+  expect(await read(service)).toEqual(empty)
   expect(service.accessKey(owner)).toBe(original)
-  fetcher.mockImplementation(async () => {
+  fetcher.mockImplementation(async (url) => {
     snapshot.settings.github.routerOperators = []
     save()
     snapshot.settings.github.routerOperators = [owner]
     save()
-    return Response.json([{ full_name: 'org/private' }])
+    return github(url)
   })
-  await expect(service.list(owner, signal)).rejects.toThrow('授权已变化')
+  await expect(read(service)).rejects.toThrow('授权已变化')
   expect(service.accessKey(owner)).not.toBe(original)
 })
 

@@ -7,13 +7,8 @@ const taskStillOpen = `(t.active=1 OR t.updated_at > ?1 OR (t.acknowledged_at IS
     (s.status NOT IN ('ready','revoked')
     OR EXISTS(SELECT 1 FROM mandate_effects e WHERE e.match_id=s.id AND e.status NOT IN ('done','skipped','revoked'))
     OR EXISTS(SELECT 1 FROM mandate_audit a WHERE a.match_id=s.id AND a.at > ?1))))`
-// Failed turns can still be retried. Pending proposals need their original confirmation card.
-const openTurn = `(c.status != 'completed' OR
-  json_extract(c.answer,'$.reminder.status') IS 'sending' OR
-  (json_type(c.answer,'$.proposal') IS 'object' AND json_extract(c.answer,'$.proposalAppliedAt') IS NULL)
-  OR (json_type(c.answer,'$.commission') IS 'object' AND NOT EXISTS (
-    SELECT 1 FROM trigger_commission_drafts draft WHERE draft.code=json_extract(c.answer,'$.commission.code')
-    AND (draft.applied=1 OR (draft.expires_at > 0 AND draft.expires_at <= unixepoch(?1)*1000)))))`
+// Failed turns can still be retried.
+const openTurn = `(c.status != 'completed')`
 
 export class TriggerRetentionStore {
   constructor(private readonly db: Database) {

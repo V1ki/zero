@@ -20,7 +20,7 @@ const owner: CommissionOperator = {
 // Same peer and operator strings on another authorized bot must not unlock this job.
 const other: CommissionOperator = { ...owner, platform: 'feishu', channelId: 'work-bot' }
 
-test('a private Router can list repositories, delegate the numbered follow-up and resume only its own job', async () => {
+test('a private Router can delegate a named repository and resume only its own job', async () => {
   const store = new TriggerStore(':memory:')
   store.saveSettings(
     {
@@ -56,8 +56,6 @@ test('a private Router can list repositories, delegate the numbered follow-up an
     const repo = { id: 2, full_name: 'fixture/second' }
     const path = '/repos/fixture/second'
     switch (url.pathname) {
-      case '/user/repos':
-        return Response.json([{ full_name: 'fixture/first' }, repo])
       case path:
         return Response.json(repo)
       case `${path}/actions/runs`:
@@ -161,7 +159,6 @@ test('a private Router can list repositories, delegate the numbered follow-up an
     },
   })
   const workspace = new RouterWorkspaceService(store, routing, createRouterAgent(deps), {
-    repositories,
     delegatedJobs: jobs,
     principals,
   })
@@ -197,14 +194,7 @@ test('a private Router can list repositories, delegate the numbered follow-up an
   try {
     workspace.start()
     jobs.start()
-    const list = await receive(owner, '看看我的 GitHub 里面的仓库', 'list_github_repositories', {
-      page: 1,
-    })
-    expect(list.handled).toBe(true)
-    expect(list.reply).toContain('fixture/first')
-    expect(list.reply).toContain('fixture/second')
-    expect(fetcher).toHaveBeenCalledTimes(1)
-    const task = await receive(owner, '帮我分析第二个仓库最近一次发布失败', 'delegate_task', {
+    const task = await receive(owner, '帮我分析 fixture/second 最近一次发布失败', 'delegate_task', {
       executor: 'zero',
       repository: 'fixture/second',
     })
@@ -242,8 +232,6 @@ test('a private Router can list repositories, delegate the numbered follow-up an
 
     const count = requests.length
     await receive(other, '帮我看看执行任务 1', 'get_task_status', { jobId: 1 })
-    await receive(other, '看看我的 GitHub 仓库', 'list_github_repositories', { page: 1 })
-    expect(fetcher.mock.calls.filter(([url]) => url.pathname === '/user/repos')).toHaveLength(1)
     expect(JSON.stringify(requests.slice(count))).not.toContain('fixture/second')
     expect(JSON.stringify(requests.slice(count))).not.toContain('失败步骤是 publish')
     // Turning off this user's grant also removes private work history from the next model call.
@@ -271,7 +259,7 @@ test('a private Router can list repositories, delegate the numbered follow-up an
   }
 })
 
-test('Web card follow-ups inherit repository access across failed turns and hide revoked history from the model', async () => {
+test('Web card follow-ups inherit job repository access across failed turns and hide revoked history from the model', async () => {
   const store = new TriggerStore(':memory:')
   const settings = store.getSettings()
   const github = { ...settings.settings.github, credentialRef: 'github_listener_web' }
@@ -281,8 +269,19 @@ test('Web card follow-ups inherit repository access across failed turns and hide
   const repositories = createRouterRepositoryLookup(
     (actor) => store.getRouterGithubGrant(actor),
     () => 'fixture-token',
-    async () => Response.json([{ full_name: privateRepo }]),
+    async () => {
+      throw new Error('Unexpected GitHub request')
+    },
   )
+  const principals = new RouterJobPrincipals(store, repositories)
+  const jobs = new RouterJobs(store.jobs, {
+    authorized: principals.authorized.bind(principals),
+    // Keep the job running; only the receipt and its access snapshot matter here.
+    execute: (_job, _history, signal) =>
+      new Promise((_resolve, reject) =>
+        signal.addEventListener('abort', () => reject(signal.reason)),
+      ),
+  })
   const requests: CompletionRequest[] = []
   const adapter: ProviderAdapter = {
     apiType: 'fixture',
@@ -292,7 +291,7 @@ test('Web card follow-ups inherit repository access across failed turns and hide
     },
     async complete(req) {
       requests.push(req)
-      const listing = requests.length === 1
+      const delegating = requests.length === 1
       const text = JSON.stringify(req.messages).includes(privateRepo)
         ? derivedFact
         : '当前授权无仓库记录。'
@@ -300,9 +299,9 @@ test('Web card follow-ups inherit repository access across failed turns and hide
         id: crypto.randomUUID(),
         model: 'fixture',
         usage: { input: 1, output: 1 },
-        stopReason: listing ? 'tool_use' : 'end_turn',
-        content: listing
-          ? [{ type: 'tool_use', id: 'read', name: 'list_github_repositories', input: { page: 1 } }]
+        stopReason: delegating ? 'tool_use' : 'end_turn',
+        content: delegating
+          ? [{ type: 'tool_use', id: 'job', name: 'delegate_task', input: { executor: 'zero' } }]
           : [{ type: 'text', text }],
       }
     },
@@ -321,7 +320,7 @@ test('Web card follow-ups inherit repository access across failed turns and hide
       modelRouter: { getDefaultModel: () => ({ adapter }), getCurrentModel: () => undefined },
       secretFilter: { filter: (text) => text },
     }),
-    { repositories, principals: new RouterJobPrincipals(store, repositories) },
+    { principals, delegatedJobs: jobs },
   )
   function click(name: 'suggest_next' | 'explain_route') {
     const surface = workspace.get('general').surface
@@ -341,8 +340,12 @@ test('Web card follow-ups inherit repository access across failed turns and hide
   }
   try {
     workspace.start()
-    const listed = await workspace.message('general', 'web-list', '看看我的仓库')
-    expect(listed.turns[0].answer?.repositories?.repositories).toEqual([privateRepo])
+    const delegated = await workspace.message(
+      'general',
+      'web-job',
+      `帮我分析 GitHub 仓库 ${privateRepo} 的发布记录`,
+    )
+    expect(delegated.turns[0].answer?.job?.repository).toBe(privateRepo)
     for (let i = 0; i < 8; i++) {
       const id = String(i)
       const pending = store.conversations.begin('general', id, '临时请求')
@@ -369,6 +372,7 @@ test('Web card follow-ups inherit repository access across failed turns and hide
     expect(sentToModel).not.toContain(derivedFact)
   } finally {
     await workspace.close()
+    await jobs.close()
     await routing.close()
     store.close()
   }

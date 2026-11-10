@@ -305,7 +305,6 @@ async function createStartupRuntimeShell({
     ),
   })
   const workspace = new RouterWorkspaceService(store, routing, createRouterAgent(core), {
-    repositories,
     principals,
     checkout,
     delegatedJobs,

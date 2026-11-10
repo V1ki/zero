@@ -1,12 +1,7 @@
 import { createHash } from 'node:crypto'
-import type { CommissionOperator, RouterRepositoryPage } from '@zero-os/shared'
+import type { CommissionOperator } from '@zero-os/shared'
 import { TriggerAgentError } from './event-agent'
-import {
-  GithubTriggerError,
-  getGithubRepository,
-  listGithubRepositoryPage,
-  readRouterLatestFailure,
-} from './github'
+import { GithubTriggerError, getGithubRepository, readRouterLatestFailure } from './github'
 
 export type RouterRepositoryActor = 'web' | CommissionOperator
 export type RouterRepositoryLookup = ReturnType<typeof createRouterRepositoryLookup>
@@ -72,15 +67,6 @@ export function createRouterRepositoryLookup(
 
   return {
     accessKey: (actor: RouterRepositoryActor): string | null => connection(actor)?.key ?? null,
-    async list(
-      actor: RouterRepositoryActor,
-      signal: AbortSignal,
-      page = 1,
-    ): Promise<RouterRepositoryPage> {
-      if (!Number.isSafeInteger(page) || page < 1 || page > 100_000)
-        throw new TriggerAgentError('请使用有效的 GitHub 仓库页码。')
-      return read(actor, signal, (token, get) => listGithubRepositoryPage(token, page, signal, get))
-    },
     /** The caller supplies the repository pinned to the job, never a worker-selected credential. */
     async latestFailure(
       actor: RouterRepositoryActor,

@@ -12,7 +12,6 @@ import {
   type TriggerRouteStatus,
   type TriggerRoutingSettings,
   getTriggerRouteBot,
-  isTriggerRoutePlatform,
   triggerRoutePlatforms,
   ROUTER_A2UI_VERSION as version,
 } from '@zero-os/shared'
@@ -24,10 +23,6 @@ const labels: Record<RouterActionName, string> = {
   explain_route: '解释这次路由',
   suggest_next: '建议下一步',
   process_event: '交给 Agent 处理',
-  apply_preference: '确认应用偏好',
-  confirm_mandate: '确认此委托变更',
-  prepare_reminder: '准备这条通知',
-  send_reminder: '发送通知',
   inspect_github: '查看 GitHub 事件详情',
   compare_runs: '对比此前的运行',
 }
@@ -100,9 +95,6 @@ function buildSurface(
       {
         id: `btn-${name}`,
         component: 'Button',
-        ...(name === 'apply_preference' || name === 'confirm_mandate' || name === 'send_reminder'
-          ? { variant: 'primary' as const }
-          : {}),
         child: `label-${name}`,
         action: { event: { name } },
       },
@@ -239,87 +231,12 @@ export function buildRouterSurface(
   )
 }
 
-const preferenceLabels = {
-  presence: '在场状态',
-  duringWork: '工作时段',
-  afterWork: '下班后',
-  offDay: '休息日',
-  awayFallback: '网页无人时',
-}
-
-function describeProposal(change: TriggerConversationAnswer['proposal']) {
-  if (change?.key === 'personalBot')
-    return isTriggerRoutePlatform(change.platform)
-      ? `${destination[change.platform]}改为「${change.label}」（${change.value}）`
-      : null
-  if (!change || !Object.hasOwn(preferenceLabels, change.key)) return null
-  const choices: Record<string, string> =
-    change.key === 'presence'
-      ? presence
-      : change.key === 'awayFallback'
-        ? {
-            weixin: '使用已选微信机器人',
-            dingtalk: '使用已选钉钉机器人',
-            feishu: '使用已选飞书机器人',
-            defer: '延后提醒',
-          }
-        : destination
-  return Object.hasOwn(choices, change.value)
-    ? `${preferenceLabels[change.key]}改为「${choices[change.value]}」`
-    : null
-}
-
 export function buildRouterReplySurface(
   scope: TriggerConversationScope,
   turnId: number,
   answer: TriggerConversationAnswer,
-  currentRevision?: number,
-  proposalTargetAvailable = false,
-  commissionStatus: 'pending' | 'expired' | 'applied' = 'expired',
-  canPrepareReminder = false,
 ): RouterSurfaceMessages | null {
   const id = `${surfaceId(scope)}-turn-${turnId}`
-  if (scope === 'general' && answer.reminder) {
-    const reminder = answer.reminder
-    const status = {
-      draft: '待发送',
-      sending: '正在发送，等待平台回执',
-      accepted: '平台已受理',
-      rejected: '未能发送',
-      unknown: '发送结果待核实，请查看机器人私聊',
-    }[reminder.status]
-    return buildSurface(
-      id,
-      '一次性通知',
-      [
-        {
-          label: destination[reminder.platform],
-          value:
-            reminder.botLabel === reminder.channelId
-              ? reminder.botLabel
-              : `${reminder.botLabel}（${reminder.channelId}）`,
-        },
-        { label: '通知内容', value: reminder.text },
-        { label: '发送状态', value: status },
-        ...(reminder.reason ? [{ label: '详情', value: reminder.reason }] : []),
-      ],
-      reminder.status === 'draft' ? ['send_reminder'] : [],
-    )
-  }
-  if (answer.commission) {
-    const { title, details } = answer.commission
-    const notice = {
-      pending: '请核对后确认，草案十分钟内有效。',
-      expired: '草案已失效，请重新提出。',
-      applied: '已确认并保存。',
-    }[commissionStatus]
-    return buildSurface(
-      id,
-      title,
-      [...details.map((value) => ({ value })), { value: notice }],
-      commissionStatus === 'pending' ? ['confirm_mandate'] : [],
-    )
-  }
   const evidence = answer.investigation
   if (evidence) {
     const heading = { jobs: '失败作业与步骤', history: '历史运行对比', pull: 'PR 与原评论' }[
@@ -331,44 +248,12 @@ export function buildRouterReplySurface(
     ]
     return buildSurface(id, heading, facts, ['suggest_next'])
   }
-  const proposal = describeProposal(answer.proposal)
-  if (scope === 'general' && canPrepareReminder && !answer.proposal) {
-    return buildSurface(
-      id,
-      '一次性通知',
-      [{ value: '可根据原请求准备通知，核对机器人和正文后发送。' }],
-      ['prepare_reminder'],
-    )
-  }
-  if (!answer.intent && !proposal) return null
-  const title = proposal
-    ? '通知偏好变更'
-    : { route: '路由依据', event: '事件要点', next: '建议的下一步' }[answer.intent ?? 'route']
+  if (!answer.intent) return null
+  const title = { route: '路由依据', event: '事件要点', next: '建议的下一步' }[answer.intent]
   const facts: Fact[] = []
-  const actions: RouterActionName[] = []
-  if (proposal) {
-    facts.push({
-      label: answer.proposalAppliedAt ? '已保存的全局设置' : '拟调整的全局设置',
-      value: proposal,
-    })
-    if (answer.proposalAppliedAt) {
-      facts.push({ value: '已确认并保存此偏好。' })
-    } else if (currentRevision === undefined || currentRevision !== answer.proposalRevision) {
-      facts.push({ value: '设置版本已更新。如需这项更改，请重新提出。' })
-    } else if (
-      (answer.proposal?.key === 'personalBot' || isTriggerRoutePlatform(answer.proposal?.value)) &&
-      !proposalTargetAvailable
-    ) {
-      facts.push({
-        value: '请在渠道配置中核对机器人账号，并在 Router 通知设置中选定机器人。',
-      })
-    } else {
-      facts.push({ value: '确认后会保存新偏好，并按新规则复核等待提醒的事件。' })
-      actions.push('apply_preference')
-    }
-  }
   for (const [i, value] of (answer.points ?? []).slice(0, 3).entries())
     facts.push({ label: answer.intent === 'next' ? `步骤 ${i + 1}` : undefined, value })
-  actions.push(answer.intent === 'next' ? 'explain_route' : 'suggest_next')
-  return buildSurface(id, title, facts, actions)
+  return buildSurface(id, title, facts, [
+    answer.intent === 'next' ? 'explain_route' : 'suggest_next',
+  ])
 }
