@@ -39,21 +39,19 @@ export function createRouterCheckoutResolver(
   const checkouts = new Map(
     Object.entries(entries ?? {}).map(([name, value]) => [name.toLowerCase(), value]),
   )
-  return async (
+  const allows = (checkout: RouterCodexCheckout, principal: 'web' | CommissionOperator) =>
+    principal === 'web' ||
+    !!checkout.imChannels?.some(
+      (channel) =>
+        channel.platform === principal.platform && channel.channelId === principal.channelId,
+    )
+  const resolve = async (
     repository: string,
     principal: 'web' | CommissionOperator,
   ): Promise<string | null> => {
     const key = repository.toLowerCase()
     const checkout = checkouts.get(key)
-    if (!checkout || !isAbsolute(checkout.path)) return null
-    if (
-      principal !== 'web' &&
-      !checkout.imChannels?.some(
-        (channel) =>
-          channel.platform === principal.platform && channel.channelId === principal.channelId,
-      )
-    )
-      return null
+    if (!checkout || !isAbsolute(checkout.path) || !allows(checkout, principal)) return null
     try {
       const [directory, runtime] = await Promise.all([realpath(checkout.path), realpath(zeroDir)])
       if (contains(directory, runtime) || contains(runtime, directory)) return null
@@ -88,4 +86,10 @@ export function createRouterCheckoutResolver(
       return null
     }
   }
+  /** Repositories configured for this principal. Each is still checked when it is used. */
+  const registered = (principal: 'web' | CommissionOperator) =>
+    [...checkouts].flatMap(([name, checkout]) =>
+      isAbsolute(checkout.path) && allows(checkout, principal) ? [name] : [],
+    )
+  return Object.assign(resolve, { registered })
 }

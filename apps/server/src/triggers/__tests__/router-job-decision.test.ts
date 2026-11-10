@@ -10,6 +10,7 @@ import type { RouterAgentInput } from '../router-agent'
 import { RouterJobPrincipals } from '../router-job-principal'
 import { RouterJobs } from '../router-jobs'
 import { RouterWorkspaceService } from '../router-workspace'
+import type { RouterWriteRequest } from '../router-write-check'
 import { TriggerRoutingRuntime } from '../routing-runtime'
 
 const cleanup: Array<() => Promise<void>> = []
@@ -56,17 +57,25 @@ function setup() {
     report: async (job) => (job.attempt === 1 ? report : { verdict: '已发布。', done: [] }),
     completed: async () => 'delivered',
   })
+  const claim = () => {}
   const ask = mock(
     async (input: RouterAgentInput, signal?: AbortSignal): Promise<TriggerConversationAnswer> => {
-      const delegate = input.actions?.delegateTask
-      if (!delegate || !signal) throw new Error('Expected delegation')
-      const job = await delegate(
-        { executor: 'codex', repository: 'owner/repo', brief: '用户今天要发版' },
-        signal,
-      )
+      const { delegateTask: delegate, continueTask } = input.actions ?? {}
+      if (!delegate || !continueTask || !signal) throw new Error('Expected delegation')
+      const job = input.question.startsWith('继续派工')
+        ? await continueTask(1, signal, claim)
+        : await delegate(
+            { executor: 'codex', repository: 'owner/repo', brief: '用户今天要发版' },
+            signal,
+            claim,
+          )
       return { text: '已派工。', job }
     },
   )
+  const checks: RouterWriteRequest[] = []
+  const confirmWrite = mock(async (request: RouterWriteRequest) => {
+    checks.push(request)
+  })
   const service = new RouterWorkspaceService(
     store,
     {
@@ -75,7 +84,7 @@ function setup() {
       process: (id) => routing.process(id),
     },
     ask,
-    { principals, delegatedJobs, checkout: async () => access.checkout },
+    { principals, delegatedJobs, checkout: async () => access.checkout, confirmWrite },
   )
   service.start()
   cleanup.push(async () => {
@@ -83,7 +92,7 @@ function setup() {
     await routing.close()
     store.close()
   })
-  return { store, service, ask, access, executed }
+  return { store, service, ask, access, executed, checks }
 }
 
 function click(surface: RouterSurfaceMessages, option: number): RouterSurfaceAction {
@@ -198,4 +207,38 @@ test('a click is refused in another scope and after authorization or checkout ch
     status: 409,
   })
   expect(store.jobs.get('general', id)?.attempt).toBe(1)
+})
+
+test('replying with the printed phrase continues a Codex job without a confirmation call', async () => {
+  const { store, service, executed, checks } = setup()
+  await service.message('general', 'ask-1', '帮我修复 owner/repo 的发布脚本')
+  const snapshot = await reported(service)
+  expect(checks).toEqual([
+    { question: '帮我修复 owner/repo 的发布脚本', kind: 'submit', repository: 'owner/repo' },
+  ])
+  const printed = snapshot.turns[0].answer?.text.match(/回复「([^」]+)」/u)?.[1]
+  expect(printed).toBe('继续派工 #1：选 1')
+  const answered = await service.message('general', 'reply-1', printed ?? '')
+  expect(answered.turns[1].answer?.job).toMatchObject({ id: 1, attempt: 2 })
+  expect(checks).toHaveLength(1)
+  expect(store.jobs.get('general', 1)?.instruction).toBe(
+    '继续派工 #1：选 1\n（用户选择的是上一步提出的问题「现在发布吗？」的选项：「发布这份草稿」）',
+  )
+  await until(() => executed.length === 2)
+})
+
+test('a numbered answer with more words is confirmed, told only the option number', async () => {
+  const { store, service, checks } = setup()
+  await service.message('general', 'ask-1', '帮我修复 owner/repo 的发布脚本')
+  await reported(service)
+  await service.message('general', 'reply-1', '继续派工 #1：选 2，顺便把 changelog 补上')
+  expect(checks.at(-1)).toEqual({
+    question: '继续派工 #1：选 2，顺便把 changelog 补上',
+    kind: 'continue',
+    repository: 'owner/repo',
+    jobId: 1,
+    chosenOption: 2,
+  })
+  expect(JSON.stringify(checks)).not.toContain('先不发布')
+  expect(store.jobs.get('general', 1)?.attempt).toBe(2)
 })

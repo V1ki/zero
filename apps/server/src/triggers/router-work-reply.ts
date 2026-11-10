@@ -9,7 +9,7 @@ const jobStates: Record<RouterJobReceipt['status'], string> = {
   unknown: '执行结果待核对',
 }
 
-/** What the owner sends to answer an open decision. It must pass `authorizeRouterJobContinuation`. */
+/** What the owner sends to answer an open decision. Continuing a Codex job with it needs no further check. */
 export function decisionAnswer(jobId: number, option: number) {
   return `继续派工 #${jobId}：选 ${option}`
 }
@@ -53,111 +53,98 @@ export function chosenOption(question: string, job: RouterJobReceipt) {
   )
   if (picks.length !== 1) return undefined
   const option = decision.options[picks[0] - 1]
-  return option === undefined ? undefined : { question: decision.question, option }
+  return option === undefined
+    ? undefined
+    : { question: decision.question, option, number: picks[0] }
 }
 
-/** Accept only a full repository name that the user wrote in the current message. */
-export function resolveJobRepository(question: string, supplied: unknown): string | undefined {
-  const fullName = /^[a-z0-9-]+\/[a-z0-9._-]+$/iu
-  if (supplied !== undefined && (typeof supplied !== 'string' || !fullName.test(supplied)))
+/** Whether the sentence is the reply `jobReply` printed for this option, up to spacing and a colon. */
+export function isPrintedDecisionAnswer(question: string, jobId: number, option: number) {
+  const plain = (text: string) =>
+    text
+      .replace(/\s+/gu, '')
+      .replaceAll(':', '：')
+      .replace(/[。.!！]+$/u, '')
+  return plain(question) === plain(decisionAnswer(jobId, option))
+}
+
+const fullName = /^[a-z0-9-]+\/[a-z0-9._-]+$/iu
+
+/** The repository argument of read-only work. The GitHub grant for it is checked separately. */
+export function readJobRepository(supplied: unknown): string | undefined {
+  if (supplied === undefined) return undefined
+  if (typeof supplied !== 'string' || !fullName.test(supplied))
     throw new TriggerAgentError('请提供仓库全名，例如 owner/repository。')
-  const names = [
-    ...question.matchAll(
-      /(?<![a-z0-9./_-])(?:https?:\/\/github\.com\/)?([a-z0-9-]+\/[a-z0-9._-]+)/giu,
+  return supplied
+}
+
+const nameRepository =
+  '没有启动 Codex：请在消息里写明要修改的仓库，例如「修复 owner/repository 里失败的测试」。'
+
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+
+/** Whether the owner's sentence writes this repository, by full name or by its bare name. */
+export function sentenceNamesRepository(question: string, repository: string): boolean {
+  const name = repository.split('/')[1]
+  if (!name) return false
+  const sentence = question.replace(/https?:\/\/github\.com\//giu, ' ')
+  return [repository, name].some((text) =>
+    new RegExp(`(?<![a-z0-9._/-])${escapeRegExp(text)}(?![a-z0-9_/-]|\\.[a-z0-9])`, 'iu').test(
+      sentence,
     ),
-  ].map((match) => match[1])
-  const mentioned =
-    typeof supplied === 'string' &&
-    names.some((name) => name.toLowerCase() === supplied.toLowerCase())
-  if (supplied && !mentioned) throw new TriggerAgentError('请选择用户本轮点名的仓库。')
-  if (supplied) return supplied
-  if (names.length === 1 && /GitHub|仓库|repos?itory/iu.test(question)) return names[0]
-  return undefined
+  )
+}
+
+/**
+ * The repository a Codex job may target. Only the owner's sentence picks it: a full name written
+ * in it, or a bare name that matches exactly one checkout registered for this principal. When the
+ * sentence names no repository, `recent` is meant: the caller passes the most recent job's
+ * repository only when the owner wrote it or that job was Codex work. The model's argument can
+ * only choose among these, never add to them.
+ */
+export function resolveCodexRepository(
+  question: string,
+  supplied: unknown,
+  registered: readonly string[],
+  recent: string | undefined,
+): string {
+  if (supplied !== undefined && (typeof supplied !== 'string' || !supplied.trim()))
+    throw new TriggerAgentError(nameRepository)
+  const written = [
+    ...question.matchAll(
+      /(?<![a-z0-9./_-])(?:https?:\/\/github\.com\/)?([a-z0-9-]+\/[a-z0-9._-]*[a-z0-9_-])/giu,
+    ),
+  ].map((match) => match[1].replace(/\.git$/iu, ''))
+  const bare = registered.filter((repository) => {
+    const name = repository.split('/')[1]
+    return new RegExp(
+      `(?<![a-z0-9._/-])${escapeRegExp(name)}(?![a-z0-9_/-]|\\.[a-z0-9])`,
+      'iu',
+    ).test(question)
+  })
+  const unique = bare.filter(
+    (repository) =>
+      bare.filter((other) => other.split('/')[1] === repository.split('/')[1]).length === 1,
+  )
+  const candidates =
+    written.length || bare.length ? [...written, ...unique] : recent ? [recent] : []
+  const wanted = typeof supplied === 'string' ? supplied.trim().toLowerCase() : undefined
+  const matches = [
+    ...new Map(
+      candidates
+        .filter(
+          (candidate) =>
+            wanted === undefined ||
+            candidate.toLowerCase() === wanted ||
+            (!wanted.includes('/') && candidate.split('/')[1].toLowerCase() === wanted),
+        )
+        .map((candidate) => [candidate.toLowerCase(), candidate]),
+    ).values(),
+  ]
+  if (matches.length !== 1) throw new TriggerAgentError(nameRepository)
+  return matches[0]
 }
 
 export function recentWorkAnswer(history: readonly TriggerConversationTurn[]) {
   return history.filter((turn) => turn.status === 'completed' && turn.answer !== null).slice(-8)
-}
-
-// This guard authorizes the write-capable executor; the LLM still selects tools and understands tasks.
-export function explicitlyRequestsEngineering(question: string): boolean {
-  if (
-    /不要|不必|别(?:再|去|动|改|写|修|跑)|暂不|如何|怎么(?:做|修|改|跑)|是否|如果|假如|假设|举例|例如|解释|讨论|只读|只(?:想|需|是)?(?:看|分析|研究|检查)|do not|don't|how (?:to|would)|what if|read.only|explain/iu.test(
-      question,
-    )
-  )
-    return false
-  // Strip attributed text before checking the outer imperative ("summarize: fix..." is not a grant).
-  const outer = question.replace(/「[^」]*」|『[^』]*』|“[^”]*”|"[^"]*"|`[^`]*`/gu, ' ').trim()
-  const imperative =
-    /^(?:(?:请(?:你)?|麻烦(?:你)?|帮我|替我|现在|直接|先|再|接着|继续|用\s*Codex|让\s*Codex|Codex|please)\s*)*(?:把|将|在|为|给|修复|修正|修一下|修改|改一下|实现|编写|写|添加|重构|补|跑|运行|\b(?:fix|implement|refactor|patch|edit|write|run)\b)/iu
-  const action =
-    /修(?:复|好|正|一下)|改(?:动|好|一下|写|成|为|造)|修改|实现|添加|重构|编写|写(?:一个|一段|代码|测试)|补(?:上|齐|测试)|(?:跑|运行).{0,8}(?:测试|构建)|\b(?:fix|implement|refactor|patch|edit|write|run (?:the )?tests?)\b/iu
-  return imperative.test(outer) && action.test(outer)
-}
-
-export function asksOnlyForProgress(question: string): boolean {
-  const progress =
-    /(?:进展|进度|状态|结果)\s*(?:如何|怎样|怎么样|呢|[?？]|$)|(?:派工|工单|这个任务|刚才的任务).{0,16}(?:进展|进度|状态)|(?:完[成了]?|做好|跑完)(?:了吗|没有)|\b(?:status|progress)\b/iu
-  const instruct =
-    /(?:继续|接着|重新|再(?:跑|分析|查)|进一步|然后|并且)|(?:请|帮我|替我)\s*(?:分析|调查|对比|修复|整理)|\b(?:continue|resume|rerun)\b/iu
-  return progress.test(question) && !instruct.test(question)
-}
-
-function asksForRepositoryPage(question: string) {
-  const inventory =
-    /(?:我的|账号|账户|my\s+).{0,30}(?:仓库|repos?)|(?:仓库|repos?).{0,20}(?:列表|清单|有哪些)|(?:列出|列一下|看看|查看|list).{0,25}(?:GitHub.{0,10}仓库|repos?)/iu
-  return (
-    inventory.test(question) &&
-    !/(?:分析|研究|比较|对比|跟踪|持续|派工|修复|修改|再|然后|investigate|analyze|compare|track)/iu.test(
-      question,
-    )
-  )
-}
-
-export function authorizeRouterJobSubmission(
-  question: string,
-  executor: RouterJobReceipt['executor'],
-) {
-  if (asksOnlyForProgress(question)) throw new TriggerAgentError('查看进展请查询派工状态。')
-  if (asksForRepositoryPage(question))
-    throw new TriggerAgentError('查看仓库清单请直接查询 GitHub 连接。')
-  if (
-    /(?:不要|别|不用|不必|暂不|没有要求|未授权)\s*(?:再|实际|真的|去)?\s*(?:派工|分派|派发|创建|启动|执行|交给)|(?:不要|别|不用)(?:把|将).{0,16}交给|do not (?:delegate|start)|don.t (?:delegate|start)/iu.test(
-      question,
-    )
-  )
-    throw new TriggerAgentError('本轮用户没有授权创建派工。')
-  if (executor === 'codex' && !explicitlyRequestsEngineering(question))
-    throw new TriggerAgentError('需要用户在当前消息中明确要求修改代码或运行测试，才能交给 Codex。')
-}
-
-/** Continuing a run can re-enter a write-capable checkout. Require a fresh outer request. */
-export function authorizeRouterJobContinuation(
-  question: string,
-  executor?: RouterJobReceipt['executor'],
-) {
-  const outer = question.replace(/「[^」]*」|『[^』]*』|“[^”]*”|"[^"]*"|`[^`]*`/gu, ' ').trim()
-  if (
-    asksOnlyForProgress(outer) ||
-    /不要|不必|别再|先别|暂不|没有要求|不是让|无需|停止|取消|如果|假如|举例|(?:这句|原话|翻译|转述|解释|示例)|do not|don't|example|explain|translate|what if/iu.test(
-      outer,
-    )
-  )
-    throw new TriggerAgentError('这条消息没有授权继续执行，可以用派工编号查询进度。')
-  const prefix =
-    /^(?:(?:请你?|麻烦你?|帮我|替我|先|现在|请把|把|让|给|对|针对|这项|这条|该|原来的|之前的|上次的|刚才的|派工|工作任务|任务|工单|worker|job|[#\d]+|[:：,，、·]|please)\s*)*/iu
-  const request = outer.replace(prefix, '')
-  const resume =
-    /^(?:继续|接着|再(?:次|往下|查|分析|检查|跑|比较|核对|看看)|进一步|补充|补上|追加|换成|改为|增加|resume\b|continue\b|retry\b)/iu.test(
-      request,
-    )
-  const engineering = explicitlyRequestsEngineering(outer)
-  if (!resume && !engineering) throw new TriggerAgentError('请说明要继续执行的工作。')
-  if (
-    executor === 'codex' &&
-    !engineering &&
-    !/^(?:继续|接着|再次|resume\b|continue\b|retry\b)/iu.test(request)
-  )
-    throw new TriggerAgentError('请明确要求继续这项 Codex 工程任务或说明需要执行的修改。')
 }

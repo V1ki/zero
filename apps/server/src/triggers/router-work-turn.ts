@@ -4,12 +4,24 @@ import { TriggerAgentError } from './event-agent'
 import { type RouterActor, type RouterJobPrincipals, fingerprint } from './router-job-principal'
 import type { RouterJobs } from './router-jobs'
 import type { RouterTurnActions } from './router-loop-tools'
-import { authorizeRouterJobContinuation, chosenOption, jobReply } from './router-work-reply'
+import {
+  chosenOption,
+  isPrintedDecisionAnswer,
+  jobReply,
+  readJobRepository,
+  resolveCodexRepository,
+  sentenceNamesRepository,
+} from './router-work-reply'
+import type { RouterWriteCheck, RouterWriteRequest } from './router-write-check'
 
 export interface RouterWorkIntegrations {
   delegatedJobs?: RouterJobs
   principals?: RouterJobPrincipals
   checkout?: (repository: string, actor: RouterActor) => Promise<string | null>
+  /** Checkouts registered for this principal, so a bare repository name can be resolved. */
+  registeredCheckouts?: (actor: RouterActor) => readonly string[]
+  /** Confirms from the owner's sentence alone that Codex work was asked for. */
+  confirmWrite?: RouterWriteCheck
 }
 
 type WorkAccess = NonNullable<TriggerConversationAnswer['workAccess']>
@@ -69,6 +81,30 @@ export function createRouterWorkTurn(
   let access =
     previous.find((a) => a.github && validAccess(a, actor, work)) ??
     previous.find((a) => validAccess(a, actor, work))
+  // The job the owner last saw a receipt for, as recorded by the server.
+  const jobTurns = history
+    .filter((item) => item.status === 'completed' && item.answer)
+    .slice(-8)
+    .flatMap(({ question, answer }) =>
+      answer?.job && (!answer.workAccess || validAccess(answer.workAccess, actor, work))
+        ? [{ question, job: answer.job }]
+        : [],
+    )
+  const recentJob = jobTurns.at(-1)?.job
+  // Read-only work may run on a repository the Router model picked. Such a repository becomes the
+  // default target of write work only if the owner wrote it in a turn of that job, or the job was
+  // already Codex work, whose target was resolved under this same rule.
+  const recentRepository =
+    recentJob?.repository &&
+    (recentJob.executor === 'codex' ||
+      jobTurns.some(
+        ({ question, job }) =>
+          job.id === recentJob.id &&
+          !!recentJob.repository &&
+          sentenceNamesRepository(question, recentJob.repository),
+      ))
+      ? recentJob.repository
+      : undefined
   let verified: TriggerConversationAnswer | undefined
   function record(job: NonNullable<TriggerConversationAnswer['job']>) {
     verified = { job, text: jobReply(job) }
@@ -94,21 +130,42 @@ export function createRouterWorkTurn(
     if (job.executor === 'codex' && (!job.repository || !(await checkout?.(job.repository, actor))))
       throw new TriggerAgentError('此入口的 Codex 工作区授权已变更。')
   }
+  /**
+   * Codex can write. Its start and every continuation need the owner's current sentence, read
+   * without anything else from this conversation, to ask for that work. This is the only place
+   * that check happens; it runs before the turn claims its operation or any job state changes.
+   */
+  async function confirmWrite(request: Omit<RouterWriteRequest, 'question'>, signal: AbortSignal) {
+    if (!work.confirmWrite) throw new TriggerAgentError('Codex 工作的确认服务尚未就绪。')
+    await work.confirmWrite({ ...request, question: turn.question }, signal)
+  }
   const actions: RouterTurnActions = {
     ...(delegatedJobs &&
       principals && {
-        delegateTask: async ({ brief, ...target }, signal) => {
-          const audience = pin(!!target.repository, signal)
-          if (
-            target.executor === 'codex' &&
-            (!target.repository || !(await checkout?.(target.repository, actor)))
-          )
-            throw new TriggerAgentError(
-              '此入口没有该仓库的 Codex 工作区授权。请先在 ZeRo 本机配置对应检出目录。',
-            )
+        delegateTask: async ({ brief, executor, repository: supplied }, signal, claim) => {
+          const repository =
+            executor === 'codex'
+              ? resolveCodexRepository(
+                  turn.question,
+                  supplied,
+                  work.registeredCheckouts?.(actor) ?? [],
+                  recentRepository,
+                )
+              : readJobRepository(supplied)
+          const audience = pin(!!repository, signal)
+          if (executor === 'codex') {
+            if (!repository || !(await checkout?.(repository, actor)))
+              throw new TriggerAgentError(
+                '此入口没有该仓库的 Codex 工作区授权。请先在 ZeRo 本机配置对应检出目录。',
+              )
+            guard(signal)
+            await confirmWrite({ kind: 'submit', repository }, signal)
+          }
           guard(signal)
+          claim()
           const job = delegatedJobs.submit(scope, turn.requestId, {
-            ...target,
+            executor,
+            ...(repository && { repository }),
             audience,
             instruction: turn.question,
             ...(brief && { brief }),
@@ -121,19 +178,35 @@ export function createRouterWorkTurn(
           record(job)
           return job
         },
-        continueTask: async (id, signal, brief) => {
+        continueTask: async (id, signal, claim, brief) => {
           const audience = jobAudience(id, signal)
           const original = delegatedJobs.get(scope, id, audience)
-          authorizeRouterJobContinuation(turn.question, original.executor)
-          await requireCheckout(original)
-          guard(signal)
           // "选 2" alone means nothing to the executor; name the option the owner picked.
           const picked = chosenOption(turn.question, original)
+          if (original.executor === 'codex') {
+            await requireCheckout(original)
+            guard(signal)
+            // The printed reply answers a decision this server rendered, like clicking its option.
+            if (!picked || !isPrintedDecisionAnswer(turn.question, id, picked.number))
+              await confirmWrite(
+                {
+                  kind: 'continue',
+                  repository: original.repository ?? '',
+                  jobId: id,
+                  ...(picked && { chosenOption: picked.number }),
+                },
+                signal,
+              )
+          }
+          guard(signal)
+          claim()
           const instruction = picked
             ? `${turn.question}\n（用户选择的是上一步提出的问题「${picked.question}」的选项：「${picked.option}」）`
             : turn.question
           const job = delegatedJobs.continue(scope, id, turn.requestId, instruction, audience, {
             ...(brief && { brief }),
+            // The step that was confirmed is the one continued.
+            ...(original.executor === 'codex' && { expectedAttempt: original.attempt }),
           })
           record(job)
           return job

@@ -7,6 +7,7 @@ import type {
   TriggerConversationTurn,
   TriggerRoutingBot,
 } from '@zero-os/shared'
+import { TriggerAgentError } from '../event-agent'
 import { type RouterAgentInput, createRouterAgent } from '../router-agent'
 
 const privateTarget = { channelId: 'private-account', peerId: 'private-peer' }
@@ -297,7 +298,7 @@ test('only display data from final model JSON is accepted; receipts, tools, pref
     '{"text":"草案","proposal":{"key":"offDay","value":"defer"}}',
     '{"text":"已读取","toolSteps":[{"name":"get_routing_context","ok":true}]}',
     '{"text":"证据","investigation":{}}',
-    '{"text":',
+    '{"text":"回执","job":{"id":1,"executor":"codex","status":"completed","attempt":1}}',
   ])
     await expect(setup(invalid).ask(general)).rejects.toThrow('格式无效')
   await expect(setup('{"text":"事件详情","intent":"event"}').ask(general)).rejects.toThrow(
@@ -307,6 +308,24 @@ test('only display data from final model JSON is accepted; receipts, tools, pref
     text: '判断规则。',
     intent: 'route',
   })
+})
+
+test('a final answer that is not a reply object is plain text', async () => {
+  for (const prose of [
+    '[提示] 通知会在下班后延后。',
+    '[配置说明](https://example.com/docs) 里有完整规则。',
+    '{提示} 现在不在工作时段。',
+    '{"text":',
+    '["只是", "一个数组"]',
+    '```json\n{"text": 未完成\n```',
+  ]) {
+    const answer = await setup(prose).ask(general)
+    expect(answer.job).toBeUndefined()
+    expect(answer.text).toBe(prose.startsWith('```') ? '{"text": 未完成' : prose)
+  }
+  expect(await setup('{"text":"判断规则。"}').ask(general)).toEqual({ text: '判断规则。' })
+  // A valid object is still validated strictly: unknown keys are refused, not shown as text.
+  await expect(setup('{"text":"已发送","card":{}}').ask(general)).rejects.toThrow('格式无效')
 })
 
 test('history excludes pending and failed turns and bounds replay', async () => {
@@ -344,22 +363,30 @@ const delegated: TriggerConversationTurn = {
   answer: { text: '已安排', job: workReceipt },
 }
 
-test('worker receives only an executor and verified selected repository; status comes from actual receipt', async () => {
+test('worker receives only an executor and the model-chosen repository; status comes from actual receipt', async () => {
   const delegateTask = mock(
-    async (_target: { executor: 'zero' | 'codex'; repository?: string }, _signal: AbortSignal) => ({
-      ...workReceipt,
-      threadId: 'secret-worker-thread',
-    }),
+    async (
+      _target: { executor: 'zero' | 'codex'; repository?: string },
+      _signal: AbortSignal,
+      claim: () => void,
+    ) => {
+      claim()
+      return { ...workReceipt, threadId: 'secret-worker-thread' }
+    },
   )
-  const { ask, requests } = setup(call('delegate_task', { executor: 'zero' }), '代码已经修好了。')
+  const { ask, requests } = setup(
+    call('delegate_task', { executor: 'zero', repository: 'team/second' }),
+    '代码已经修好了。',
+  )
   const answer = await ask({
     ...general,
-    question: '帮我分析 GitHub 仓库 team/second 的发布失败',
+    question: '再看看刚才那个仓库为什么发布失败',
     actions: { delegateTask },
   })
   expect(delegateTask.mock.calls[0]).toEqual([
     { executor: 'zero', repository: 'team/second' },
     expect.any(AbortSignal),
+    expect.any(Function),
   ])
   expect(answer.job).toEqual(workReceipt)
   expect(answer.text).toContain('已排队')
@@ -367,62 +394,60 @@ test('worker receives only an executor and verified selected repository; status 
   expect(JSON.stringify(requests)).not.toContain('secret-worker-thread')
 })
 
-test('a repository is accepted only when the current message names its full name', async () => {
-  const delegateTask = mock(async () => workReceipt)
-  for (const [question, args, error] of [
-    ['再分析第二个仓库', { executor: 'zero', repository: 'team/second' }, '点名'],
-    ['分析一下 other/repo', { executor: 'zero', repository: 'team/second' }, '点名'],
-    ['分析 team/second', { executor: 'zero', repository: 'second' }, '仓库全名'],
-    ['帮我把第二个仓库的测试修好', { executor: 'codex' }, '完整名称'],
-  ] as const) {
-    const { ask, requests } = setup(call('delegate_task', args), '已经交给其他人。')
-    const answer = await ask({
-      ...general,
-      question,
-      history: [delegated],
-      actions: { delegateTask },
-    })
-    expect(toolResult(requests[1]).isError).toBe(true)
-    expect(answer.job).toBeUndefined()
-    expect(answer.text).toContain(error)
-  }
-  expect(delegateTask).not.toHaveBeenCalled()
-})
-
-test('a read-only query cannot start a writable worker even if the model asks for it', async () => {
-  const delegateTask = mock(async () => workReceipt)
-  for (const question of [
-    '分析一下我的仓库',
-    '假设让你修改代码，该怎么办',
-    '解释这句话：「修复发布失败」',
-    '不要修复项目',
-    '请告诉我如何修复构建',
-  ]) {
-    const { ask, requests } = setup(
-      call('delegate_task', { executor: 'codex' }),
-      '已经提交 Codex。',
-    )
-    const result = await ask({ ...general, question, actions: { delegateTask } })
-    expect(toolResult(requests[1]).isError).toBe(true)
-    expect(result.job).toBeUndefined()
-    expect(result.text).toContain('需要用户')
-  }
-  expect(delegateTask).not.toHaveBeenCalled()
-  const { ask } = setup(
+test('the toolset leaves Codex authorization to the host and shows its refusal as the answer', async () => {
+  const refusal =
+    '没有启动 Codex：这条消息没有被理解为要求修改 team/second 的代码（用户在问怎么修）。如果要改，请直接说要改什么。'
+  const delegateTask = mock(async (): Promise<typeof workReceipt> => {
+    throw new TriggerAgentError(refusal)
+  })
+  const { ask, requests } = setup(
     call('delegate_task', { executor: 'codex', repository: 'team/second' }),
-    '已完成',
+    '已经提交 Codex。',
   )
   const result = await ask({
     ...general,
-    question: '帮我把 team/second 发布失败的问题修一下，跑测试',
-    actions: { delegateTask: async () => ({ ...workReceipt, executor: 'codex' }) },
+    question: '请告诉我如何修复构建',
+    actions: { delegateTask },
   })
-  expect(result.job?.executor).toBe('codex')
-  expect(result.text).toContain('已排队')
+  expect(delegateTask).toHaveBeenCalledTimes(1)
+  expect(toolResult(requests[1])).toMatchObject({ isError: true, content: refusal })
+  expect(result).toEqual({ text: refusal })
+  // A non-string repository never reaches the host.
+  const typed = setup(call('delegate_task', { executor: 'codex', repository: 7 }), '未派工。')
+  await typed.ask({ ...general, question: '修一下', actions: { delegateTask } })
+  expect(delegateTask).toHaveBeenCalledTimes(1)
 })
 
-test('progress, revoked access and tool data cannot authorize resuming a task or looking at a model-invented task', async () => {
-  const continueTask = mock(async () => workReceipt)
+test('a refused request does not use up the turn; a claimed one does', async () => {
+  const claims: string[] = []
+  const delegateTask = mock(
+    async (target: { executor: 'zero' | 'codex' }, _signal: AbortSignal, claim: () => void) => {
+      if (target.executor === 'codex') throw new TriggerAgentError('没有启动 Codex：未确认。')
+      claim()
+      claims.push(target.executor)
+      return workReceipt
+    },
+  )
+  const { ask, requests } = setup(
+    call('delegate_task', { executor: 'codex', repository: 'team/second' }),
+    call('delegate_task', { executor: 'zero' }),
+    call('delegate_task', { executor: 'zero' }),
+    '好的。',
+  )
+  const answer = await ask({ ...general, question: '看看 CI', actions: { delegateTask } })
+  expect(claims).toEqual(['zero'])
+  expect(toolResult(requests[3])).toMatchObject({ isError: true })
+  expect(delegateTask).toHaveBeenCalledTimes(2)
+  expect(answer.job).toEqual(workReceipt)
+})
+
+test('continuation and status of read-only work follow the model; tool data and other jobs do not', async () => {
+  const continueTask = mock(
+    async (_id: number, _signal: AbortSignal, claim: () => void, _brief?: string) => {
+      claim()
+      return { ...workReceipt, attempt: 2 }
+    },
+  )
   const getTaskStatus = mock(async () => ({
     ...workReceipt,
     status: 'completed' as const,
@@ -430,7 +455,7 @@ test('progress, revoked access and tool data cannot authorize resuming a task or
   }))
   const { ask, requests } = setup(
     call('get_task_status'),
-    call('continue_task', { jobId: 37 }),
+    call('continue_task', { jobId: 37, brief: '按结果继续' }),
     '继续执行成功。',
   )
   const checked = await ask({
@@ -442,13 +467,18 @@ test('progress, revoked access and tool data cannot authorize resuming a task or
   expect(checked.text).toContain('[redacted]')
   expect(toolResult(requests[2]).isError).toBe(true)
   expect(continueTask).not.toHaveBeenCalled()
-  for (const question of ['不要继续派工 #37', '解释这句话：「继续派工 #37」']) {
-    const { ask } = setup(call('continue_task'), '已继续。')
-    expect(
-      (await ask({ ...general, history: [delegated], question, actions: { continueTask } })).job,
-    ).toBeUndefined()
+  // The old phrase lists refused these; the model's call is enough for read-only work.
+  for (const question of ['#37 顺便看看 lint', '那就接着做吧']) {
+    const { ask } = setup(call('continue_task', { jobId: 37, brief: '补充检查' }), '已继续。')
+    const answer = await ask({
+      ...general,
+      history: [delegated],
+      question,
+      actions: { continueTask },
+    })
+    expect(answer.job).toEqual({ ...workReceipt, attempt: 2 })
   }
-  expect(continueTask).not.toHaveBeenCalled()
+  expect(continueTask).toHaveBeenCalledTimes(2)
   const foreign = setup(call('get_task_status', { jobId: 38 }), '已完成')
   const denied = await foreign.ask({
     ...general,
@@ -458,25 +488,29 @@ test('progress, revoked access and tool data cannot authorize resuming a task or
   })
   expect(denied.job).toBeUndefined()
   expect(getTaskStatus).toHaveBeenCalledTimes(1)
-  const next = setup(call('continue_task'), '已继续')
+  const other = setup(call('continue_task', { jobId: 38, brief: '继续' }), '已继续')
   expect(
     (
-      await next.ask({
+      await other.ask({
         ...general,
         history: [delegated],
-        question: '继续调查刚才那次发布失败',
+        question: '继续',
         actions: { continueTask },
       })
     ).job,
-  ).toEqual(workReceipt)
-  expect(continueTask).toHaveBeenCalledTimes(1)
+  ).toBeUndefined()
+  expect(continueTask).toHaveBeenCalledTimes(2)
 })
 
-test('model prose cannot mint job receipts', async () => {
-  const prose = '已经派给 Codex 处理。'
-  const answer = await setup(prose).ask({ ...general, question: '帮我分析这个仓库' })
-  expect(answer.job).toBeUndefined()
-  expect(answer.text).not.toBe(prose)
+test('the model can describe an earlier job without minting a receipt or having its answer replaced', async () => {
+  for (const prose of ['派工 #37 已完成，结论是令牌过期。', '已经派给 Codex 处理。']) {
+    const answer = await setup(prose).ask({
+      ...general,
+      history: [delegated],
+      question: '刚才那项派工最后怎么样了？',
+    })
+    expect(answer).toEqual({ text: prose })
+  }
 })
 
 test('routing context reports a filtered event with its triage reason and the triage switch', async () => {

@@ -10,25 +10,29 @@ import {
 import { type AgentDependencies, TriggerAgentError } from './event-agent'
 import { InvestigationError } from './investigation'
 import type { RouterAgentInput } from './router-agent'
-import {
-  authorizeRouterJobContinuation,
-  authorizeRouterJobSubmission,
-  jobReply,
-  recentWorkAnswer,
-  resolveJobRepository,
-} from './router-work-reply'
+import { jobReply, recentWorkAnswer } from './router-work-reply'
 
 export interface RouterTurnActions {
   inspectGithub?(
     action: GithubInvestigationAction,
     signal: AbortSignal,
   ): Promise<GithubInvestigation>
+  /**
+   * The host checks the request, then calls `claim` right before it creates any job state, so a
+   * refused request does not use up this turn's one operation.
+   */
   delegateTask?(
     target: { executor: RouterJobReceipt['executor']; repository?: string; brief?: string },
     signal: AbortSignal,
+    claim: () => void,
   ): Promise<RouterJobReceipt>
   getTaskStatus?(jobId: number, signal: AbortSignal): Promise<RouterJobReceipt>
-  continueTask?(jobId: number, signal: AbortSignal, brief?: string): Promise<RouterJobReceipt>
+  continueTask?(
+    jobId: number,
+    signal: AbortSignal,
+    claim: () => void,
+    brief?: string,
+  ): Promise<RouterJobReceipt>
   previewRoute?(): Promise<TriggerRouteDecision>
   onToolStep?(name: string, ok: boolean): void
 }
@@ -74,9 +78,12 @@ export function createRouterToolset(
   const lastJob = prior.findLast((turn) => turn.answer?.job)?.answer?.job
   let mutationStarted = false
 
-  const claim = () => {
+  const mayClaim = () => {
     if (job || statusRead) reject('本轮已查询或取得派工回执，新的操作请在下一条消息中提出。')
     if (mutationStarted) reject('本轮已经尝试过一项操作。请根据现有结果答复，不要重复执行。')
+  }
+  const claim = () => {
+    mayClaim()
     mutationStarted = true
   }
   type Run = (args: Record<string, unknown>, signal: AbortSignal) => unknown
@@ -170,7 +177,7 @@ export function createRouterToolset(
     if (delegateTask)
       register(
         'delegate_task',
-        '将本轮用户原话派成一次独立工作，并用 brief 写明执行者需要的背景。多步分析用 zero；用户明确要求执行工程修改或跑测试才选 codex。repository 只填写用户本轮写明的 owner/name 全名。不要为查询进度或持续跟踪新建派工。',
+        '将本轮用户原话派成一次独立工作，并用 brief 写明执行者需要的背景。只读的多步分析用 zero；要修改代码或在检出目录里跑测试才选 codex，服务器会再按用户本轮原话确认，可能拒绝。repository 填 owner/name 全名：zero 可填要分析的仓库；codex 的仓库须是用户本轮说出的仓库，没说时沿用本对话最近一项派工中用户写明过的仓库或 codex 派工的仓库。不要为查询进度或持续跟踪新建派工。',
         {
           executor: { type: 'string', enum: ['zero', 'codex'] },
           repository: { type: 'string' },
@@ -178,19 +185,19 @@ export function createRouterToolset(
         },
         async ({ executor, repository, brief }, signal) => {
           const selected = choice(executor, ['zero', 'codex'] as const)
-          authorizeRouterJobSubmission(input.question, selected)
-          const name = resolveJobRepository(input.question, repository)
-          if (selected === 'codex' && !name) reject('请指定工程仓库的完整名称。')
+          if (repository !== undefined && typeof repository !== 'string')
+            reject('请提供仓库全名，例如 owner/repository。')
           const background = readBrief(brief, filter)
-          claim()
+          mayClaim()
           return captureJob(
             await delegateTask(
               {
                 executor: selected,
-                ...(name && { repository: name }),
+                ...(repository !== undefined && { repository }),
                 ...(background && { brief: background }),
               },
               signal,
+              claim,
             ),
           )
         },
@@ -224,15 +231,13 @@ export function createRouterToolset(
     if (continueTask)
       register(
         'continue_task',
-        '把本轮用户的实际补充要求交给同一项独立派工，并用 brief 写明执行者需要的新背景。查询状态或结果只用 get_task_status。',
+        '把本轮用户的实际补充要求交给同一项独立派工，并用 brief 写明执行者需要的新背景。继续 Codex 派工时，服务器会再按用户本轮原话确认，可能拒绝。查询状态或结果只用 get_task_status。',
         { ...jobParam, brief: briefParam },
         async ({ jobId, brief }, signal) => {
           const id = taskId(jobId)
-          const previous = prior.findLast((turn) => turn.answer?.job?.id === id)?.answer?.job
-          authorizeRouterJobContinuation(input.question, previous?.executor)
           const background = readBrief(brief, filter)
-          claim()
-          return captureJob(await continueTask(id, signal, background))
+          mayClaim()
+          return captureJob(await continueTask(id, signal, claim, background))
         },
         ['jobId', 'brief'],
       )
@@ -292,19 +297,6 @@ export function createRouterToolset(
           ...(job && { job }),
         }
       }
-    },
-    verifyReply(answer: TriggerConversationAnswer): TriggerConversationAnswer {
-      if (!general) return answer
-      if (
-        !job &&
-        /(?:已(?:经)?(?:成功)?(?:派发|派给|派单|创建(?:了)?(?:派工|工作任务)|交(?:给|由).{0,12}(?:ZeRo|Codex)|提交(?:给.{0,8})?(?:Codex|Worker|工作任务))|派工\s*#\s*\d+.{0,18}(?:已排队|执行中|已完成))/iu.test(
-          answer.text,
-        )
-      )
-        return {
-          text: '本轮未取得派工回执。可以请 Router 派发一项具体工作，或按派工编号查询进度。',
-        }
-      return answer
     },
   }
 }
