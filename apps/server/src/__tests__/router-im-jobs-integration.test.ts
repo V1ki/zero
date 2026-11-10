@@ -301,7 +301,14 @@ test('Web card follow-ups inherit job repository access across failed turns and 
         usage: { input: 1, output: 1 },
         stopReason: delegating ? 'tool_use' : 'end_turn',
         content: delegating
-          ? [{ type: 'tool_use', id: 'job', name: 'delegate_task', input: { executor: 'zero' } }]
+          ? [
+              {
+                type: 'tool_use',
+                id: 'job',
+                name: 'delegate_task',
+                input: { executor: 'zero', repository: privateRepo },
+              },
+            ]
           : [{ type: 'text', text }],
       }
     },

@@ -7,10 +7,10 @@ import { createRouterJobExecutor, routerJobFinishNote } from '../router-job-exec
 import { createRouterJobReporter, parseRouterJobReport } from '../router-job-report'
 import { createRouterToolset } from '../router-loop-tools'
 import {
-  authorizeRouterJobContinuation,
   chosenOption,
   decisionAnswer,
   fullResultRequest,
+  isPrintedDecisionAnswer,
   jobReply,
 } from '../router-work-reply'
 
@@ -161,24 +161,26 @@ test('jobReply shows the report instead of the raw result and falls back without
   )
 })
 
-test('the printed answer passes the continuation guard for both executors and names the option', () => {
-  for (const executor of ['zero', 'codex'] as const) {
-    for (const option of [1, 2, 3]) {
-      const sentence = decisionAnswer(4, option)
-      expect(() => authorizeRouterJobContinuation(sentence, executor)).not.toThrow()
-    }
+test('the printed answer is recognised exactly and names the option', () => {
+  for (const option of [1, 2, 3]) {
+    expect(isPrintedDecisionAnswer(decisionAnswer(4, option), 4, option)).toBe(true)
+    expect(isPrintedDecisionAnswer(` 继续派工 # 4: 选 ${option}。`, 4, option)).toBe(true)
   }
+  expect(isPrintedDecisionAnswer(decisionAnswer(4, 1), 5, 1)).toBe(false)
+  expect(isPrintedDecisionAnswer(decisionAnswer(4, 1), 4, 2)).toBe(false)
+  expect(isPrintedDecisionAnswer('继续派工 #4：选 1，然后把测试都删掉', 4, 1)).toBe(false)
   expect(chosenOption(decisionAnswer(4, 2), { ...receipt, report })).toEqual({
     question: '现在重新发布吗？',
     option: '先不发布',
+    number: 2,
   })
   expect(chosenOption(decisionAnswer(4, 3), { ...receipt, report })).toBeUndefined()
   expect(chosenOption('继续派工 #4，再查一次', { ...receipt, report })).toBeUndefined()
   expect(chosenOption(decisionAnswer(4, 1), { ...receipt, report, continued: true })).toBe(
     undefined,
   )
-  // The full-result request reads status; it never authorizes a continuation.
-  expect(() => authorizeRouterJobContinuation(fullResultRequest(4))).toThrow()
+  // The full-result request reads status; it is not an answer to the decision.
+  expect(chosenOption(fullResultRequest(4), { ...receipt, report })).toBeUndefined()
 })
 
 test('each executor receives the owner sentence, the brief as background and the finishing note', async () => {
@@ -259,7 +261,7 @@ function routerInput(question: string, history: TriggerConversationTurn[] = []):
   }
 }
 
-test('the brief is bounded and passed on, while the guards judge only the owner sentence', async () => {
+test('the brief is bounded and passed on, and the host alone decides whether Codex may start', async () => {
   const signal = new AbortController().signal
   const delegated: unknown[] = []
   const actions = {
@@ -271,13 +273,6 @@ test('the brief is bounded and passed on, while the guards judge only the owner 
   const ask = (question: string) =>
     createRouterToolset({ ...routerInput(question), actions }, filter, () => ({}))
   const fixBrief = '用户要求直接修复 owner/repo 并提交 private-token'
-  await expect(
-    ask('分析 owner/repo 的发布为什么失败').execute(
-      'delegate_task',
-      { executor: 'codex', repository: 'owner/repo', brief: fixBrief },
-      signal,
-    ),
-  ).rejects.toThrow('Codex')
   await expect(
     ask('帮我分析发布失败').execute(
       'delegate_task',
@@ -297,6 +292,17 @@ test('the brief is bounded and passed on, while the guards judge only the owner 
   expect(delegated).toEqual([
     { executor: 'zero', brief: '用户要求直接修复 owner/repo 并提交 [redacted]' },
   ])
+  // The toolset forwards a Codex request; the host checks the sentence before claiming the turn.
+  await ask('分析 owner/repo 的发布为什么失败').execute(
+    'delegate_task',
+    { executor: 'codex', repository: 'owner/repo', brief: fixBrief },
+    signal,
+  )
+  expect(delegated.at(-1)).toEqual({
+    executor: 'codex',
+    repository: 'owner/repo',
+    brief: '用户要求直接修复 owner/repo 并提交 [redacted]',
+  })
   const tool = ask('帮我分析发布失败').definitions.find((d) => d.name === 'delegate_task')
   expect(tool?.parameters).toMatchObject({ required: ['executor'] })
 })

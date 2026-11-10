@@ -38,6 +38,7 @@ import { createRouterJobReporter } from '../triggers/router-job-report'
 import { RouterJobs } from '../triggers/router-jobs'
 import { createRouterRepositoryLookup } from '../triggers/router-repositories'
 import { RouterWorkspaceService } from '../triggers/router-workspace'
+import { createRouterWriteCheck } from '../triggers/router-write-check'
 import { TriggerRoutingRuntime } from '../triggers/routing-runtime'
 import { ListenerRuntime } from '../triggers/runtime'
 import {
@@ -312,6 +313,8 @@ async function createStartupRuntimeShell({
   const workspace = new RouterWorkspaceService(store, routing, createRouterAgent(core), {
     principals,
     checkout,
+    registeredCheckouts: checkout.registered,
+    confirmWrite: createRouterWriteCheck(core),
     delegatedJobs,
     investigator,
     commission,

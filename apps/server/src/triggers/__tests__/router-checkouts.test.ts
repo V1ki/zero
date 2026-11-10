@@ -124,3 +124,20 @@ test('loads owner-side checkout configuration with explicit bot grants', () => {
   })
   expect(() => loadConfig(file)).toThrow('exact bot')
 })
+
+test('lists only the checkouts registered for the principal', () => {
+  const find = createRouterCheckoutResolver(
+    {
+      [repo]: {
+        path: workspace,
+        imChannels: [{ platform: bot.platform, channelId: bot.channelId }],
+      },
+      'example/web-only': { path: workspace },
+    },
+    zeroDir,
+  )
+  expect(find.registered('web')).toEqual(['example/service', 'example/web-only'])
+  expect(find.registered(bot)).toEqual(['example/service'])
+  expect(find.registered({ ...bot, channelId: 'other-bot' })).toEqual([])
+  expect(createRouterCheckoutResolver(undefined, zeroDir).registered('web')).toEqual([])
+})
