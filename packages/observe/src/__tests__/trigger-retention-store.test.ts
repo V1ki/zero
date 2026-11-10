@@ -182,7 +182,7 @@ test('failed or unknown delivery, new discussions, live and paused task generati
   expect(store.getInboxItem(active)?.summary).toBe('private body')
 })
 
-test('suspending retention cancels the old deadline, confirmation proposals survive, and expired IM drafts become dedup tombstones', () => {
+test('suspending retention cancels the old deadline, legacy confirmation cards expire, and expired IM drafts become dedup tombstones', () => {
   const { store, sql } = fixture()
   config(store, { retentionDays: 7 })
   const initial = '2000-01-01T00:00:00.000Z'
@@ -197,10 +197,12 @@ test('suspending retention cancels the old deadline, confirmation proposals surv
   const preview = { code: 'oldcode', title: '测试', details: [], expiresAt: ts }
   const pending = store.conversations.begin('general', 'proposal', '待确认的偏好')
   if (pending.kind !== 'started') throw new Error('expected open turn')
-  store.conversations.finish('general', 'proposal', pending.attempt, {
-    text: '请确认',
-    proposal: { key: 'offDay', value: 'defer' },
-  })
+  store.conversations.finish('general', 'proposal', pending.attempt, { text: '请确认' })
+  // Answers saved by the removed preference card no longer keep a turn open.
+  sql.run(
+    `UPDATE trigger_conversation_turns SET answer=json_set(answer,'$.proposal',json('{"key":"offDay","value":"defer"}'))
+     WHERE request_id='proposal'`,
+  )
   const expired = store.conversations.begin('general', 'draft', '已过期的委托提议')
   if (expired.kind !== 'started') throw new Error('expected open turn')
   store.conversations.finish('general', 'draft', expired.attempt, {
@@ -211,43 +213,13 @@ test('suspending retention cancels the old deadline, confirmation proposals surv
     'INSERT INTO trigger_commission_drafts(code,principal,request_id,draft,expires_at) VALUES(?,?,?,?,?)',
     [preview.code, 'web', 'draft', JSON.stringify({ question: '私密草稿', preview }), ts],
   )
-  expect(store.retention.sweep(future()).turns).toBe(1)
-  expect(store.conversations.list('general').map((row) => row.requestId)).toEqual(['proposal'])
+  expect(store.retention.sweep(future()).turns).toBe(2)
+  expect(store.conversations.list('general')).toEqual([])
   expect(
     sql
       .query('SELECT request_id AS id,draft FROM trigger_commission_drafts WHERE code=?')
       .get(preview.code),
   ).toEqual({ id: 'draft', draft: '' })
-})
-
-test('retention expires stale reminder drafts without replaying them and protects in-flight sends', () => {
-  const { store } = fixture()
-  config(store, { retentionDays: 7 })
-  for (const id of ['draft', 'sending']) {
-    const claim = store.conversations.begin('general', id, '发通知')
-    if (claim.kind !== 'started') throw Error('Expected to start a reminder turn')
-    store.conversations.finish('general', id, claim.attempt, {
-      text: '准备发送',
-      reminder: {
-        platform: 'weixin',
-        channelId: 'bot',
-        botLabel: '测试',
-        audienceKey: 'user-hash',
-        text: '待办事项',
-        status: 'draft',
-      },
-    })
-  }
-  expect(store.conversations.claimReminder('general', 'sending')).toBe(true)
-  expect(store.retention.sweep(future()).turns).toBe(1)
-  expect(store.conversations.claimReminder('general', 'draft')).toBe(false)
-  expect(store.conversations.begin('general', 'draft', '发通知', true).kind).toBe('conflict')
-  expect(store.conversations.get('general', 'sending')?.answer?.reminder?.status).toBe('sending')
-  expect(store.conversations.finishReminder('general', 'sending', { status: 'accepted' })).toBe(
-    true,
-  )
-  expect(store.retention.sweep(future()).turns).toBe(1)
-  expect(store.conversations.claimReminder('general', 'sending')).toBe(false)
 })
 
 test('retention expires IM history per audience and preserves the inbound replay barrier', () => {

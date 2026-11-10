@@ -66,7 +66,6 @@ async function mockWorkspace(
   page: Page,
   reply: (submitted: Submission) => Promise<TriggerConversationAnswer | { error: string }>,
   settings = prefs,
-  commissionStatus: () => 'pending' | 'applied' | 'expired' = () => 'expired',
 ) {
   const history = new Map<TriggerConversationScope, TriggerConversationTurn[]>()
   const submissions: Submission[] = []
@@ -87,16 +86,7 @@ async function mockWorkspace(
       ),
       turns: (history.get(scope) ?? []).map((turn) => ({
         ...turn,
-        surface: turn.answer
-          ? buildRouterReplySurface(
-              scope,
-              turn.id,
-              turn.answer,
-              settings.revision,
-              false,
-              commissionStatus(),
-            )
-          : null,
+        surface: turn.answer ? buildRouterReplySurface(scope, turn.id, turn.answer) : null,
       })),
     }
   }
@@ -131,22 +121,6 @@ async function mockWorkspace(
     if (operation === 'actions') expect(submission.action).toBeTruthy()
     submissions.push(submission)
     const result = await reply(submission)
-    if (submission.action?.action.name === 'send_reminder' && !('error' in result)) {
-      const confirmed = snapshot(scope).turns.find(
-        (turn) => turn.surface?.[0].createSurface.surfaceId === submission.action?.action.surfaceId,
-      )
-      const original = history.get(scope)?.find((turn) => turn.id === confirmed?.id)
-      if (!original?.answer?.reminder || original.answer.reminder.status !== 'draft')
-        return route.fulfill({ status: 409, json: { error: '通知草稿已失效。' } })
-      original.answer = result
-      return route.fulfill({ json: snapshot(scope) })
-    }
-    if (
-      (submission.action?.action.name === 'apply_preference' ||
-        submission.action?.action.name === 'confirm_mandate') &&
-      !('error' in result)
-    )
-      return route.fulfill({ json: snapshot(scope) })
     const turns = history.get(scope) ?? []
     const previous = turns.find((turn) => turn.requestId === submission.requestId)
     const turn = previous ?? {
@@ -167,25 +141,13 @@ async function mockWorkspace(
   return submissions
 }
 
-test('opens only GitHub repository links and follows a delegated job from the same conversation', async ({
-  page,
-}) => {
+test('follows a delegated job from the same conversation', async ({ page }) => {
   const job = { id: 7, executor: 'zero' as const, attempt: 1 }
   const receipt: TriggerConversationAnswer = {
     text: '派工 #7（ZeRo）已排队。',
     job: { ...job, status: 'queued' },
   }
   const submissions = await mockWorkspace(page, async ({ text }) => {
-    if (text === '看看我的 GitHub 仓库')
-      return {
-        text: '当前 GitHub 连接可见的仓库（第 1 页）：\n1. example/releases\n2. bad/../escape\n3. example/imagined',
-        repositories: { page: 1, repositories: ['example/releases', 'bad/../escape'], nextPage: 2 },
-      }
-    if (text === '列出我可访问的 GitHub 仓库第 2 页')
-      return {
-        text: '这是第二页。',
-        repositories: { page: 2, repositories: ['example/tools'], nextPage: null },
-      }
     if (text === '分析 example/tools 的发布失败') return receipt
     expect(text).toBe('查看派工 #7 的进度')
     receipt.text = '派工 #7（ZeRo）执行中。'
@@ -196,16 +158,6 @@ test('opens only GitHub repository links and follows a delegated job from the sa
   const textbox = page.getByRole('textbox', { name: '给 Router 发消息' })
   const send = page.getByRole('button', { name: '发送', exact: true })
   const chat = page.getByRole('region', { name: '对话记录' })
-  await textbox.fill('看看我的 GitHub 仓库')
-  await send.click()
-  await expect(chat.getByRole('link', { name: 'example/releases' })).toHaveAttribute(
-    'href',
-    'https://github.com/example/releases',
-  )
-  await expect(chat.getByRole('link', { name: 'bad/../escape' })).toHaveCount(0)
-  await expect(chat.getByRole('link', { name: 'example/imagined' })).toHaveCount(0)
-  await chat.getByRole('button', { name: '查看第 2 页' }).click()
-  await expect(chat).toContainText('这是第二页。')
   await textbox.fill('分析 example/tools 的发布失败')
   await send.click()
   await expect(chat).toContainText('派工 #7（ZeRo）已排队')
@@ -217,7 +169,7 @@ test('opens only GitHub repository links and follows a delegated job from the sa
   await expect(chat.getByRole('button', { name: '查询派工进度' })).toHaveCount(0)
   await page.reload()
   await expect(chat).toContainText('失败发生在测试步骤。')
-  expect(submissions.map((submission) => submission.scope)).toEqual(Array(4).fill('general'))
+  expect(submissions.map((submission) => submission.scope)).toEqual(Array(2).fill('general'))
 })
 
 test('opens the Router from the main navigation, handles A2UI actions and restores the selected conversation', async ({
@@ -310,142 +262,30 @@ test('keeps a late reply in its originating thread and retries a failed turn usi
   await expect(chat).not.toContainText('模型连接已经恢复。')
 })
 
-test('applies a conversational preference only after the user confirms the specific A2UI proposal', async ({
-  page,
-}) => {
-  const settings = structuredClone(prefs)
-  const submissions = await mockWorkspace(
-    page,
-    async (submission) => {
-      if (submission.action?.action.name === 'apply_preference') {
-        settings.revision++
-        settings.settings.presence = 'away'
-        return { text: '已应用。' }
-      }
-      return {
-        text: '可以把在场状态设为离开。',
-        proposal: { key: 'presence', value: 'away' },
-        proposalRevision: settings.revision,
-      }
-    },
-    settings,
-  )
-  await page.goto('/router')
-  await page.getByRole('textbox', { name: '给 Router 发消息' }).fill('把我的在场状态设为离开')
-  await page.getByRole('button', { name: '发送', exact: true }).click()
-  const button = page.getByRole('button', { name: '确认应用偏好' })
-  await expect(button).toBeVisible()
-  expect(submissions).toHaveLength(1)
-  await page.reload()
-  await expect(button).toBeVisible()
-  expect(settings.settings.presence).toBe('auto')
-  await button.click()
-  await expect(button).toHaveCount(0)
-  await expect(page.getByText('手动标记离开。网页无人时延后提醒。', { exact: true })).toBeVisible()
-  expect(submissions[1].action?.action).toMatchObject({
-    name: 'apply_preference',
-    surfaceId: 'router-general-turn-1',
-    context: {},
-  })
-  expect(submissions).toHaveLength(2)
-})
-
-test('an explicit send-now command shows the accepted notification and the public tool trace', async ({
-  page,
-}) => {
-  const question = '现在发送微信通知，通知我处理 DeepSeek 的充值'
-  const body = '处理 DeepSeek 的充值'
+test('shows the public tool trace without tool arguments', async ({ page }) => {
+  const question = '现在的通知会发到哪里？'
   const recipient = 'private-recipient-for-trace-test'
   const toolSteps = [
     { name: 'list_notification_bots', ok: true },
-    {
-      name: 'send_personal_reminder',
-      ok: true,
-      arguments: { recipient, text: body },
-    },
+    { name: 'preview_current_route', ok: true, arguments: { recipient } },
   ]
   const submissions = await mockWorkspace(page, async (submitted) => {
     expect(submitted.text).toBe(question)
-    expect(submitted.action).toBeUndefined()
-    return {
-      text: '微信平台已受理这条通知。',
-      reminder: {
-        platform: 'weixin',
-        channelId: 'weixin-personal',
-        botLabel: '个人微信机器人',
-        status: 'accepted',
-        text: body,
-      },
-      toolSteps,
-    }
+    return { text: '当前会通过网页提醒。', toolSteps }
   })
   await page.goto('/router')
   await page.getByRole('textbox', { name: '给 Router 发消息' }).fill(question)
   await page.getByRole('button', { name: '发送', exact: true }).click()
   const chat = page.getByRole('region', { name: '对话记录' })
-  const card = chat.locator('[data-surface-id="router-general-turn-1"]')
-  await expect(card).toContainText('平台已受理')
-  await expect(card).toContainText('个人微信机器人')
-  await expect(card.getByText(body, { exact: true })).toBeVisible()
-  await expect(card.getByRole('button', { name: '发送通知', exact: true })).toHaveCount(0)
+  await expect(chat).toContainText('当前会通过网页提醒。')
   const trace = chat.locator('details').filter({ hasText: '本轮调用了 2 次工具' })
   await trace.locator('summary').click()
   await expect(trace.getByRole('listitem')).toHaveText([
     '查询通知机器人 · 已返回',
-    '发送个人通知 · 已返回',
+    '预演当前去向 · 已返回',
   ])
-  await expect(trace).not.toContainText(body)
   await expect(chat).not.toContainText(recipient)
-  await page.reload()
-  await expect(card).toContainText('平台已受理')
-  await expect(card.getByRole('button', { name: '发送通知', exact: true })).toHaveCount(0)
   expect(submissions).toHaveLength(1)
-})
-
-test('an explicit Weixin draft shows the exact text and sends once after confirmation', async ({
-  page,
-}) => {
-  const reminder = {
-    platform: 'weixin' as const,
-    channelId: 'weixin-personal',
-    botLabel: '个人微信机器人',
-    text: '处理 DeepSeek 的充值',
-  }
-  const question = '先帮我拟一条微信通知，内容是「处理 DeepSeek 的充值」'
-  let deliveries = 0
-  const submissions = await mockWorkspace(page, async (submitted) => {
-    if (submitted.action) {
-      expect(submitted.action.action).toMatchObject({
-        name: 'send_reminder',
-        surfaceId: 'router-general-turn-1',
-        sourceComponentId: 'btn-send_reminder',
-        context: {},
-      })
-      deliveries++
-      return { text: '收到平台回执。', reminder: { ...reminder, status: 'accepted' } }
-    }
-    expect(submitted).toMatchObject({ text: question, scope: 'general' })
-    return { text: '请核对提醒。', reminder: { ...reminder, status: 'draft' } }
-  })
-  await page.goto('/router')
-  await page.getByRole('textbox', { name: '给 Router 发消息' }).fill(question)
-  await page.getByRole('button', { name: '发送', exact: true }).click()
-  const card = page.locator('[data-surface-id="router-general-turn-1"]')
-  const confirm = card.getByRole('button', { name: '发送通知', exact: true })
-  await expect(card).toContainText(reminder.botLabel)
-  await expect(card.getByText(reminder.text, { exact: true })).toBeVisible()
-  await expect(confirm).toBeVisible()
-  await page.reload()
-  await expect(confirm).toBeVisible()
-  expect(deliveries).toBe(0)
-  await confirm.click()
-  await expect(card).toContainText('已受理')
-  await expect(confirm).toHaveCount(0)
-  await page.reload()
-  await expect(card).toContainText('已受理')
-  await expect(confirm).toHaveCount(0)
-  expect(deliveries).toBe(1)
-  expect(submissions).toHaveLength(2)
 })
 
 test('mobile navigation opens the workbench and keeps event cards and chat within the viewport', async ({
@@ -530,51 +370,4 @@ test('an interrupted IM turn remains visible with its original reply channel', a
   await expect(chat).toContainText('来自 IM 的提问')
   await expect(chat).toContainText('请在原会话中重新发送问题。')
   await expect(chat.getByRole('button', { name: '重新提问' })).toHaveCount(0)
-})
-
-test('a mandate card preserves the named cross-channel destination across reload and requires confirmation', async ({
-  page,
-}) => {
-  let saved = false
-  const submissions = await mockWorkspace(
-    page,
-    async (s) => {
-      if (s.action?.action.name === 'confirm_mandate') {
-        saved = true
-        return { text: '已确认' }
-      }
-      return {
-        text: '请核对委托范围和提醒去向。',
-        commission: {
-          code: '001122334455',
-          title: '创建委托「发布构建」',
-          details: [
-            '监听：github / example/release',
-            '休息日：钉钉',
-            '允许外发至：钉钉 / 发布会话',
-          ],
-          expiresAt: Date.now() + 600000,
-        },
-      }
-    },
-    prefs,
-    () => (saved ? 'applied' : 'pending'),
-  )
-  await page.goto('/router')
-  await page
-    .getByRole('textbox', { name: '给 Router 发消息' })
-    .fill('替我跟踪发布构建，周末通知钉钉')
-  await page.getByRole('button', { name: '发送', exact: true }).click()
-  const card = page.locator('[data-surface-id="router-general-turn-1"]')
-  await expect(card.getByRole('heading', { name: '创建委托「发布构建」' })).toBeVisible()
-  await expect(card).toContainText('允许外发至：钉钉 / 发布会话')
-  expect(saved).toBe(false)
-  await page.reload()
-  await card.getByRole('button', { name: '确认此委托变更' }).click()
-  await expect(card).toContainText('已确认并保存。')
-  await expect(card.getByRole('button')).toHaveCount(0)
-  expect(submissions[1].action?.action).toMatchObject({
-    name: 'confirm_mandate',
-    surfaceId: 'router-general-turn-1',
-  })
 })

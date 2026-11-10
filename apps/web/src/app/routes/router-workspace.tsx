@@ -25,7 +25,7 @@ import type {
   TriggerRouteStatus,
   TriggerWorkspaceEvent,
 } from '@zero-os/shared'
-import { Fragment, useLayoutEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { RouterSurface } from '../components/RouterSurface'
 import { apiFetch, apiPost } from '../lib/api'
 import { ListenerRoutingSettings, useListenerRoutingConfig } from './config-listener-routing'
@@ -42,13 +42,7 @@ const toolLabels: Record<string, string> = {
   preview_current_route: '预演当前去向',
   get_routing_context: '查看路由状态',
   list_notification_bots: '查询通知机器人',
-  prepare_personal_reminder: '准备个人通知',
-  send_personal_reminder: '发送个人通知',
-  prepare_routing_preference: '准备通知偏好变更',
-  prepare_bot_selection: '准备更换机器人',
-  prepare_commission: '准备跟踪委托',
   inspect_github: '检查 GitHub 事件',
-  list_github_repositories: '列出可访问的 GitHub 仓库',
   delegate_task: '派发工作',
   get_task_status: '查询派工进度',
   continue_task: '继续派工',
@@ -179,47 +173,10 @@ function RouterAnswer({
   disabled: boolean
   ask: (text: string) => void
 }) {
-  const { repositories, job } = answer
-  const nextPage = repositories?.nextPage
-  const text = repositories
-    ? answer.text.split('\n').map((line, index) => {
-        const entry = /^(\d+)\. ([a-z\d-]+\/[a-z\d_.-]+)$/i.exec(line)
-        const name = entry?.[2]
-        const verified =
-          entry &&
-          name &&
-          !/\/\.{1,2}$/.test(name) &&
-          name === repositories.repositories[Number(entry[1]) - 1]
-        return (
-          <Fragment key={`${index}-${line}`}>
-            {index > 0 && '\n'}
-            {verified ? (
-              <>
-                {entry[1]}.{' '}
-                <a href={`https://github.com/${name}`} target="_blank" rel="noreferrer">
-                  {name}
-                </a>
-              </>
-            ) : (
-              line
-            )}
-          </Fragment>
-        )
-      })
-    : answer.text
+  const { job } = answer
   return (
     <>
-      <p className="rw-answer">{text}</p>
-      {nextPage != null && (
-        <button
-          type="button"
-          className="rw-inline-button rw-work-action"
-          disabled={disabled}
-          onClick={() => ask(`列出我可访问的 GitHub 仓库第 ${nextPage} 页`)}
-        >
-          查看第 {nextPage} 页
-        </button>
-      )}
+      <p className="rw-answer">{answer.text}</p>
       {job && (job.status === 'queued' || job.status === 'running') && (
         <button
           type="button"
@@ -264,7 +221,6 @@ function Conversation({
       return data.turns.some(
         (t) =>
           t.status === 'pending' ||
-          t.answer?.reminder?.status === 'sending' ||
           t.answer?.job?.status === 'queued' ||
           t.answer?.job?.status === 'running',
       ) || ['pending', 'analyzing', 'ready', 'sending'].includes(data.route?.status ?? '')
@@ -281,16 +237,7 @@ function Conversation({
       await cache.cancelQueries({ queryKey: key, exact: true })
       cache.setQueryData(key, snapshot)
       if ('text' in op && !op.retry) clearSubmitted(op.text)
-      if ('action' in op) {
-        void cache.invalidateQueries({ queryKey: eventsKey })
-        if (op.action.action.name === 'confirm_mandate') {
-          void cache.invalidateQueries({ queryKey: ['listeners', 'mandates'] })
-          void cache.invalidateQueries({ queryKey: ['listeners', 'commission-grants'] })
-        }
-        if (op.action.action.name === 'apply_preference') {
-          void cache.invalidateQueries({ queryKey: ['listeners', 'routing', 'config'] })
-        }
-      }
+      if ('action' in op) void cache.invalidateQueries({ queryKey: eventsKey })
     },
     onError: async (_error, op) => {
       await cache.invalidateQueries({ queryKey: key, exact: true })
@@ -402,7 +349,7 @@ function Conversation({
                 ? `持续任务 #${data.task.id} · ${data.task.eventCount} 条命中`
                 : data.event
                   ? `${data.event.source === 'github' ? 'GitHub' : 'WXARC'} 事件 #${data.event.id}`
-                  : '查询仓库、安排工作、跟进派工，或调整提醒与跟踪委托。'}
+                  : '安排工作、跟进派工，或询问通知去向。'}
             </p>
             {data.task && <p>{data.task.purpose}</p>}
           </div>
@@ -421,11 +368,6 @@ function Conversation({
         )}
         <div className="rw-context">
           <RouterSurface messages={data.surface} onAction={action} disabled={busy || readOnly} />
-          {send.isSuccess &&
-            'action' in send.variables &&
-            send.variables.action.action.name === 'apply_preference' && (
-              <output className="rw-hint">通知偏好已更新，可展开情境预演查看当前规则。</output>
-            )}
           {data.event && !data.task && <EventMandateMatches inboxId={data.event.id} />}
           {data.event && (
             <details className="rw-original">
@@ -595,7 +537,9 @@ function Conversation({
             id="router-message"
             aria-label="给 Router 发消息"
             placeholder={
-              data.event ? '你想进一步了解什么？' : '例如「发送微信通知：处理充值」或「替我跟踪…」'
+              data.event
+                ? '你想进一步了解什么？'
+                : '例如「现在的通知会发到哪里？」或「分析 owner/repo 最近一次失败」'
             }
             maxLength={2000}
             value={draft}

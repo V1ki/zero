@@ -1,22 +1,5 @@
-import type {
-  RouterJobReceipt,
-  RouterRepositoryPage,
-  TriggerConversationTurn,
-} from '@zero-os/shared'
+import type { RouterJobReceipt, TriggerConversationTurn } from '@zero-os/shared'
 import { TriggerAgentError } from './event-agent'
-
-export function repositoryReply(list: RouterRepositoryPage): string {
-  if (!list.repositories.length) {
-    return list.page === 1
-      ? '当前 GitHub 连接没有可见的仓库。'
-      : `当前 GitHub 连接的仓库列表第 ${list.page} 页没有结果。`
-  }
-  return [
-    `当前 GitHub 连接可见的仓库（第 ${list.page} 页）：`,
-    ...list.repositories.map((name, index) => `${index + 1}. ${name}`),
-    ...(list.nextPage === null ? [] : [`可以继续查看第 ${list.nextPage} 页。`]),
-  ].join('\n')
-}
 
 const jobStates: Record<RouterJobReceipt['status'], string> = {
   queued: '已排队',
@@ -32,23 +15,8 @@ export function jobReply(job: RouterJobReceipt): string {
   return `派工 #${job.id}（${executor}${target}）${jobStates[job.status]}。${job.result ? `\n${job.result}` : ''}`
 }
 
-const ordinalWords = '一二三四五六七八九'
-function ordinalNumber(word: string): number {
-  if (/^\d+$/u.test(word)) return Number(word)
-  if (word === '两') return 2
-  if (word === '十') return 10
-  if (word === '二十') return 20
-  if (word.startsWith('十') && word.length === 2 && ordinalWords.includes(word[1]))
-    return 11 + ordinalWords.indexOf(word[1])
-  return word.length === 1 ? ordinalWords.indexOf(word) + 1 : 0
-}
-
-/** Resolve references against the exact ordering the user saw, never against a fresh remote list. */
-export function resolveJobRepository(
-  question: string,
-  supplied: unknown,
-  displayed?: RouterRepositoryPage,
-): string | undefined {
+/** Accept only a full repository name that the user wrote in the current message. */
+export function resolveJobRepository(question: string, supplied: unknown): string | undefined {
   const fullName = /^[a-z0-9-]+\/[a-z0-9._-]+$/iu
   if (supplied !== undefined && (typeof supplied !== 'string' || !fullName.test(supplied)))
     throw new TriggerAgentError('请提供仓库全名，例如 owner/repository。')
@@ -60,24 +28,7 @@ export function resolveJobRepository(
   const mentioned =
     typeof supplied === 'string' &&
     names.some((name) => name.toLowerCase() === supplied.toLowerCase())
-  const ordinals = [
-    ...question.matchAll(
-      /第\s*([\d一二两三四五六七八九十百]+)\s*(?:个|项|条)(?!\s*(?:文件|问题|任务|步骤|作业|测试|版本|PR|工作流))/giu,
-    ),
-  ]
-  if (ordinals.length && (displayed || /仓库/u.test(question))) {
-    const indexes = new Set(ordinals.map((match) => ordinalNumber(match[1])))
-    const pinned = displayed?.repositories[ordinalNumber(ordinals[0][1]) - 1]
-    if (
-      indexes.size !== 1 ||
-      !pinned ||
-      (supplied && pinned.toLowerCase() !== supplied.toLowerCase())
-    )
-      throw new TriggerAgentError('无法把这个序号对应到刚才显示的单个仓库，请指定仓库全名。')
-    return pinned
-  }
-  if (supplied && !mentioned)
-    throw new TriggerAgentError('请选择用户本轮点名的仓库，或按刚才列表中的序号选择。')
+  if (supplied && !mentioned) throw new TriggerAgentError('请选择用户本轮点名的仓库。')
   if (supplied) return supplied
   if (names.length === 1 && /GitHub|仓库|repos?itory/iu.test(question)) return names[0]
   return undefined
@@ -112,7 +63,7 @@ export function asksOnlyForProgress(question: string): boolean {
   return progress.test(question) && !instruct.test(question)
 }
 
-export function asksForRepositoryPage(question: string) {
+function asksForRepositoryPage(question: string) {
   const inventory =
     /(?:我的|账号|账户|my\s+).{0,30}(?:仓库|repos?)|(?:仓库|repos?).{0,20}(?:列表|清单|有哪些)|(?:列出|列一下|看看|查看|list).{0,25}(?:GitHub.{0,10}仓库|repos?)/iu
   return (

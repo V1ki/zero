@@ -4,11 +4,9 @@ import { TriggerAgentError } from './event-agent'
 import { type RouterActor, type RouterJobPrincipals, fingerprint } from './router-job-principal'
 import type { RouterJobs } from './router-jobs'
 import type { RouterTurnActions } from './router-loop-tools'
-import type { RouterRepositoryLookup } from './router-repositories'
-import { authorizeRouterJobContinuation, jobReply, repositoryReply } from './router-work-reply'
+import { authorizeRouterJobContinuation, jobReply } from './router-work-reply'
 
 export interface RouterWorkIntegrations {
-  repositories?: Pick<RouterRepositoryLookup, 'list' | 'accessKey'>
   delegatedJobs?: RouterJobs
   principals?: RouterJobPrincipals
   checkout?: (repository: string, actor: RouterActor) => Promise<string | null>
@@ -63,7 +61,7 @@ export function createRouterWorkTurn(
   history: readonly TriggerConversationTurn[],
   authorized: () => boolean,
 ) {
-  const { repositories, delegatedJobs, principals, checkout } = work
+  const { delegatedJobs, principals, checkout } = work
   const previous = history
     .filter((item) => item.status === 'completed' && item.answer)
     .slice(-8)
@@ -72,15 +70,8 @@ export function createRouterWorkTurn(
     previous.find((a) => a.github && validAccess(a, actor, work)) ??
     previous.find((a) => validAccess(a, actor, work))
   let verified: TriggerConversationAnswer | undefined
-  function record(receipt: Pick<TriggerConversationAnswer, 'repositories' | 'job'>) {
-    const data = { ...verified, ...receipt }
-    const text = [
-      data.repositories && repositoryReply(data.repositories),
-      data.job && jobReply(data.job),
-    ]
-      .filter(Boolean)
-      .join('\n\n')
-    verified = { ...data, text }
+  function record(job: NonNullable<TriggerConversationAnswer['job']>) {
+    verified = { job, text: jobReply(job) }
   }
   const guard = (signal?: AbortSignal) => {
     signal?.throwIfAborted()
@@ -100,16 +91,6 @@ export function createRouterWorkTurn(
     return pin(!!stored.repository, signal)
   }
   const actions: RouterTurnActions = {
-    ...(repositories &&
-      principals && {
-        listGithubRepositories: async (page, signal) => {
-          pin(true, signal)
-          const data = await repositories.list(actor, signal, page)
-          guard(signal)
-          record({ repositories: data })
-          return data
-        },
-      }),
     ...(delegatedJobs &&
       principals && {
         delegateTask: async (target, signal) => {
@@ -127,12 +108,12 @@ export function createRouterWorkTurn(
             audience,
             instruction: turn.question,
           })
-          record({ job })
+          record(job)
           return job
         },
         getTaskStatus: async (id, signal) => {
           const job = delegatedJobs.get(scope, id, jobAudience(id, signal))
-          record({ job })
+          record(job)
           return job
         },
         continueTask: async (id, signal) => {
@@ -146,7 +127,7 @@ export function createRouterWorkTurn(
             throw new TriggerAgentError('此入口的 Codex 工作区授权已变更。')
           guard(signal)
           const job = delegatedJobs.continue(scope, id, turn.requestId, turn.question, audience)
-          record({ job })
+          record(job)
           return job
         },
       }),
@@ -156,7 +137,7 @@ export function createRouterWorkTurn(
     verified: (result?: TriggerConversationAnswer) => {
       if (!verified) return undefined
       // Router Agent formats multi-tool successes/errors; only host callbacks can attach receipts.
-      return result?.repositories || result?.job ? { ...verified, text: result.text } : verified
+      return result?.job ? { ...verified, text: result.text } : verified
     },
     protect(answer: TriggerConversationAnswer) {
       guard()

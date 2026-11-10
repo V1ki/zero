@@ -165,19 +165,6 @@ async function repositoryNamesPage(api: GithubApi, path: string) {
   return { names, next: result.next }
 }
 
-/** The Router reads one bounded page per call. The host fixes the endpoint and credentials. */
-export async function listGithubRepositoryPage(
-  token: string,
-  page: number,
-  signal: AbortSignal,
-  fetcher: Fetch = fetch,
-) {
-  const path = `/user/repos?per_page=20&sort=full_name&direction=asc&page=${page}`
-  const { names, next } = await repositoryNamesPage(new GithubApi(token, signal, fetcher), path)
-  if (names.length > 20) throw new Error('GitHub repository page exceeded the requested size')
-  return { page, repositories: names, nextPage: next ? page + 1 : null }
-}
-
 export async function listGithubRepositories(
   token: string | undefined,
   signal: AbortSignal,

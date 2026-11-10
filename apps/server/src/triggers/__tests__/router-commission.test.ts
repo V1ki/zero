@@ -1,17 +1,10 @@
 import { afterEach, expect, mock, test } from 'bun:test'
 import type { ProviderAdapter } from '@zero-os/model'
 import { TriggerStore } from '@zero-os/observe'
-import type {
-  CommissionOperator,
-  CompletionRequest,
-  MandatePolicy,
-  RouterSurfaceAction,
-} from '@zero-os/shared'
+import type { CommissionOperator, CompletionRequest, MandatePolicy } from '@zero-os/shared'
 import { type CommissionCatalog, type CommissionIntent, commissionIntent } from '../commission-plan'
 import { mandateSnapshot } from '../mandate-input'
 import { RouterCommissionService } from '../router-commission'
-import { RouterWorkspaceService } from '../router-workspace'
-import { TriggerRoutingRuntime } from '../routing-runtime'
 
 function draftCode(value: { commission?: { code: string } } | null) {
   if (!value?.commission) throw Error('Expected commission preview')
@@ -117,63 +110,10 @@ function fixture() {
   }
 }
 
-test('Web A2UI owns a named preview and atomically saves its mandate and receipt only once', async () => {
+test('concurrent requests plan once from the original wording without publishing a mandate', async () => {
   const f = fixture()
-  const unavailable = async (): Promise<never> => {
-    throw Error('unexpected')
-  }
-  const routing = new TriggerRoutingRuntime(f.store.routing, {
-    analyze: unavailable,
-    weixin: { listTargets: () => [], send: unavailable },
-  })
-  const workspace = new RouterWorkspaceService(
-    f.store,
-    routing,
-    async ({ actions }, signal) => {
-      if (!actions?.prepareCommission || !signal) throw Error('Missing Web commission tool')
-      await actions.prepareCommission('create', signal)
-      return { text: '请核对委托草案。' }
-    },
-    { commission: f.commission },
-  )
-  workspace.start()
-  try {
-    const question = 'room-a 的发布流水线麻烦帮我盯着，一有构建失败就记下来。'
-    expect(commissionIntent(question)).toBeNull()
-    const view = await workspace.message('general', 'r1', question)
-    expect(f.plan.mock.calls[0]?.slice(0, 2)).toEqual([question, 'create'])
-    expect((await workspace.message('general', 'r1', question)).turns).toHaveLength(1)
-    expect(f.plan).toHaveBeenCalledTimes(1)
-    const card = view.turns[0].surface
-    if (!card) throw Error('missing card')
-    const action: RouterSurfaceAction = {
-      version: card[0].version,
-      action: {
-        name: 'confirm_mandate',
-        surfaceId: card[0].createSurface.surfaceId,
-        sourceComponentId: 'btn-confirm_mandate',
-        timestamp: new Date().toISOString(),
-        context: {},
-      },
-    }
-    expect(f.registry.getConfig().settings.mandates).toHaveLength(0)
-    await expect(workspace.action('general', 'r1', action)).rejects.toThrow('请求编号')
-    expect(f.registry.getConfig().revision).toBe(0)
-    await workspace.action('general', 'confirmation', action)
-    await workspace.action('general', 'confirmation', action)
-    expect(f.registry.getConfig().settings.mandates.map((m) => m.purpose)).toEqual(['跟踪构建失败'])
-    const changed = workspace.get('general').turns[0].surface
-    expect(changed?.[2].updateDataModel.value).toContainValue('已确认并保存。')
-  } finally {
-    await workspace.close()
-    await routing.close()
-  }
-})
-
-test('concurrent web tool calls plan once from the original wording without publishing a mandate', async () => {
-  const f = fixture()
-  const question = 'room-a 里再出现构建失败就帮我记下来。'
-  const prepare = () => f.commission.prepareFromIntent('draft', question, 'create')
+  const question = '跟踪 room-a 里的构建失败'
+  const prepare = () => f.commission.prepare('web', 'draft', question)
   const [first, second] = await Promise.all([prepare(), prepare()])
   expect(draftCode(first)).toBe(draftCode(second))
   expect(f.plan.mock.calls.map(([text, intent]) => [text, intent])).toEqual([[question, 'create']])
