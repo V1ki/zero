@@ -342,7 +342,6 @@ function normalizeChannelConfig(raw: Record<string, unknown>): ChannelInstanceCo
       clientSecretRef,
       robotCodeRef: readString(raw, 'robotCodeRef', 'robot_code_ref'),
       cardTemplateId: readString(raw, 'cardTemplateId', 'card_template_id'),
-      cardStreamingKey: readString(raw, 'cardStreamingKey', 'card_streaming_key'),
       debug: readBoolean(raw, 'debug'),
       keepAlive: readBoolean(raw, 'keepAlive', 'keep_alive'),
     }

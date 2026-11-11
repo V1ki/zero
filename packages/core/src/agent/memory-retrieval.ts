@@ -4,10 +4,11 @@ import {
   runMemoryRetrievalAgentDetailed,
 } from '@zero-os/memory'
 import { type ProviderAdapter, computeCost } from '@zero-os/model'
-import type { Tracer } from '@zero-os/observe'
+import type { SessionEventStore, Tracer } from '@zero-os/observe'
 import type {
   LoopRunner,
   LoopToolCallRecord,
+  MemoryRetrievalLayer,
   ModelPricing,
   ReasoningEffort,
   SecretFilter,
@@ -36,6 +37,10 @@ interface RetrieveMemoriesWithDecisionOptions {
   logger: ToolLogger
   failureEvent: string
   trace?: MemoryRetrievalTraceOptions
+  /** 事件流:提供时发射 memory/retrieval/start|end 成对事件 */
+  sessionEvents?: Pick<SessionEventStore, 'append'>
+  layer?: MemoryRetrievalLayer
+  turnIndex?: number
 }
 
 export interface MemoryRetrievalTraceOptions {
@@ -60,12 +65,17 @@ export async function retrieveMemoriesWithDecision({
   logger,
   failureEvent,
   trace,
+  sessionEvents,
+  layer = 'layer1',
+  turnIndex,
 }: RetrieveMemoriesWithDecisionOptions): Promise<RetrievedMemoryMatch[] | undefined> {
   if (!memoryRetriever) return undefined
   if (userMessage.trim().length < 5) return undefined
 
   const traceSpanId = startMemoryRetrievalTrace(sessionId, trace)
   const sideLoop: MemoryRetrievalSideLoopCapture = {}
+  const retrievalStartedAt = Date.now()
+  sessionEvents?.append(sessionId, [{ type: 'memory/retrieval/start', data: { layer, turnIndex } }])
 
   try {
     const result = await runMemoryRetrievalAgentDetailed({
@@ -100,9 +110,43 @@ export async function retrieveMemoriesWithDecision({
 
     recordMemoryRetrievalTraceResult({ trace, traceSpanId, userMessage, result, sideLoop })
 
+    sessionEvents?.append(sessionId, [
+      {
+        type: 'memory/retrieval/end',
+        data: {
+          layer,
+          turnIndex,
+          status: (result.memories?.length ?? 0) > 0 ? 'injected' : 'skipped',
+          queries: result.queries,
+          searchCount: result.searches.length,
+          selected: result.selectedMemories.map((memory) => ({
+            id: memory.id,
+            title: memory.title,
+            score: memory.score,
+          })),
+          durationMs: result.durationMs,
+          usage: result.usage as Record<string, number>,
+        },
+      },
+    ])
+
     return result.memories
   } catch (error) {
     recordMemoryRetrievalTraceError({ trace, traceSpanId, error })
+    sessionEvents?.append(sessionId, [
+      {
+        type: 'memory/retrieval/end',
+        data: {
+          layer,
+          turnIndex,
+          status: 'failed',
+          queries: [],
+          selected: [],
+          durationMs: Date.now() - retrievalStartedAt,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      },
+    ])
     logger.warn(failureEvent, {
       message: error instanceof Error ? error.message : String(error),
     })

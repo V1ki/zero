@@ -2,11 +2,22 @@ import { expect, mock, test } from 'bun:test'
 import * as lark from '@larksuiteoapi/node-sdk'
 import { FeishuChannel } from '@zero-os/channel'
 import { TriggerStore } from '@zero-os/observe'
-import type { MandateTarget, TriggerInboxItem, TriggerMandate } from '@zero-os/shared'
+import type {
+  MandateTarget,
+  TriggerAgentResult,
+  TriggerInboxItem,
+  TriggerMandate,
+  TriggerPriorEvent,
+} from '@zero-os/shared'
+import type {
+  MandateInvestigationContext,
+  MandateInvestigationResult,
+} from '../mandate-investigation'
 import {
   type MandateDelivery,
   type MandateReceipt,
   TriggerMandateRuntime,
+  investigationFallback,
 } from '../mandate-runtime'
 
 const scope = 'test/mandate-repo'
@@ -47,6 +58,13 @@ function fixture(
       maySend: () => boolean,
     ) => Promise<MandateReceipt>
     analyze?: () => Promise<void>
+    triage?: (event: TriggerInboxItem) => TriggerAgentResult['triage']
+    investigate?: (
+      event: TriggerInboxItem,
+      signal: AbortSignal,
+      context: MandateInvestigationContext,
+    ) => Promise<MandateInvestigationResult>
+    noInvestigator?: boolean
     now?: () => Date
   } = {},
 ) {
@@ -91,10 +109,15 @@ function fixture(
       event: TriggerInboxItem,
       sessionId: string,
       _signal: AbortSignal,
-      context: { purpose: string },
-    ) => {
+      context: { purpose: string; previous: TriggerPriorEvent[] },
+    ): Promise<TriggerAgentResult> => {
       await options.analyze?.()
-      return { summary: `${context.purpose} - ${event.summary}`, sessionId }
+      const triage = options.triage?.(event)
+      return {
+        summary: `${context.purpose} - ${event.summary}`,
+        sessionId,
+        ...(triage && { triage }),
+      }
     },
   )
   const send = mock(
@@ -115,7 +138,23 @@ function fixture(
     ): Promise<MandateReceipt> =>
       options.archive?.(payload, signal, maySend) ?? { status: 'accepted', receipt: 'test-block' },
   )
-  const deps = { analyze, platforms: { listTargets: () => [target], send, archive } }
+  const investigate = mock(
+    async (
+      event: TriggerInboxItem,
+      _sessionId: string,
+      signal: AbortSignal,
+      context: MandateInvestigationContext,
+    ): Promise<MandateInvestigationResult> =>
+      options.investigate?.(event, signal, context) ?? {
+        status: 'read',
+        summary: `调查结论 ${event.eventId}`,
+      },
+  )
+  const deps = {
+    analyze,
+    ...(!options.noInvestigator && { investigate }),
+    platforms: { listTargets: () => [target], send, archive },
+  }
   const runtime = new TriggerMandateRuntime(store, deps, now)
   function ingest(source: 'github' | 'wxarc', ...ids: string[]) {
     const sourceScope = source === 'github' ? scope : 'private-room'
@@ -140,7 +179,7 @@ function fixture(
     store.close()
   }
   const flush = () => new Promise<void>((resolve) => setImmediate(resolve))
-  return { runtime, store, analyze, send, archive, ingest, close, flush, deps, now }
+  return { runtime, store, analyze, investigate, send, archive, ingest, close, flush, deps, now }
 }
 
 test('one inbox event can serve different purposes and audiences with independent archive and no legacy delivery', async () => {
@@ -288,9 +327,9 @@ test('related runs reuse just their own authorized task summaries and session', 
     for (const purpose of [mandate.purpose, '研究观点']) {
       const calls = f.analyze.mock.calls.filter((call) => call[3].purpose === purpose)
       expect(calls[0][1]).toBe(calls[1][1])
-      expect(calls[0][3]).toMatchObject({ previousSummaries: [] })
+      expect(calls[0][3]).toMatchObject({ previous: [] })
       expect(calls[1][3]).toMatchObject({
-        previousSummaries: [`${purpose} - sensitive-fixture-body`],
+        previous: [{ summary: `${purpose} - sensitive-fixture-body` }],
       })
     }
     const sessions = new Set(f.analyze.mock.calls.map((c) => c[1]))
@@ -611,3 +650,367 @@ for (const receipt of ['accepted', 'unknown'] as const) {
     }
   })
 }
+
+const skipAll = () => ({ decision: 'skip' as const, reason: '与上次相同。' })
+
+test('triage skips only the notify effect, keeps archiving, and notify anyway re-opens it', async () => {
+  const f = fixture([{ ...mandate, archive: document }], { triage: skipAll })
+  try {
+    f.ingest('github', 'event-1')
+    f.runtime.start()
+    await f.flush()
+    const [match] = f.store.mandates.listMatches()
+    expect(match.status).toBe('ready')
+    expect(match.summary).toContain(mandate.purpose)
+    expect(match.effects).toEqual([
+      expect.objectContaining({ kind: 'archive', status: 'done' }),
+      expect.objectContaining({
+        kind: 'notify',
+        status: 'skipped',
+        reason: '分诊判断无需提醒：与上次相同。',
+        triaged: true,
+      }),
+    ])
+    expect(f.archive).toHaveBeenCalledTimes(1)
+    expect(f.send).not.toHaveBeenCalled()
+    expect(f.runtime.retry(match.id, 'archive')).toBe(false)
+    expect(f.runtime.retry(match.id, 'notify')).toBe(true)
+    await f.flush()
+    expect(f.send).toHaveBeenCalledTimes(1)
+    expect(f.store.mandates.getMatch(match.id)?.effects[1]).toMatchObject({
+      kind: 'notify',
+      status: 'done',
+    })
+    expect(f.store.mandates.getMatch(match.id)?.effects[1].triaged).toBeUndefined()
+    expect(f.analyze).toHaveBeenCalledTimes(1)
+  } finally {
+    await f.close()
+  }
+})
+
+test('a policy skip cannot be re-opened by retry', async () => {
+  const f = fixture([{ ...mandate, policy: { duringWork: 'none' } }])
+  try {
+    f.ingest('github', 'event-1')
+    f.runtime.start()
+    await f.flush()
+    const [match] = f.store.mandates.listMatches()
+    expect(match.effects[1]).toMatchObject({ kind: 'notify', status: 'skipped' })
+    expect(match.effects[1].triaged).toBeUndefined()
+    expect(f.runtime.retry(match.id, 'notify')).toBe(false)
+  } finally {
+    await f.close()
+  }
+})
+
+test('urgent mandates, direct reminders and triage turned off are never filtered', async () => {
+  for (const [rule, triageOn] of [
+    [{ ...mandate, urgent: true }, true],
+    [{ ...mandate, processing: 'direct' as const }, true],
+    [mandate, false],
+  ] as const) {
+    const f = fixture([rule], { triage: skipAll })
+    try {
+      if (!triageOn) {
+        const current = f.store.routing.getSettings()
+        f.store.routing.saveSettings({ ...current.settings, triage: false }, current.revision)
+      }
+      f.ingest('github', 'event-1')
+      f.runtime.start()
+      await f.flush()
+      expect(f.send).toHaveBeenCalledTimes(1)
+      expect(f.analyze).toHaveBeenCalledTimes(rule.processing === 'direct' ? 0 : 1)
+      expect(f.store.mandates.listMatches()[0].effects[1]).toMatchObject({ status: 'done' })
+    } finally {
+      await f.close()
+    }
+  }
+})
+
+test('a skipped match drops out of a digest, still counts as prior context and is marked filtered', async () => {
+  const f = fixture(
+    [{ ...mandate, groupBy: 'mandate', policy: { duringWork: 'dingtalk', digestMinutes: 60 } }],
+    { triage: (event) => (event.eventId === 'event-b' ? skipAll() : undefined) },
+  )
+  try {
+    f.ingest('github', 'event-a', 'event-b', 'event-c')
+    f.runtime.start()
+    await f.flush()
+    expect(f.send).toHaveBeenCalledTimes(1)
+    expect(f.send.mock.calls[0][1].entries.map((entry) => entry.matchId)).toEqual([1, 3])
+    const last = f.analyze.mock.calls[2][3].previous
+    expect(last.map((prior) => prior.outcome)).toEqual(['not_notified', 'filtered'])
+  } finally {
+    await f.close()
+  }
+})
+
+const investigating: TriggerMandate = {
+  ...mandate,
+  processing: 'investigate',
+  groupBy: 'mandate',
+}
+const notified = (f: ReturnType<typeof fixture>) =>
+  f.send.mock.calls.flatMap((call) => call[1].entries.map((entry) => entry.summary))
+
+test('investigation runs only after a notify outcome and its text becomes the summary and the next prior context', async () => {
+  const f = fixture([investigating], {
+    triage: (event) => (event.eventId === 'event-b' ? skipAll() : undefined),
+  })
+  try {
+    f.ingest('github', 'event-a', 'event-b', 'event-c')
+    f.runtime.start()
+    await f.flush()
+    expect(f.investigate.mock.calls.map((call) => call[0].eventId)).toEqual(['event-a', 'event-c'])
+    expect(f.investigate.mock.calls[0][3]).toEqual({
+      purpose: mandate.purpose,
+      triage: `${mandate.purpose} - sensitive-fixture-body`,
+    })
+    expect(f.investigate.mock.calls[0][1]).toBe(f.analyze.mock.calls[0][1])
+    const [a, b, c] = [1, 2, 3].map((id) => f.store.mandates.getMatch(id))
+    expect(a?.summary).toBe('调查结论 event-a')
+    expect(b?.summary).toBe(`${mandate.purpose} - sensitive-fixture-body`)
+    expect(b?.effects[1]).toMatchObject({ status: 'skipped', triaged: true })
+    expect(c?.summary).toBe('调查结论 event-c')
+    expect(f.analyze.mock.calls[1][3].previous.map((prior) => prior.summary)).toEqual([
+      '调查结论 event-a',
+    ])
+    expect(notified(f)).toEqual(['调查结论 event-a', '调查结论 event-c'])
+    // Notifying a filtered match anyway reuses its stored summary and reads nothing.
+    expect(f.runtime.retry(2, 'notify')).toBe(true)
+    await f.flush()
+    expect(f.investigate).toHaveBeenCalledTimes(2)
+  } finally {
+    await f.close()
+  }
+})
+
+test('urgent mandates still investigate; agent and direct mandates never do', async () => {
+  for (const [rule, investigations] of [
+    [{ ...investigating, urgent: true }, 1],
+    [mandate, 0],
+    [{ ...mandate, processing: 'direct' as const }, 0],
+  ] as const) {
+    const f = fixture([rule], { triage: skipAll })
+    try {
+      f.ingest('github', '11:run:27:1:failure')
+      f.runtime.start()
+      await f.flush()
+      expect(f.investigate).toHaveBeenCalledTimes(investigations)
+      expect(f.send).toHaveBeenCalledTimes(rule.urgent || rule.processing === 'direct' ? 1 : 0)
+      if (investigations) expect(notified(f)).toEqual(['调查结论 11:run:27:1:failure'])
+    } finally {
+      await f.close()
+    }
+  }
+})
+
+test('a missing, unread or failed investigation still notifies with the triage summary and a visible note', async () => {
+  const triage = `${mandate.purpose} - sensitive-fixture-body`
+  for (const [options, note] of [
+    [{ noInvestigator: true }, investigationFallback.unread],
+    [{ investigate: async () => ({ status: 'unread' as const }) }, investigationFallback.unread],
+    [
+      {
+        investigate: async () => {
+          throw new Error('GitHub 调查超过 90 秒')
+        },
+      },
+      investigationFallback.unfinished,
+    ],
+  ] as const) {
+    const f = fixture([investigating], options)
+    try {
+      f.ingest('github', 'event-a')
+      f.runtime.start()
+      await f.flush()
+      const match = f.store.mandates.getMatch(1)
+      expect(match).toMatchObject({ status: 'ready', error: null, summary: `${triage}${note}` })
+      expect(match?.effects[1]).toMatchObject({ status: 'done' })
+      expect(notified(f)).toEqual([`${triage}${note}`])
+      expect(f.runtime.retry(1, 'analysis')).toBe(false)
+    } finally {
+      await f.close()
+    }
+  }
+  const long = fixture([investigating], { investigate: async () => ({ status: 'unread' }) })
+  try {
+    long.analyze.mockImplementationOnce(async (_event, sessionId) => ({
+      summary: '长'.repeat(600),
+      sessionId,
+    }))
+    long.ingest('github', 'event-a')
+    long.runtime.start()
+    await long.flush()
+    const summary = long.store.mandates.getMatch(1)?.summary ?? ''
+    expect(summary).toHaveLength(600)
+    expect(summary.endsWith(investigationFallback.unread)).toBe(true)
+  } finally {
+    await long.close()
+  }
+})
+
+test('a triage model error keeps today’s retryable failure and reads nothing', async () => {
+  const f = fixture([investigating], {
+    analyze: async () => {
+      throw new Error('model offline')
+    },
+  })
+  try {
+    f.ingest('github', 'event-a')
+    f.runtime.start()
+    await f.flush()
+    expect(f.store.mandates.getMatch(1)?.status).toBe('failed')
+    expect(f.investigate).not.toHaveBeenCalled()
+    expect(f.send).not.toHaveBeenCalled()
+  } finally {
+    await f.close()
+  }
+})
+
+test('pausing, disabling, switching the mode or removing the source during an investigation delivers nothing stale', async () => {
+  const changes: [string, (f: ReturnType<typeof fixture>) => void][] = [
+    ['pause', (f) => f.store.mandates.setTaskPaused(1, true)],
+    [
+      'disable',
+      (f) =>
+        f.store.mandates.saveSettings(
+          { projects: [], mandates: [{ ...investigating, enabled: false }] },
+          1,
+        ),
+    ],
+    [
+      'switch',
+      (f) =>
+        f.store.mandates.saveSettings(
+          { projects: [], mandates: [{ ...investigating, processing: 'agent' }] },
+          1,
+        ),
+    ],
+    [
+      'source',
+      (f) => {
+        const current = f.store.getSettings()
+        f.store.saveSettings(
+          { ...current.settings, github: { credentialRef: '', repositories: [] } },
+          current.revision,
+        )
+      },
+    ],
+  ]
+  for (const [, change] of changes) {
+    const started = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const f = fixture([{ ...investigating, archive: document }], {
+      investigate: async () => {
+        started.resolve()
+        await release.promise
+        return { status: 'read', summary: 'stale' }
+      },
+    })
+    try {
+      f.ingest('github', 'event-a')
+      f.runtime.start()
+      await started.promise
+      change(f)
+      release.resolve()
+      await f.flush()
+      const match = f.store.mandates.getMatch(1)
+      expect(match?.status).toBe('revoked')
+      expect(match?.summary).toBeNull()
+      expect(f.send).not.toHaveBeenCalled()
+      expect(f.archive).not.toHaveBeenCalled()
+    } finally {
+      release.resolve()
+      await f.close()
+    }
+  }
+})
+
+test('shutdown aborts an in-flight investigation and the next start runs it again', async () => {
+  const started = Promise.withResolvers<void>()
+  let aborted = false
+  const f = fixture([investigating], {
+    investigate: (_event, signal) => {
+      started.resolve()
+      return new Promise((_resolve, reject) =>
+        signal.addEventListener('abort', () => {
+          aborted = true
+          reject(new Error('GitHub 调查已取消。'))
+        }),
+      )
+    },
+  })
+  try {
+    f.ingest('github', 'event-a')
+    f.runtime.start()
+    await started.promise
+    await f.runtime.close()
+    expect(aborted).toBe(true)
+    expect(f.store.mandates.getMatch(1)?.status).toBe('analyzing')
+    expect(f.send).not.toHaveBeenCalled()
+    const restarted = new TriggerMandateRuntime(
+      f.store,
+      {
+        ...f.deps,
+        investigate: async () => ({ status: 'read' as const, summary: '重启后的调查结论' }),
+      },
+      f.now,
+    )
+    restarted.start()
+    await f.flush()
+    await restarted.close()
+    expect(f.analyze).toHaveBeenCalledTimes(2)
+    expect(f.store.mandates.getMatch(1)).toMatchObject({
+      status: 'ready',
+      summary: '重启后的调查结论',
+    })
+    expect(notified(f)).toEqual(['重启后的调查结论'])
+  } finally {
+    await f.close()
+  }
+})
+
+test('deliveries of other matches keep moving while an investigation is in flight', async () => {
+  const started = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  let accept = false
+  const f = fixture(
+    [
+      { ...mandate, id: 'chat', source: 'wxarc', scope: 'private-room', processing: 'direct' },
+      investigating,
+    ],
+    {
+      send: async () =>
+        accept
+          ? { status: 'accepted', receipt: 'later' }
+          : { status: 'rejected', reason: '平台拒绝' },
+      investigate: async () => {
+        started.resolve()
+        await release.promise
+        return { status: 'read', summary: '调查结论' }
+      },
+    },
+  )
+  try {
+    f.ingest('wxarc', 'wxarc:text:1')
+    f.runtime.start()
+    await f.flush()
+    expect(f.store.mandates.getMatch(1)?.effects[1]).toMatchObject({ status: 'failed' })
+    f.ingest('github', 'event-a')
+    await started.promise
+    accept = true
+    expect(f.runtime.retry(1, 'notify')).toBe(true)
+    const deadline = performance.now() + 1000
+    while (f.send.mock.calls.length < 2 && performance.now() < deadline) await Bun.sleep(5)
+    expect(f.store.mandates.getMatch(1)?.effects[1]).toMatchObject({ status: 'done' })
+    expect(f.store.mandates.getMatch(2)?.status).toBe('analyzing')
+    release.resolve()
+    await f.flush()
+    expect(f.store.mandates.getMatch(2)?.summary).toBe('调查结论')
+    expect(f.send).toHaveBeenCalledTimes(3)
+  } finally {
+    release.resolve()
+    await f.close()
+  }
+})

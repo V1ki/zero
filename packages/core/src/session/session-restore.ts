@@ -96,7 +96,10 @@ export function prepareSessionRestoreState(options: {
       ? sanitizeConversationHistoryForSignedThinkingToolUse(repairedMessages)
       : repairedMessages
   if (restoredMessages !== messages) {
-    deps.sessionDb?.saveMessages(data.id, restoredMessages)
+    deps.sessionEvents?.syncMessages(data.id, restoredMessages)
+    if (!deps.sessionEventsOnly) {
+      deps.sessionDb?.saveMessages(data.id, restoredMessages)
+    }
   }
 
   return {

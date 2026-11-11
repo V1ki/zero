@@ -471,7 +471,12 @@ class SessionManagerStore {
   flushAll(): void {
     if (!this.sessionDb) return
     for (const session of this.sessions.values()) {
-      persistSessionSnapshot(this.sessionDb, session)
+      persistSessionSnapshot(
+        this.sessionDb,
+        session,
+        this.deps.sessionEvents,
+        this.deps.sessionEventsOnly,
+      )
     }
   }
 
@@ -493,10 +498,14 @@ class SessionManagerStore {
   }
 
   getMessagesFromDB(id: string): Message[] {
+    const projected = this.deps.sessionEvents?.project(id)
+    if (projected) return projected.messages
     return this.sessionDb?.loadSessionMessages(id) ?? []
   }
 
   getCompactionBlocksFromDB(id: string): TimelineCompactionBlock[] {
+    const projected = this.deps.sessionEvents?.project(id)
+    if (projected) return projected.blocks
     return this.sessionDb?.loadSessionCompactionBlocks(id) ?? []
   }
 
@@ -529,8 +538,14 @@ class SessionManagerStore {
 
     const normalizedRow = normalizeSessionRow(row, this.modelRouter)
     const data = sessionDataFromRow(normalizedRow)
-    const messages = this.sessionDb?.loadSessionMessages(row.id) ?? []
-    const timelineCompactionBlocks = this.sessionDb?.loadSessionCompactionBlocks(row.id) ?? []
+    // 事件流优先(写入序为事件先于 DB,只会更新);无事件文件时回退 DB 快照
+    const projection = this.deps.sessionEvents?.project(row.id)
+    const messages = projection
+      ? projection.messages
+      : (this.sessionDb?.loadSessionMessages(row.id) ?? [])
+    const timelineCompactionBlocks = projection
+      ? projection.blocks
+      : (this.sessionDb?.loadSessionCompactionBlocks(row.id) ?? [])
     const modelScope = getModelScope(
       data.source,
       data.channelId,

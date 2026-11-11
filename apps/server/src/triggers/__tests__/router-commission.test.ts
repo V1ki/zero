@@ -5,8 +5,6 @@ import type { CommissionOperator, CompletionRequest, MandatePolicy } from '@zero
 import { type CommissionCatalog, type CommissionIntent, commissionIntent } from '../commission-plan'
 import { mandateSnapshot } from '../mandate-input'
 import { RouterCommissionService } from '../router-commission'
-import { RouterWorkspaceService } from '../router-workspace'
-import { TriggerRoutingRuntime } from '../routing-runtime'
 
 function draftCode(value: { commission?: { code: string } } | null) {
   if (!value?.commission) throw Error('Expected commission preview')
@@ -112,55 +110,10 @@ function fixture() {
   }
 }
 
-test('the Agent prepares and confirms an authorized standing instruction with a durable receipt', async () => {
+test('concurrent requests plan once from the original wording without publishing a mandate', async () => {
   const f = fixture()
-  const unavailable = async (): Promise<never> => {
-    throw Error('unexpected')
-  }
-  const routing = new TriggerRoutingRuntime(f.store.routing, {
-    analyze: unavailable,
-    weixin: { listTargets: () => [], send: unavailable },
-  })
-  let code = ''
-  let phase = 'draft'
-  const workspace = new RouterWorkspaceService(
-    f.store,
-    routing,
-    async ({ actions }, signal) => {
-      if (!actions?.prepareCommission || !actions.confirmCommission || !signal)
-        throw Error('missing rule capabilities')
-      if (phase === 'draft') {
-        const draft = await actions.prepareCommission('create', signal)
-        if (!draft?.commission) throw Error('missing prepared draft')
-        code = draft.commission.code
-        return { text: '草案已准备，尚未保存。' }
-      }
-      await actions.confirmCommission(code, signal)
-      return { text: '已保存这项长期规则。' }
-    },
-    { commission: f.commission },
-  )
-  workspace.start()
-  try {
-    const question = 'room-a 的发布流水线麻烦帮我盯着，一有构建失败就记下来。'
-    await workspace.message('general', 'draft', question)
-    expect(f.registry.getConfig().settings.mandates).toHaveLength(0)
-    expect(f.plan.mock.calls[0]?.slice(0, 2)).toEqual([question, 'create'])
-    phase = 'confirm'
-    await workspace.message('general', 'confirm', '确认保存刚才那项规则')
-    await workspace.message('general', 'confirm', '确认保存刚才那项规则')
-    expect(f.registry.getConfig().settings.mandates.map((m) => m.purpose)).toEqual(['跟踪构建失败'])
-    expect(f.registry.getConfig().revision).toBe(1)
-  } finally {
-    await workspace.close()
-    await routing.close()
-  }
-})
-
-test('concurrent web tool calls plan once from the original wording without publishing a mandate', async () => {
-  const f = fixture()
-  const question = 'room-a 里再出现构建失败就帮我记下来。'
-  const prepare = () => f.commission.prepareFromIntent('draft', question, 'create')
+  const question = '跟踪 room-a 里的构建失败'
+  const prepare = () => f.commission.prepare('web', 'draft', question)
   const [first, second] = await Promise.all([prepare(), prepare()])
   expect(draftCode(first)).toBe(draftCode(second))
   expect(f.plan.mock.calls.map(([text, intent]) => [text, intent])).toEqual([[question, 'create']])
@@ -358,6 +311,18 @@ test('edited fields preserve other parts of the confirmed mandate and support pe
     groupBy: 'event',
     processing: 'direct',
   })
+})
+
+test('reading GitHub details is refused for a WeChat mandate drafted from IM', async () => {
+  const f = fixture()
+  await f.grant()
+  const draft = await f.commission.prepare(actor, 'create', '跟踪构建失败')
+  await f.commission.confirm(actor, draftCode(draft))
+  f.modelOutput({ mandate: 'M1', patch: { processing: 'investigate' } })
+  const question = '把发布委托的处理方式改为读取 GitHub 详情后提醒'
+  expect(commissionIntent(question)).toBe('edit')
+  await expect(f.commission.prepare(actor, 'edit', question)).rejects.toThrow('只有 GitHub 委托')
+  expect(f.registry.getConfig().settings.mandates[0].processing).toBeUndefined()
 })
 
 test('ordering is previewed and confirmed without modifying any other rule or policy field', async () => {

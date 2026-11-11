@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { MEMORY_NUDGE_PROMPT } from '@zero-os/memory'
 import type { ProviderAdapter } from '@zero-os/model'
 import type {
@@ -236,6 +237,7 @@ class AgentQueueGate {
       bus?: {
         emit(topic: string, data: Record<string, unknown>): void
       }
+      sessionEvents?: AgentObservability['sessionEvents']
       shouldInterrupt?: () => boolean
       getQueuedMessages?: () => QueuedMessage[]
       createControlMessage: (text: string, controlKind: ControlKind) => Message
@@ -343,12 +345,22 @@ class AgentQueueGate {
 
     if (queued.length === 0 || messages.length === 0) return
 
+    this.deps.sessionEvents?.append(this.deps.sessionId, [
+      { type: 'agent/inbox/drained', data: { count: queued.length } },
+    ])
+
     const lastIdx = messages.length - 1
     if (messages[lastIdx].role !== 'user') return
 
     const injected = injectQueuedMessagesWithTrace(messages[lastIdx], queued)
     messages[lastIdx] = injected.message
     this.pendingQueuedInjection = injected.trace
+    this.deps.sessionEvents?.append(this.deps.sessionId, [
+      {
+        type: 'agent/inbox/spliced',
+        data: { strategy: 'inject_into_last_user', count: queued.length },
+      },
+    ])
     this.hadQueuedMessages = injected.trace !== undefined
     this.appendAppliedQueuedIntent(queued)
     this.trackQueuedAppliedCallbacks(queued)
@@ -408,6 +420,7 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): Agen
   }
 
   const queueGate = new AgentQueueGate({
+    sessionEvents: obs.sessionEvents,
     sessionId: toolContext.sessionId,
     agentName: config.name,
     logger: toolContext.logger,
@@ -463,7 +476,30 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): Agen
   })
 
   return {
-    buildRequestUserContent: (content) => buildAgentRequestUserContent(content, context),
+    buildRequestUserContent: (content) => {
+      const requestContent = buildAgentRequestUserContent(content, context)
+      // 注入内容只进 API 不落 canonical;在此补记为 request-scoped 事件
+      const injections: Array<{ kind: 'dynamic' | 'image_delegation'; text: string }> = []
+      if (context.dynamicContext) {
+        injections.push({ kind: 'dynamic', text: context.dynamicContext })
+      }
+      if (context.imageDelegationFiles?.length) {
+        injections.push({
+          kind: 'image_delegation',
+          text: buildImageDelegationPrompt(context.imageDelegationFiles),
+        })
+      }
+      if (injections.length > 0) {
+        obs.sessionEvents?.append(
+          toolContext.sessionId,
+          injections.map((injection) => ({
+            type: 'injection/context',
+            data: { kind: injection.kind, content: injection.text },
+          })),
+        )
+      }
+      return requestContent
+    },
     onNewMessage: (message) => {
       if (!memoryNudge.isActive) {
         options.onNewMessage?.(message)
@@ -505,6 +541,7 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): Agen
       obs,
       context,
       userMessage,
+      turnIndex,
       queueGate,
       memoryNudge,
       getCurrentRequestSpanId: () => llmRequestHooks.getCurrentRequestSpanId(),
@@ -522,6 +559,7 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): Agen
         identitySummary: context.identityMemory,
         injectedMemoryIds: context.injectedMemoryIds,
         traceRecorder,
+        sessionEvents: obs.sessionEvents,
         turnIndex,
         requestId: executionState.currentRequestId,
         trace: {
@@ -581,6 +619,21 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): Agen
       }
 
       queueGate.injectQueuedMessagesIntoLastUserMessage(ctx.messages)
+
+      // 排队消息拼进请求首条 user 消息(API-only):补一条 queued_merge 注入事件
+      const queuedInjection = queueGate.pendingInjection
+      if (queuedInjection) {
+        obs.sessionEvents?.append(toolContext.sessionId, [
+          {
+            type: 'injection/context',
+            data: {
+              kind: 'queued_merge',
+              content: queuedInjection.formattedText,
+              refs: { count: queuedInjection.count },
+            },
+          },
+        ])
+      }
     },
     shouldInterrupt: () => queueGate.shouldKeepInterrupting(),
   }
@@ -593,6 +646,7 @@ interface CreateAgentEndTurnHandlerOptions {
   obs: AgentObservability
   context: AgentContext
   userMessage: string
+  turnIndex: number
   queueGate: AgentQueueGate
   memoryNudge: AgentMemoryNudgeController
   getCurrentRequestSpanId(): string | undefined
@@ -605,6 +659,7 @@ function createAgentEndTurnHandler({
   obs,
   context,
   userMessage,
+  turnIndex,
   queueGate,
   memoryNudge,
   getCurrentRequestSpanId,
@@ -627,7 +682,21 @@ function createAgentEndTurnHandler({
     const shouldEvaluateTaskClosure =
       !toolContext.spawnedByRequestId && !memoryNudge.isActive && hasAssistantText(response.content)
 
+    let closureStartedAt: number | undefined
     if (shouldEvaluateTaskClosure) {
+      closureStartedAt = Date.now()
+      obs.sessionEvents?.append(toolContext.sessionId, [
+        {
+          type: 'closure/start',
+          data: {
+            turnIndex,
+            requestId: response.id,
+            model: obs.closureModelLabel,
+            baseSeq: obs.sessionEvents?.getLastSeq(toolContext.sessionId) ?? undefined,
+            messageCount: ctx.messages.length,
+          },
+        },
+      ])
       taskClosureEvaluation = await decideTaskClosure({
         adapter: closureAdapter,
         sessionId: toolContext.sessionId,
@@ -662,6 +731,23 @@ function createAgentEndTurnHandler({
           originalReason: taskClosureEvaluation.decision?.reason ?? null,
         },
       })
+      obs.sessionEvents?.append(toolContext.sessionId, [
+        {
+          type: 'closure/end',
+          data: {
+            turnIndex,
+            action: 'discarded',
+            reason: taskClosureEvaluation.decision?.reason,
+            model: obs.closureModelLabel,
+            requestId: response.id,
+            durationMs: closureStartedAt !== undefined ? Date.now() - closureStartedAt : undefined,
+            detail: {
+              discardedDuePendingQueue: true,
+              originalAction: taskClosureEvaluation.decision?.action ?? null,
+            },
+          },
+        },
+      ])
       return gate2
     }
 
@@ -677,6 +763,23 @@ function createAgentEndTurnHandler({
       evaluation: taskClosureEvaluation,
       assistantMsg,
     })
+
+    if (shouldEvaluateTaskClosure) {
+      obs.sessionEvents?.append(toolContext.sessionId, [
+        {
+          type: 'closure/end',
+          data: {
+            turnIndex,
+            action: taskClosureEvaluation.decision?.action ?? 'finish',
+            reason: taskClosureEvaluation.decision?.reason,
+            model: obs.closureModelLabel,
+            requestId: response.id,
+            assistantMessageId: assistantMsg?.id,
+            durationMs: closureStartedAt !== undefined ? Date.now() - closureStartedAt : undefined,
+          },
+        },
+      ])
+    }
 
     if (assistantMsg?.role === 'assistant' && taskClosureEvaluation.eventPayload) {
       const sessionEvent: ClosureLogEntryInput & { spanId?: string } = {
@@ -1240,6 +1343,7 @@ interface ProcessAgentToolResultsOptions {
   identitySummary?: string
   injectedMemoryIds?: Map<string, string>
   traceRecorder: Pick<AgentTraceRecorder, 'logToolEvidence'>
+  sessionEvents?: AgentObservability['sessionEvents']
   turnIndex: number
   requestId?: string
   trace?: {
@@ -1294,6 +1398,22 @@ async function processAgentToolResults(
         thresholdChars: artifactized.thresholdChars,
         inlineContentChars: content.length,
       })
+
+      // 持久替换:canonical tool_result 由原文降级为 artifact 引用,落 prune 事件留证
+      options.sessionEvents?.append(options.toolContext.sessionId, [
+        {
+          type: 'compaction/prune',
+          data: {
+            toolUseId: block.toolUseId,
+            from: {
+              chars: artifactized.originalChars ?? block.content.length,
+              hash: `sha256:${createHash('sha256').update(block.content).digest('hex')}`,
+            },
+            to: { chars: content.length, mode: 'artifact_ref' },
+            evidence,
+          },
+        },
+      ])
     }
 
     return {
@@ -1313,6 +1433,7 @@ async function processAgentToolResults(
     logger: options.toolContext.logger,
     identitySummary: options.identitySummary,
     injectedMemoryIds: options.injectedMemoryIds,
+    sessionEvents: options.sessionEvents,
     trace: {
       tracer: options.trace?.tracer,
       agentName: options.trace?.agentName,
@@ -1353,6 +1474,7 @@ async function buildMemoryHintMessage(options: {
   logger: ToolContext['logger']
   identitySummary?: string
   injectedMemoryIds?: Map<string, string>
+  sessionEvents?: AgentObservability['sessionEvents']
   trace?: {
     tracer?: Pick<Tracer, 'startSpan' | 'updateSpan' | 'endSpan' | 'getSpan'>
     agentName?: string
@@ -1386,6 +1508,8 @@ async function buildMemoryHintMessage(options: {
     previouslyInjectedIds: options.injectedMemoryIds,
     logger: options.logger,
     failureEvent: 'memory_hint_retrieval_failed',
+    sessionEvents: options.sessionEvents,
+    layer: 'layer2',
     trace: {
       tracer: options.trace?.tracer,
       agentName: options.trace?.agentName,
@@ -1487,6 +1611,7 @@ function createAgentLLMRequestHooks({
   let currentRequestToolResults: RequestToolResultEntry[] = []
   let pendingMemoryInjections = cloneMemoryInjections(initialMemoryInjections)
   let currentRequestSpanId: string | undefined
+  let stepIndex = 0
 
   return {
     getCurrentRequestSpanId: () => currentRequestSpanId,
@@ -1507,24 +1632,35 @@ function createAgentLLMRequestHooks({
         },
       })
       currentRequestSpanId = llmSpan?.id
-      obs.tracer?.logSession?.(toolContext.sessionId, 'debug', 'llm_request.raw_request', {
-        traceSpanId: currentRequestSpanId,
-        turnIndex,
-        parentId: pendingParentRequestId,
-        request: filterTraceValue(request, obs.secretFilter),
-      })
+      stepIndex += 1
+      obs.sessionEvents?.append(toolContext.sessionId, [
+        {
+          type: 'step/start',
+          data: {
+            stepIndex,
+            requestSpanId: currentRequestSpanId,
+            model: obs.modelLabel,
+            messageCount: request.messages.length,
+          },
+        },
+      ])
     },
     onCompletionEnd: (request, response, durationMs) => {
       response.model = obs.modelLabel ?? response.model
       executionState.currentRequestId = response.id
 
-      obs.tracer?.logSession?.(toolContext.sessionId, 'debug', 'llm_request.raw_response', {
-        traceSpanId: currentRequestSpanId,
-        turnIndex,
-        requestId: response.id,
-        durationMs,
-        response: filterTraceValue(response, obs.secretFilter),
-      })
+      obs.sessionEvents?.append(toolContext.sessionId, [
+        {
+          type: 'step/end',
+          data: {
+            stepIndex,
+            stopReason: mapStopReason(response.stopReason),
+            requestId: response.id,
+            usage: response.usage,
+            durationMs,
+          },
+        },
+      ])
 
       traceRecorder.logLLMRequest({
         request,
@@ -1604,6 +1740,7 @@ function createAgentToolCallHooks({
 }: CreateAgentToolCallHooksOptions): AgentToolCallHooks {
   const toolSpanIds = new Map<string, string>()
   const toolNamesByUseId = new Map<string, string>()
+  const toolStartTimes = new Map<string, number>()
 
   return {
     toolNamesByUseId,
@@ -1638,13 +1775,19 @@ function createAgentToolCallHooks({
         toolSpanIds.set(toolUseId, toolSpan.id)
       }
       executionState.currentTraceSpanId = toolSpan?.id
-      obs.tracer?.logSession?.(toolContext.sessionId, 'debug', 'tool_call.raw_input', {
-        traceSpanId: toolSpan?.id,
-        requestId: executionState.currentRequestId,
-        tool: toolName,
-        toolUseId,
-        input: filteredToolInput,
-      })
+      toolStartTimes.set(toolUseId, Date.now())
+      obs.sessionEvents?.append(toolContext.sessionId, [
+        {
+          type: 'tool/call',
+          data: {
+            toolUseId,
+            name: toolName,
+            inputHash: hashTraceValue(filteredToolInput),
+            inputPreview: previewTraceValue(filteredToolInput),
+            spanId: toolSpan?.id,
+          },
+        },
+      ])
     },
     onToolCallEnd: (toolName, toolUseId, input, result) => {
       if (toolName === 'memory' && result.success) {
@@ -1654,24 +1797,46 @@ function createAgentToolCallHooks({
             : undefined
         if (action === 'create' || action === 'update') {
           markMemoryWriteSucceeded()
+          const memoryInput = input as {
+            id?: string
+            type?: string
+            title?: string
+            updates?: { title?: string }
+          }
+          obs.sessionEvents?.append(toolContext.sessionId, [
+            {
+              type: 'memory/recorded',
+              data: {
+                action,
+                memoryId: memoryInput.id,
+                memoryType: memoryInput.type,
+                title: memoryInput.title ?? memoryInput.updates?.title,
+                toolUseId,
+              },
+            },
+          ])
         }
       }
 
       const toolSpanId = toolSpanIds.get(toolUseId)
       const filteredToolInput = filterToolInput(input, obs.secretFilter)
-      const filteredToolResult = filterTraceValue(result, obs.secretFilter)
+      const startedAt = toolStartTimes.get(toolUseId)
+      toolStartTimes.delete(toolUseId)
+      const durationMs = startedAt !== undefined ? Date.now() - startedAt : undefined
+      // span 只带有界载荷:完整工具 IO 不再重复写入 trace.jsonl/run.log
+      const slimResult = slimToolResultForTrace(result)
       if (toolSpanId) {
         obs.tracer?.updateSpan(toolSpanId, {
           data: {
             input: filteredToolInput,
-            toolResult: filteredToolResult,
+            toolResult: slimResult,
             outputSummary: result.outputSummary,
           },
           metadata: {
             toolUseId,
             toolName,
             input: filteredToolInput,
-            result: filteredToolResult,
+            result: slimResult,
             outputSummary: result.outputSummary,
           },
         })
@@ -1679,23 +1844,23 @@ function createAgentToolCallHooks({
           toolUseId,
           toolName,
           input: filteredToolInput,
-          toolResult: filteredToolResult,
+          toolResult: slimResult,
           outputSummary: result.outputSummary,
         })
       }
-      obs.tracer?.logSession?.(
-        toolContext.sessionId,
-        result.success ? 'debug' : 'error',
-        'tool_call.raw_result',
+      obs.sessionEvents?.append(toolContext.sessionId, [
         {
-          traceSpanId: toolSpanId,
-          requestId: executionState.currentRequestId,
-          tool: toolName,
-          toolUseId,
-          input: filteredToolInput,
-          result: filteredToolResult,
+          type: 'tool/result',
+          data: {
+            toolUseId,
+            name: toolName,
+            status: result.success ? 'success' : 'error',
+            durationMs,
+            chars: result.output.length,
+            summary: result.outputSummary,
+          },
         },
-      )
+      ])
 
       obs.bus?.emit('tool:result', {
         sessionId: toolContext.sessionId,
@@ -1773,4 +1938,42 @@ function filterAssistantContentWithEvidence(
       })
     },
   })
+}
+
+const TOOL_RESULT_PREVIEW_CHARS = 2048
+
+/** span/事件载荷里的工具结果只保留有界预览;完整 IO 由 evidence 文件承载 */
+function slimToolResultForTrace(result: ToolResult): Record<string, unknown> {
+  const output = result.output ?? ''
+  return {
+    success: result.success,
+    outputSummary: result.outputSummary,
+    chars: output.length,
+    output:
+      output.length > TOOL_RESULT_PREVIEW_CHARS
+        ? `${output.slice(0, TOOL_RESULT_PREVIEW_CHARS)}\n…[truncated ${output.length - TOOL_RESULT_PREVIEW_CHARS} chars]`
+        : output,
+    ...(result.backgroundTaskId ? { backgroundTaskId: result.backgroundTaskId } : {}),
+  }
+}
+
+function hashTraceValue(value: unknown): string {
+  return `sha256:${createHash('sha256')
+    .update(JSON.stringify(value) ?? 'null')
+    .digest('hex')}`
+}
+
+function previewTraceValue(value: unknown, maxLength = 512): string {
+  const text = typeof value === 'string' ? value : JSON.stringify(value)
+  if (text === undefined) return ''
+  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text
+}
+
+function mapStopReason(
+  stopReason: string | undefined,
+): 'end_turn' | 'tool_use' | 'error' | 'aborted' {
+  if (stopReason === 'tool_use') return 'tool_use'
+  if (stopReason === 'aborted' || stopReason === 'interrupted') return 'aborted'
+  if (stopReason === 'error' || stopReason === 'max_tokens') return 'error'
+  return 'end_turn'
 }

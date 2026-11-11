@@ -179,49 +179,6 @@ describe('directed iLink trigger reminders', () => {
     ).toBe('rejected')
     expect(sent).toHaveLength(3)
   })
-  test('long reminders retain line breaks, Unicode and the last fact across individually acknowledged messages', async () => {
-    const { platforms, sent } = await setup(() => Response.json({ ret: 0 }), [])
-    const [dm] = platforms.listPersonalDirectTargets()
-    const text = '结论在前。\n\n' + '核'.repeat(3999) + '🌿' + '\n    原始证据与下一步。'
-    const send = () =>
-      platforms.sendDirect(dm, text, 'long-request', new AbortController().signal, () => true)
-    expect((await send()).status).toBe('accepted')
-    const messages = sent.map((raw) => JSON.parse(raw).msg)
-    const parts = messages.map((m) => m.item_list[0].text_item.text as string)
-    expect(parts.length).toBeGreaterThan(1)
-    expect(parts.join('')).toBe(text)
-    expect(
-      parts.every(
-        (p) =>
-          p.length <= 4000 && [...p].every((c) => c.length !== 1 || !/[\uD800-\uDFFF]/u.test(c)),
-      ),
-    ).toBe(true)
-    expect(new Set(messages.map((m) => m.client_id)).size).toBe(messages.length)
-  })
-
-  test.each(['rejected', 'revoked'] as const)(
-    'stops multi-part delivery after %s and reports its accepted prefix',
-    async (mode) => {
-      let accepted = 0
-      const { platforms, sent } = await setup(() => {
-        if (accepted++) return Response.json({ ret: -2 })
-        return Response.json({ ret: 0 })
-      }, [])
-      const [dm] = platforms.listPersonalDirectTargets()
-      const result = await platforms.sendDirect(
-        dm,
-        '段'.repeat(9000),
-        'partial-request',
-        new AbortController().signal,
-        () => mode === 'rejected' || accepted === 0,
-      )
-      expect(result).toMatchObject({
-        status: 'unknown',
-        reason: expect.stringContaining('前 1 段已受理'),
-      })
-      expect(sent.length).toBe(mode === 'revoked' ? 1 : 2)
-    },
-  )
   test('a verified direct peer can receive a personal reminder without an Agent session', async () => {
     const { sink, sent } = await setup(() => Response.json({ ret: 0 }), [])
     expect(sink.listTargets()).toEqual([])

@@ -63,22 +63,12 @@ test('a queued job is scoped, resumable by the same owner, and delivered once pe
     jobs.continue(scope, receipt.id, 'followup', '继续看作业日志', privateInput.audience)
     await until(() => completed.mock.calls.length === 2)
     expect(execute.mock.calls.map(([job]) => job.threadId)).toEqual([null, 'private-worker-thread'])
-    expect(jobs.get(scope, receipt.id, privateInput.audience, 1)).toEqual(finished)
+    expect(jobs.get(scope, receipt.id, privateInput.audience, 1)).toEqual({
+      ...finished,
+      continued: true,
+    })
     expect(jobs.get(scope, receipt.id, privateInput.audience, 2).result).toBe('attempt-2: filtered')
     expect(jobs.get(scope, receipt.id, privateInput.audience).attempt).toBe(2)
-    expect(jobs.findAttempts(scope, receipt.id, privateInput.audience, 'ATTEMPT-1')).toEqual([
-      { attempt: 1, status: 'completed' },
-    ])
-    expect(jobs.findAttempts(scope, receipt.id, privateInput.audience, '作业日志')).toEqual([
-      { attempt: 2, status: 'completed' },
-    ])
-    expect(jobs.findAttempts(scope, receipt.id, privateInput.audience, '%')).toEqual([])
-    expect(() => jobs.findAttempts(scope, receipt.id, 'another-binding', 'filtered')).toThrow(
-      '找不到',
-    )
-    expect(() =>
-      jobs.findAttempts('general', receipt.id, privateInput.audience, 'filtered'),
-    ).toThrow('找不到')
     expect(() => jobs.get(scope, receipt.id, privateInput.audience, 3)).toThrow('找不到')
     expect(() => jobs.get(scope, receipt.id, 'another-binding', 1)).toThrow('找不到')
     expect(() => jobs.get('general', receipt.id, privateInput.audience, 1)).toThrow('找不到')
@@ -104,9 +94,6 @@ test('revoked origin is denied at queue claim, read, continuation and completion
     expect(completed).not.toHaveBeenCalled()
     expect(() => jobs.get(scope, receipt.id, privateInput.audience)).toThrow('授权')
     expect(() => jobs.get(scope, receipt.id, privateInput.audience, 1)).toThrow('授权')
-    expect(() => jobs.findAttempts(scope, receipt.id, privateInput.audience, 'private')).toThrow(
-      '授权',
-    )
     expect(() =>
       jobs.continue(scope, receipt.id, 'follow', 'follow', privateInput.audience),
     ).toThrow('授权')
@@ -244,131 +231,140 @@ test('pending returns proceed while another worker is waiting', async () => {
   }
 })
 
-test('event completion keeps verified same-repository evidence; missing evidence or a foreign source cannot resolve work', async () => {
+const report = {
+  verdict: '发布失败是因为令牌过期。',
+  done: ['更新了发布脚本'],
+  decision: { question: '现在发布吗？', options: ['发布这份草稿', '先不发布'], recommended: 0 },
+}
+
+test('a completed step is delivered only after its report, which belongs to that attempt', async () => {
   const store = new TriggerStore(':memory:')
-  const submit = (id: string) =>
-    store.jobs.submit('general', id, { ...privateInput, kind: 'github-watch' })
-  const ok = submit('evidence')
-  const foreign = submit('foreign')
-  const missing = submit('missing')
+  const gate = Promise.withResolvers<void>()
+  const execute = mock(async (job: RouterJob) => ({ result: `raw work log ${job.attempt}` }))
+  const reportCalls: RouterJob[] = []
+  const reporter = mock(async (job: RouterJob) => {
+    reportCalls.push(job)
+    // The executor's result is durable before the report starts.
+    expect(store.jobs.get(job.scope, job.id, job.attempt)?.result).toBe(job.result)
+    expect(store.jobs.claimReturn()).toBeNull()
+    await gate.promise
+    return job.attempt === 1 ? report : { verdict: '已发布。', done: [] }
+  })
+  const completed = mock(async (_job: RouterJob) => 'delivered' as const)
   const jobs = new RouterJobs(store.jobs, {
     authorized: () => true,
-    execute: async () => {
-      throw new Error('unexpected generic executor')
-    },
-    filter: (s) => s.replaceAll('sensitive', '[filtered]'),
-    tracking: {
-      authorized: () => true,
-      execute: async (job) => ({
-        result: 'sensitive result',
-        attentionQuestion: 'sensitive detail',
-        work: {
-          outcome: 'resolved',
-          steps: [{ tool: 'inspect_github', ok: true }],
-          sources:
-            job.id === missing.id
-              ? []
-              : [
-                  {
-                    label: 'sensitive label',
-                    url: `https://github.com/${job.id === ok.id ? 'example' : 'someone'}/repo/issues/2`,
-                  },
-                ],
-        },
-      }),
-    },
+    execute,
+    report: reporter,
+    completed,
   })
   try {
     jobs.start()
-    await until(() => store.jobs.get('general', missing.id)?.status === 'failed')
-    expect(store.jobs.get('general', ok.id)).toMatchObject({
+    const receipt = jobs.submit('general', 'first', {
+      executor: 'zero',
+      instruction: '查发布失败',
+      brief: '用户想今天发版',
+    })
+    await until(() => reporter.mock.calls.length === 1)
+    expect(jobs.get('general', receipt.id)).toMatchObject({
       status: 'completed',
-      result: '[filtered] result',
-      attentionQuestion: '[filtered] detail',
-      work: {
-        outcome: 'resolved',
-        sources: [{ label: '[filtered] label', url: 'https://github.com/example/repo/issues/2' }],
-      },
+      result: 'raw work log 1',
+      reportPending: true,
     })
-    expect(store.jobs.get('general', foreign.id)?.status).toBe('failed')
-    expect(store.jobs.get('general', missing.id)?.work).toBeUndefined()
+    await Bun.sleep(20)
+    expect(completed).not.toHaveBeenCalled()
+    gate.resolve()
+    await until(() => completed.mock.calls.length === 1)
+    expect(reportCalls[0]).toMatchObject({ instruction: '查发布失败', brief: '用户想今天发版' })
+    const first = jobs.get('general', receipt.id)
+    expect(first).toEqual({ ...receipt, status: 'completed', result: 'raw work log 1', report })
+    jobs.continue('general', receipt.id, 'second', '发布这份草稿', undefined, {
+      brief: '按推荐发布',
+    })
+    await until(() => completed.mock.calls.length === 2)
+    expect(jobs.get('general', receipt.id, undefined, 1)).toEqual({ ...first, continued: true })
+    expect(jobs.get('general', receipt.id).report).toEqual({ verdict: '已发布。', done: [] })
+    expect(store.jobs.get('general', receipt.id)?.brief).toBe('按推荐发布')
+    expect(execute).toHaveBeenCalledTimes(2)
   } finally {
+    gate.resolve()
     await jobs.close()
     store.close()
   }
 })
 
-test('event work retains every verified step, evidence label, fact and full follow-up reason', async () => {
-  const store = new TriggerStore(':memory:')
-  const job = store.jobs.submit('general', 'long-evidence', {
-    ...privateInput,
-    kind: 'github-watch',
-  })
-  const sources = Array.from({ length: 42 }, (_, i) => ({
-    label: '依据'.repeat(240) + i,
-    url: `https://github.com/example/repo/issues/${i + 1}`,
-  }))
-  const steps = sources.map(() => ({ tool: 'inspect_github' as const, ok: true }))
-  const publicFacts = sources.map((_, i) => ({
-    label: '评论时间' as const,
-    value: new Date(2026, 0, i + 1).toISOString(),
-  }))
-  const reason = '尚待独立回执'.repeat(180)
-  const jobs = new RouterJobs(store.jobs, {
-    authorized: () => true,
-    execute: async () => {
-      throw Error('unexpected executor')
+test('a failed, invalid or timed-out report leaves status and raw result and still delivers', async () => {
+  for (const reporter of [
+    async () => {
+      throw new Error('provider down')
     },
-    tracking: {
+    async () => null,
+    // Ignores its signal entirely; the timeout still releases delivery.
+    () => new Promise<null>(() => {}),
+  ]) {
+    const store = new TriggerStore(':memory:')
+    const execute = mock(async () => ({ result: 'raw result' }))
+    const completed = mock(async (_job: RouterJob) => 'delivered' as const)
+    const jobs = new RouterJobs(store.jobs, {
       authorized: () => true,
-      execute: async () => ({
-        result: '完成核验',
-        work: {
-          outcome: 'resolved',
-          steps,
-          sources,
-          publicFacts,
-          followup: { kind: 'continue', decision: 'act', reason },
-        },
-      }),
-    },
-  })
-  try {
-    jobs.start()
-    await until(() => store.jobs.get('general', job.id)?.status === 'completed')
-    const work = store.jobs.get('general', job.id)?.work
-    expect(work).toMatchObject({ steps, sources, publicFacts, followup: { reason } })
-  } finally {
-    await jobs.close()
-    store.close()
+      execute,
+      report: reporter,
+      reportTimeout: 30,
+      completed,
+    })
+    try {
+      jobs.start()
+      const receipt = jobs.submit('general', 'first', { executor: 'zero', instruction: '分析' })
+      await until(() => completed.mock.calls.length === 1)
+      expect(jobs.get('general', receipt.id)).toEqual({
+        ...receipt,
+        status: 'completed',
+        result: 'raw result',
+      })
+      expect(store.jobs.get('general', receipt.id)?.reportState).toBe('none')
+      expect(execute).toHaveBeenCalledTimes(1)
+    } finally {
+      await jobs.close()
+      store.close()
+    }
   }
 })
 
-test('a failed executor keeps the thread saved before execution for the next attempt', async () => {
+test('failed steps get no report, and a report cut off by restart is delivered without one', async () => {
   const store = new TriggerStore(':memory:')
+  const failed = store.jobs.submit('general', 'failed', { executor: 'zero', instruction: '分析' })
+  store.jobs.claimNext()
+  store.jobs.finish(failed.id, 1, { status: 'failed', result: '任务超时。', report: true })
+  const cut = store.jobs.submit('general', 'cut', { executor: 'zero', instruction: '分析' })
+  store.jobs.claimNext()
+  store.jobs.finish(cut.id, 1, { status: 'completed', result: 'stored result', report: true })
+  expect(store.jobs.get('general', failed.id)?.reportState).toBeNull()
+  expect(store.jobs.get('general', cut.id)?.reportState).toBe('pending')
+  expect(store.jobs.claimReturn()?.id).toBe(failed.id)
+  expect(store.jobs.claimReturn()).toBeNull()
+  const execute = mock(async () => ({ result: 'should not run' }))
+  const reporter = mock(async () => report)
+  const completed = mock(async (_job: RouterJob) => 'delivered' as const)
   const jobs = new RouterJobs(store.jobs, {
     authorized: () => true,
-    async execute(job, _history, _signal, onThreadReady) {
-      if (job.attempt === 1) {
-        onThreadReady?.('durable-codex-thread')
-        expect(store.jobs.get(job.scope, job.id)?.threadId).toBe('durable-codex-thread')
-        throw new RouterJobExecutionUncertainError('执行连接中断')
-      }
-      expect(job.threadId).toBe('durable-codex-thread')
-      return { result: '核对原线程后完成', threadId: job.threadId ?? undefined }
-    },
-    completed: async () => 'delivered',
+    execute,
+    report: reporter,
+    completed,
   })
   try {
     jobs.start()
-    const job = jobs.submit('general', 'persist-before-failure', {
-      executor: 'codex',
-      instruction: '执行任务',
+    await until(() => completed.mock.calls.length === 1)
+    expect(completed.mock.calls[0][0].id).toBe(cut.id)
+    expect(jobs.get('general', cut.id)).toEqual({
+      id: cut.id,
+      executor: 'zero',
+      attempt: 1,
+      status: 'completed',
+      result: 'stored result',
     })
-    await until(() => store.jobs.get('general', job.id)?.status === 'unknown')
-    jobs.continue('general', job.id, 'resume-after-check', '继续原线程')
-    await until(() => store.jobs.get('general', job.id)?.status === 'completed')
-    expect(store.jobs.get('general', job.id)?.threadId).toBe('durable-codex-thread')
+    expect(store.jobs.get('general', cut.id)?.reportState).toBe('none')
+    expect(jobs.get('general', failed.id).report).toBeUndefined()
+    expect(reporter).not.toHaveBeenCalled()
+    expect(execute).not.toHaveBeenCalled()
   } finally {
     await jobs.close()
     store.close()

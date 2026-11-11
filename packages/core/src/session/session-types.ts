@@ -1,5 +1,11 @@
 import type { MemoryRetriever } from '@zero-os/memory'
-import type { MetricsDB, ObservabilityStore, SessionDB, Tracer } from '@zero-os/observe'
+import type {
+  MetricsDB,
+  ObservabilityStore,
+  SessionDB,
+  SessionEventStore,
+  Tracer,
+} from '@zero-os/observe'
 import type {
   ControlKind,
   Message,
@@ -60,6 +66,13 @@ export interface SessionDeps {
   }
   persistModelPreference?: (model: string) => void
   sessionDb?: SessionDB
+  /** 权威事件流(session.jsonl);提供时与 sessionDb 双写 */
+  sessionEvents?: SessionEventStore
+  /**
+   * 事件文件为唯一消息存储:跳过 session_messages/session_compaction_blocks 写入,
+   * DB 大字段降级为可由 rebuild 重建的派生索引(元数据小行仍写 DB)。
+   */
+  sessionEventsOnly?: boolean
   schedulerHandle?: ToolContext['schedulerHandle']
   scheduleStore?: ToolContext['scheduleStore']
   taskClosureModel?: string

@@ -1,12 +1,9 @@
 import { execFile } from 'node:child_process'
 import { constants } from 'node:fs'
-import { access, lstat, mkdir, mkdtemp, realpath, rename, rm } from 'node:fs/promises'
-import { delimiter, dirname, isAbsolute, join, relative, sep } from 'node:path'
-import { homedir } from 'node:os'
+import { access, lstat, realpath } from 'node:fs/promises'
+import { delimiter, isAbsolute, join, relative, sep } from 'node:path'
 import { promisify } from 'node:util'
 import type { CommissionOperator, RouterCodexCheckout } from '@zero-os/shared'
-
-import { TriggerAgentError } from './event-agent'
 
 const run = promisify(execFile)
 
@@ -38,64 +35,25 @@ async function gitReadOnly(cwd: string, args: string[]) {
 export function createRouterCheckoutResolver(
   entries: Readonly<Record<string, RouterCodexCheckout>> | undefined,
   zeroDir: string,
-  principalFor: (actor: 'web' | CommissionOperator) => string | null,
-  managed?: {
-    isTracked(repository: string): boolean
-    root?: string
-    clone?(repository: string, destination: string): Promise<void>
-  },
 ) {
   const checkouts = new Map(
     Object.entries(entries ?? {}).map(([name, value]) => [name.toLowerCase(), value]),
   )
-  return async (
+  const allows = (checkout: RouterCodexCheckout, principal: 'web' | CommissionOperator) =>
+    principal === 'web' ||
+    !!checkout.imChannels?.some(
+      (channel) =>
+        channel.platform === principal.platform && channel.channelId === principal.channelId,
+    )
+  const resolve = async (
     repository: string,
     principal: 'web' | CommissionOperator,
   ): Promise<string | null> => {
     const key = repository.toLowerCase()
-    if (principalFor(principal) !== 'router-owner') return null
-    const mapped = checkouts.get(key)
-    let path = mapped?.path
-    if (!path && managed?.isTracked(key)) {
-      if (!/^[a-z0-9-]+\/[a-z0-9_.-]+$/u.test(key) || /\/\.{1,2}$/u.test(key)) return null
-      // Keep managed repositories outside both the ZeRo installation and its private runtime data.
-      path = join(
-        managed.root ?? join(homedir(), '.local', 'share', 'zero', 'router-checkouts'),
-        key,
-      )
-      const exists = await lstat(path).catch((error: NodeJS.ErrnoException) => {
-        if (error.code === 'ENOENT') return null
-        throw error
-      })
-      if (!exists) {
-        await mkdir(dirname(path), { recursive: true })
-        const temp = await mkdtemp(path + '-')
-        try {
-          if (managed.clone) await managed.clone(key, temp)
-          else
-            await run('gh', ['repo', 'clone', `https://github.com/${key}`, temp], {
-              env: { ...process.env, GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0' },
-            })
-          if (!managed.isTracked(key) || principalFor(principal) !== 'router-owner') return null
-          try {
-            await rename(temp, path)
-          } catch (error) {
-            // Another request may have completed the same clone. Validate its origin below.
-            if (!['EEXIST', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? ''))
-              throw error
-          }
-        } catch {
-          throw new TriggerAgentError(
-            `未能取得 ${key} 的工作副本。请核对本机 gh 对该仓库的读取能力及工作目录的可写性。`,
-          )
-        } finally {
-          await rm(temp, { force: true, recursive: true })
-        }
-      }
-    }
-    if (!path || !isAbsolute(path)) return null
+    const checkout = checkouts.get(key)
+    if (!checkout || !isAbsolute(checkout.path) || !allows(checkout, principal)) return null
     try {
-      const [directory, runtime] = await Promise.all([realpath(path), realpath(zeroDir)])
+      const [directory, runtime] = await Promise.all([realpath(checkout.path), realpath(zeroDir)])
       if (contains(directory, runtime) || contains(runtime, directory)) return null
       await access(directory, constants.W_OK | constants.X_OK)
       if (
@@ -128,4 +86,10 @@ export function createRouterCheckoutResolver(
       return null
     }
   }
+  /** Repositories configured for this principal. Each is still checked when it is used. */
+  const registered = (principal: 'web' | CommissionOperator) =>
+    [...checkouts].flatMap(([name, checkout]) =>
+      isAbsolute(checkout.path) && allows(checkout, principal) ? [name] : [],
+    )
+  return Object.assign(resolve, { registered })
 }

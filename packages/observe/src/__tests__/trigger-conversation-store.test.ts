@@ -1,3 +1,4 @@
+import { Database } from 'bun:sqlite'
 import { afterEach, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -78,15 +79,7 @@ test('turns are isolated by event or general workspace and responses are idempot
     text: 'See the matching rule.',
     intent: 'route',
     points: ['Rule A'],
-    proposal: { key: 'duringWork', value: 'defer' },
-    proposalRevision: 5,
   }
-  expect(() =>
-    writer.conversations.finish(first, requestId, started.attempt, {
-      ...answer,
-      proposalAppliedAt: '2026-01-01T12:00:00.000Z',
-    }),
-  ).toThrow('cannot confirm')
   expect(writer.conversations.finish(first, requestId, started.attempt, answer)).toBe(true)
   expect(writer.conversations.finish(first, requestId, started.attempt, { text: 'changed' })).toBe(
     false,
@@ -199,313 +192,51 @@ test('named actions commit once with their effect and reject collisions with mes
   expect(calls).toBe(2)
 })
 
-test('confirming a preference atomically commits its configuration, source turn and receipt', () => {
-  const path = temporaryPath()
-  const store = open(path)
-  const reader = open(path)
-  const [event] = receiveEvents(store)
-  const turnId = crypto.randomUUID()
-  const actionId = crypto.randomUUID()
-  const at = '2026-10-30T14:00:00.000Z'
-  const original = store.routing.getSettings()
-  const answer: TriggerConversationAnswer = {
-    text: '设置为离开？',
-    proposal: { key: 'presence', value: 'away' },
-    proposalRevision: original.revision,
-  }
-  const turn = store.conversations.begin('general', turnId, '设置为离开')
-  if (turn.kind !== 'started') throw new Error('Could not create the proposal turn')
-  store.conversations.finish('general', turnId, turn.attempt, answer)
-  const confirm = () => {
-    store.routing.saveSettings({ ...original.settings, presence: 'away' }, original.revision)
-    store.conversations.markProposalApplied('general', turnId, at)
-  }
-  expect(() =>
-    store.conversations.applyActionOnce('general', actionId, turnId, () => {
-      confirm()
-      throw new Error('Abort after marking the proposal')
-    }),
-  ).toThrow('Abort after marking the proposal')
-  expect(reader.routing.getSettings()).toEqual(original)
-  expect(reader.conversations.get('general', turnId)?.answer).toEqual(answer)
-  expect(reader.conversations.getActionIdentity('general', actionId)).toBeNull()
-  expect(store.conversations.applyActionOnce('general', actionId, turnId, confirm)).toBe('applied')
-  expect(reader.routing.getSettings()).toMatchObject({
-    revision: original.revision + 1,
-    settings: { presence: 'away' },
-  })
-  expect(reader.conversations.get('general', turnId)?.answer).toEqual({
-    ...answer,
-    proposalAppliedAt: at,
-  })
-  expect(reader.conversations.applyActionOnce('general', actionId, turnId, confirm)).toBe(
-    'existing',
-  )
-  expect(() => reader.conversations.markProposalApplied('general', turnId, at)).toThrow()
-  expect(() => reader.conversations.markProposalApplied(event, turnId, at)).toThrow()
-})
-
-test('missing, pending, failed and plain-text turns cannot confirm preference changes', () => {
-  const store = open()
-  const id = crypto.randomUUID()
-  const plainId = crypto.randomUUID()
-  const original = store.routing.getSettings()
-  const at = '2026-10-30T14:00:00.000Z'
-  const verifyRejected = (turnId: string) => {
-    const actionId = crypto.randomUUID()
-    expect(() =>
-      store.conversations.applyActionOnce('general', actionId, turnId, () => {
-        store.routing.saveSettings({ ...original.settings, presence: 'away' }, original.revision)
-        store.conversations.markProposalApplied('general', turnId, at)
-      }),
-    ).toThrow()
-    expect(store.routing.getSettings()).toEqual(original)
-    expect(store.conversations.getActionIdentity('general', actionId)).toBeNull()
-  }
-  verifyRejected(id)
-  const pending = store.conversations.begin('general', id, 'Question')
-  if (pending.kind !== 'started') throw new Error('Could not create the pending turn')
-  verifyRejected(id)
-  store.conversations.fail('general', id, pending.attempt, 'Model unavailable')
-  verifyRejected(id)
-  const plain = store.conversations.begin('general', plainId, 'Another question')
-  if (plain.kind !== 'started') throw new Error('Could not create the plain-text turn')
-  store.conversations.finish('general', plainId, plain.attempt, { text: 'A reply' })
-  verifyRejected(plainId)
-})
-
-const reminder = {
-  platform: 'weixin',
-  channelId: 'bot',
-  botLabel: '我的机器人',
-  text: '回家前带上钥匙。',
-  audienceKey: 'opaque-key',
-  status: 'draft',
-} as const
-
-test('an IM reminder can consume only a draft from its own private Router conversation', () => {
-  const path = temporaryPath()
-  const store = open(path)
-  const c = store.conversations
+test('IM threads are private per audience and reject malformed scopes', () => {
+  const c = open().conversations
   const first = `im-${'a'.repeat(64)}` as const
   const second = `im-${'b'.repeat(64)}` as const
   for (const invalid of ['im-', `im-${'A'.repeat(64)}`, `im-${'a'.repeat(63)}`] as const)
     expect(() => c.list(invalid)).toThrow()
-
-  function draft(scope: typeof first | 'general', text: string) {
+  for (const [scope, text] of [
+    ['general', 'web only'],
+    [second, 'second only'],
+    [first, 'first only'],
+  ] as const) {
     const turn = c.begin(scope, 'same-message', text)
-    if (turn.kind !== 'started') throw Error('Expected an independent draft turn')
-    expect(c.finish(scope, 'same-message', turn.attempt, { text, reminder })).toBe(true)
-    expect(c.begin(scope, 'same-message', text).kind).toBe('existing')
-    return turn.turn.id
+    if (turn.kind !== 'started') throw Error('Expected an independent turn')
+    expect(c.finish(scope, 'same-message', turn.attempt, { text })).toBe(true)
   }
-  const webDraft = draft('general', 'web only')
-  const otherDraft = draft(second, 'second only')
-  const myDraft = draft(first, 'first only')
   expect(c.list(first).map((t) => t.question)).toEqual(['first only'])
   expect(c.list(second).map((t) => t.question)).toEqual(['second only'])
-
-  const sending = c.begin(first, 'confirm', '发刚才的草稿')
-  if (sending.kind !== 'started') throw Error('Expected a confirmation turn')
-  for (const foreign of [webDraft, otherDraft])
-    expect(c.reserveToolReminder(first, 'confirm', sending.attempt, reminder, foreign)).toBe(false)
-  expect(c.reserveToolReminder(first, 'confirm', sending.attempt, reminder, myDraft)).toBe(true)
-  expect(c.finishReminder(second, 'confirm', { status: 'accepted' })).toBe(false)
-  close(store)
-  const recovered = open(path).conversations
-  recovered.recoverInterrupted()
-  for (const id of ['same-message', 'confirm']) {
-    expect(recovered.get(first, id)).toMatchObject({
-      status: 'completed',
-      answer: { reminder: { status: 'unknown' } },
-    })
-    expect(recovered.get(first, id)?.answer?.reminder).not.toHaveProperty('audienceKey')
-  }
-  expect(recovered.begin(first, 'confirm', '发刚才的草稿', true).kind).toBe('existing')
-  for (const scope of ['general', second] as const)
-    expect(recovered.get(scope, 'same-message')?.answer?.reminder).toEqual(reminder)
+  expect(c.list('general').map((t) => t.question)).toEqual(['web only'])
 })
 
-test('one reminder draft authorizes one send and one final receipt across store instances', () => {
+test('answers stored by removed Router chat features stay readable and recover like plain turns', () => {
   const path = temporaryPath()
   const store = open(path)
-  const other = open(path)
-  for (const status of ['accepted', 'rejected', 'unknown'] as const) {
-    const id = crypto.randomUUID()
-    const started = store.conversations.begin('general', id, '发一条通知')
-    if (started.kind !== 'started') throw Error('Expected a new reminder turn')
-    expect(() =>
-      store.conversations.finish('general', id, started.attempt, {
-        text: 'fake receipt',
-        reminder: { ...reminder, status },
-      }),
-    ).toThrow('unsent draft')
-    expect(store.conversations.claimReminder('general', id)).toBe(false)
-    expect(
-      store.conversations.finish('general', id, started.attempt, { text: '草稿', reminder }),
-    ).toBe(true)
-    expect(store.conversations.claimReminder(1, id)).toBe(false)
-    expect(store.conversations.finishReminder('general', id, { status })).toBe(false)
-    expect(store.conversations.claimReminder('general', id)).toBe(true)
-    expect(other.conversations.claimReminder('general', id)).toBe(false)
-    expect(other.conversations.get('general', id)?.answer?.reminder?.status).toBe('sending')
-    if (status === 'unknown') {
-      other.conversations.recoverInterrupted()
-      expect(store.conversations.finishReminder('general', id, { status: 'accepted' })).toBe(false)
-    } else {
-      expect(other.conversations.finishReminder('general', id, { status })).toBe(true)
-    }
-    expect(store.conversations.claimReminder('general', id)).toBe(false)
-    expect(store.conversations.finishReminder('general', id, { status: 'unknown' })).toBe(false)
-    expect(store.conversations.begin('general', id, '发一条通知', true).kind).toBe('existing')
-    const { audienceKey: _private, ...publicReminder } = reminder
-    expect(store.conversations.get('general', id)?.answer?.reminder).toMatchObject({
-      ...publicReminder,
-      status,
-    })
-    expect(store.conversations.get('general', id)?.answer?.reminder).not.toHaveProperty(
-      'audienceKey',
-    )
+  const sql = new Database(path)
+  const legacy = {
+    text: '请查看机器人的发送回执。',
+    reminder: { platform: 'weixin', channelId: 'bot', audienceKey: 'opaque', status: 'sending' },
+    proposal: { key: 'presence', value: 'away' },
   }
-})
-
-test('a model tool reserves at most one reminder on its current general turn and cannot overwrite the receipt', () => {
-  const path = temporaryPath()
-  const store = open(path).conversations
-  const other = open(path).conversations
-  const turn = store.begin('general', 'send', '请发通知')
-  if (turn.kind !== 'started') throw Error('Expected current model turn')
-  expect(store.reserveToolReminder(1, 'send', turn.attempt, reminder)).toBe(false)
-  expect(store.reserveToolReminder('general', 'send', turn.attempt + 1, reminder)).toBe(false)
-  expect(store.reserveToolReminder('general', 'send', turn.attempt, reminder)).toBe(true)
-  expect(other.get('general', 'send')).toMatchObject({
-    status: 'pending',
-    answer: { reminder: { status: 'sending' } },
+  for (const [id, status] of [
+    ['done', 'completed'],
+    ['interrupted', 'pending'],
+  ] as const)
+    sql.run(
+      `INSERT INTO trigger_conversation_turns(thread,request_id,question,answer,status,attempt,created_at,updated_at)
+       VALUES('0',?,?,?,?,1,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+      [id, '发微信', JSON.stringify(legacy), status],
+    )
+  sql.close()
+  store.conversations.recoverInterrupted()
+  expect(store.conversations.get('general', 'done')).toMatchObject({ status: 'completed' })
+  expect(store.conversations.get('general', 'interrupted')).toMatchObject({
+    status: 'failed',
+    error: '服务重启中断了这次回答，可重试此轮对话。',
   })
-  expect(
-    other.reserveToolReminder('general', 'send', turn.attempt, { ...reminder, text: '重复调用' }),
-  ).toBe(false)
-  expect(store.finishReminder('general', 'send', { status: 'rejected', reason: '平台拒绝' })).toBe(
-    true,
-  )
-  expect(
-    store.finish('general', 'send', turn.attempt, {
-      text: '已经解释',
-      reminder: { ...reminder, text: 'model forged', status: 'accepted' },
-    }),
-  ).toBe(true)
-  expect(other.get('general', 'send')).toMatchObject({
-    status: 'completed',
-    answer: {
-      text: '已经解释',
-      reminder: { status: 'rejected', text: reminder.text, reason: '平台拒绝' },
-    },
-  })
-  expect(other.get('general', 'send')?.answer?.reminder).not.toHaveProperty('audienceKey')
-})
-
-test('a spoken confirmation consumes the exact historical draft and seals both receipts even if the model fails or restarts', () => {
-  const path = temporaryPath()
-  const c = open(path).conversations
-  const other = open(path).conversations
-  for (const outcome of ['accepted', 'fail', 'restart'] as const) {
-    const source = c.begin('general', `draft-${outcome}`, '暂存提醒。')
-    if (source.kind !== 'started') throw Error('Expected draft turn')
-    c.finish('general', source.turn.requestId, source.attempt, { text: '请确认', reminder })
-    const current = c.begin('general', outcome, '发刚才那条')
-    if (current.kind !== 'started') throw Error('Expected confirmation turn')
-    const reserve = (which: typeof c, draft: NonNullable<TriggerConversationAnswer['reminder']>) =>
-      which.reserveToolReminder('general', outcome, current.attempt, draft, source.turn.id)
-    expect(reserve(c, { ...reminder, text: '改正文' })).toBe(false)
-    expect(reserve(c, { ...reminder, audienceKey: 'other' })).toBe(false)
-    expect(c.get('general', outcome)?.answer).toBeNull()
-    expect(reserve(c, reminder)).toBe(true)
-    expect(reserve(other, reminder)).toBe(false)
-    expect(other.claimReminder('general', source.turn.requestId)).toBe(false)
-    expect(other.finishReminder('general', source.turn.requestId, { status: 'accepted' })).toBe(
-      false,
-    )
-    expect(c.fail('general', outcome, current.attempt - 1, 'late stale model')).toBe(false)
-    if (outcome === 'accepted') {
-      expect(c.finishReminder('general', outcome, { status: 'accepted' })).toBe(true)
-      other.recoverInterrupted()
-    } else if (outcome === 'fail') {
-      expect(c.fail('general', outcome, current.attempt, 'model died')).toBe(true)
-    } else {
-      other.recoverInterrupted()
-    }
-    const status = outcome === 'accepted' ? 'accepted' : 'unknown'
-    for (const requestId of [source.turn.requestId, outcome]) {
-      expect(other.get('general', requestId)).toMatchObject({
-        status: 'completed',
-        answer: { reminder: { status, text: reminder.text } },
-      })
-      expect(other.get('general', requestId)?.answer?.reminder).not.toHaveProperty('audienceKey')
-      expect(other.claimReminder('general', requestId)).toBe(false)
-    }
-    expect(other.begin('general', outcome, '发刚才那条', true).kind).toBe('existing')
-    expect(c.finishReminder('general', outcome, { status: 'rejected' })).toBe(false)
-  }
-})
-
-test('a historical plain answer gets one prepared reminder without overwriting a competing draft', () => {
-  const path = temporaryPath()
-  const store = open(path)
-  const reader = open(path)
-  const draft = {
-    platform: 'weixin',
-    channelId: 'bot',
-    botLabel: '我的机器人',
-    text: '提醒我带钥匙',
-    audienceKey: 'opaque-key',
-    status: 'draft',
-  } as const
-  for (const answer of [
-    { text: '旧版本未发送。' },
-    {
-      text: '修改偏好',
-      proposal: { key: 'presence', value: 'away' },
-    },
-  ] satisfies TriggerConversationAnswer[]) {
-    const id = crypto.randomUUID()
-    const c = store.conversations
-    const turn = c.begin('general', id, '发送微信通知，提醒我带钥匙')
-    if (turn.kind !== 'started') throw Error('Expected a new turn')
-    expect(c.attachReminder('general', id, draft)).toBe(false)
-    expect(c.finish('general', id, turn.attempt, answer)).toBe(true)
-    expect(c.attachReminder('general', id, { ...draft, audienceKey: undefined })).toBe(false)
-    expect(c.attachReminder('general', id, { ...draft, status: 'accepted' })).toBe(false)
-    expect(c.attachReminder(1, id, draft)).toBe(false)
-    const otherAudience = `im-${'c'.repeat(64)}` as const
-    expect(c.attachReminder(otherAudience, id, draft)).toBe(false)
-    expect(c.attachReminder('general', id, draft)).toBe(!answer.proposal)
-    expect(c.claimReminder(otherAudience, id)).toBe(false)
-    expect(
-      reader.conversations.attachReminder('general', id, { ...draft, text: '另一条提醒' }),
-    ).toBe(false)
-    expect(reader.conversations.get('general', id)?.answer).toEqual(
-      answer.proposal ? answer : { ...answer, reminder: draft },
-    )
-  }
-})
-
-test('matter history pages past unrelated conversations without including them', () => {
-  const store = open()
-  for (let index = 0; index < 130; index++) {
-    const id = `history-${index}`
-    const claimed = store.conversations.begin('general', id, '输入')
-    if (claimed.kind !== 'started') throw Error('failed to claim')
-    store.conversations.finish('general', id, claimed.attempt, {
-      text: `答复 ${index}`,
-      matterIds: index < 3 ? ['relevant'] : ['unrelated'],
-    })
-  }
-  const page = store.conversations.listForMatter('general', 'relevant', 2)
-  expect(page.map((t) => t.answer?.text)).toEqual(['答复 1', '答复 2'])
-  expect(
-    store.conversations
-      .listForMatter('general', 'relevant', 2, page[0].id)
-      .map((t) => t.answer?.text),
-  ).toEqual(['答复 0'])
-  expect(store.conversations.listForMatter('general', 'missing')).toEqual([])
+  const retry = store.conversations.begin('general', 'interrupted', '发微信', true)
+  expect(retry.kind).toBe('started')
 })

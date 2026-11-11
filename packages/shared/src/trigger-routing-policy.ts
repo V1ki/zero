@@ -162,7 +162,6 @@ export function decideTriggerRoute(
   lastPresenceAt?: Date,
   targetAvailable: boolean | Partial<Record<MandatePlatform, boolean>> = false,
   native?: TriggerNativePresence,
-  urgency: 'normal' | 'urgent' = 'normal',
 ): TriggerRouteDecision {
   const { period, recheckAt } = getTriggerTimeContext(settings, now)
   const defer = (reason: string): TriggerRouteDecision => ({
@@ -171,9 +170,8 @@ export function decideTriggerRoute(
     recheckAt,
   })
   if (!settings.enabled) return defer('主动通知已暂停')
-  const urgent = urgency === 'urgent' ? settings.urgentDestination : null
-  const label = urgent ? '紧急提醒' : periodLabels[period]
-  const preferred = urgent ?? settings[period]
+  const label = periodLabels[period]
+  const preferred = settings[period]
   if (preferred === 'defer') return defer(`${label}的偏好为延后提醒`)
 
   const canSend = (platform: MandatePlatform) =>

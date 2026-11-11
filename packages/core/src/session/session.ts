@@ -136,6 +136,7 @@ export class Session {
     // Persist session metadata to DB
     persistSessionMetadata({
       sessionDb: this.deps.sessionDb,
+      sessionEvents: this.deps.sessionEvents,
       data: this.data,
     })
   }
@@ -169,6 +170,7 @@ export class Session {
     // Persist session with agent config
     persistSessionMetadata({
       sessionDb: this.deps.sessionDb,
+      sessionEvents: this.deps.sessionEvents,
       data: this.data,
       agentConfig: config,
       systemPrompt: this.controllers.staticContext.getLastSystemPrompt() || undefined,
@@ -376,6 +378,8 @@ export class Session {
   private persistState(): void {
     persistSessionState({
       sessionDb: this.deps.sessionDb,
+      sessionEvents: this.deps.sessionEvents,
+      sessionEventsOnly: this.deps.sessionEventsOnly,
       data: this.data,
       messages: this.conversation.messages,
       timelineCompactionBlocks: this.conversation.timelineCompactionBlocks,
@@ -557,6 +561,17 @@ async function handleSessionMessageEntry(options: {
   }
 
   if (options.turnRuntime.isTurnInProgress()) {
+    // 入队消息同时追加进 canonical(messages 尾部),index 即 length-1
+    options.deps.sessionEvents?.append(options.sessionData.id, [
+      {
+        type: 'agent/inbox/enqueued',
+        data: {
+          messageIndex: options.messages.length,
+          reason: 'turn_in_progress',
+          interrupt: true,
+        },
+      },
+    ])
     options.turnRuntime.queueMessage({
       content: options.content,
       images: options.handleOptions?.images,
@@ -626,6 +641,22 @@ async function switchSessionModel(options: {
     from: oldModel,
     to: nextModelLabel,
   })
+
+  options.deps.sessionEvents?.append(options.data.id, [
+    {
+      type: 'model/selection',
+      data: {
+        from: oldModel,
+        to: {
+          label: nextModelLabel,
+          provider: result.model.providerName,
+          modelId: result.model.modelConfig.modelId,
+        },
+        trigger: 'user_command',
+        detail: { requested: options.target },
+      },
+    },
+  ])
 
   options.reinitializeAgent()
   if (options.lastAgentConfig) {

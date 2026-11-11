@@ -1,4 +1,4 @@
-import type { MandateEffect, MandateTaskDetail } from '@zero-os/shared'
+import type { MandateEffect, MandateTaskDetail, RouterTaskJob } from '@zero-os/shared'
 import { expect, test } from './fixtures'
 
 const receipt = (kind: 'notify' | 'archive', status: MandateEffect['status']): MandateEffect => ({
@@ -44,6 +44,19 @@ test('follows a task across events, retries only the failed effect, and separate
     })),
   }
   const retries: unknown[] = []
+  const jobs: RouterTaskJob[] = [
+    { id: 12, executor: 'zero', status: 'running', updatedAt: '2026-11-04T02:00:00Z' },
+    {
+      id: 11,
+      executor: 'codex',
+      status: 'completed',
+      updatedAt: '2026-11-04T01:00:00Z',
+      verdict: '发布脚本的测试已修好。',
+    },
+  ]
+  await page.route('**/api/listeners/workspace/task-8/jobs', (route) =>
+    route.fulfill({ json: { items: jobs } }),
+  )
   await page.route('**/api/listeners/mandates/**', async (route) => {
     const request = route.request()
     const path = new URL(request.url()).pathname.replace('/api/listeners/mandates', '')
@@ -95,6 +108,15 @@ test('follows a task across events, retries only the failed effect, and separate
   task.acknowledgedAt = null
   await page.reload()
   await expect(timeline.getByText(/确认跟进/)).toHaveCount(0)
+  const jobList = timeline.getByRole('list', { name: '派工记录' })
+  await expect(jobList.getByRole('listitem')).toHaveText([
+    /派工 #12.*ZeRo · 执行中/,
+    /派工 #11.*Codex · 已完成.*发布脚本的测试已修好。/,
+  ])
+  await expect(jobList.getByRole('link', { name: '派工 #11' })).toHaveAttribute(
+    'href',
+    '/router?task=8&view=chat',
+  )
   const latest = timeline.getByRole('listitem').filter({ hasText: '再次失败' })
   const first = timeline.getByRole('listitem').filter({ hasText: '首次失败' })
   await expect(latest.getByRole('region', { name: '提醒' })).toContainText('已完成')

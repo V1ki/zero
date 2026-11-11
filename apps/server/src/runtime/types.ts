@@ -9,7 +9,13 @@ import type {
   VectorIndex,
 } from '@zero-os/memory'
 import type { ModelRouter, ProviderHealthRegistry } from '@zero-os/model'
-import type { MetricsDB, ObservabilityStore, SessionDB, Tracer } from '@zero-os/observe'
+import type {
+  MetricsDB,
+  ObservabilityStore,
+  SessionDB,
+  SessionEventStore,
+  Tracer,
+} from '@zero-os/observe'
 import type { CronScheduler } from '@zero-os/scheduler'
 import type { OutputSecretFilter, Vault } from '@zero-os/secrets'
 import type { Notification } from '@zero-os/shared'
@@ -22,8 +28,6 @@ import type { ChannelRecoveryController } from './channel-recovery'
 import type { ChannelRuntimeDefinition } from './channel-runtime/types'
 
 export interface StartOptions {
-  routerExecutors?: readonly import('../triggers/router-jobs').RouterExecutorAdapter[]
-  routerSources?: readonly import('../triggers/router-workspace').RouterSourceAdapter[]
   dataDir?: string
   projectRoot?: string
   skipProcessExit?: boolean
@@ -37,6 +41,7 @@ export interface ZeroOS {
   observability: ObservabilityStore
   metrics: MetricsDB
   sessionDb: SessionDB
+  sessionEvents: SessionEventStore
   modelRouter: ModelRouter
   providerHealth: ProviderHealthRegistry
   toolRegistry: ToolRegistry

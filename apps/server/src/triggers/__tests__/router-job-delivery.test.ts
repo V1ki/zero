@@ -45,14 +45,7 @@ const job: RouterJob = {
 }
 
 function fixture(decision: TriggerRouteDecision = { destination: 'weixin', reason: '个人偏好' }) {
-  const state = {
-    allowed: true,
-    live: true,
-    revision: 1,
-    settings: { ...initial },
-    targets: [actor],
-    grant: 'read-grant' as string | null,
-  }
+  const state = { allowed: true, live: true, revision: 1, settings: { ...initial } }
   const send = mock(
     async (
       ...args: Parameters<Parameters<typeof createRouterJobDelivery>[0]['sendDirectReminder']>
@@ -63,25 +56,16 @@ function fixture(decision: TriggerRouteDecision = { destination: 'weixin', reaso
   const deliver = createRouterJobDelivery(
     {
       getConfig: () => ({ revision: state.revision, settings: state.settings }),
-      listPersonalTargets: () => state.targets.map((target) => ({ ...target, label: 'private' })),
-      isSelectedDirectTarget: (target) =>
-        state.targets.some(
-          (active) =>
-            active.platform === target.platform &&
-            active.channelId === target.channelId &&
-            active.peerId === target.peerId &&
-            active.operatorId === target.operatorId,
-        ) && state.live,
+      isSelectedDirectTarget: (target) => target.peerId === actor.peerId && state.live,
       previewCurrentRoute: preview,
-      prepareDirectReminder: (platform) => ({
-        channelId: state.targets.find((target) => target.platform === platform)?.channelId ?? '',
+      prepareDirectReminder: () => ({
+        channelId: actor.channelId,
         label: 'test',
         audienceKey: 'key',
       }),
       sendDirectReminder: send,
     },
     () => state.allowed,
-    () => state.grant,
   )
   const signal = new AbortController().signal
   return { state, send, deliver, preview, signal }
@@ -156,97 +140,25 @@ test('unknown delivery receipt is never marked delivered and a long result is bo
   expect(send.mock.calls[0][2].length).toBeLessThan(2000)
 })
 
-const watched: RouterJob = {
-  ...job,
-  kind: 'github-watch',
-  scope: 'general',
-  audience: JSON.stringify(['web', null, 'connection']),
-  repository: 'private/repository',
-  result: '只在网页显示的私有事件及分析',
-}
-
-test('routine watch events only update the Web feed even when the current route points to IM', async () => {
-  const { deliver, send, preview, signal, state } = fixture()
-  expect(await deliver(watched, signal)).toBe('delivered')
-  expect(preview).not.toHaveBeenCalled()
-  expect(send).not.toHaveBeenCalled()
-  state.allowed = false
-  expect(await deliver(watched, signal)).toBe('unavailable')
-})
-
-test('Router-owned attention, failure, and unknown outcomes nudge the authorized personal destination without disclosing event details', async () => {
-  for (const outcome of [
-    { status: 'completed', attentionQuestion: '需确认的私有内容' },
-    { status: 'failed', attentionQuestion: null },
-    { status: 'unknown', attentionQuestion: null },
-  ] as const) {
-    const privateFeishu: CommissionOperator = {
-      platform: 'feishu',
-      channelId: 'feishu-bot',
-      operatorId: 'owner',
-      peerId: 'dm',
-    }
-    const { deliver, send, signal, state } = fixture({
-      destination: 'feishu',
-      reason: '工作时段首选飞书',
-    })
-    state.targets.push(privateFeishu)
-    expect(await deliver({ ...watched, ...outcome }, signal)).toBe('delivered')
-    expect(send).toHaveBeenCalledTimes(1)
-    const [platform, , body, key] = send.mock.calls[0]
-    expect(platform).toBe('feishu')
-    expect(body).toBe('有一项 GitHub 跟踪结果需要你查看。请打开 Router 网页查看派工 #31。')
-    expect(key).toBe('router-job-31-2')
+test('a reported step sends its short report with numbered options; a long raw result is truncated', async () => {
+  const { send, deliver, signal } = fixture()
+  const report = {
+    verdict: '令牌过期导致发布失败。',
+    done: [],
+    decision: { question: '重新发布吗？', options: ['重新发布', '先不发布'], recommended: 0 },
   }
-})
-
-test('watch alerts honor Web, deferred, offline and unavailable recipients', async () => {
-  const attention: RouterJob = { ...watched, attentionQuestion: '请判断' }
-  const recheckAt = new Date(Date.now() + 60_000).toISOString()
-  for (const decision of [
-    { destination: 'web', reason: '在场' },
-    { destination: 'defer', reason: '静默', recheckAt },
-    { destination: 'feishu', reason: '另一个平台' },
-    { destination: 'weixin', reason: '离线' },
-  ] as const) {
-    const { deliver, send, signal, state } = fixture(decision)
-    state.live = false
-    expect(await deliver(attention, signal)).toEqual(
-      decision.destination === 'web'
-        ? 'delivered'
-        : decision.destination === 'defer'
-          ? { recheckAt }
-          : 'unavailable',
-    )
-    expect(send).not.toHaveBeenCalled()
-  }
-})
-
-test('watch nudges require a unique selected private recipient with a current GitHub connection grant', async () => {
-  const attention: RouterJob = { ...watched, attentionQuestion: '需确认' }
-  const { deliver, send, signal, state } = fixture()
-  state.grant = null
-  expect(await deliver(attention, signal)).toBe('unavailable')
-  state.grant = 'allowed'
-  state.targets.push({ ...actor, peerId: 'other', operatorId: 'other' })
-  expect(await deliver(attention, signal)).toBe('unavailable')
-  state.targets = [{ ...actor, operatorId: '' }]
-  expect(await deliver(attention, signal)).toBe('unavailable')
-  expect(send).not.toHaveBeenCalled()
-})
-
-test('watch nudge rechecks the grant identity and private binding at send time', async () => {
-  const attention: RouterJob = { ...watched, status: 'unknown' }
-  for (const change of ['regrant', 'rebind', 'ambiguous'] as const) {
-    const { deliver, send, signal, state } = fixture()
-    send.mockImplementation(async (...args) => {
-      if (change === 'regrant') state.grant = 'new-read-grant'
-      if (change === 'rebind') state.targets = [{ ...actor, peerId: 'next' }]
-      if (change === 'ambiguous')
-        state.targets.push({ ...actor, peerId: 'other', operatorId: 'other' })
-      expect(args[5]?.()).toBe(false)
-      return { status: 'rejected', reason: '授权变更' }
-    })
-    expect(await deliver(attention, signal)).toBe('unavailable')
-  }
+  const long = '工作记录'.repeat(1000)
+  await deliver(
+    { ...job, result: long, report: JSON.stringify(report), reportState: 'ready' },
+    signal,
+  )
+  const body = send.mock.calls[0][2]
+  expect(body).toContain('令牌过期导致发布失败。')
+  expect(body).toContain('1. 重新发布（推荐）')
+  expect(body).toContain('回复「继续派工 #31：选 1」')
+  expect(body).not.toContain('工作记录')
+  await deliver({ ...job, result: long, reportState: 'none' }, signal)
+  const fallback = send.mock.calls[1][2]
+  expect(fallback.length).toBeLessThanOrEqual(1800)
+  expect(fallback).toEndWith('可在此查询派工 #31 查看完整结果。')
 })

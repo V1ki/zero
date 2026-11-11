@@ -1,12 +1,10 @@
-import { Database } from 'bun:sqlite'
 import { expect, test } from 'bun:test'
 import type { ProviderAdapter } from '@zero-os/model'
-import { type RouterJob, RouterLedgerStore } from '@zero-os/observe'
+import type { RouterJob } from '@zero-os/observe'
 import type { CompletionResponse } from '@zero-os/shared'
 import { readRouterLatestFailure } from '../github'
 import { createRouterJobExecutor } from '../router-job-executors'
 import { RouterJobExecutionUncertainError } from '../router-jobs'
-import { createRouterTraceSink } from '../router-trace'
 
 const signal = new AbortController().signal
 const job: RouterJob = {
@@ -135,14 +133,7 @@ test('Codex receives only configured working directory, task prompt and its own 
     codex: {
       async runRouterJob(input) {
         expect(Object.keys(input).sort()).toEqual(
-          [
-            'instruction',
-            'resumeThreadId',
-            'onThreadReady',
-            'sessionId',
-            'signal',
-            'workingDirectory',
-          ].sort(),
+          ['instruction', 'resumeThreadId', 'sessionId', 'signal', 'workingDirectory'].sort(),
         )
         expect(input.workingDirectory).toBe(cwd)
         expect(input.resumeThreadId).toBe(calls++ ? 'actual-thread-id' : undefined)
@@ -247,104 +238,4 @@ test('GitHub failure lookup pins repo, run attempt and optional workflow; return
   await expect(readRouterLatestFailure('owner/second', '', signal, unreachable)).rejects.toThrow(
     '凭据不可用',
   )
-})
-
-test('engineering handoff includes current matter and full scoped history before saving its thread', async () => {
-  const priorResult = `已排除原因：${'证据'.repeat(9000)}\n下一步验证边界`
-  const context = {
-    matter: {
-      goal: '核查真实性',
-      criteria: ['实际验证'],
-      version: 4,
-      context: { revoked: '不要发布', evidence: ['原始资料 private-token'] },
-    },
-  }
-  let savedThread: string | undefined
-  const execute = createRouterJobExecutor({
-    modelRouter: model(unreachable),
-    secretFilter: filter,
-    latestFailure: unreachable,
-    workspaceForRepository: async () => '/trusted/checkout',
-    capabilitiesFor: async () => ({ context, capabilities: [] }),
-    codex: {
-      async runRouterJob(input) {
-        const payload = JSON.parse(input.instruction.slice(input.instruction.indexOf('\n{') + 1))
-        expect(payload.context.matter).toMatchObject({ goal: '核查真实性', version: 4 })
-        expect(payload.context.matter.context.revoked).toBe('不要发布')
-        expect(payload.earlierSteps).toHaveLength(1)
-        expect(payload.earlierSteps[0].result).toBe(priorResult)
-        expect(input.instruction).not.toContain('private-token')
-        expect(input.instruction).not.toContain('其他人私聊')
-        input.onThreadReady?.('durable-thread')
-        expect(savedThread).toEndWith('.durable-thread')
-        throw new Error('connection lost after thread creation')
-      },
-    },
-  })
-  await expect(
-    execute(
-      { ...job, executor: 'codex' },
-      [
-        { ...job, attempt: 1, result: priorResult },
-        { ...job, attempt: 1, scope: `im-${'b'.repeat(64)}`, result: '其他人私聊' },
-      ],
-      signal,
-      (id) => {
-        savedThread = id
-      },
-    ),
-  ).rejects.toBeInstanceOf(RouterJobExecutionUncertainError)
-  expect(savedThread).toEndWith('.durable-thread')
-})
-
-test('failed native executions retain linked, redacted host requests without fabricating a model request', async () => {
-  const db = new Database(':memory:')
-  try {
-    const ledger = new RouterLedgerStore(db)
-    const matter = ledger.createMatter('owner', '核对记录', '查原文', ['给出编号'])
-    ledger.bindWorker({
-      jobId: job.id,
-      principal: 'owner',
-      matterId: matter.id,
-      scope: 'general',
-      audience: 'fixture',
-      eventIds: [],
-      authority: 'user',
-    })
-    const execute = createRouterJobExecutor({
-      modelRouter: { ...model(unreachable), trace: createRouterTraceSink(ledger, filter.filter) },
-      secretFilter: filter,
-      workspaceForRepository: async () => '/fixture',
-      latestFailure: unreachable,
-      codex: {
-        async runRouterJob(input) {
-          input.onThreadReady?.('native-id')
-          input.onPublicEvent?.('turn/start', {
-            threadId: 'native-id',
-            input: [{ text: input.instruction }],
-          })
-          input.onPublicEvent?.('item/completed', {
-            type: 'commandExecution',
-            aggregatedOutput: 'evidence private-token',
-          })
-          throw Error('fixture failure private-token')
-        },
-      },
-    })
-    await expect(execute({ ...job, executor: 'codex' }, [], signal)).rejects.toBeInstanceOf(
-      RouterJobExecutionUncertainError,
-    )
-    const [run] = ledger.listRuns({ matterId: matter.id, workerId: job.id })
-    expect(run).toMatchObject({ matterId: matter.id, status: 'failed', sessionId: 'router-job-7' })
-    expect(ledger.workerSessions('owner', matter.id)).toEqual([
-      { jobId: 7, latestRunId: run.id, handoffFromJobId: null },
-    ])
-    const entries = ledger.entries(run.id)
-    expect(entries.map((e) => e.kind)).toContain('worker_request')
-    expect(entries.map((e) => e.kind)).not.toContain('model_request')
-    expect(JSON.stringify(entries)).toContain('evidence [redacted]')
-    expect(JSON.stringify(entries)).not.toContain('private-token')
-  } finally {
-    db.close()
-  }
 })

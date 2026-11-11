@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { type RetrievedMemoryMatch, detectMemoryEcho } from '@zero-os/memory'
 import type { ModelRouter, ResolvedModel } from '@zero-os/model'
 import type { RequestMemoryInjectionEntry } from '@zero-os/observe'
@@ -5,6 +6,7 @@ import type {
   Message,
   ReasoningEffort,
   Session as SessionData,
+  SessionTrigger,
   TimelineCompactionBlock,
   ToolLogger,
 } from '@zero-os/shared'
@@ -70,6 +72,7 @@ export async function processSessionMessageTurn({
 }: ProcessSessionMessageTurnOptions): Promise<Message[]> {
   const { currentModel, tools, toolNames, systemPrompt, projectRoot, workspacePath } =
     staticContext.ensure()
+  ensureToolsSetEvent(deps, sessionData.id, toolNames)
   snapshotRecorder.ensureCurrentContextSnapshot(getCurrentSnapshotContext(toolNames))
   const userMessageEntry = createUserMessage({
     sessionId: sessionData.id,
@@ -154,6 +157,20 @@ export async function processSessionMessageTurn({
   }
 
   const messageCountBefore = messages.length
+  const turnIndex = turnRuntime.allocateTurnIndex()
+  const turnStartedAt = Date.now()
+  deps.sessionEvents?.append(sessionData.id, [
+    {
+      type: 'turn/start',
+      data: {
+        turnIndex,
+        trigger: deriveTurnTrigger(options),
+        model: activeModel ? modelRouter.getModelLabel(activeModel) : undefined,
+        agentName: getAgentName(),
+        baseSeq: deps.sessionEvents.getLastSeq(sessionData.id) ?? undefined,
+      },
+    },
+  ])
   try {
     const turnMessages = await agent.run(
       context,
@@ -163,9 +180,15 @@ export async function processSessionMessageTurn({
       onTextDelta,
       () => turnRuntime.shouldInterrupt(),
       () => turnRuntime.drainQueuedMessages(),
-      { turnIndex: turnRuntime.allocateTurnIndex(), userMessageEntry },
+      { turnIndex, userMessageEntry },
       () => turnRuntime.shouldAbort(),
     )
+    deps.sessionEvents?.append(sessionData.id, [
+      {
+        type: 'turn/end',
+        data: { turnIndex, status: 'completed', durationMs: Date.now() - turnStartedAt },
+      },
+    ])
     recordMemoryEchoUsage({
       recorder: deps.memoryUsage,
       sessionId: sessionData.id,
@@ -197,8 +220,33 @@ export async function processSessionMessageTurn({
     if (error instanceof Error) {
       ;(error as Error & { rolledBack?: boolean }).rolledBack = rolledBack
     }
+    deps.sessionEvents?.append(sessionData.id, [
+      {
+        type: 'turn/end',
+        data: { turnIndex, status: 'failed', durationMs: Date.now() - turnStartedAt },
+      },
+    ])
     throw error
   }
+}
+
+/** 工具集是 model-visible 请求输入:名字列表变化时落一条 tools/set 事件 */
+function ensureToolsSetEvent(deps: SessionDeps, sessionId: string, toolNames: string[]): void {
+  const store = deps.sessionEvents
+  if (!store || toolNames.length === 0) return
+
+  const hash = `sha256:${createHash('sha256').update(JSON.stringify(toolNames)).digest('hex')}`
+  if (store.getToolSet(sessionId)?.hash === hash) return
+
+  store.append(sessionId, [
+    { type: 'tools/set', data: { hash, toolNames: [...toolNames], count: toolNames.length } },
+  ])
+}
+
+function deriveTurnTrigger(options?: HandleMessageOptions): SessionTrigger {
+  if (options?.messageType === 'control') return 'control'
+  if (options?.messageType === 'queued') return 'queued_drain'
+  return 'channel'
 }
 
 interface SessionMemoryInjection {
@@ -240,6 +288,8 @@ async function retrieveSessionMemories(options: {
     previouslyInjectedIds: options.injectedMemoryIds,
     logger: options.logger,
     failureEvent: 'memory_retrieval_failed',
+    sessionEvents: options.deps.sessionEvents,
+    layer: 'layer1',
     trace: {
       tracer: options.deps.tracer,
       agentName: options.agentName,

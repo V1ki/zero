@@ -11,15 +11,6 @@ export class FeishuAdapter implements ChannelAdapter {
     private readonly options: FeishuAdapterOptions = {},
   ) {}
 
-  async replyRouter(
-    _chatId: string,
-    text: string,
-    messageId: string,
-    mayReply?: () => boolean,
-  ): Promise<void> {
-    await this.feishuChannel.router.replyMarkdown(messageId, text, mayReply)
-  }
-
   async reply(chatId: string, text: string, replyToMessageId?: string | number): Promise<void> {
     if (replyToMessageId !== undefined && replyToMessageId !== null) {
       await this.feishuChannel.reply(String(replyToMessageId), text)

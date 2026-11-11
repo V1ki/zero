@@ -298,7 +298,6 @@ channels:
       clientSecretRef: 'dingtalk_ops_client_secret',
       robotCodeRef: 'dingtalk_ops_robot_code',
       cardTemplateId: 'ops-card.schema',
-      cardStreamingKey: 'summary',
       debug: undefined,
       keepAlive: false,
     })

@@ -43,8 +43,12 @@ export interface TriggerMandate {
   purpose: string
   source: TriggerSource
   scope: string
-  /** Existing mandates use the model unless the owner explicitly chooses a factual reminder. */
-  processing?: 'agent' | 'direct'
+  /**
+   * Existing mandates use the model unless the owner explicitly chooses a factual reminder.
+   * `investigate` (GitHub only) also reads the event's own Actions or PR records, read-only,
+   * after triage lets the event through and before the notification is sent.
+   */
+  processing?: 'agent' | 'direct' | 'investigate'
   groupBy?: 'thread' | 'mandate' | 'event'
   keyword: string
   projectId: string | null
@@ -98,6 +102,8 @@ export interface MandateEffect {
   reason: string | null
   dueAt: string | null
   receipt: string | null
+  /** Set on a notify effect that triage skipped. Only such a skip may be re-opened by a retry. */
+  triaged?: boolean
 }
 export interface MandateMatch {
   id: number

@@ -1,129 +1,71 @@
-import type { RouterEventActivity } from '../router-event-activity'
-import type { RouterGeneratedUI } from '../router-surface'
-import type { ChannelMessageReference } from './context'
 import type { TriggerSource } from './trigger'
 import type { CommissionPreview } from './trigger-commission'
-import type { MandatePlatform } from './trigger-mandate'
-import type {
-  TriggerPresence,
-  TriggerRouteDestination,
-  TriggerRouteStatus,
-  TriggerRoutingSettings,
-} from './trigger-routing'
+import type { TriggerRouteStatus } from './trigger-routing'
 
 /** Event IDs and task IDs have separate durable namespaces. */
 export type TriggerConversationScope = 'general' | number | `task-${number}`
 export type TriggerConversationIntent = 'route' | 'event' | 'next'
 
-export type TriggerPreferenceChange =
-  | { key: 'personalBot'; platform: MandatePlatform; value: string; label: string }
-  | { key: 'presence'; value: TriggerPresence }
-  | { key: 'duringWork' | 'afterWork' | 'offDay'; value: TriggerRouteDestination }
-  | { key: 'awayFallback'; value: TriggerRoutingSettings['awayFallback'] }
-
-export type GithubInvestigationAction = 'inspect_github' | 'compare_runs' | 'find_related_issues'
+export type GithubInvestigationAction = 'inspect_github' | 'compare_runs'
 
 export interface GithubInvestigation {
-  kind: 'pull' | 'issue' | 'jobs' | 'history' | 'related-issues'
+  kind: 'pull' | 'jobs' | 'history'
   observedAt: string
   sourceUrl: string
   facts: { label: string; value: string; url?: string }[]
 }
 
-export interface RouterDirectReminder {
-  platform: MandatePlatform
-  channelId: string
-  botLabel: string
-  text: string
-  /** Server-side fingerprint used to verify the recipient again before sending. */
-  audienceKey?: string
-  status: 'draft' | 'sending' | 'accepted' | 'rejected' | 'unknown'
-  reason?: string
-}
-
-/** One page of repository names actually returned for the current user's GitHub access. */
-export interface RouterRepositoryPage {
-  page: number
-  repositories: string[]
-  nextPage: number | null
-}
-
-export interface RouterOpenPullRequestsPage {
-  repository: string
-  page: number
-  nextPage: number | null
-  /** Older receipts were always read from GitHub in pages of ten. */
-  pageSize?: 5 | 10
-  pullRequests: { number: number; title: string; url: string; draft: boolean }[]
-}
-
-/** Persisted receipt for an explicitly enabled repository listener. */
-export interface RouterRepositoryTrackingReceipt {
-  id: number
-  repository: string
-  issues: boolean
-  pullRequests: boolean
-  issueComments?: boolean
-  pullRequestComments?: boolean
-  deliveryMode: 'poll' | 'webhook'
+/**
+ * A model-written reading of one completed job step for its owner. Every field is untrusted
+ * display text derived from executor output; an option is only ever sent back to the same job.
+ */
+export interface RouterJobReport {
+  /** One or two sentences answering what the owner originally asked. */
+  verdict: string
+  /** Present only when the owner has to choose. */
+  decision?: { question: string; options: string[]; recommended: number }
+  /** What was actually changed or produced. May be empty. */
+  done: string[]
 }
 
 /** Receipt for a one-off worker job. Private execution and delivery identifiers stay server-side. */
 export interface RouterJobReceipt {
   id: number
-  executor: string
+  executor: 'zero' | 'codex'
   status: 'queued' | 'running' | 'completed' | 'failed' | 'unknown'
   attempt: number
-  handoff?: { fromJobId: number; fromAttempt: number; fromStatus: string }
   repository?: string
+  /** The executor's full, filtered result. */
   result?: string
+  /** Absent for steps without a report, including those finished before reports existed. */
+  report?: RouterJobReport
+  /** The step completed and its report is still being written. */
+  reportPending?: true
+  /** A newer step of the same job exists, so this step's decision is no longer open. */
+  continued?: true
 }
 
 export interface TriggerConversationAnswer {
-  /** Host-verified matter references for scoped cross-platform context retrieval. */
-  matterIds?: string[]
-  /** Source records consulted in this answer, for rechecking access when it is retrieved later. */
-  sourceEventIds?: number[]
-  contextPrincipal?: string
-  /** Tools may have succeeded before the main Agent failed to complete its assessment. */
-  incompleteReason?: string
-  generatedUI?: RouterGeneratedUI
   /** Completed tool calls in execution order. Inputs, private results and reasoning stay out of this view. */
   toolSteps?: Array<{ name: string; ok: boolean }>
   /** Recorded only by the scoped read-only GitHub integration. */
   investigation?: GithubInvestigation
-  repositories?: RouterRepositoryPage
-  pullRequests?: RouterOpenPullRequestsPage
-  /** One item opened from this conversation's verified PR page. */
-  pullRequestNumber?: number
-  tracking?: RouterRepositoryTrackingReceipt
   job?: RouterJobReceipt
   /** Server-only authorization snapshot for redacting work history after access changes. */
   workAccess?: { github: boolean; key: string }
-  /** Server-only link for hiding event follow-ups when access to the underlying summary is withdrawn. */
-  trackingContextJobId?: number
-  /** Server-only link from a local close command to its precise, durable worker attempt. */
-  trackingCloseReceipt?: { attempt: number; number: number }
   text: string
   intent?: TriggerConversationIntent
   points?: string[]
-  /** Prepared from an explicit request in the main Router chat. */
-  reminder?: RouterDirectReminder
+  /** IM mandate command drafts only. Router conversation turns no longer store it. */
   commission?: CommissionPreview
-  proposal?: TriggerPreferenceChange
-  /** Recorded by the server when the proposed change is first shown for confirmation. */
-  proposalRevision?: number
-  /** Written by the server in the same transaction as the confirmed settings change. */
-  readonly proposalAppliedAt?: string
 }
 
 export interface TriggerConversationTurn {
-  quotedMessage?: ChannelMessageReference
   id: number
   requestId: string
   question: string
   answer: TriggerConversationAnswer | null
-  status: 'queued' | 'pending' | 'completed' | 'failed'
+  status: 'pending' | 'completed' | 'failed'
   error: string | null
   createdAt: string
   updatedAt: string
@@ -136,6 +78,4 @@ export interface TriggerWorkspaceEvent {
   title: string
   receivedAt: string
   status: TriggerRouteStatus | null
-  githubOwnComment?: true
-  activity?: RouterEventActivity
 }

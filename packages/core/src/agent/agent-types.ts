@@ -1,6 +1,7 @@
 import type {
   MetricsDB,
   RequestMemoryInjectionEntry,
+  SessionEventStore,
   SnapshotEntry,
   Tracer,
   UsagePurpose,
@@ -69,6 +70,8 @@ export interface AgentObservability {
   contextCompactionModelLabel?: string
   usagePurpose?: UsagePurpose
   parentSessionId?: string
+  /** 权威事件流句柄;提供时 hook 层追加 step/tool/injection 诊断事件 */
+  sessionEvents?: Pick<SessionEventStore, 'append' | 'getLastSeq'>
   getCurrentSnapshotId?: () => string | undefined
   onContextCompressed?: (event: {
     summary: string

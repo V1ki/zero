@@ -1,6 +1,5 @@
 import { join } from 'node:path'
 import { weixinCli } from '../channels/weixin'
-import { runGithubCommand } from './github'
 import { printHelp } from './help'
 import { runInitCommand } from './init'
 import { runLaunchctlCommand } from './launchctl'
@@ -59,18 +58,6 @@ export async function runCli(argv = process.argv): Promise<void> {
         secretsPath: paths.secretsPath,
       })
       return
-    case 'github': {
-      try {
-        const receipt = await runGithubCommand(paths.zeroDir, args)
-        if ('commentsAllowed' in receipt || 'status' in receipt) {
-          console.log(JSON.stringify(receipt))
-        } else console.log(`${receipt.author}: ${receipt.url}`)
-      } catch (error) {
-        console.error(error instanceof Error ? error.message : 'GitHub 操作失败。')
-        process.exitCode = 1
-      }
-      return
-    }
     case 'status':
       await runStatusCommand({
         zeroDir: paths.zeroDir,

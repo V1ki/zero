@@ -96,9 +96,6 @@ test('retention opt-in grants existing history a full term, removes closed bodie
   expect(store.retention.sweep(future())).toEqual({ events: 1, turns: 2, more: false })
   expect(store.listInbox().map((i) => i.id)).toEqual([unprocessed])
   expect(store.listWorkspaceEvents().some((e) => e.id === old)).toBe(false)
-  expect(store.retention.expiredTraceSources(old)).toEqual(['event'])
-  expect(store.retention.expiredTraceSources(unprocessed)).toEqual([])
-  expect(store.retention.expiredTraceSources(99999)).toEqual([])
   expect(store.getInboxItem(old)).toBeNull()
   expect(store.routing.get(old)).toBeNull()
   expect(store.routing.listWeb()).toEqual([])
@@ -185,7 +182,7 @@ test('failed or unknown delivery, new discussions, live and paused task generati
   expect(store.getInboxItem(active)?.summary).toBe('private body')
 })
 
-test('suspending retention cancels the old deadline, confirmation proposals survive, and expired IM drafts become dedup tombstones', () => {
+test('suspending retention cancels the old deadline, legacy confirmation cards expire, and expired IM drafts become dedup tombstones', () => {
   const { store, sql } = fixture()
   config(store, { retentionDays: 7 })
   const initial = '2000-01-01T00:00:00.000Z'
@@ -200,10 +197,12 @@ test('suspending retention cancels the old deadline, confirmation proposals surv
   const preview = { code: 'oldcode', title: '测试', details: [], expiresAt: ts }
   const pending = store.conversations.begin('general', 'proposal', '待确认的偏好')
   if (pending.kind !== 'started') throw new Error('expected open turn')
-  store.conversations.finish('general', 'proposal', pending.attempt, {
-    text: '请确认',
-    proposal: { key: 'offDay', value: 'defer' },
-  })
+  store.conversations.finish('general', 'proposal', pending.attempt, { text: '请确认' })
+  // Answers saved by the removed preference card no longer keep a turn open.
+  sql.run(
+    `UPDATE trigger_conversation_turns SET answer=json_set(answer,'$.proposal',json('{"key":"offDay","value":"defer"}'))
+     WHERE request_id='proposal'`,
+  )
   const expired = store.conversations.begin('general', 'draft', '已过期的委托提议')
   if (expired.kind !== 'started') throw new Error('expected open turn')
   store.conversations.finish('general', 'draft', expired.attempt, {
@@ -214,43 +213,13 @@ test('suspending retention cancels the old deadline, confirmation proposals surv
     'INSERT INTO trigger_commission_drafts(code,principal,request_id,draft,expires_at) VALUES(?,?,?,?,?)',
     [preview.code, 'web', 'draft', JSON.stringify({ question: '私密草稿', preview }), ts],
   )
-  expect(store.retention.sweep(future()).turns).toBe(1)
-  expect(store.conversations.list('general').map((row) => row.requestId)).toEqual(['proposal'])
+  expect(store.retention.sweep(future()).turns).toBe(2)
+  expect(store.conversations.list('general')).toEqual([])
   expect(
     sql
       .query('SELECT request_id AS id,draft FROM trigger_commission_drafts WHERE code=?')
       .get(preview.code),
   ).toEqual({ id: 'draft', draft: '' })
-})
-
-test('retention expires stale reminder drafts without replaying them and protects in-flight sends', () => {
-  const { store } = fixture()
-  config(store, { retentionDays: 7 })
-  for (const id of ['draft', 'sending']) {
-    const claim = store.conversations.begin('general', id, '发通知')
-    if (claim.kind !== 'started') throw Error('Expected to start a reminder turn')
-    store.conversations.finish('general', id, claim.attempt, {
-      text: '准备发送',
-      reminder: {
-        platform: 'weixin',
-        channelId: 'bot',
-        botLabel: '测试',
-        audienceKey: 'user-hash',
-        text: '待办事项',
-        status: 'draft',
-      },
-    })
-  }
-  expect(store.conversations.claimReminder('general', 'sending')).toBe(true)
-  expect(store.retention.sweep(future()).turns).toBe(1)
-  expect(store.conversations.claimReminder('general', 'draft')).toBe(false)
-  expect(store.conversations.begin('general', 'draft', '发通知', true).kind).toBe('conflict')
-  expect(store.conversations.get('general', 'sending')?.answer?.reminder?.status).toBe('sending')
-  expect(store.conversations.finishReminder('general', 'sending', { status: 'accepted' })).toBe(
-    true,
-  )
-  expect(store.retention.sweep(future()).turns).toBe(1)
-  expect(store.conversations.claimReminder('general', 'sending')).toBe(false)
 })
 
 test('retention expires IM history per audience and preserves the inbound replay barrier', () => {
@@ -320,130 +289,15 @@ test('a retired task expires independently of its active sibling and their share
   ).toEqual({ question: '', answer: null })
 })
 
-test('WXARC inbox bodies survive while general follow-up work or its delivery is in flight', () => {
-  const { store, receive, done } = fixture()
+test('a filtered route is finished history and expires like a delivered one', () => {
+  const { store, receive } = fixture()
   config(store, { enabled: true, retentionDays: 7 })
-  const id = receive('wxarc:text:17')
-  done(id)
-  expect(store.retention.sweep(future()).events).toBe(0)
-  const job = store.jobs.claimNext()
-  expect(job?.kind).toBe('event-followup')
-  if (!job) throw new Error('Missing archive follow-up')
-  expect(store.retention.sweep(future()).events).toBe(0)
-  store.jobs.finish(job.id, job.attempt, { status: 'completed', result: '核对完成' })
-  expect(store.retention.sweep(future()).events).toBe(0)
-  expect(store.jobs.claimReturn()?.id).toBe(job.id)
-  expect(store.retention.sweep(future()).events).toBe(0)
-  store.jobs.settleReturn(job.id, job.attempt, 'delivered')
+  const id = receive('filtered')
+  expect(store.routing.claimAgent(id, 'synthetic-session')).toBe(true)
+  const skip = { decision: 'skip' as const, reason: 'private reason' }
+  expect(
+    store.routing.filterAgent(id, 'synthetic-session', { summary: 'private', triage: skip }),
+  ).toBe(true)
   expect(store.retention.sweep(future()).events).toBe(1)
-  expect(store.getInboxItem(id)).toBeNull()
-})
-
-test('unfinished matters retain source bodies, relevant cross-platform turns and their Worker until completion', () => {
-  const { store, receive, done } = fixture()
-  config(store, { enabled: true, retentionDays: 7 })
-  const id = receive('wxarc:text:18')
-  done(id)
-  const job = store.jobs.claimNext()
-  if (!job) throw Error('missing Worker')
-  store.jobs.finish(job.id, job.attempt, { status: 'completed', result: '仍需复测，不能确认解决' })
-  store.jobs.claimReturn()
-  store.jobs.settleReturn(job.id, job.attempt, 'delivered')
-  let matter = store.ledger.createMatter('owner', '完成复测', '核实是否解决', ['取得复测证据'])
-  store.ledger.bindWorker({
-    jobId: job.id,
-    principal: 'owner',
-    matterId: matter.id,
-    scope: 'general',
-    audience: 'owner',
-    eventIds: [id],
-    authority: 'user',
-  })
-  const scope = `im-${'c'.repeat(64)}` as const
-  const turn = store.conversations.begin(scope, 'prior-context', '下次收到复测结果再继续')
-  if (turn.kind !== 'started') throw Error('missing turn')
-  store.conversations.finish(scope, 'prior-context', turn.attempt, {
-    text: '已保留当前证据，等待复测。',
-    matterIds: [matter.id],
-  })
-  for (const state of ['open', 'working', 'waiting', 'paused'] as const) {
-    matter = store.ledger.updateMatter('owner', matter.id, matter.version, { state, context: {} })
-    expect(store.retention.sweep(future())).toEqual({ events: 0, turns: 0, more: false })
-    expect(store.getInboxItem(id)?.summary).toBe('private body')
-    expect(store.conversations.get(scope, 'prior-context')?.answer?.matterIds).toEqual([matter.id])
-    expect(store.jobs.get(job.scope, job.id)?.result).toBe('仍需复测，不能确认解决')
-  }
-  store.ledger.updateMatter('owner', matter.id, matter.version, { state: 'completed', context: {} })
-  expect(store.retention.sweep(future()).events).toBe(1)
-  expect(store.conversations.get(scope, 'prior-context')).toBeNull()
-  expect(store.getInboxItem(id)).toBeNull()
-})
-
-test('protected turns cannot fill the expiry batch and starve unrelated eligible records', () => {
-  const { store, turn } = fixture()
-  config(store, { enabled: true, retentionDays: 7 })
-  const matter = store.ledger.createMatter('owner', '等待新证据', '取得原单', ['核对'])
-  for (let i = 0; i < 100; i++) {
-    const result = store.conversations.begin('general', 'protected-' + i, '核对这份原单')
-    if (result.kind !== 'started') throw Error('Expected synthetic turn')
-    store.conversations.finish('general', result.turn.requestId, result.attempt, {
-      text: '正在核对',
-      matterIds: [matter.id],
-    })
-  }
-  turn('general', 'unrelated-old')
-  expect(store.retention.sweep(future()).turns).toBe(1)
-  expect(store.conversations.get('general', 'unrelated-old')).toBeNull()
-  expect(store.conversations.get('general', 'protected-99')?.answer?.text).toBe('正在核对')
-})
-
-test('moving an event preserves evidence inherited by an unfinished matter across later edits and expiry', () => {
-  const { store, receive, done } = fixture()
-  config(store, { enabled: true, retentionDays: 7 })
-  const event = receive('moved-note')
-  done(event)
-  const first = store.ledger.createMatter('owner', '归档复核', '复核单据', ['取得签收'])
-  const second = store.ledger.createMatter('owner', '单据归档', '归档单据', ['已归档'])
-  store.ledger.linkSource('owner', first.id, event, '初次登记')
-  const move = store.ledger.changeSourceAssociation(
-    'owner',
-    event,
-    first.id,
-    second.id,
-    '归档与复核各自跟进',
-  )
-  store.ledger.updateMatter('owner', second.id, move.versions[second.id], {
-    state: 'completed',
-    context: {},
-  })
-  const updated = store.ledger.updateMatter('owner', first.id, move.versions[first.id], {
-    state: 'paused',
-    context: first.context,
-  })
-  expect(store.ledger.matterSources(first.id)).toEqual([])
-  expect(store.ledger.matterEvidenceSources(first.id)).toEqual([event])
-  expect(store.ledger.matterHistory('owner', first.id)[0].snapshot.inheritedSourceIds).toEqual([
-    event,
-  ])
-  expect(store.retention.sweep(future()).events).toBe(0)
-  expect(store.getInboxItem(event)?.summary).toBe('private body')
-  store.ledger.updateMatter('owner', first.id, updated.version, { state: 'completed', context: {} })
-  expect(store.retention.sweep(future()).events).toBe(1)
-})
-
-test('an event conversation linked to open work can still be opened after retention runs', () => {
-  const { store, receive, done } = fixture()
-  config(store, { enabled: true, retentionDays: 7 })
-  const id = receive('case-note')
-  done(id)
-  const m = store.ledger.createMatter('owner', '原件', '等待签字', ['核对签字'])
-  const claim = store.conversations.begin(id, 'context', '有了签字再核对')
-  if (claim.kind !== 'started') throw Error('Missing event turn')
-  store.conversations.finish(id, 'context', claim.attempt, { text: '等待签字', matterIds: [m.id] })
-  store.retention.sweep(future())
-  expect(store.getInboxItem(id)?.summary).toBe('private body')
-  expect(store.conversations.get(id, 'context')?.answer?.text).toBe('等待签字')
-  store.ledger.updateMatter('owner', m.id, 1, { state: 'cancelled', context: {} })
-  store.retention.sweep(future())
-  expect(store.getInboxItem(id)).toBeNull()
+  expect(store.routing.get(id)).toBeNull()
 })

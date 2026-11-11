@@ -1,8 +1,7 @@
 import { Database } from 'bun:sqlite'
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
-import type { RouterPresentation, RouterPublicationAction } from '@zero-os/shared'
 import type { DWClientDownStream } from 'dingtalk-stream'
 import type { DingtalkRobotMessage } from './incoming-message'
 
@@ -26,7 +25,6 @@ interface Peer {
 export interface TaskCardData {
   id: string
   digest: boolean
-  presentation?: RouterPresentation
   entries: Array<{ taskId: number; title: string; summary: string }>
 }
 
@@ -97,14 +95,12 @@ export class DingtalkTaskCards {
     private readonly options: {
       dbPath: string
       templateId?: string
-      streamingKey?: string
       account: string
       robotCode: string
       apiBaseUrl: string
       fetch: typeof fetch
       getToken(): Promise<string | undefined>
       onAction?(action: DingtalkTaskCardAction): Promise<boolean>
-      onPublication?(action: RouterPublicationAction): Promise<boolean>
     },
   ) {}
 
@@ -118,9 +114,6 @@ export class DingtalkTaskCards {
       CREATE TABLE IF NOT EXISTS peers (
         peerId TEXT NOT NULL, actorId TEXT NOT NULL, corpId TEXT NOT NULL,
         spaceType TEXT NOT NULL, spaceId TEXT NOT NULL, PRIMARY KEY(peerId, actorId)
-      );
-      CREATE TABLE IF NOT EXISTS publication_cards (
-        cardId TEXT PRIMARY KEY,deliveryId TEXT NOT NULL,actionId TEXT
       );
       CREATE TABLE IF NOT EXISTS cards (
         cardId TEXT PRIMARY KEY, peerId TEXT NOT NULL, actorId TEXT NOT NULL, corpId TEXT NOT NULL,
@@ -161,8 +154,7 @@ export class DingtalkTaskCards {
 
   canSend(peerId: string, actorId: string): boolean {
     return (
-      (!this.options.templateId || !!(this.options.onAction || this.options.onPublication)) &&
-      this.hasBoundPeer(peerId, actorId)
+      (!this.options.templateId || !!this.options.onAction) && this.hasBoundPeer(peerId, actorId)
     )
   }
 
@@ -342,66 +334,6 @@ export class DingtalkTaskCards {
     return this.sendTextReminder(this.peer(peerId, actorId), body, signal, maySend)
   }
 
-  /** Only the accepted card row contains the platform acknowledgement. The planned card ID alone does not. */
-  publicationReceipt(peerId: string, actorId: string, deliveryId: string): string | null {
-    return (
-      this.database()
-        .query<{ receipt: string }, [string, string, string]>(
-          "SELECT c.receipt FROM publication_cards p JOIN cards c ON c.cardId=p.cardId WHERE p.deliveryId=? AND c.peerId=? AND c.actorId=? AND c.state='accepted' AND c.receipt IS NOT NULL",
-        )
-        .get(deliveryId, peerId, actorId)?.receipt ?? null
-    )
-  }
-
-  async sendPresentation(
-    peerId: string,
-    actorId: string,
-    deliveryId: string,
-    presentation: RouterPresentation,
-    signal: AbortSignal,
-    maySend: () => boolean,
-  ) {
-    if (!/^publication-[a-f0-9]{64}-dingtalk$/.test(deliveryId))
-      return { status: 'rejected' as const, reason: '交付编号无效。' }
-    if (!this.options.templateId || !this.options.onPublication)
-      return { status: 'rejected' as const, reason: '钉钉原生交付卡片模板或回调未配置。' }
-    if (presentation.actions.length > 1 || presentation.actions.some((a) => a.label !== '确认'))
-      return {
-        status: 'rejected' as const,
-        reason: '当前钉钉模板支持一个可见的「确认」按钮；其他操作可在原私聊继续提出。',
-      }
-    const cardId = `zero_${createHash('sha256')
-      .update(JSON.stringify([this.options.account, peerId, actorId, deliveryId]))
-      .digest('hex')
-      .slice(0, 48)}`
-    this.database().run(
-      'INSERT INTO publication_cards VALUES(?,?,?) ON CONFLICT(cardId) DO NOTHING',
-      [cardId, deliveryId, presentation.actions[0]?.id ?? null],
-    )
-    try {
-      const receipt = await this.send(
-        peerId,
-        actorId,
-        {
-          id: deliveryId,
-          digest: false,
-          presentation,
-          entries: [{ taskId: 1, title: presentation.title, summary: presentation.text }],
-        },
-        signal,
-        maySend,
-      )
-      return { status: 'accepted' as const, receipt }
-    } catch (error) {
-      if (error instanceof DingtalkCardError)
-        return {
-          status: error.uncertain ? ('unknown' as const) : ('rejected' as const),
-          reason: error.message,
-        }
-      throw error
-    }
-  }
-
   async sendDirectReminder(
     peerId: string,
     actorId: string,
@@ -514,26 +446,18 @@ export class DingtalkTaskCards {
       userIdType: 1,
       cardData: {
         cardParamMap: {
-          title:
-            data.presentation?.title ??
-            (data.digest
-              ? `ZeRo · ${data.entries.length} 条任务摘要`
-              : `#${single.taskId} ${single.title}`),
-          summary:
-            data.presentation?.text ??
-            (data.digest
-              ? data.entries
-                  .map((entry) => `#${entry.taskId} ${entry.title}：${entry.summary}`)
-                  .join('\n')
-              : single.summary),
+          title: data.digest
+            ? `ZeRo · ${data.entries.length} 条任务摘要`
+            : `#${single.taskId} ${single.title}`,
+          summary: data.digest
+            ? data.entries
+                .map((entry) => `#${entry.taskId} ${entry.title}：${entry.summary}`)
+                .join('\n')
+            : single.summary,
           tasks: JSON.stringify(
-            (data.presentation && data.presentation.actions.length === 0 ? [] : data.entries).map(
-              ({ taskId, title, summary }) => ({ taskId, title, summary }),
-            ),
+            data.entries.map(({ taskId, title, summary }) => ({ taskId, title, summary })),
           ),
-          status: data.presentation ? '' : '待跟进',
-          // AI card lifecycle describes this message, not completion of the underlying matter.
-          flowStatus: '3',
+          status: '待跟进',
         },
       },
       openSpaceId: `dtv1.card//${peer.spaceType}.${peer.spaceId}`,
@@ -567,31 +491,6 @@ export class DingtalkTaskCards {
       throw new DingtalkCardError('钉钉回执未能确认指定卡片和接收会话。', true)
     }
     if (!delivery.success) throw new DingtalkCardError('钉钉未向所选会话投放卡片。')
-    // AI Markdown variables use the streaming endpoint even for a complete, static reply.
-    // A delivered shell is not a complete delivery; never recreate it if body update fails.
-    if (this.options.streamingKey) {
-      try {
-        await this.cardRequest(
-          'PUT',
-          '/v1.0/card/streaming',
-          {
-            outTrackId: cardId,
-            guid: randomUUID(),
-            key: this.options.streamingKey,
-            content: payload.cardData.cardParamMap.summary,
-            isFull: true,
-            isFinalize: true,
-            isError: false,
-          },
-          token,
-          signal,
-        )
-      } catch (error) {
-        if (error instanceof DingtalkCardError)
-          throw new DingtalkCardError(`卡片已投放，但正文更新未确认：${error.message}`, true)
-        throw error
-      }
-    }
     return cardId
   }
 
@@ -603,7 +502,7 @@ export class DingtalkTaskCards {
       !identity(cardId) ||
       !identity(messageId) ||
       event.type !== 'actionCallback' ||
-      (!this.options.onAction && !this.options.onPublication)
+      !this.options.onAction
     )
       return false
     const card = this.database()
@@ -627,23 +526,6 @@ export class DingtalkTaskCards {
       action.actionIds[0] !== 'ack'
     )
       return false
-    const publication = this.database()
-      .query<{ deliveryId: string; actionId: string | null }, [string]>(
-        'SELECT deliveryId,actionId FROM publication_cards WHERE cardId=?',
-      )
-      .get(cardId)
-    if (publication) {
-      if (!publication.actionId || !this.options.onPublication) return false
-      return this.options.onPublication({
-        peerId: card.peerId,
-        actorId: card.actorId,
-        cardId,
-        messageId,
-        deliveryId: publication.deliveryId,
-        actionId: publication.actionId,
-      })
-    }
-    if (!this.options.onAction) return false
     const taskIds = JSON.parse(card.taskIds) as number[]
     const supplied = record(action.params).taskId
     if (

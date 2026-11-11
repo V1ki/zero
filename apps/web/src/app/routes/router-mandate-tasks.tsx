@@ -8,6 +8,7 @@ import type {
   MandateMatch,
   MandateTask,
   MandateTaskDetail,
+  RouterTaskJob,
   TriggerMandateSnapshot,
 } from '@zero-os/shared'
 import { type ReactNode, useState } from 'react'
@@ -19,6 +20,15 @@ import './router-mandate-tasks.css'
 const base = '/api/listeners/mandates'
 const tasksKey = ['listeners', 'mandates', 'tasks']
 const pageSize = 25
+/** Shared with the task conversation, which refreshes it after each turn. */
+export const taskJobsKey = (taskId: number) => [...tasksKey, taskId, 'jobs']
+const jobStatus: Record<RouterTaskJob['status'], string> = {
+  queued: '已排队',
+  running: '执行中',
+  completed: '已完成',
+  failed: '执行失败',
+  unknown: '结果待核对',
+}
 const statusName: Record<MandateAnalysisStatus, string> = {
   pending: '待分析',
   analyzing: '正在分析',
@@ -90,6 +100,16 @@ function EffectRow({
           重试{label}
         </button>
       )}
+      {effect.status === 'skipped' && effect.triaged && (
+        <button
+          type="button"
+          className="rw-inline-button"
+          disabled={busy}
+          onClick={() => retry(effect.kind)}
+        >
+          仍然提醒
+        </button>
+      )}
     </section>
   )
 }
@@ -123,6 +143,55 @@ function TimelineEntry({
         <EffectRow key={effect.kind} effect={effect} retry={retry} busy={busy} />
       ))}
     </li>
+  )
+}
+
+function TaskJobs({ taskId }: { taskId: number }) {
+  const jobs = useQuery({
+    queryKey: taskJobsKey(taskId),
+    queryFn: ({ signal }) =>
+      apiFetch<{ items: RouterTaskJob[] }>(`/api/listeners/workspace/task-${taskId}/jobs`, {
+        signal,
+      }),
+    retry: false,
+    refetchInterval: (q) =>
+      q.state.status === 'error'
+        ? false
+        : q.state.data?.items.some(
+              (job) => job.status === 'queued' || job.status === 'running' || job.reportPending,
+            )
+          ? 3000
+          : 15000,
+  })
+  const items = jobs.data?.items ?? []
+  if (jobs.error)
+    return (
+      <p role="alert" className="rw-error">
+        {jobs.error.message}
+      </p>
+    )
+  if (!items.length) return null
+  return (
+    <>
+      <h3>派工记录</h3>
+      <ol className="mt-timeline" aria-label="派工记录">
+        {items.map((job) => (
+          <li key={job.id} className="mt-match">
+            <div className="mt-match-head">
+              <Link to="/router" search={{ task: taskId, view: 'chat' }}>
+                派工 #{job.id}
+              </Link>
+              <span>
+                {job.executor === 'codex' ? 'Codex' : 'ZeRo'} · {jobStatus[job.status]}
+                {job.reportPending && ' · 正在整理结果'}
+              </span>
+            </div>
+            {job.verdict && <p>{job.verdict}</p>}
+            {job.unavailable && <small>这项派工的授权已变更，内容不再显示。</small>}
+          </li>
+        ))}
+      </ol>
+    </>
   )
 }
 
@@ -225,6 +294,7 @@ function TaskDetail({ taskId, config }: { taskId: number; config?: TriggerMandat
             </p>
           )}
           {retry.isSuccess && <output>已请求重试{workNames[retry.variables.kind]}</output>}
+          <TaskJobs taskId={taskId} />
           <h3>命中与投递记录</h3>
           <ol className="mt-timeline">
             {data.matches.map((match) => (

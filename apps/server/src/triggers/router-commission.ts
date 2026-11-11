@@ -17,7 +17,6 @@ import {
   buildCommissionChange,
   changedRulePlatforms,
   commissionIntent,
-  commissionIntents,
   createCommissionPlanner,
   describeCommission,
 } from './commission-plan'
@@ -223,18 +222,6 @@ export class RouterCommissionService {
   ): Promise<TriggerConversationAnswer | null> {
     const intent = commissionIntent(question)
     return intent ? this.prepareDraft(actor, requestId, question, intent, signal) : null
-  }
-
-  /** The main Web loop supplies the operation; its planner still reads the original user turn. */
-  prepareFromIntent(
-    requestId: string,
-    question: string,
-    intent: CommissionIntent,
-    signal?: AbortSignal,
-  ): Promise<TriggerConversationAnswer> {
-    if (!commissionIntents.includes(intent))
-      throw new MandateInputError(400, '不支持这项委托操作。')
-    return this.prepareDraft('web', requestId, question, intent, signal)
   }
 
   private async prepareDraft(

@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { type ProviderAdapter, TrackedAdapter } from '@zero-os/model'
-import { MetricsDB, Tracer } from '@zero-os/observe'
+import { MetricsDB, SessionEventStore, Tracer } from '@zero-os/observe'
 import { OutputSecretFilter } from '@zero-os/secrets'
 import type {
   CompletionRequest,
@@ -1178,15 +1178,23 @@ describe('Agent', () => {
     expect(toolSpan?.metadata?.toolUseId).toBeTypeOf('string')
   }, 30000)
 
-  test('run: session run.log records raw LLM and tool diagnostics', async () => {
+  test('run: raw LLM/tool payloads stay out of run.log; diagnostics go to session events', async () => {
     const logsDir = mkdtempSync(join(tmpdir(), 'zero-agent-run-log-'))
     try {
       const tracer = new Tracer(logsDir)
+      const sessionEvents = new SessionEventStore({ basePath: logsDir })
+      sessionEvents.ensureSession({
+        v: 1,
+        sessionId: 'test-session',
+        schemaVersion: 1,
+        source: 'web',
+      })
       const { agent, registry } = createAgentWithAdapter(
         new ReadToolCallAdapter(),
         {},
         {
           tracer,
+          sessionEvents,
         },
       )
       const context = createContext(registry)
@@ -1204,36 +1212,42 @@ describe('Agent', () => {
         .split('\n')
         .map((line) => JSON.parse(line) as Record<string, unknown>)
 
-      expect(entries.some((entry) => entry.event === 'llm_request.raw_request')).toBe(true)
-      expect(entries.some((entry) => entry.event === 'llm_request.raw_response')).toBe(true)
-      expect(entries.some((entry) => entry.event === 'tool_call.raw_input')).toBe(true)
-      expect(entries.some((entry) => entry.event === 'tool_call.raw_result')).toBe(true)
+      // 全量请求/响应/工具 IO 不再写 run.log
+      expect(entries.some((entry) => entry.event === 'llm_request.raw_request')).toBe(false)
+      expect(entries.some((entry) => entry.event === 'llm_request.raw_response')).toBe(false)
+      expect(entries.some((entry) => entry.event === 'tool_call.raw_input')).toBe(false)
+      expect(entries.some((entry) => entry.event === 'tool_call.raw_result')).toBe(false)
 
-      const rawToolResultEntry = expectDefined(
-        entries.find((entry) => entry.event === 'tool_call.raw_result'),
-      )
-      const rawToolResultData = rawToolResultEntry.data as {
-        result?: { output?: string; outputSummary?: string }
-      }
-      expect(rawToolResultData.result?.output).toContain('"name": "zero-os"')
-      expect(rawToolResultData.result?.output).not.toBe(rawToolResultData.result?.outputSummary)
-
+      // 工具 span 只带有界载荷:预览 + chars + outputSummary
       const traceToolSuccessEntry = expectDefined(
         entries.find((entry) => entry.event === 'trace.tool_call.success'),
       )
       const traceToolData = traceToolSuccessEntry.data as {
-        spanData?: { toolResult?: { output?: string; outputSummary?: string } }
+        spanData?: {
+          toolResult?: { output?: string; outputSummary?: string; chars?: number }
+        }
       }
-      expect(traceToolData.spanData?.toolResult?.output).toContain('"name": "zero-os"')
-      expect(traceToolData.spanData?.toolResult?.output).not.toBe(
-        traceToolData.spanData?.toolResult?.outputSummary,
-      )
+      const slimToolResult = expectDefined(traceToolData.spanData?.toolResult)
+      expect(slimToolResult.chars).toBeTypeOf('number')
+      expect(slimToolResult.output).toContain('"name": "zero-os"')
+      expect(slimToolResult.output).not.toBe(slimToolResult.outputSummary)
 
-      const responseEntry = expectDefined(
-        entries.find((entry) => entry.event === 'llm_request.raw_response'),
+      // step/tool 过程事件进入 session.jsonl
+      const sessionEvents2 = readFileSync(
+        join(logsDir, 'sessions', 'test-session', 'session.jsonl'),
+        'utf-8',
       )
-      const responseData = responseEntry.data as Record<string, unknown>
-      expect(responseData.response).toMatchObject({ id: 'resp_read_tool_use' })
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { seq: number; type: string })
+      expect(sessionEvents2[0]).toMatchObject({ seq: 0, type: 'session' })
+      expect(sessionEvents2.some((event) => event.type === 'step/start')).toBe(true)
+      expect(sessionEvents2.some((event) => event.type === 'tool/call')).toBe(true)
+      expect(sessionEvents2.some((event) => event.type === 'tool/result')).toBe(true)
+      expect(sessionEvents2.some((event) => event.type === 'step/end')).toBe(true)
+      // 任务结束判断成对出现
+      expect(sessionEvents2.some((event) => event.type === 'closure/start')).toBe(true)
+      expect(sessionEvents2.some((event) => event.type === 'closure/end')).toBe(true)
     } finally {
       rmSync(logsDir, { recursive: true, force: true })
     }
@@ -1277,24 +1291,22 @@ describe('Agent', () => {
         .trim()
         .split('\n')
         .map((line) => JSON.parse(line) as Record<string, unknown>)
-      const rawToolInputEntry = expectDefined(
-        entries.find((entry) => entry.event === 'tool_call.raw_input'),
-      )
-      const rawToolInputData = rawToolInputEntry.data as {
-        input?: { command?: string; envSecrets?: Record<string, string> }
-      }
-      expect(rawToolInputData.input?.envSecrets?.SSH_PASSWORD).toBe(secretRef)
-      expect(rawToolInputData.input?.command).not.toContain(secretValue)
 
-      const rawToolResultEntry = expectDefined(
-        entries.find((entry) => entry.event === 'tool_call.raw_result'),
+      // 工具 span 载荷:输入按引用记录密钥,输出经 secretFilter 过滤
+      const traceToolSuccessEntry = expectDefined(
+        entries.find((entry) => entry.event === 'trace.tool_call.success'),
       )
-      const rawToolResultData = rawToolResultEntry.data as {
-        result?: { output?: string; outputSummary?: string }
+      const traceToolData = traceToolSuccessEntry.data as {
+        spanData?: {
+          input?: { command?: string; envSecrets?: Record<string, string> }
+          toolResult?: { output?: string; outputSummary?: string }
+        }
       }
-      expect(rawToolResultData.result?.output).toContain('[REDACTED]')
-      expect(rawToolResultData.result?.output).not.toContain(secretValue)
-      expect(rawToolResultData.result?.outputSummary).toBe(
+      expect(traceToolData.spanData?.input?.envSecrets?.SSH_PASSWORD).toBe(secretRef)
+      expect(traceToolData.spanData?.input?.command).not.toContain(secretValue)
+      expect(traceToolData.spanData?.toolResult?.output).toContain('[REDACTED]')
+      expect(traceToolData.spanData?.toolResult?.output).not.toContain(secretValue)
+      expect(traceToolData.spanData?.toolResult?.outputSummary).toBe(
         'Executed: command with secret references',
       )
     } finally {

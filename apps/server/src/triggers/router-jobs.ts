@@ -5,14 +5,9 @@ import {
   type RouterJobStep,
   type TriggerStore,
 } from '@zero-os/observe'
-import {
-  type RouterEventWork,
-  type RouterJobReceipt,
-  type RouterTraceSink,
-  isPublicGithubFact,
-} from '@zero-os/shared'
+import type { RouterJobReceipt, RouterJobReport } from '@zero-os/shared'
 import { TriggerAgentError } from './event-agent'
-import type { createRouterEventWorker } from './router-event-worker'
+import { parseRouterJobReport } from './router-job-report'
 
 /** The worker may already have changed its checkout. Never automatically re-run this attempt. */
 export class RouterJobExecutionUncertainError extends TriggerAgentError {}
@@ -20,38 +15,40 @@ export class RouterJobExecutionUncertainError extends TriggerAgentError {}
 type ReturnStatus = 'delivered' | 'unavailable' | 'unknown'
 
 interface NewJob {
-  executor: string
+  executor: 'zero' | 'codex'
   instruction: string
+  /** Router-written background for the executor. Never consulted for authorization. */
+  brief?: string
   repository?: string
   /** Opaque origin pinned by the server, never supplied by the model. */
   audience?: string
+  /** The mandate task whose conversation created the job. Never consulted for authorization. */
+  taskId?: number
 }
 
-export interface RouterExecutorAdapter {
-  name: string
-  description: string
-  execute: Dependencies['execute']
-}
+/** Bounds the report model call; the executor's result is already stored when it starts. */
+const reportTimeout = 60_000
 
 interface Dependencies {
-  executors?: readonly RouterExecutorAdapter[]
-  trace?: RouterTraceSink
-  unifiedExecution?: boolean
-  current?(job: RouterJob): boolean
-  handoffAuthorized?(job: RouterJob): boolean
   authorized(scope: RouterJobScope, audience: string | null, repository: string | null): boolean
   execute(
     job: RouterJob,
     history: RouterJobStep[],
     signal: AbortSignal,
-    onThreadReady?: (threadId: string) => void,
   ): Promise<{ result: string; threadId?: string }>
   completed?(job: RouterJob, signal: AbortSignal): Promise<ReturnStatus | { recheckAt: string }>
+  /** Turns a completed step's stored result into a report. Must not run the executor again. */
+  report?(job: RouterJob, signal: AbortSignal): Promise<RouterJobReport | null>
+  /** Milliseconds a report may take before the step is delivered without one. */
+  reportTimeout?: number
   filter?(text: string): string
-  tracking?: ReturnType<typeof createRouterEventWorker>
 }
 
 export function routerJobReceipt(job: RouterJob): RouterJobReceipt {
+  const report =
+    job.status === 'completed' && job.reportState === 'ready' && job.report
+      ? parseRouterJobReport(job.report)
+      : null
   return {
     id: job.id,
     executor: job.executor,
@@ -59,6 +56,8 @@ export function routerJobReceipt(job: RouterJob): RouterJobReceipt {
     attempt: job.attempt,
     ...(job.repository && { repository: job.repository }),
     ...(job.result && { result: job.result }),
+    ...(report && { report }),
+    ...(job.status === 'completed' && job.reportState === 'pending' && { reportPending: true }),
   }
 }
 
@@ -69,39 +68,12 @@ export class RouterJobs {
   private executing?: Promise<void>
   private requested = false
   private retry?: ReturnType<typeof setTimeout>
-
-  private readonly adapters = new Map<string, RouterExecutorAdapter>()
+  private readonly reports = new Set<Promise<void>>()
 
   constructor(
     private readonly store: TriggerStore['jobs'],
     private readonly deps: Dependencies,
-  ) {
-    for (const adapter of deps.executors ?? []) {
-      if (
-        !adapter.name.trim() ||
-        !adapter.description.trim() ||
-        ['zero', 'codex'].includes(adapter.name) ||
-        this.adapters.has(adapter.name)
-      )
-        throw Error(`执行器名称重复或缺少能力说明：${adapter.name}`)
-      this.adapters.set(adapter.name, adapter)
-    }
-  }
-
-  executorCatalog(engineering: boolean) {
-    return [
-      { name: 'zero', description: '负责通用分析和处理。' },
-      ...(engineering ? [{ name: 'codex', description: '使用已授权的工程工作区。' }] : []),
-      ...Array.from(this.adapters.values(), ({ name, description }) => ({ name, description })),
-    ]
-  }
-
-  private executor(name: string): Dependencies['execute'] {
-    if (name === 'codex' || name === 'zero') return this.deps.execute.bind(this.deps)
-    const adapter = this.adapters.get(name)
-    if (!adapter) throw new TriggerAgentError(`执行器 ${name} 未接入。`)
-    return adapter.execute.bind(adapter)
-  }
+  ) {}
 
   start() {
     if (this.started || this.stop.signal.aborted) return
@@ -113,18 +85,12 @@ export class RouterJobs {
   async close() {
     this.stop.abort()
     clearTimeout(this.retry)
-    await Promise.all([this.running, this.executing])
+    await Promise.all([this.running, this.executing, ...this.reports])
   }
 
-  submit(
-    scope: RouterJobScope,
-    requestId: string,
-    input: NewJob,
-    registered?: (job: RouterJob) => void,
-  ): RouterJobReceipt {
+  submit(scope: RouterJobScope, requestId: string, input: NewJob): RouterJobReceipt {
     this.requireAccess(scope, input.audience ?? null, input.repository ?? null)
-    this.executor(input.executor)
-    const job = this.operation(() => this.store.submit(scope, requestId, input, registered))
+    const job = this.operation(() => this.store.submit(scope, requestId, input))
     this.requireOwner(job, scope, input.audience)
     this.wake()
     return routerJobReceipt(job)
@@ -133,15 +99,10 @@ export class RouterJobs {
   get(scope: RouterJobScope, id: number, audience?: string, attempt?: number): RouterJobReceipt {
     const job = this.store.get(scope, id, attempt)
     this.requireOwner(job, scope, audience)
-    return routerJobReceipt(job)
-  }
-
-  findAttempts(scope: RouterJobScope, id: number, audience: string, query: string) {
-    this.get(scope, id, audience)
-    return this.store.matchingAttempts(scope, id, audience, query).map(({ attempt }) => {
-      const receipt = this.get(scope, id, audience, attempt)
-      return { attempt, status: receipt.status }
-    })
+    const receipt = routerJobReceipt(job)
+    if (attempt !== undefined && this.store.get(scope, id)?.attempt !== job.attempt)
+      receipt.continued = true
+    return receipt
   }
 
   continue(
@@ -150,11 +111,15 @@ export class RouterJobs {
     requestId: string,
     instruction: string,
     audience?: string,
-    registered?: (job: RouterJob) => void,
+    options: {
+      brief?: string
+      expectedAttempt?: number
+      answer?: { attempt: number; option: number }
+    } = {},
   ): RouterJobReceipt {
-    this.executor(this.get(scope, id, audience).executor)
+    this.get(scope, id, audience)
     const job = this.operation(() =>
-      this.store.continue(scope, id, requestId, instruction, undefined, true, registered),
+      this.store.continue(scope, id, requestId, instruction, options),
     )
     this.wake()
     return routerJobReceipt(job)
@@ -177,10 +142,6 @@ export class RouterJobs {
     if (!job || job.audience !== (audience ?? null))
       throw new TriggerAgentError('在当前 Router 对话中找不到这个工作任务。')
     this.requireAccess(scope, job.audience, job.repository)
-    if (this.deps.handoffAuthorized && !this.deps.handoffAuthorized(job))
-      throw new TriggerAgentError('原 Worker 的资料授权已变更。')
-    if (job.kind && !this.deps.tracking?.authorized(job))
-      throw new TriggerAgentError('事件来源已停用，或已无权读取这条事件。')
   }
 
   private requireAccess(scope: RouterJobScope, audience: string | null, repository: string | null) {
@@ -188,11 +149,6 @@ export class RouterJobs {
       throw new TriggerAgentError('Router 工作任务服务尚未就绪。')
     if (!this.deps.authorized(scope, audience, repository))
       throw new TriggerAgentError('当前身份或仓库授权已变更，无法访问这个工作任务。')
-  }
-
-  /** Intake inserts watch jobs atomically with the event and wakes this existing queue after commit. */
-  notify() {
-    this.wake()
   }
 
   private wake() {
@@ -253,12 +209,7 @@ export class RouterJobs {
   }
 
   private mayUse(job: RouterJob) {
-    return (
-      this.deps.authorized(job.scope, job.audience, job.repository) &&
-      (this.deps.current?.(job) ?? true) &&
-      (this.deps.handoffAuthorized?.(job) ?? true) &&
-      (!job.kind || !!this.deps.tracking?.authorized(job))
-    )
+    return this.deps.authorized(job.scope, job.audience, job.repository)
   }
 
   private async run(job: RouterJob) {
@@ -267,7 +218,8 @@ export class RouterJobs {
       return
     }
     const access = new AbortController()
-    const signal = AbortSignal.any([this.stop.signal, access.signal])
+    const deadline = AbortSignal.timeout(10 * 60_000)
+    const signal = AbortSignal.any([this.stop.signal, access.signal, deadline])
     const check = setInterval(() => {
       try {
         if (!this.mayUse(job)) access.abort()
@@ -277,40 +229,9 @@ export class RouterJobs {
       }
     }, 1000)
     check.unref()
-    const extension = job.executor !== 'zero' && job.executor !== 'codex'
-    const trace = extension ? this.deps.trace : undefined
-    let runId: string | undefined
     let outcome: Parameters<TriggerStore['jobs']['finish']>[2]
     try {
-      let result: {
-        result: string
-        threadId?: string
-        attentionQuestion?: string
-        work?: RouterEventWork
-      }
-      const history = this.store.history(job.scope, job.id)
-      if (trace) {
-        runId = trace.begin(`router-job-${job.id}`, `Worker · ${job.executor}`, {
-          transport: 'registered-executor',
-          executor: job.executor,
-          context: { workerId: job.id, attempt: job.attempt },
-          instruction: job.instruction,
-          threadId: job.threadId,
-          history: history.map(({ attempt, instruction, result, status }) => ({
-            attempt,
-            instruction,
-            result,
-            status,
-          })),
-        })
-      }
-      if (job.kind && !this.deps.unifiedExecution) {
-        if (!this.deps.tracking) throw new TriggerAgentError('事件 Worker 尚未就绪。')
-        result = await this.deps.tracking.execute(job, signal)
-      } else
-        result = await this.executor(job.executor)(job, history, signal, (threadId) =>
-          this.store.attachThread(job.id, job.attempt, threadId),
-        )
+      const result = await this.deps.execute(job, this.store.history(job.scope, job.id), signal)
       if (!this.mayUse(job)) access.abort()
       signal.throwIfAborted()
       if (!result.result.trim()) throw new TriggerAgentError('执行器没有返回任务结果。')
@@ -318,94 +239,73 @@ export class RouterJobs {
         ...result,
         status: 'completed',
         result: this.safeText(result.result),
-        ...(result.attentionQuestion && {
-          attentionQuestion: this.safeText(result.attentionQuestion),
-        }),
-        ...(result.work && { work: this.workReceipt(job, result.work) }),
+        report: !!this.deps.report,
       }
     } catch (error) {
       const uncertain =
         error instanceof RouterJobExecutionUncertainError ||
-        ((job.executor === 'codex' || extension) &&
-          (signal.aborted || !(error instanceof TriggerAgentError)))
+        (job.executor === 'codex' && (signal.aborted || !(error instanceof TriggerAgentError)))
       const description = access.signal.aborted
         ? '执行期间任务授权已失效。'
         : this.stop.signal.aborted
           ? 'Router 停止期间执行被中断。'
-          : error instanceof TriggerAgentError
-            ? this.safeText(error.message)
-            : '执行器未返回有效结果。'
+          : deadline.aborted
+            ? '任务超时。'
+            : error instanceof TriggerAgentError
+              ? this.safeText(error.message)
+              : '执行器未返回有效结果。'
       outcome = {
         status: uncertain ? 'unknown' : 'failed',
-        result: uncertain
-          ? `${description} 请先核对${job.kind === 'github-watch' ? '原讨论' : '工作区'}，任务未自动重试。`
-          : description,
+        result: uncertain ? `${description} 请先核对工作区，任务未自动重试。` : description,
       }
     } finally {
       clearInterval(check)
     }
-    this.store.finish(job.id, job.attempt, outcome)
-    if (runId && trace) {
-      trace.append(runId, outcome.status === 'completed' ? 'result' : 'error', {
-        text: outcome.result,
-        status: outcome.status,
-        threadId: outcome.threadId ?? job.threadId,
-      })
-      trace.end(runId, outcome.status === 'completed' ? 'completed' : 'failed')
-    }
+    // The result is durable before the report starts; a report can never lose or relabel it.
+    if (this.store.finish(job.id, job.attempt, outcome) && outcome.report) this.startReport(job)
   }
 
-  private workReceipt(job: RouterJob, work: RouterEventWork): RouterEventWork {
-    if (
-      !job.kind ||
-      (job.kind === 'github-watch' && !job.repository) ||
-      (work.outcome === 'resolved' && (!work.sources.length || !work.steps.some((s) => s.ok)))
-    )
-      throw new TriggerAgentError('Worker 未提供可核实的办理回执。')
-    const archive = job.kind === 'event-followup'
-    const key = archive && this.store.followups.step(job.id, job.attempt)?.eventKey
-    const inbox = key && /^inbox:([1-9]\d*)$/u.exec(key)?.[1]
-    if (
-      archive &&
-      (!inbox || work.publicFacts || work.steps.some((s) => s.tool !== 'inspect_archive'))
-    )
-      throw new TriggerAgentError('归档 Worker 的办理回执与来源不符。')
-    if (!archive && work.steps.some((s) => s.tool === 'inspect_archive'))
-      throw new TriggerAgentError('GitHub Worker 的办理回执与来源不符。')
-    const prefix = job.repository && `https://github.com/${job.repository.toLowerCase()}/`
-    const sources = work.sources.map(({ label, url }) => {
-      // Only server-verified links in this repository may be persisted as evidence.
-      if (
-        this.safeText(url) !== url ||
-        (archive
-          ? url !== `/router?event=${inbox}`
-          : !prefix ||
-            !URL.canParse(url) ||
-            new URL(url).href !== url ||
-            !url.toLowerCase().startsWith(prefix))
-      )
-        throw new TriggerAgentError('Worker 的证据链接与本次仓库不符。')
-      return { label: this.safeText(label), url }
-    })
-    return {
-      outcome: work.outcome,
-      ...(work.followup && {
-        followup: {
-          kind: work.followup.kind,
-          decision: work.followup.decision,
-          reason: this.safeText(work.followup.reason),
-        },
-      }),
-      steps: work.steps.map(({ tool, ok }) => ({ tool, ok })),
-      ...(work.publicFacts && {
-        publicFacts: work.publicFacts.filter(isPublicGithubFact),
-      }),
-      sources,
+  private startReport(claimed: RouterJob) {
+    const work = this.writeReport(claimed)
+      .catch((error: unknown) => this.reportQueueFailure(error))
+      .finally(() => {
+        this.reports.delete(work)
+        this.wake()
+      })
+    this.reports.add(work)
+  }
+
+  /** Any failure, timeout or invalid output gives up the report; status and result stay as stored. */
+  private async writeReport(claimed: RouterJob) {
+    let report: RouterJobReport | null = null
+    const job = this.store.get(claimed.scope, claimed.id, claimed.attempt)
+    try {
+      if (job && this.deps.report && this.mayUse(job)) {
+        const signal = AbortSignal.any([
+          this.stop.signal,
+          AbortSignal.timeout(this.deps.reportTimeout ?? reportTimeout),
+        ])
+        signal.throwIfAborted()
+        // Delivery waits for this step, so it must end on time even if the call ignores the signal.
+        const abandoned = Promise.withResolvers<null>()
+        const give = () => abandoned.resolve(null)
+        signal.addEventListener('abort', give, { once: true })
+        try {
+          report = await Promise.race([this.deps.report(job, signal), abandoned.promise])
+        } finally {
+          signal.removeEventListener('abort', give)
+        }
+        if (signal.aborted || !this.mayUse(job)) report = null
+      }
+    } catch {
+      // Nothing from a failed report is kept or logged; the raw result is delivered instead.
+      report = null
     }
+    this.store.saveReport(claimed.id, claimed.attempt, report && JSON.stringify(report))
   }
 
   private safeText(text: string) {
-    return this.deps.filter?.(text) ?? text
+    return (this.deps.filter?.(text) ?? text).slice(0, 12000)
   }
 
   private async returnResult(job: RouterJob) {

@@ -6,7 +6,6 @@ import { LogsPage } from './routes/logs'
 import { MemoPage } from './routes/memo'
 import { MemoryPage } from './routes/memory'
 import { MetricsPage } from './routes/metrics'
-import { RouterTracesPage } from './routes/router-traces'
 import { RouterWorkspacePage } from './routes/router-workspace'
 import {
   SessionChannelDetailRedirectPage,
@@ -27,23 +26,12 @@ const indexRoute = createRoute({
   component: DashboardPage,
 })
 
-const runtimeRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/runtime',
-  component: DashboardPage,
-})
-
 const routerWorkspaceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/router',
   validateSearch: (
     search: Record<string, unknown>,
-  ): {
-    event?: number
-    task?: number
-    matterId?: string
-    view?: 'tasks' | 'chat' | 'notifications'
-  } => {
+  ): { event?: number; task?: number; view?: 'tasks' | 'chat' | 'notifications' | 'summary' } => {
     const positiveId = (raw: unknown) => {
       const id = typeof raw === 'string' && /^[1-9]\d*$/.test(raw) ? Number(raw) : raw
       return typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? id : undefined
@@ -52,9 +40,8 @@ const routerWorkspaceRoute = createRoute({
     return {
       event: positiveId(search.event),
       task,
-      matterId: typeof search.matterId === 'string' ? search.matterId : undefined,
       view:
-        search.view === 'tasks' || search.view === 'notifications'
+        search.view === 'tasks' || search.view === 'notifications' || search.view === 'summary'
           ? search.view
           : search.view === 'chat' && task
             ? 'chat'
@@ -62,12 +49,6 @@ const routerWorkspaceRoute = createRoute({
     }
   },
   component: RouterWorkspacePage,
-})
-
-const routerTracesRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/router/traces',
-  component: RouterTracesPage,
 })
 
 const sessionsRoute = createRoute({
@@ -146,9 +127,7 @@ const metricsRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
-  runtimeRoute,
   routerWorkspaceRoute,
-  routerTracesRoute,
   sessionsRoute,
   sessionDetailRoute,
   sessionSourceDetailRoute,

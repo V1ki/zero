@@ -42,7 +42,7 @@ export function commissionIntent(input: string): CommissionIntent | null {
     )
   )
     return /(?:委托|订阅|跟踪|mandate|subscription)/iu.test(text) &&
-      /目的|名称|名字|关键词|关键字|匹配|截止|归档|文档|会话|受众|来源|归组|负责|改名|接收人|收件人|目标群|紧急标记|keywords?|deadline|purpose/i.test(
+      /目的|名称|名字|关键词|关键字|匹配|截止|归档|文档|会话|受众|来源|归组|处理方式|负责|改名|接收人|收件人|目标群|紧急标记|keywords?|deadline|purpose/i.test(
         text,
       )
       ? 'edit'
@@ -64,7 +64,7 @@ const directions = [
   'create 返回 {"source":"S1","name":"简短名称","purpose":"用户的跟踪目的","keyword":"原文关键词或空串","targets":[],"archive":null,"project":null,"policy":{},"urgent":false,"deadline":null}。targets 只用 T 编号，archive 只用 D 编号，project 只用 P 编号；未要求推送或归档时不要推定。',
   'pause/resume 只能返回 {"mandate":"M1"}。policy 只能返回 {"mandate":"M1","policy":{...}} 或 {"project":"P1","policy":{...}}。每次只改一个对象。',
   'edit 返回 {"mandate":"M1","patch":{...}}，patch 只包含明确变更的 create 字段（策略仅改指定字段）。可选 groupBy 为 thread（同一 PR 等业务对象）、mandate（整个委托归一项）、event（逐事件）。缺少对象则澄清。',
-  'create/edit 仅在用户明确选择处理方式时填写 processing。direct 表示直接按来源事实提醒，agent 表示让模型按委托目的归纳。',
+  'create/edit 仅在用户明确选择处理方式时填写 processing。direct 表示直接按来源事实提醒，agent 表示让模型按委托目的归纳，investigate 表示提醒前只读查看 GitHub 失败详情或 PR 记录（仅限 GitHub 来源）。',
   'policy 用 duringWork/afterWork/offDay/awayFallback/urgentDestination 表示目标 web/weixin/feishu/dingtalk/defer/none，可设 quietStart/quietEnd (HH:mm)、digestMinutes、dateOverrides。只填明确要求的字段，外发须有对应目标。',
   'policy.rules 是同一层从前到后首条匹配的规则数组（最多 12 条）；委托层优先项目层。仅当用户明确管理规则时提供整个数组，保留未指定的旧规则、ID 及相对顺序，新增默认追加；遇到歧义返回 clarify。只有用户明确要求优先级或位置时才变更原有顺序。',
   '每条规则形如 {"id":"stable-id","name":"规则名称","when":{"period":"offDay","presence":"away","urgency":"normal","quiet":false},"destination":"defer"}。when 取一个或多个条件，组合均需满足。period 为 duringWork/afterWork/offDay，presence 为 present/away/unknown，urgency 为 urgent/normal，quiet 为布尔值。规则内禁止表达式和其他字段。',
@@ -471,7 +471,11 @@ export function describeCommission(change: CommissionChange, catalog: Commission
     title,
     details: [
       `跟踪目的：${m.purpose}`,
-      m.processing === 'direct' ? '处理方式为直接生成事实提醒' : '处理方式为 Agent 归纳',
+      m.processing === 'direct'
+        ? '处理方式为直接生成事实提醒'
+        : m.processing === 'investigate'
+          ? '处理方式为读取 GitHub 详情后提醒'
+          : '处理方式为 Agent 归纳',
       `监听：${m.source} / ${source?.label ?? m.scope}${source?.label !== m.scope ? `（${m.scope}）` : ''}`,
       `任务归组：${{ thread: '按业务对象', mandate: '整个委托', event: '逐条事件' }[m.groupBy ?? 'thread']}`,
       `匹配文字：${m.keyword || '该来源所有命中事件'}`,

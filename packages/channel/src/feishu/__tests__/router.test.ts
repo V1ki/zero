@@ -471,63 +471,6 @@ describe('Feishu native Router', () => {
   })
 })
 
-test('Agent-composed native presentation preserves content and callback identity without legacy task ids', async () => {
-  const h = await harness()
-  const deliveryId = `publication-${'a'.repeat(64)}-feishu`
-  const received = mock(async (input: { actorId: string }) => input.actorId === 'ou_user')
-  h.channel.router.setPublicationHandler(received)
-  const presentation = {
-    title: '核查有了新结果',
-    text: '**找到相关讨论**，但还没有复测证据。\n[查看原讨论](https://github.com/example/repo/issues/1)；不代表修复完成。',
-    actions: [{ id: 'verify', label: '继续核对' }],
-  }
-  try {
-    const result = await h.channel.router.sendPresentation(
-      'oc_room',
-      deliveryId,
-      presentation,
-      signal(),
-      () => true,
-    )
-    expect(result).toEqual({ status: 'accepted', receipt: 'om_native' })
-    const sent = h.create.mock.calls[0][0] as { data: { content: string } }
-    const view = JSON.parse(sent.data.content)
-    expect(view.header.title.content).toBe(presentation.title)
-    expect(view.body.elements[0]).toEqual({ tag: 'markdown', content: presentation.text })
-    const button = view.body.elements[1]
-    expect(button.text.content).toBe('继续核对')
-    expect(button.behaviors[0].value).toEqual({
-      source: 'zero_router_publication',
-      deliveryId,
-      actionId: 'verify',
-    })
-    const original = actionEvent()
-    const click = {
-      ...original,
-      event: { ...original.event, action: { tag: 'button', value: button.behaviors[0].value } },
-    }
-    expect(await h.invoke(click)).toMatchObject({ toast: { type: 'success' } })
-    expect(received).toHaveBeenCalledWith({
-      peerId: 'oc_room',
-      actorId: 'ou_user',
-      cardId: 'om_native',
-      messageId: 'event_a',
-      deliveryId,
-      actionId: 'verify',
-    })
-    expect(
-      await h.invoke({ ...click, header: { ...click.header, app_id: 'wrong-app' } }),
-    ).toMatchObject({ toast: { type: 'error' } })
-    const denied = {
-      ...click,
-      event: { ...click.event, operator: { tenant_key: 'tenant1', open_id: 'ou_other' } },
-    }
-    expect(await h.invoke(denied)).toMatchObject({ toast: { type: 'error' } })
-  } finally {
-    await h.channel.stop()
-  }
-})
-
 test('generic archive preserves content beyond notification length and fences revoked writes', async () => {
   const h = await harness()
   const body = '完整原始证据和限制。'.repeat(400)

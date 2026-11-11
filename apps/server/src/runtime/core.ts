@@ -291,6 +291,9 @@ function createRuntimeSessionManager({
       identityReader: memoryRuntime.identityReader,
       bus,
       sessionDb: observability.sessionDb,
+      sessionEvents: observability.sessionEvents,
+      // ZERO_SESSION_STORE=file-only:消息/压缩块只写事件文件,DB 大字段降为可 rebuild 的派生索引
+      sessionEventsOnly: process.env.ZERO_SESSION_STORE === 'file-only',
       schedulerHandle: schedulerRuntime.schedulerHandle,
       scheduleStore: schedulerRuntime.scheduleStore,
       taskClosureModel: config.taskClosureModel,

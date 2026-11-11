@@ -285,6 +285,7 @@ function createSessionAgentObservability(options: {
     tracer: options.deps.tracer,
     secretFilter: options.deps.secretFilter,
     bus: options.deps.bus,
+    sessionEvents: options.deps.sessionEvents,
     providerName: options.resolved.providerName,
     modelLabel: options.modelRouter.getModelLabel(options.resolved),
     pricing: options.resolved.modelConfig.pricing,

@@ -11,12 +11,8 @@ type Check = TriggerGithubPermissionReport['checks'][number]
 
 const resourceLabels: Record<Check['resource'], string> = {
   actions: 'Actions 运行记录',
-  prComments: 'PR 评论中的 @ 提及',
+  prComments: 'PR 普通评论',
   prBase: 'PR 目标分支',
-  issues: 'Issue 状态',
-  pullRequests: 'PR 状态',
-  issueComments: 'Issue 普通评论',
-  pullRequestComments: 'PR 普通评论',
 }
 
 const statusLabels: Record<Check['status'], string> = {
@@ -43,19 +39,11 @@ export function GithubPermissionCheck({
     workflowFailures: repo.workflowFailures,
     prComments,
     prBase: prComments && Boolean(repo.branch.trim()),
-    ...(repo.issues && { issues: true }),
-    ...(repo.pullRequests && { pullRequests: true }),
-    ...(repo.issueComments && { issueComments: true }),
-    ...(repo.pullRequestComments && { pullRequestComments: true }),
   } satisfies TriggerGithubPermissionSelection
   const selected = [
     ...(selection.workflowFailures ? [resourceLabels.actions] : []),
     ...(selection.prComments ? [resourceLabels.prComments] : []),
     ...(selection.prBase ? [resourceLabels.prBase] : []),
-    ...(selection.issues ? [resourceLabels.issues] : []),
-    ...(selection.pullRequests ? [resourceLabels.pullRequests] : []),
-    ...(selection.issueComments ? [resourceLabels.issueComments] : []),
-    ...(selection.pullRequestComments ? [resourceLabels.pullRequestComments] : []),
   ]
   const probe = useMutation({
     mutationFn: () => {
@@ -79,20 +67,12 @@ export function GithubPermissionCheck({
         >
           {probe.isPending ? '正在检查读取权限…' : '检查读取权限'}
         </button>
-        <small>
-          {repo.githubAppRef ? (
-            <>
-              GitHub App · <code>{repo.githubAppRef}</code>（监听和此项检查只使用读取权限）
-            </>
-          ) : credentialRef ? (
-            '使用所选凭证'
-          ) : (
-            '使用匿名访问'
-          )}
-        </small>
+        <small>{credentialRef ? '使用所选凭证' : '使用匿名访问'}</small>
       </div>
       <small>
-        {selected.length ? `检查项目：${selected.join('、')}` : '请先选择要检查的仓库监听条件。'}
+        {selected.length
+          ? `检查项目：${selected.join('、')}`
+          : '请先选择要监听的工作流失败或 PR 提及。'}
       </small>
       {probe.error && (
         <p className="listener-error" role="alert">

@@ -107,33 +107,5 @@ export function createFeishuTaskDelivery(
     )
   }
 
-  async function appendDocument(
-    target: MandateArchive,
-    id: string,
-    title: string,
-    body: string,
-    signal: AbortSignal,
-    maySend: () => boolean,
-  ) {
-    const channel = connectedChannel(target.channelId)
-    if (!channel) return { status: 'rejected' as const, reason: '归档所需的飞书机器人未连接。' }
-    return channel.router.appendDocument(
-      target.documentId,
-      id,
-      title,
-      body,
-      signal,
-      () => maySend() && connectedChannel(target.channelId) === channel,
-    )
-  }
-
-  return {
-    appendDocument,
-    listTargets,
-    listDirectTargets,
-    listArchiveChannels,
-    probeArchive,
-    send,
-    archive,
-  }
+  return { listTargets, listDirectTargets, listArchiveChannels, probeArchive, send, archive }
 }

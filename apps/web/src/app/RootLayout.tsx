@@ -9,6 +9,7 @@ import { useUIStore } from './stores/ui'
 
 export function RootLayout() {
   const { chatDrawerOpen, isMobile, isTablet } = useUIStore()
+
   const sidebarWidth = isMobile ? 0 : isTablet ? 44 : 220
   const drawerWidth = chatDrawerOpen ? (isMobile ? 0 : 360) : 0
 

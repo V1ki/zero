@@ -1,7 +1,14 @@
 import { join } from 'node:path'
 import type { CodexWorkerUsageRecord } from '@zero-os/core'
 import { LiteLLMPricing, type UsageRecorder, computeCost } from '@zero-os/model'
-import { MetricsDB, ObservabilityStore, SessionDB, Tracer, isUsagePurpose } from '@zero-os/observe'
+import {
+  MetricsDB,
+  ObservabilityStore,
+  SessionDB,
+  SessionEventStore,
+  Tracer,
+  isUsagePurpose,
+} from '@zero-os/observe'
 import type { ForkEffect } from '@zero-os/shared'
 import { generateId, now } from '@zero-os/shared'
 import { HeartbeatWriter } from '@zero-os/supervisor'
@@ -11,6 +18,7 @@ export interface ObservabilityRuntime {
   observability: ObservabilityStore
   metrics: MetricsDB
   sessionDb: SessionDB
+  sessionEvents: SessionEventStore
   sessionsDbPath: string
   tracer: Tracer
   heartbeat: HeartbeatWriter
@@ -27,6 +35,13 @@ export function createObservabilityRuntime(
   const sessionDb = new SessionDB(sessionsDbPath)
   metrics.attachSessionsDb(sessionsDbPath)
   const tracer = new Tracer(logsDir)
+  const sessionEvents = new SessionEventStore({
+    basePath: logsDir,
+    onError: (message) => {
+      console.error(`[ZeRo OS] ${message}`)
+      observability.log('warn', 'session_event_store_error', { message })
+    },
+  })
   const heartbeat = new HeartbeatWriter(join(zeroDir, 'heartbeat.json'), {
     bootId: process.env.ZERO_HEARTBEAT_BOOT_ID || undefined,
     forkEffect,
@@ -41,6 +56,7 @@ export function createObservabilityRuntime(
     observability,
     metrics,
     sessionDb,
+    sessionEvents,
     sessionsDbPath,
     tracer,
     heartbeat,

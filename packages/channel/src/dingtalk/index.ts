@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { RouterPublicationAction } from '@zero-os/shared'
 import { describeError } from '@zero-os/shared'
 import {
   DWClient,
@@ -31,9 +30,7 @@ export interface DingtalkChannelConfig {
   clientSecret: string
   robotCode?: string
   cardTemplateId?: string
-  cardStreamingKey?: string
   cardStorePath?: string
-  onPublicationAction?: (action: RouterPublicationAction) => Promise<boolean>
   onTaskCardAction?: (action: DingtalkTaskCardAction) => Promise<boolean>
   downloadsDir?: string
   apiBaseUrl?: string
@@ -125,12 +122,10 @@ export class DingtalkChannel implements Channel {
       account: config.clientId,
       robotCode: config.robotCode ?? config.clientId,
       templateId: config.cardTemplateId,
-      streamingKey: config.cardStreamingKey,
       apiBaseUrl: this.apiBaseUrl,
       fetch: this.fetchImpl,
       getToken: () => this.getAccessToken(),
       onAction: config.onTaskCardAction,
-      onPublication: config.onPublicationAction,
     })
     this.incomingBuilder = new DingtalkIncomingMessageBuilder({
       downloadMedia: (request) => this.downloadMedia(request),
@@ -159,10 +154,7 @@ export class DingtalkChannel implements Channel {
         return { status: EventAck.SUCCESS }
       })
 
-    if (
-      this.config.cardTemplateId &&
-      (this.config.onTaskCardAction || this.config.onPublicationAction)
-    ) {
+    if (this.config.cardTemplateId && this.config.onTaskCardAction) {
       this.client.registerCallbackListener(TOPIC_CARD, (message) => {
         this.taskCards
           .handle(message)

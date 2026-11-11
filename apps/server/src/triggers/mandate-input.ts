@@ -199,19 +199,24 @@ function mandate(value: unknown): TriggerMandate {
   const targets = list(data.targets, 3, parseMandateTarget, '提醒目标列表')
   if (new Set(targets.map((row) => row.platform)).size !== targets.length)
     throw new MandateInputError(400, '每个平台只能选择一个接收目标。')
+  const source = oneOf(data.source, ['github', 'wxarc'] as const, '事件来源')
+  const processing =
+    'processing' in data
+      ? oneOf(data.processing, ['agent', 'direct', 'investigate'] as const, '事件处理方式')
+      : undefined
+  if (processing === 'investigate' && source !== 'github')
+    throw new MandateInputError(400, '只有 GitHub 委托可以选择「读取 GitHub 详情后提醒」。')
   return {
     id: id(data.id, '委托标识'),
     enabled: bool(data.enabled, '启用开关'),
     name: text(data.name, '委托名称', 120),
     purpose: text(data.purpose, '跟踪目的', 2000, 'multiline'),
-    source: oneOf(data.source, ['github', 'wxarc'], '事件来源'),
+    source,
     scope: text(data.scope, '监听范围', 256),
     keyword: text(data.keyword, '关键词', 256, 'optional'),
     projectId: data.projectId === null ? null : id(data.projectId, '所属项目'),
     targets,
-    ...('processing' in data
-      ? { processing: oneOf(data.processing, ['agent', 'direct'] as const, '事件处理方式') }
-      : {}),
+    ...(processing ? { processing } : {}),
     ...('groupBy' in data
       ? { groupBy: oneOf(data.groupBy, ['thread', 'mandate', 'event'] as const, '任务归组方式') }
       : {}),

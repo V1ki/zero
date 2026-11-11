@@ -274,9 +274,14 @@ function updateSessionReasoningEffort(options: {
     }
   }
 
+  const previousEffort = options.data.reasoningEffort
   options.data.reasoningEffort = options.effort
   options.data.updatedAt = now()
   options.persistState()
+
+  options.deps.sessionEvents?.append(options.data.id, [
+    { type: 'params/reasoning', data: { from: previousEffort, to: options.effort } },
+  ])
 
   options.deps.bus?.emit('session:update', {
     sessionId: options.data.id,

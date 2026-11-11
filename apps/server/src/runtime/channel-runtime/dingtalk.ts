@@ -33,7 +33,6 @@ export function buildConfiguredDingtalkDefinition(
       ...(channel.robotCodeRef ? [channel.robotCodeRef] : []),
     ],
     cardTemplateId: channel.cardTemplateId,
-    cardStreamingKey: channel.cardStreamingKey,
     debug: channel.debug ?? false,
     keepAlive: channel.keepAlive ?? true,
     credentials:
@@ -64,7 +63,6 @@ export async function registerDingtalkRuntimeChannel(
     clientSecret: definition.credentials.clientSecret,
     robotCode: definition.credentials.robotCode,
     cardTemplateId: definition.cardTemplateId,
-    cardStreamingKey: definition.cardStreamingKey,
     cardStorePath: join(
       options.zeroDir,
       'channels',
@@ -73,14 +71,6 @@ export async function registerDingtalkRuntimeChannel(
         .update(JSON.stringify([definition.name, definition.credentials.clientId]))
         .digest('hex')}.sqlite`,
     ),
-    onPublicationAction: async (action) => {
-      if (options.isShuttingDown()) return false
-      return (
-        (await options
-          .getTaskBridge?.()
-          ?.publication({ platform: 'dingtalk', channelId: definition.name, ...action })) ?? false
-      )
-    },
     onTaskCardAction: async (action) =>
       (await options.getTaskBridge?.()?.card({
         platform: 'dingtalk',

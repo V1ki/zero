@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto'
 import type { TriggerStore } from '@zero-os/observe'
-import type { RouterPresentation } from '@zero-os/shared'
 import {
   type MandatePlatform,
   type MandateTarget,
@@ -13,7 +12,7 @@ import {
   isTriggerRoutePlatform,
   sameTriggerRouteTarget,
 } from '@zero-os/shared'
-import { TriggerAgentError } from './event-agent'
+import { TriggerAgentError, type TriggerAnalysisContext } from './event-agent'
 import type { createMandatePlatforms } from './mandate-platforms'
 import type { MandateReceipt } from './mandate-runtime'
 import type { MandateTargetOption } from './mandate-service'
@@ -26,15 +25,14 @@ interface RoutingDependencies {
     item: TriggerInboxItem,
     sessionId: string,
     signal?: AbortSignal,
+    context?: TriggerAnalysisContext,
   ): Promise<TriggerAgentResult>
   weixin: Pick<ReturnType<typeof createTriggerWeixin>, 'listTargets' | 'send'>
   personal?: Pick<
     ReturnType<typeof createMandatePlatforms>,
     'listPersonalBots' | 'listPersonalTargets' | 'sendPersonal'
   > &
-    Partial<
-      Pick<ReturnType<typeof createMandatePlatforms>, 'sendDirect' | 'lookupDirectReceipt'>
-    > & {
+    Partial<Pick<ReturnType<typeof createMandatePlatforms>, 'sendDirect'>> & {
       listPersonalDirectTargets(): readonly MandateTarget[]
     }
   onPolicyChange?(): void
@@ -48,6 +46,21 @@ type BotBinding = ReturnType<TriggerStore['routing']['getPersonalBotBinding']>
 type DeliveryState = TriggerRoutingBot['deliveryState']
 type BotClaim = { target: MandateTarget; bindingRevision: number | null; automatic: boolean }
 export class DirectReminderUnavailableError extends Error {}
+
+/** How far back triage looks for earlier events of the same stream. */
+const triageWindowMs = 7 * 86_400_000
+
+/** Program rules the model cannot override: only a subscription route with triage on may be filtered. */
+function applyTriageRules(agent: TriggerAgentResult, triage: boolean, manual: boolean) {
+  const { triage: judgement, ...result } = agent
+  if (!triage || !judgement) return result
+  if (judgement.decision === 'skip' && manual)
+    return {
+      ...result,
+      triage: { decision: 'notify' as const, reason: '手动提交的事件不做筛选。' },
+    }
+  return { ...result, triage: judgement }
+}
 
 const directUnavailable: Record<Exclude<DeliveryState, 'ready'>, string> = {
   offline: '所选机器人离线，请在它重新连接后发送。',
@@ -248,11 +261,6 @@ export class TriggerRoutingRuntime {
     return !!this.selectedDirectClaim(target)
   }
 
-  directAudienceKey(target: MandateTarget): string | undefined {
-    const claim = this.selectedDirectClaim(target)
-    return claim && audienceKey(claim, this.getConfig().revision)
-  }
-
   /** Pin the verified private recipient and fence an in-flight conversation against rebinding. */
   claimRouterImTarget(target: MandateTarget): (() => boolean) | null {
     const revision = this.getConfig().revision
@@ -286,27 +294,6 @@ export class TriggerRoutingRuntime {
     return { channelId: bot.channelId, label: bot.label, audienceKey: audienceKey(claim, revision) }
   }
 
-  readDirectReceipt(
-    platform: MandatePlatform,
-    prepared: { channelId: string; audienceKey: string },
-    id: string,
-  ) {
-    const lookup = this.deps.personal?.lookupDirectReceipt
-    if (!lookup) return null
-    try {
-      const { bot, claim, revision } = this.directRecipient(platform)
-      if (
-        bot.channelId !== prepared.channelId ||
-        audienceKey(claim, revision) !== prepared.audienceKey
-      )
-        return null
-      return lookup(claim.target, id)
-    } catch (error) {
-      if (error instanceof DirectReminderUnavailableError) return null
-      throw error
-    }
-  }
-
   async sendDirectReminder(
     platform: MandatePlatform,
     prepared: { channelId: string; audienceKey: string },
@@ -314,7 +301,6 @@ export class TriggerRoutingRuntime {
     deliveryId: string,
     signal: AbortSignal,
     originAuthorized: () => boolean = () => true,
-    presentation?: RouterPresentation,
   ): Promise<MandateReceipt> {
     const cancelled = {
       status: 'rejected' as const,
@@ -352,7 +338,7 @@ export class TriggerRoutingRuntime {
       )
     if (!maySend()) return cancelled
     try {
-      return await send(claim.target, text, deliveryId, operation, maySend, presentation)
+      return await send(claim.target, text, deliveryId, operation, maySend)
     } catch {
       return { status: 'unknown', reason: '未能确认平台回执，请先在机器人私聊中核对。' }
     }
@@ -373,7 +359,6 @@ export class TriggerRoutingRuntime {
   private evaluateRoute(
     settings: TriggerRoutingSettings,
     presence: Awaited<ReturnType<TriggerRoutingRuntime['getPresenceContext']>>,
-    urgency: 'normal' | 'urgent' = 'normal',
   ) {
     const claims = this.selectedClaims(settings)
     const now = this.now()
@@ -383,16 +368,15 @@ export class TriggerRoutingRuntime {
       presence.lastPresenceAt,
       Object.fromEntries(Array.from(claims.keys(), (platform) => [platform, true])),
       presence.native,
-      urgency,
     )
     return { decision, claims, now }
   }
 
-  async previewCurrentRoute(urgency: 'normal' | 'urgent' = 'normal') {
+  async previewCurrentRoute() {
     const { settings, revision } = this.getConfig()
     const presence = await this.getPresenceContext(settings)
     if (this.getConfig().revision !== revision) throw new Error('通知设置刚刚变更，请重新查询。')
-    return this.evaluateRoute(settings, presence, urgency).decision
+    return this.evaluateRoute(settings, presence).decision
   }
 
   listRoutes(limit?: number) {
@@ -473,9 +457,19 @@ export class TriggerRoutingRuntime {
     let agent = route.agent
     if (route.status === 'pending') {
       const sessionId = route.sessionId ?? `trigger-${crypto.randomUUID()}`
+      const triage = this.getConfig().settings.triage !== false
+      const context = triage
+        ? {
+            previous: this.store.listRecentInStream(
+              event.id,
+              new Date(Date.parse(event.receivedAt) - triageWindowMs).toISOString(),
+            ),
+          }
+        : undefined
       if (!this.store.claimAgent(event.id, sessionId)) return
+      let result: TriggerAgentResult
       try {
-        agent = await this.deps.analyze(event, sessionId, this.controller.signal)
+        result = await this.deps.analyze(event, sessionId, this.controller.signal, context)
       } catch (error) {
         this.store.failAgent(
           event.id,
@@ -483,6 +477,13 @@ export class TriggerRoutingRuntime {
           error instanceof TriggerAgentError ? error.message : 'Agent 分析失败，可手动重试。',
         )
         return
+      }
+      agent = applyTriageRules(result, triage, route.origin === 'manual')
+      if (agent.triage?.decision === 'skip') {
+        // Filtered is terminal: nothing is routed or delivered, not even to the Web.
+        if (this.store.filterAgent(event.id, sessionId, agent)) return
+        // A manual request or turning triage off won the race. Continue as without triage.
+        agent = applyTriageRules(agent, false, false)
       }
       if (!this.store.finishAgent(event.id, sessionId, agent)) return
     }

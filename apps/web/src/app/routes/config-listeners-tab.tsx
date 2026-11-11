@@ -72,11 +72,6 @@ function GithubSettings({
   const validRef = !credentialRef || credentialPattern.test(credentialRef)
   const repositories = value.repositories
   const grants = value.routerOperators ?? []
-  const setRead = (identity: CommissionOperator, selected: boolean) => {
-    const others = grants.filter((t) => t.platform !== identity.platform)
-    onChange({ ...value, routerOperators: selected ? [...others, identity] : others })
-  }
-  const replacingConnection = Boolean(saved.credentialRef && saved.credentialRef !== credentialRef)
   const changedAuthorizedConnection =
     saved.credentialRef !== credentialRef && Boolean(saved.routerOperators?.length)
   const options = useQuery({
@@ -91,39 +86,7 @@ function GithubSettings({
   })
   const update = (repos: TriggerGithubRepository[]) => onChange({ ...value, repositories: repos })
   const patch = (name: string, fields: Partial<TriggerGithubRepository>) =>
-    update(
-      repositories.map((repo) => {
-        if (repo.name !== name) return repo
-        const next = { ...repo, ...fields }
-        if (
-          !next.enabled ||
-          !next.githubAppRef ||
-          repo.githubAppRef !== next.githubAppRef ||
-          !next.issueComments
-        ) {
-          if (next.allowOwnerIssueClose) next.allowOwnerIssueClose = false
-          next.allowOwnerIssueCloseSince = undefined
-        }
-        if (
-          !next.enabled ||
-          !next.issues ||
-          !next.githubAppRef ||
-          repo.githubAppRef !== next.githubAppRef
-        ) {
-          if (next.closeResolvedDuplicates) next.closeResolvedDuplicates = false
-          next.closeResolvedDuplicatesSince = undefined
-        }
-        if (
-          !next.enabled ||
-          !next.githubAppRef ||
-          !(next.issueComments || next.pullRequestComments)
-        ) {
-          if (next.ownerMentionReplies) next.ownerMentionReplies = false
-          next.ownerMentionRepliesSince = undefined
-        }
-        return next
-      }),
-    )
+    update(repositories.map((repo) => (repo.name === name ? { ...repo, ...fields } : repo)))
   const exists = (candidate: string) =>
     repositories.some((repo) => repo.name.toLowerCase() === candidate.toLowerCase())
   const add = (candidate: string) => {
@@ -173,12 +136,7 @@ function GithubSettings({
             autoComplete="off"
             spellCheck={false}
             onChange={(e) => {
-              onChange({
-                ...value,
-                credentialRef: e.target.value,
-                routerOperators: [],
-                ...(value.routerTrackingEnabled !== undefined && { routerTrackingEnabled: false }),
-              })
+              onChange({ ...value, credentialRef: e.target.value, routerOperators: [] })
               setChoices([])
               discover.reset()
             }}
@@ -233,7 +191,11 @@ function GithubSettings({
                       <input
                         type="checkbox"
                         checked={checked}
-                        onChange={(e) => setRead(identity, e.target.checked)}
+                        onChange={(e) => {
+                          const next = grants.filter((t) => t.platform !== platform)
+                          if (e.target.checked) next.push(identity)
+                          onChange({ ...value, routerOperators: next })
+                        }}
                       />
                       {platformLabel} · {label}
                     </label>
@@ -246,30 +208,24 @@ function GithubSettings({
                     )
                     .map((old) => (
                       <label className="listener-row" key={old.platform}>
-                        <input type="checkbox" checked onChange={() => setRead(old, false)} />
+                        <input
+                          type="checkbox"
+                          checked
+                          onChange={() =>
+                            onChange({
+                              ...value,
+                              routerOperators: grants.filter(
+                                (t) => !sameTriggerRouteTarget(t, old),
+                              ),
+                            })
+                          }
+                        />
                         {old.channelId} · 旧授权当前不可用，取消勾选可移除
                       </label>
                     ))}
               </>
             )
           )}
-        </fieldset>
-        <fieldset className="listener-item listener-stack">
-          <legend>Router 仓库跟踪</legend>
-          <label className="listener-row">
-            <input
-              type="checkbox"
-              checked={value.routerTrackingEnabled === true}
-              disabled={!credentialRef || !validRef || replacingConnection}
-              onChange={(e) => onChange({ ...value, routerTrackingEnabled: e.target.checked })}
-            />
-            允许 Router 跟踪 GitHub 仓库
-          </label>
-          <small>
-            网页和已获准读取 GitHub 的 IM 入口共用此设置。向 Router
-            提出跟踪请求后，仓库会出现在下方，新发生的 Issue 和 PR 变化会交给后台 Worker 处理。
-          </small>
-          {replacingConnection && <small>保存新连接后，可为它开启仓库跟踪。</small>}
         </fieldset>
         <div className="listener-row">
           <label className="listener-field">
@@ -375,9 +331,8 @@ function GithubSettings({
                 </label>
                 <small>
                   在仓库 Webhooks 中设置可从 GitHub 访问的 HTTPS 地址，路径为{' '}
-                  <code>/webhook/github/{repo.name}</code>。选择 JSON 格式，按下方规则订阅
-                  Issues、Pull requests、Workflow runs 或 Issue comments 事件，并使用与 Secrets
-                  中相同的签名密钥。
+                  <code>/webhook/github/{repo.name}</code>。选择 JSON 格式及 Workflow runs 或 Issue
+                  comments 事件，并使用与 Secrets 中相同的签名密钥。
                 </small>
               </>
             )}
@@ -394,92 +349,6 @@ function GithubSettings({
               />
               Actions 工作流失败
             </label>
-            <label className="listener-row">
-              <input
-                type="checkbox"
-                checked={!!repo.issues}
-                onChange={(e) => patch(repo.name, { issues: e.target.checked })}
-              />
-              Issue 状态变化
-            </label>
-            <label className="listener-row">
-              <input
-                type="checkbox"
-                checked={!!repo.pullRequests}
-                onChange={(e) => patch(repo.name, { pullRequests: e.target.checked })}
-              />
-              PR 状态变化
-            </label>
-            {(repo.issues || repo.pullRequests) && (
-              <small>
-                所有分支上新建、关闭、重新打开和 PR 合并都会进入收件箱。私有仓库需为 GitHub
-                凭证开通相应的 Issues 或 Pull requests 只读权限。
-              </small>
-            )}
-            <label className="listener-row">
-              <input
-                type="checkbox"
-                checked={!!repo.closeResolvedDuplicates}
-                disabled={!repo.enabled || !repo.issues || !repo.githubAppRef}
-                onChange={(e) => patch(repo.name, { closeResolvedDuplicates: e.target.checked })}
-              />
-              自动关闭已确认重复且已有解决记录的 Issue
-            </label>
-            <small>
-              需绑定 GitHub App 并启用 Issue 状态变化监听。保存后，对新收到的事件核实重复关系及原
-              Issue 的解决状态；只关闭当前重复项，主题相似或仅提到旧帖不会触发关闭。
-            </small>
-            <label className="listener-row">
-              <input
-                type="checkbox"
-                checked={!!repo.issueComments}
-                onChange={(e) => patch(repo.name, { issueComments: e.target.checked })}
-              />
-              Issue 普通评论
-            </label>
-            <label className="listener-row">
-              <input
-                type="checkbox"
-                checked={!!repo.pullRequestComments}
-                onChange={(e) => patch(repo.name, { pullRequestComments: e.target.checked })}
-              />
-              PR 普通评论
-            </label>
-            <small>
-              新旧 Issue 和 PR 的主讨论区都接收新评论，无需
-              @。默认从现在开始；自动检查可在下方选择回看 1 或 24 小时。编辑、删除、PR
-              审阅和行内评论不入箱。含危险操作请求的评论会被过滤。
-            </small>
-            <label className="listener-row">
-              <input
-                type="checkbox"
-                checked={!!repo.allowOwnerIssueClose}
-                disabled={!repo.enabled || !repo.githubAppRef || !repo.issueComments}
-                onChange={(e) => patch(repo.name, { allowOwnerIssueClose: e.target.checked })}
-              />
-              允许仓库所有者 @ 机器人关闭当前 Issue
-            </label>
-            <small>
-              需绑定 GitHub App 并监听 Issue 普通评论。仅在保存后的新评论中，仓库所有者直接 @
-              机器人并明确要求关闭当前 Issue 时执行。
-            </small>
-            <label className="listener-row">
-              <input
-                type="checkbox"
-                checked={!!repo.ownerMentionReplies}
-                disabled={
-                  !repo.enabled ||
-                  !repo.githubAppRef ||
-                  !(repo.issueComments || repo.pullRequestComments)
-                }
-                onChange={(e) => patch(repo.name, { ownerMentionReplies: e.target.checked })}
-              />
-              仓库所有者 @ 机器人时，在原讨论回复办理结果
-            </label>
-            <small>
-              只对保存后新发表的评论生效。Worker 办完后，用绑定的 GitHub App
-              在原讨论发布结果和证据链接。
-            </small>
             {repo.workflowFailures && (
               <>
                 <label className="listener-field">
@@ -528,7 +397,7 @@ function GithubSettings({
             <label className="listener-field">
               PR 普通评论中提及的账号
               <input
-                placeholder="留空关闭单独的 @ 提及规则"
+                placeholder="留空则不监听评论"
                 spellCheck={false}
                 value={repo.mention}
                 onChange={(e) => patch(repo.name, { mention: e.target.value })}
@@ -692,7 +561,7 @@ function ListenerInbox({
           </summary>
           <p className="listener-body">{item.summary}</p>
           <Link to="/router" search={{ event: item.id }}>
-            打开事件对话
+            在 Router 中继续
           </Link>
           <small>
             {item.scope} · #{item.id} · 事件 <DateStamp value={item.occurredAt} /> · 入箱{' '}
@@ -749,7 +618,6 @@ export function ConfigListenersTab() {
   const config = useQuery({
     queryKey: keys.config,
     queryFn: ({ signal }) => apiFetch<TriggerSettingsSnapshot>(`${base}/config`, { signal }),
-    refetchInterval: (query) => (query.state.status === 'error' ? false : 15_000),
     retry: false,
   })
   const status = useQuery({
@@ -938,16 +806,6 @@ export function ConfigListenersTab() {
                   </>
                 )}
                 {s.error && <p className="listener-error">{s.error}</p>}
-                {s.lastIgnoredComment && (
-                  <p>
-                    最近跳过的
-                    <a href={s.lastIgnoredComment.url} target="_blank" rel="noreferrer">
-                      评论
-                    </a>
-                    {' · '}
-                    {s.lastIgnoredComment.reason}
-                  </p>
-                )}
               </li>
             )
           })}

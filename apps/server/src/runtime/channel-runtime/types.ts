@@ -9,7 +9,6 @@ export interface ChannelRuntimeDefinition {
 export interface DingtalkRuntimeDefinition extends ChannelRuntimeDefinition {
   type: 'dingtalk'
   cardTemplateId?: string
-  cardStreamingKey?: string
   debug: boolean
   keepAlive: boolean
   credentials?: {

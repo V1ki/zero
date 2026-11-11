@@ -97,46 +97,6 @@ test('one intake atomically hands off to every matching purpose, or to the legac
   expect(store.routing.list()).toHaveLength(1)
 })
 
-test('ordinary comments enabled in settings reach the inbox without broadening an existing mention mandate', () => {
-  const store = setup([{ ...config, keyword: '', processing: 'direct' }])
-  const current = store.getSettings()
-  const settings = current.settings
-  const repo = settings.github.repositories[0]
-  store.saveSettings(
-    {
-      ...settings,
-      github: {
-        ...settings.github,
-        repositories: [{ ...repo, issueComments: true, pullRequestComments: true }],
-      },
-    },
-    current.revision,
-  )
-  const at = new Date().toISOString()
-  const issue: TriggerEvent = {
-    ...event(1),
-    githubCommentKind: 'issue-comment',
-    url: 'https://github.com/Owner/App/issues/5#issuecomment-1',
-    occurredAt: at,
-  }
-  const pull: TriggerEvent = { ...event(2), githubCommentKind: 'pr-comment', occurredAt: at }
-  const mention: TriggerEvent = {
-    ...event(3),
-    githubCommentKind: 'pr-comment',
-    githubCommentMention: true,
-    occurredAt: at,
-  }
-  expect(push(store, [issue, pull, mention], store.getSettings().revision)).toBe(true)
-  expect(store.listInbox().map((item) => item.eventId)).toEqual([
-    mention.eventId,
-    pull.eventId,
-    issue.eventId,
-  ])
-  const matches = store.mandates.listMatches()
-  expect(matches).toHaveLength(1)
-  expect(store.getInboxItem(matches[0].inboxId)?.eventId).toBe(mention.eventId)
-})
-
 test('analysis uses a task session and claim token. Authenticated PR identity and optional mandate-wide grouping drive coalescing', () => {
   const store = setup()
   push(store, [
@@ -158,12 +118,31 @@ test('analysis uses a task session and claim token. Authenticated PR identity an
   if (!second) throw new Error('expected second claim')
   expect(second.task.id).toBe(first.task.id)
   expect(second.task.sessionId).toBe('first')
-  expect(ledger.getPriorSummaries(second.task.id, second.match.id)).toEqual(['earlier'])
+  expect(ledger.getPriorSummaries(second.task.id, second.match.id)).toEqual([
+    { summary: 'earlier', at: expect.any(String), outcome: 'not_notified' },
+  ])
   store.mandates.saveSettings({ projects: [], mandates: [{ ...config, groupBy: 'mandate' }] }, 1)
   push(store, [event(6, 9), event(7, 12)])
   const [grouped] = ledger.listTasks()
   expect(grouped.businessKey).toBe('mandate')
   expect(grouped.eventCount).toBe(2)
+})
+
+test('switching to or from investigation revokes undelivered work decided under the previous mode', () => {
+  const store = setup()
+  const ledger = store.mandates
+  let revision = 1
+  for (const processing of ['investigate', 'agent'] as const) {
+    push(store, [event(revision)])
+    const work = ledger.claimAnalysis('session')
+    if (!work) throw new Error('expected a claim')
+    expect(ledger.finishAnalysis(work.match.id, 'summary', work.claimToken)).toBe(true)
+    const notify = () => ledger.getMatch(work.match.id)?.effects.find((e) => e.kind === 'notify')
+    expect(notify()?.status).toBe('pending')
+    ledger.saveSettings({ projects: [], mandates: [{ ...config, processing }] }, revision++)
+    expect(notify()?.status).toBe('revoked')
+    expect(ledger.getTask(work.task.id)?.active).toBe(false)
+  }
 })
 
 test('recipient identity, revocation generations and source release protect historical task details', () => {

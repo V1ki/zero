@@ -82,23 +82,6 @@
   border-right: 1px solid var(--rw-line);
   padding: 17px 12px;
 }
-.rw-own-filter {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 8px 10px 14px;
-  color: var(--color-text-secondary);
-  font-size: 12px;
-}
-.rw-own-badge {
-  display: inline-block;
-  width: fit-content;
-  padding: 2px 7px;
-  border: 1px solid var(--rw-line);
-  border-radius: 5px;
-  color: var(--color-text-secondary);
-  font-size: 12px;
-}
 .rw-general {
   gap: 10px;
   padding: 11px 12px;
@@ -304,61 +287,45 @@
   color: var(--color-accent);
   text-decoration: underline;
 }
-.rw-pr-list {
-  min-width: 0;
-  font-size: 14px;
-}
-.rw-pr-list header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 3px 12px;
-  margin-bottom: 6px;
-  overflow-wrap: anywhere;
-}
-.rw-pr-list header span,
-.rw-pr-number,
-.rw-pr-draft {
-  color: var(--color-text-secondary);
-  font-size: 12px;
-}
-.rw-pr-list ul {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.rw-pr-list li {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 9px 0;
-  border-top: 1px solid var(--rw-line);
-}
-.rw-pr-list li a {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  min-width: 0;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-.rw-pr-list li a:hover {
-  color: var(--color-accent);
-  text-decoration: underline;
-}
-.rw-pr-number {
-  flex: none;
-  color: var(--color-accent);
-  font-variant-numeric: tabular-nums;
-}
-.rw-pr-draft {
-  flex: none;
-  padding: 0 5px;
-  border: 1px solid var(--rw-line);
-  border-radius: 4px;
-}
 .rw-work-action {
   justify-self: start;
+}
+.rw-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.rw-job-report {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.rw-verdict {
+  font-weight: 550;
+}
+.rw-job-done {
+  margin: 0;
+  padding-inline-start: 20px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}
+.rw-job-full summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.rw-job-full > p {
+  margin-block: 8px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.65;
 }
 .rw-tool-steps ol {
   padding-inline-start: 20px;
@@ -461,8 +428,6 @@
     padding: 16px;
   }
   .rw-header {
-    flex-direction: column;
-    align-items: flex-start;
     margin-bottom: 14px;
   }
   .rw-heading {
@@ -560,26 +525,6 @@
   white-space: pre-wrap;
   line-height: 1.65;
   font-size: 14px;
-}
-.rw-comment-form {
-  margin-top: 12px;
-  gap: 10px;
-}
-.rw-github-reply a {
-  color: var(--color-accent);
-  text-decoration: underline;
-}
-.rw-github-reply textarea {
-  width: 100%;
-  padding: 8px 10px;
-  resize: vertical;
-  border: 1px solid var(--rw-line);
-  border-radius: 6px;
-  color: var(--color-text-primary);
-  background: var(--color-main-bg);
-  font: inherit;
-  font-size: 14px;
-  line-height: 1.6;
 }
 .rw-original > small {
   color: var(--color-text-secondary);

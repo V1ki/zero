@@ -98,25 +98,6 @@ test('phase-one inbox upgrades in place without auto-enrolling history; intake i
   ])
 })
 
-test('legacy manual notification requests survive migration without guessing a click time from delivery', () => {
-  const path = tempPath()
-  const prior = open(path)
-  prior.saveSettings(source, 0)
-  configure(prior, { enabled: true })
-  receive(prior, 'manual')
-  receive(prior, 'automatic')
-  expect(prior.routing.enqueue(1)).toBe(true)
-  expect(prior.routing.notificationRequest(1)?.submittedAt).toEqual(expect.any(String))
-  close(prior)
-
-  const old = new Database(path)
-  old.exec('ALTER TABLE trigger_routes DROP COLUMN manual_requested_at')
-  old.close()
-  const current = open(path)
-  expect(current.routing.notificationRequest(1)).toEqual({ submittedAt: null })
-  expect(current.routing.notificationRequest(2)).toBeNull()
-})
-
 test('pending and deferred work respects source pause, explicit request and current version when claiming a destination', () => {
   const store = open()
   store.saveSettings(source, 0)
@@ -624,4 +605,101 @@ test('reopen a router database without first-defer history, then preserve first 
   )
   expect(store.routing.get(1)?.firstDeferred).toEqual({ at: now, reason: 'away' })
   expect(store.routing.listWeb()[0].route.decision?.reason).toBe('back')
+})
+
+test('triage filters only a subscription route while triage is on; notify anyway resumes with its summary', () => {
+  const path = tempPath()
+  const store = open(path)
+  store.saveSettings(source, 0)
+  configure(store, { enabled: true })
+  const skip = {
+    summary: '重复',
+    sessionId: 's',
+    triage: { decision: 'skip' as const, reason: '同上' },
+  }
+  receive(store, 'first')
+  receive(store, 'second')
+  receive(store, 'third')
+  const [first, second, third] = store.routing
+    .list()
+    .map(({ event }) => event.id)
+    .sort()
+  expect(store.routing.filterAgent(first, 's', skip)).toBe(false)
+  expect(store.routing.claimAgent(first, 's')).toBe(true)
+  expect(store.routing.filterAgent(first, 'other-session', skip)).toBe(false)
+  expect(store.routing.filterAgent(first, 's', skip)).toBe(true)
+  expect(store.routing.get(first)).toMatchObject({ status: 'filtered', agent: skip })
+  expect(store.routing.listReady(later)).toHaveLength(2)
+
+  // Older clients omit the switch and keep it; an explicit false turns triage off.
+  const { triage: _, ...oldClient } = store.routing.getSettings().settings
+  store.routing.saveSettings(oldClient, store.routing.getSettings().revision)
+  expect(store.routing.getSettings().settings.triage).toBeUndefined()
+  configure(store, { triage: false })
+  expect(store.routing.claimAgent(second, 's')).toBe(true)
+  expect(store.routing.filterAgent(second, 's', skip)).toBe(false)
+  store.routing.saveSettings(
+    { ...store.routing.getSettings().settings, triage: undefined },
+    store.routing.getSettings().revision,
+  )
+  expect(store.routing.getSettings().settings.triage).toBe(false)
+  configure(store, { triage: true })
+
+  // A manual request made before analysis is never filtered.
+  expect(store.routing.enqueue(third)).toBe(true)
+  expect(store.routing.claimAgent(third, 's')).toBe(true)
+  expect(store.routing.filterAgent(third, 's', skip)).toBe(false)
+
+  // Only analysed earlier events of the stream within the window are listed.
+  expect(
+    store.routing
+      .listRecentInStream(third, '2000-01-01T00:00:00.000Z')
+      .map((e) => [e.summary, e.outcome]),
+  ).toEqual([['重复', 'filtered']])
+  expect(store.routing.listRecentInStream(third, '2999-01-01T00:00:00.000Z')).toEqual([])
+
+  close(store)
+  const reopened = open(path)
+  reopened.routing.recoverInterrupted()
+  expect(reopened.routing.get(first)?.status).toBe('filtered')
+  expect(reopened.routing.enqueue(first)).toBe(true)
+  expect(reopened.routing.get(first)).toMatchObject({
+    origin: 'manual',
+    status: 'ready',
+    sessionId: 's',
+    agent: skip,
+  })
+
+  // The summary sees the restore through its own column; the route itself reads as before.
+  const window = { from: '2000-01-01T00:00:00.000Z', to: '2999-01-01T00:00:00.000Z' }
+  const notes = { unread: '（未读）', unfinished: '（未完）' }
+  const restoredCount = () => reopened.summary.read([window], notes)[0]?.triage
+  expect(restoredCount()).toEqual({ filtered: 0, restored: 1 })
+  expect(
+    reopened.routing.applyDecision(
+      first,
+      { destination: 'web', reason: 'here' },
+      reopened.routing.getSettings().revision,
+      later,
+    ),
+  ).toBe(true)
+  expect(reopened.routing.get(first)?.status).toBe('web')
+  expect(restoredCount()).toEqual({ filtered: 0, restored: 1 })
+  expect(reopened.summary.read([window], notes)[0]?.notifications.personal).toBe(1)
+  // A plain retry of a failed route is not a restore.
+  expect(reopened.routing.get(second)?.status).toBe('failed')
+  expect(reopened.routing.retry(second)).toBe(true)
+  const raw = new Database(path)
+  expect(
+    raw
+      .query(
+        'SELECT inbox_id AS id, triage_restored AS restored FROM trigger_routes ORDER BY inbox_id',
+      )
+      .all(),
+  ).toEqual([
+    { id: first, restored: 1 },
+    { id: second, restored: 0 },
+    { id: third, restored: 0 },
+  ])
+  raw.close()
 })

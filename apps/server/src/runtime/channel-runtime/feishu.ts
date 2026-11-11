@@ -85,14 +85,6 @@ export async function registerFeishuRuntimeChannel(
       }),
     )
 
-    feishuChannel.router.setPublicationHandler(async (click) => {
-      if (options.isShuttingDown()) return false
-      return (
-        (await options
-          .getTaskBridge?.()
-          ?.publication({ platform: 'feishu', channelId: channelName, ...click })) ?? false
-      )
-    })
     feishuChannel.router.setActionHandler(async (click) => {
       const bridge = options.getTaskBridge?.()
       if (!bridge || options.isShuttingDown()) return false

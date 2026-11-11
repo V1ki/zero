@@ -35,7 +35,9 @@ export interface ChannelMessageReference {
   text?: string
 }
 
-/** Channel capability hints — tells agents what the channel supports. */
+/**
+ * Channel capability hints — tells agents what the channel supports.
+ */
 export interface ChannelCapabilities {
   /** Channel supports streaming output (e.g. typing effect) */
   streaming?: boolean

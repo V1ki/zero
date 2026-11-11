@@ -2,7 +2,6 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { Client, EventDispatcher } from '@larksuiteoapi/node-sdk'
-import type { RouterPresentation, RouterPublicationAction } from '@zero-os/shared'
 import { buildFeishuMarkdownCardV2, chunkFeishuRichContent } from './card'
 
 interface RouterEntry {
@@ -204,12 +203,6 @@ export class FeishuRouterDelivery {
     }
   }
 
-  private onPublication?: (click: RouterPublicationAction) => Promise<boolean>
-
-  setPublicationHandler(handler: (click: RouterPublicationAction) => Promise<boolean>) {
-    this.onPublication = handler
-  }
-
   setActionHandler(handler: (click: CardClick) => Promise<boolean>): void {
     this.onClick = handler
   }
@@ -229,42 +222,6 @@ export class FeishuRouterDelivery {
     const { source, action, taskId, digest } = record(value)
     const denied = { toast: { type: 'error', content: '该卡片操作不可用或没有权限。' } }
     // Apps can host unrelated cards. Trace only identified Router actions, without payload fields.
-    if (app_id === this.appId && source === 'zero_router_publication') {
-      const { deliveryId, actionId } = record(value)
-      if (
-        !current ||
-        !this.onPublication ||
-        typeof tenant_key !== 'string' ||
-        !tenant_key ||
-        actor.tenant_key !== tenant_key ||
-        host !== 'im_message' ||
-        tag !== 'button' ||
-        typeof actor.open_id !== 'string' ||
-        !nativeActor.test(actor.open_id) ||
-        typeof open_chat_id !== 'string' ||
-        !nativeChat.test(open_chat_id) ||
-        typeof open_message_id !== 'string' ||
-        !nativeMessage.test(open_message_id) ||
-        typeof event_id !== 'string' ||
-        !event_id ||
-        typeof deliveryId !== 'string' ||
-        !/^publication-[a-f0-9]{64}-feishu$/.test(deliveryId) ||
-        typeof actionId !== 'string' ||
-        !/^[a-zA-Z0-9_-]{1,40}$/.test(actionId)
-      )
-        return denied
-      const accepted = await this.onPublication({
-        peerId: open_chat_id,
-        actorId: actor.open_id,
-        cardId: open_message_id,
-        messageId: event_id,
-        deliveryId,
-        actionId,
-      })
-      return accepted
-        ? { toast: { type: 'success', content: '已交给 Router 跟进，结果会继续更新。' } }
-        : denied
-    }
     if (app_id !== this.appId || source !== 'zero_router') return denied
     console.log('[FeishuChannel] Router card callback: received')
     if (!current || !this.onClick) {
@@ -401,45 +358,6 @@ export class FeishuRouterDelivery {
       chatId,
       nativeUuid('listener', chatId, String(inboxId)),
       body,
-      signal,
-      maySend,
-    )
-  }
-
-  async sendPresentation(
-    chatId: string,
-    deliveryId: string,
-    presentation: RouterPresentation,
-    signal: AbortSignal,
-    maySend: () => boolean,
-  ): Promise<Receipt> {
-    const client = this.client()
-    if (
-      !client ||
-      !nativeChat.test(chatId) ||
-      !/^publication-[a-f0-9]{64}-feishu$/.test(deliveryId) ||
-      signal.aborted
-    )
-      return rejected('飞书交付目标不可用。')
-    const elements: unknown[] = [{ tag: 'markdown', content: presentation.text }]
-    for (const action of presentation.actions)
-      elements.push({
-        tag: 'button',
-        type: 'default',
-        text: text(action.label),
-        behaviors: [
-          {
-            type: 'callback',
-            value: { source: 'zero_router_publication', deliveryId, actionId: action.id },
-          },
-        ],
-      })
-    return this.sendMessage(
-      client,
-      chatId,
-      'interactive',
-      JSON.stringify(card(presentation.title, elements)),
-      nativeUuid('publication', chatId, deliveryId),
       signal,
       maySend,
     )
