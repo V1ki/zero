@@ -10,4 +10,12 @@ export * from './trigger-routing-policy'
 
 export * from './router-surface'
 
-export type { RouterWorkspaceSnapshot, RouterWorkspaceTask } from './router-workspace'
+export type {
+  RouterSummary,
+  RouterSummaryCounts,
+  RouterSummaryPeriod,
+  RouterSummaryWindow,
+  RouterWorkspaceSnapshot,
+  RouterWorkspaceTask,
+} from './router-workspace'
+export { routerSummaryWindows } from './router-workspace'

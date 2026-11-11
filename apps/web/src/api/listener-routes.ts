@@ -4,6 +4,7 @@ import {
   getTriggerRouteBot,
   isTriggerCalendarDate,
   isTriggerRetentionDays,
+  routerSummaryWindows,
   sameTriggerRouteTarget,
   triggerRoutePlatforms,
 } from '@zero-os/shared'
@@ -54,7 +55,7 @@ type ListenerService = Pick<
   mandates?: MandateService
   workspace: Pick<
     RouterWorkspaceService,
-    'get' | 'message' | 'action' | 'listEvents' | 'taskJobs'
+    'get' | 'message' | 'action' | 'listEvents' | 'taskJobs' | 'summary'
   > &
     Partial<Pick<RouterWorkspaceService, 'commission'>>
   routing: Pick<
@@ -513,6 +514,13 @@ export function createListenerRoutes(service: ListenerService) {
         ),
       }),
     )
+    .get('/workspace-summary', (c) => {
+      const raw = c.req.query('days')
+      const days =
+        raw === undefined ? 7 : routerSummaryWindows.find((window) => String(window) === raw)
+      if (days === undefined) badInput('统计范围只能是 7 天或 30 天。')
+      return c.json(service.workspace.summary(days))
+    })
     .get('/workspace/:scope', (c) =>
       c.json(service.workspace.get(workspaceScope(c.req.param('scope')))),
     )

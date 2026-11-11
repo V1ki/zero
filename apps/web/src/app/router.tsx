@@ -31,7 +31,7 @@ const routerWorkspaceRoute = createRoute({
   path: '/router',
   validateSearch: (
     search: Record<string, unknown>,
-  ): { event?: number; task?: number; view?: 'tasks' | 'chat' | 'notifications' } => {
+  ): { event?: number; task?: number; view?: 'tasks' | 'chat' | 'notifications' | 'summary' } => {
     const positiveId = (raw: unknown) => {
       const id = typeof raw === 'string' && /^[1-9]\d*$/.test(raw) ? Number(raw) : raw
       return typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? id : undefined
@@ -41,7 +41,7 @@ const routerWorkspaceRoute = createRoute({
       event: positiveId(search.event),
       task,
       view:
-        search.view === 'tasks' || search.view === 'notifications'
+        search.view === 'tasks' || search.view === 'notifications' || search.view === 'summary'
           ? search.view
           : search.view === 'chat' && task
             ? 'chat'

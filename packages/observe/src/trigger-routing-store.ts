@@ -153,6 +153,12 @@ export class TriggerRoutingStore {
       }
       if (!columns.some((column) => column.name === 'send_binding_revision'))
         db.exec('ALTER TABLE trigger_routes ADD COLUMN send_binding_revision INTEGER')
+      // Read only by the Router summary: "notify anyway" brought this filtered route back. The
+      // stored triage verdict says the same until retention clears it, so earlier rows are copied.
+      if (!columns.some((column) => column.name === 'triage_restored'))
+        db.exec(`ALTER TABLE trigger_routes ADD COLUMN triage_restored INTEGER NOT NULL DEFAULT 0;
+          UPDATE trigger_routes SET triage_restored=1 WHERE status!='filtered'
+            AND CASE WHEN json_valid(agent) THEN json_extract(agent,'$.triage.decision') END='skip';`)
       // Import the pre-existing Weixin address only when introducing the channel registry.
       // Subsequent unbinding remains authoritative even when the legacy setting still exists.
       if (
@@ -698,6 +704,7 @@ export class TriggerRoutingStore {
       this.db.run(
         `UPDATE trigger_routes SET status = CASE WHEN agent IS NULL THEN 'pending' ELSE 'ready' END,
       session_id = CASE WHEN agent IS NOT NULL THEN session_id END,
+      triage_restored = CASE WHEN status = 'filtered' THEN 1 ELSE triage_restored END,
       error = NULL, updated_at = ? WHERE inbox_id = ? AND status = ? AND ${eligible}`,
         [nowIso(), inboxId, from],
       ).changes === 1

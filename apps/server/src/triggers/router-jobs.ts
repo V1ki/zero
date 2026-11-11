@@ -111,7 +111,11 @@ export class RouterJobs {
     requestId: string,
     instruction: string,
     audience?: string,
-    options: { brief?: string; expectedAttempt?: number } = {},
+    options: {
+      brief?: string
+      expectedAttempt?: number
+      answer?: { attempt: number; option: number }
+    } = {},
   ): RouterJobReceipt {
     this.get(scope, id, audience)
     const job = this.operation(() =>

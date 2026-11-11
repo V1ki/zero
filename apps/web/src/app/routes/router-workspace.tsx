@@ -31,6 +31,7 @@ import { apiFetch, apiPost } from '../lib/api'
 import { ListenerRoutingSettings, useListenerRoutingConfig } from './config-listener-routing'
 import { RoutingPreview } from './config-routing-preview'
 import { EventMandateMatches, RouterMandateTasks, taskJobsKey } from './router-mandate-tasks'
+import { RouterSummaryView } from './router-summary'
 import { RouterWebNotifications } from './router-web-notifications'
 import './config-listeners-tab.css'
 import './router-workspace.css'
@@ -623,6 +624,7 @@ export function RouterWorkspacePage() {
   const { event, view, task } = useSearch({ from: '/router' })
   const showWebNotices = view === 'notifications' && task === undefined
   const showTasks = view === 'tasks' || task !== undefined
+  const showSummary = view === 'summary' && task === undefined
   const scope = event ?? 'general'
   const [settingsOpen, setSettingsOpen] = useState(false)
   const routingConfig = useListenerRoutingConfig(settingsOpen)
@@ -673,8 +675,10 @@ export function RouterWorkspacePage() {
       <nav aria-label="工作台视图" className="mt-views">
         <Link
           to="/router"
-          search={{ event }}
-          aria-current={!showTasks && !showWebNotices ? 'page' : undefined}
+          search={{ event, view: undefined }}
+          // Without this the link matches every view, since its search is a subset of all of them.
+          activeOptions={{ explicitUndefined: true }}
+          aria-current={!showTasks && !showWebNotices && !showSummary ? 'page' : undefined}
         >
           对话与事件
         </Link>
@@ -688,8 +692,17 @@ export function RouterWorkspacePage() {
         >
           网页提醒
         </Link>
+        <Link
+          to="/router"
+          search={{ view: 'summary' }}
+          aria-current={showSummary ? 'page' : undefined}
+        >
+          效果统计
+        </Link>
       </nav>
-      {showWebNotices ? (
+      {showSummary ? (
+        <RouterSummaryView />
+      ) : showWebNotices ? (
         <RouterWebNotifications />
       ) : showTasks ? (
         <RouterMandateTasks

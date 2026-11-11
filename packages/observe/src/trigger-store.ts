@@ -13,6 +13,7 @@ import {
 } from '@zero-os/shared'
 
 import { RouterJobStore } from './router-job-store'
+import { RouterSummaryStore } from './router-summary-store'
 import { TriggerConversationStore } from './trigger-conversation-store'
 import { TriggerMandateStore } from './trigger-mandate-store'
 import { TriggerRetentionStore } from './trigger-retention-store'
@@ -84,6 +85,7 @@ export class TriggerStore {
   readonly retention: TriggerRetentionStore
   readonly routing: TriggerRoutingStore
   readonly webNotifications: TriggerWebNotificationStore
+  readonly summary: RouterSummaryStore
   private readonly db: Database
 
   constructor(dbPath: string) {
@@ -131,6 +133,7 @@ export class TriggerStore {
     this.conversations = new TriggerConversationStore(this.db)
     this.retention = new TriggerRetentionStore(this.db)
     this.webNotifications = new TriggerWebNotificationStore(this.db)
+    this.summary = new RouterSummaryStore(this.db)
     const defaults: TriggerSettings = {
       github: { credentialRef: '', repositories: [] },
       wxarc: { sessions: [] },
