@@ -249,6 +249,8 @@ export function createRouterWorkTurn(
             ...(brief && { brief }),
             // The step that was confirmed is the one continued.
             ...(original.executor === 'codex' && { expectedAttempt: original.attempt }),
+            // Recorded for the Router summary; it changes nothing about the continuation.
+            ...(picked && { answer: { attempt: original.attempt, option: picked.number - 1 } }),
           })
           record(job)
           return job
@@ -286,6 +288,7 @@ export function createRouterWorkTurn(
     const instruction = `用户在网页上回答了这项派工上一步提出的问题「${decision.question}」，选择了：「${option}」。请按这个选择继续。`
     const job = delegatedJobs.continue(scope, choice.jobId, requestId, instruction, audience, {
       expectedAttempt: choice.attempt,
+      answer: { attempt: choice.attempt, option: choice.option },
     })
     record(job)
     return job

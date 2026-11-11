@@ -117,6 +117,14 @@ async function reported(service: RouterWorkspaceService, turn = 0) {
   return snapshot
 }
 
+/** The decision figures of the summary, which only counts what the store recorded. */
+function decisions(service: RouterWorkspaceService) {
+  // Windows end before `now`; a step stamped in this same millisecond belongs to the next one.
+  const later = new Date(Date.now() + 1000)
+  const { decisions, answered, recommended } = service.summary(7, later).current.counts.reports
+  return { decisions, answered, recommended }
+}
+
 test('clicking an option continues the same job once, without a Router model call', async () => {
   const { store, service, ask, executed } = setup()
   await service.message('general', 'ask-1', '帮我修复 owner/repo 的发布脚本')
@@ -153,7 +161,10 @@ test('clicking an option continues the same job once, without a Router model cal
     }),
   ).rejects.toMatchObject({ status: 400 })
 
+  expect(decisions(service)).toEqual({ decisions: 1, answered: 0, recommended: 0 })
   const answered = await service.action('general', 'click-1', click(surface, 1))
+  // The click picked the second option, not the recommended first one.
+  expect(decisions(service)).toEqual({ decisions: 1, answered: 1, recommended: 0 })
   expect(ask).toHaveBeenCalledTimes(1)
   expect(answered.turns).toHaveLength(2)
   expect(answered.turns[1].question).toBe('选择：先不发布')
@@ -181,6 +192,10 @@ test('clicking an option continues the same job once, without a Router model cal
   expect(final.turns[1].answer?.job?.report).toEqual({ verdict: '已发布。', done: [] })
   expect(store.jobs.get('general', stored?.id ?? 0)?.attempt).toBe(2)
   expect(ask).toHaveBeenCalledTimes(1)
+  expect(decisions(service)).toEqual({ decisions: 1, answered: 1, recommended: 0 })
+  const summary = JSON.stringify(service.summary(30))
+  for (const content of ['发布', 'owner/repo', 'raw work log', 'release.yml'])
+    expect(summary).not.toContain(content)
 })
 
 test('a click is refused in another scope and after authorization or checkout changes', async () => {
@@ -225,6 +240,8 @@ test('replying with the printed phrase continues a Codex job without a confirmat
     '继续派工 #1：选 1\n（用户选择的是上一步提出的问题「现在发布吗？」的选项：「发布这份草稿」）',
   )
   await until(() => executed.length === 2)
+  // The printed reply answers the recommended option, like a click on it.
+  expect(decisions(service)).toEqual({ decisions: 1, answered: 1, recommended: 1 })
 })
 
 test('a numbered answer with more words is confirmed, told only the option number', async () => {
@@ -241,4 +258,28 @@ test('a numbered answer with more words is confirmed, told only the option numbe
   })
   expect(JSON.stringify(checks)).not.toContain('先不发布')
   expect(store.jobs.get('general', 1)?.attempt).toBe(2)
+  expect(decisions(service)).toEqual({ decisions: 1, answered: 1, recommended: 0 })
+})
+
+test('a continuation that picks no option leaves the decision unanswered', async () => {
+  const { store, service, checks } = setup()
+  await service.message('general', 'ask-1', '帮我修复 owner/repo 的发布脚本')
+  await reported(service)
+  await service.message('general', 'reply-1', '继续派工 #1，再看一下日志')
+  expect(checks.at(-1)).toMatchObject({ kind: 'continue', jobId: 1 })
+  expect(checks.at(-1)).not.toHaveProperty('chosenOption')
+  expect(store.jobs.get('general', 1)?.attempt).toBe(2)
+  expect(decisions(service)).toEqual({ decisions: 1, answered: 0, recommended: 0 })
+})
+
+test('the summary covers the chosen window and the one just before it', () => {
+  const { service } = setup()
+  const summary = service.summary(30, new Date('2026-11-11T12:00:00.000Z'))
+  expect(summary).toMatchObject({
+    days: 30,
+    current: { from: '2026-10-12T12:00:00.000Z', to: '2026-11-11T12:00:00.000Z' },
+    previous: { from: '2026-09-12T12:00:00.000Z', to: '2026-10-12T12:00:00.000Z' },
+    retentionDays: null,
+  })
+  expect(summary.recordedSince).toEqual(expect.any(String))
 })

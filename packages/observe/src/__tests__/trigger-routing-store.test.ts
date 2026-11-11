@@ -669,4 +669,37 @@ test('triage filters only a subscription route while triage is on; notify anyway
     sessionId: 's',
     agent: skip,
   })
+
+  // The summary sees the restore through its own column; the route itself reads as before.
+  const window = { from: '2000-01-01T00:00:00.000Z', to: '2999-01-01T00:00:00.000Z' }
+  const notes = { unread: '（未读）', unfinished: '（未完）' }
+  const restoredCount = () => reopened.summary.read([window], notes)[0]?.triage
+  expect(restoredCount()).toEqual({ filtered: 0, restored: 1 })
+  expect(
+    reopened.routing.applyDecision(
+      first,
+      { destination: 'web', reason: 'here' },
+      reopened.routing.getSettings().revision,
+      later,
+    ),
+  ).toBe(true)
+  expect(reopened.routing.get(first)?.status).toBe('web')
+  expect(restoredCount()).toEqual({ filtered: 0, restored: 1 })
+  expect(reopened.summary.read([window], notes)[0]?.notifications.personal).toBe(1)
+  // A plain retry of a failed route is not a restore.
+  expect(reopened.routing.get(second)?.status).toBe('failed')
+  expect(reopened.routing.retry(second)).toBe(true)
+  const raw = new Database(path)
+  expect(
+    raw
+      .query(
+        'SELECT inbox_id AS id, triage_restored AS restored FROM trigger_routes ORDER BY inbox_id',
+      )
+      .all(),
+  ).toEqual([
+    { id: first, restored: 1 },
+    { id: second, restored: 0 },
+    { id: third, restored: 0 },
+  ])
+  raw.close()
 })

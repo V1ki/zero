@@ -5,6 +5,8 @@ import {
   type GithubInvestigation,
   type GithubInvestigationAction,
   type MandatePlatform,
+  type RouterSummary,
+  type RouterSummaryWindow,
   type RouterTaskJob,
   type RouterWorkspaceSnapshot,
   type RouterWorkspaceTask,
@@ -17,6 +19,7 @@ import {
 } from '@zero-os/shared'
 import { TriggerAgentError } from './event-agent'
 import { type GithubInvestigator, InvestigationError } from './investigation'
+import { investigationFallback } from './mandate-runtime'
 import type { RouterAgentInput, createRouterAgent } from './router-agent'
 import type { RouterCommissionService } from './router-commission'
 import { routerImScope } from './router-job-principal'
@@ -119,6 +122,29 @@ export class RouterWorkspaceService {
 
   listEvents(limit?: number, beforeId?: number) {
     return this.store.listWorkspaceEvents(limit, beforeId)
+  }
+
+  /** Counts for the last `days` days and the same span just before it. No content leaves here. */
+  summary(days: RouterSummaryWindow, now = new Date()): RouterSummary {
+    const span = days * 86_400_000
+    const to = now.toISOString()
+    const from = new Date(now.getTime() - span).toISOString()
+    const before = new Date(now.getTime() - 2 * span).toISOString()
+    const [current, previous] = this.store.summary.read(
+      [
+        { from, to },
+        { from: before, to: from },
+      ],
+      investigationFallback,
+    )
+    if (!current || !previous) throw new Error('Missing Router summary windows')
+    return {
+      days,
+      current: { from, to, counts: current },
+      previous: { from: before, to: from, counts: previous },
+      recordedSince: this.store.summary.recordedSince(),
+      retentionDays: this.store.routing.getSettings().settings.retentionDays ?? null,
+    }
   }
 
   private context(scope: Scope) {

@@ -1,3 +1,4 @@
+import { Database } from 'bun:sqlite'
 import { afterEach, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -166,4 +167,90 @@ test('pausing the router removes deferred work from the timer and blocks receipt
   expect(store.mandates.listReadyEffects('notify', future)).toEqual([])
   expect(store.mandates.claimEffect(id, 'notify', 'dingtalk', team, '测试', future)).toEqual([])
   expect(store.mandates.skipEffect(id, 'notify', '过期策略', expected)).toBe(false)
+})
+
+test('notify anyway leaves the triage mark readers see unchanged and keeps a separate restore trace', () => {
+  const { store, path, expected } = configure()
+  const ledger = store.mandates
+  const db = new Database(path)
+  const column = (id: number) =>
+    db
+      .query<{ triage: number; restored: number }, [number]>(
+        "SELECT triage, triage_restored AS restored FROM mandate_effects WHERE match_id=? AND kind='notify'",
+      )
+      .get(id)
+  const ids: number[] = []
+  for (;;) {
+    const work = ledger.claimAnalysis(crypto.randomUUID())
+    if (!work) break
+    ids.push(work.match.id)
+    // Mandate one: both events filtered by triage. Mandate two: notified.
+    expect(
+      ledger.finishAnalysis(
+        work.match.id,
+        '摘要',
+        work.claimToken,
+        work.mandate.id === 'one' ? '分诊判断无需提醒：重复' : undefined,
+      ),
+    ).toBe(true)
+  }
+  const one = ids.filter((id) => ledger.getMatch(id)?.mandateId === 'one')
+  expect(one).toHaveLength(2)
+  const [first] = one
+  if (first === undefined) throw new Error('missing matches')
+  const task = ledger.getMatch(first)?.taskId ?? 0
+  const second = Number.MAX_SAFE_INTEGER
+  const notify = (id: number) => ledger.getMatch(id)?.effects.find((e) => e.kind === 'notify')
+  expect(notify(first)).toMatchObject({ status: 'skipped', triaged: true })
+  expect(ledger.getPriorSummaries(task, second).map((p) => p.outcome)).toEqual(['filtered'])
+  expect(column(first)).toEqual({ triage: 1, restored: 0 })
+
+  // The retry, the prior outcome and the timeline flag behave exactly as before.
+  expect(ledger.retryEffect(first, 'notify')).toBe(true)
+  expect(notify(first)).toEqual({
+    kind: 'notify',
+    status: 'pending',
+    destination: null,
+    target: null,
+    reason: null,
+    dueAt: null,
+    receipt: null,
+  })
+  expect(ledger.getPriorSummaries(task, second).map((p) => p.outcome)).toEqual(['not_notified'])
+  expect(ledger.retryEffect(first, 'notify')).toBe(false)
+  expect(column(first)).toEqual({ triage: 0, restored: 1 })
+
+  // Delivered after the restore: done for every reader, and still restored for the summary.
+  expect(
+    ledger.claimEffect(first, 'notify', 'dingtalk', team, '提醒', now, [], expected),
+  ).toHaveLength(1)
+  expect(ledger.finishEffect(first, 'notify', 'failed', 'rejected')).toBe(true)
+  // Retrying a failed send is not a triage restore and does not clear the trace either.
+  expect(ledger.retryEffect(first, 'notify')).toBe(true)
+  expect(column(first)).toEqual({ triage: 0, restored: 1 })
+  expect(
+    ledger.claimEffect(first, 'notify', 'dingtalk', team, '提醒', now, [], expected),
+  ).toHaveLength(1)
+  expect(ledger.finishEffect(first, 'notify', 'done', 'receipt')).toBe(true)
+  expect(ledger.getPriorSummaries(task, second).map((p) => p.outcome)).toEqual(['notified'])
+
+  // A failed effect that triage never touched is never marked restored; policy skips stay final.
+  const other = ids.find((id) => ledger.getMatch(id)?.mandateId === 'two') ?? 0
+  expect(
+    ledger.claimEffect(other, 'notify', 'dingtalk', team, '提醒', now, [], expected),
+  ).toHaveLength(1)
+  expect(ledger.finishEffect(other, 'notify', 'failed', 'rejected')).toBe(true)
+  expect(ledger.retryEffect(other, 'notify')).toBe(true)
+  expect(column(other)).toEqual({ triage: 0, restored: 0 })
+  expect(ledger.skipEffect(other, 'notify', '无需提醒', expected)).toBe(true)
+  expect(ledger.retryEffect(other, 'notify')).toBe(false)
+
+  const window = { from: '2000-01-01T00:00:00.000Z', to: '2999-01-01T00:00:00.000Z' }
+  const notes = { unread: '（未读）', unfinished: '（未完）' }
+  expect(store.summary.read([window], notes)[0]).toMatchObject({
+    notifications: { mandate: 1 },
+    // The other event of mandate one is still filtered.
+    triage: { filtered: 1, restored: 1 },
+  })
+  db.close()
 })

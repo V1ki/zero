@@ -1,5 +1,6 @@
 import type { Database } from 'bun:sqlite'
 import type { RouterImScope } from './trigger-conversation-store'
+import { noteRecordedSince } from './trigger-recorded-facts'
 
 export class RouterJobConflictError extends Error {}
 
@@ -51,6 +52,11 @@ interface Continuation {
   brief?: string
   /** Refuse unless this is still the latest attempt, so one answer cannot apply twice. */
   expectedAttempt?: number
+  /**
+   * The option (from 0) of the decision on step `attempt` that this continuation answers. Recorded
+   * on that step for the Router summary only when it is the step being continued.
+   */
+  answer?: { attempt: number; option: number }
 }
 
 export const ROUTER_JOB_BRIEF_LIMIT = 4000
@@ -108,6 +114,11 @@ export class RouterJobStore {
         )
       if (!present.has('task_id'))
         db.exec('ALTER TABLE router_job_steps ADD COLUMN task_id INTEGER')
+      // Read only by the Router summary: which option of this step's decision the owner chose.
+      if (!present.has('answered_option')) {
+        db.exec('ALTER TABLE router_job_steps ADD COLUMN answered_option INTEGER')
+        noteRecordedSince(db, 'job_answered_option')
+      }
       db.exec(
         'CREATE INDEX IF NOT EXISTS router_jobs_task ON router_job_steps(task_id,job_id) WHERE task_id IS NOT NULL',
       )
@@ -247,6 +258,12 @@ export class RouterJobStore {
           )
           .get(requestId, instruction, options.brief ?? null, id, job.attempt)
         if (!inserted) throw new Error('Failed to continue Router job')
+        const { answer } = options
+        if (answer && answer.attempt === job.attempt && Number.isSafeInteger(answer.option))
+          this.db.run(
+            'UPDATE router_job_steps SET answered_option=? WHERE job_id=? AND attempt=?',
+            [answer.option, id, job.attempt],
+          )
         return inserted
       })
       .immediate()

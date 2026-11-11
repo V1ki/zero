@@ -162,6 +162,24 @@ function fixture(mandates?: MandateService) {
               ],
             }
           },
+          summary(days) {
+            workspaceCalls.push(['summary', days])
+            const store = new TriggerStore(':memory:')
+            const counts = store.summary.read(
+              [{ from: '2026-11-04T00:00:00.000Z', to: '2026-11-11T00:00:00.000Z' }],
+              { unread: '（未读）', unfinished: '（未完）' },
+            )[0]
+            store.close()
+            if (!counts) throw new Error('missing counts')
+            const period = (from: string, to: string) => ({ from, to, counts })
+            return {
+              days,
+              current: period('2026-11-04T00:00:00.000Z', '2026-11-11T00:00:00.000Z'),
+              previous: period('2026-10-28T00:00:00.000Z', '2026-11-04T00:00:00.000Z'),
+              recordedSince: '2026-11-11T00:00:00.000Z',
+              retentionDays: null,
+            }
+          },
         },
         routing: {
           getConfig: () => ({ settings: routingSettings, revision: routeRevision }),
@@ -424,6 +442,42 @@ describe('listener control plane', () => {
     expect(workspaceCalls).toEqual([
       ['jobs', 7],
       ['jobs', 8],
+    ])
+  })
+
+  test('the Router summary is local-only, validates its window and returns counts only', async () => {
+    const { req, workspaceCalls } = fixture()
+    for (const init of [{}, { headers: { Origin: 'https://untrusted.example' } }]) {
+      const peer = 'headers' in init ? '127.0.0.1' : '10.0.0.8'
+      const res = await req('workspace-summary', init, peer)
+      expect(res.status).toBe(403)
+      expect(res.headers.get('Cache-Control')).toBe('no-store')
+    }
+    for (const days of ['14', '07', '7d', '', '30.0', '-7'])
+      expect((await req(`workspace-summary?days=${days}`)).status).toBe(400)
+    expect(workspaceCalls).toEqual([])
+    const res = await req('workspace-summary')
+    expect(res.headers.get('Cache-Control')).toBe('no-store')
+    const body = await res.json()
+    expect(Object.keys(body).sort()).toEqual([
+      'current',
+      'days',
+      'previous',
+      'recordedSince',
+      'retentionDays',
+    ])
+    expect(body.days).toBe(7)
+    // Every leaf of a period is a number, apart from its bounds.
+    const leaves = (value: unknown): unknown[] =>
+      value && typeof value === 'object' ? Object.values(value).flatMap(leaves) : [value]
+    for (const period of [body.current, body.previous]) {
+      expect(Object.keys(period).sort()).toEqual(['counts', 'from', 'to'])
+      expect(leaves(period.counts).every((leaf) => typeof leaf === 'number')).toBe(true)
+    }
+    expect((await (await req('workspace-summary?days=30')).json()).days).toBe(30)
+    expect(workspaceCalls).toEqual([
+      ['summary', 7],
+      ['summary', 30],
     ])
   })
 

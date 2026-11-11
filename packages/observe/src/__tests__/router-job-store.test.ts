@@ -229,3 +229,44 @@ test('an existing table gains the brief and report columns in place', () => {
   expect(jobs.claimReturn()?.id).toBe(1)
   open(path)
 })
+
+test('an answer records the chosen option on the step it answers, and only there', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'zero-job-answer-'))
+  dirs.push(dir)
+  const path = join(dir, 'jobs.sqlite')
+  const jobs = open(path).jobs
+  const answered = () => {
+    const db = new Database(path)
+    try {
+      return db
+        .query<{ attempt: number; option: number | null }, []>(
+          'SELECT attempt, answered_option AS option FROM router_job_steps ORDER BY job_id, attempt',
+        )
+        .all()
+    } finally {
+      db.close()
+    }
+  }
+  const settle = (id: number, attempt: number) => {
+    jobs.claimNext()
+    jobs.finish(id, attempt, { status: 'completed', result: 'done' })
+  }
+  const job = jobs.submit(owner, 'a', input)
+  settle(job.id, 1)
+  // A continuation that is not a choice records nothing.
+  const plain = jobs.continue(owner, job.id, 'b', 'look again')
+  expect(plain).not.toHaveProperty('answeredOption')
+  settle(job.id, 2)
+  // An answer for a step that is no longer the latest is not recorded on the wrong step.
+  jobs.continue(owner, job.id, 'c', 'option', { answer: { attempt: 1, option: 1 } })
+  settle(job.id, 3)
+  jobs.continue(owner, job.id, 'd', 'option', { answer: { attempt: 3, option: 2 } })
+  // The replay of the same request does not write again.
+  jobs.continue(owner, job.id, 'd', 'option', { answer: { attempt: 3, option: 0 } })
+  expect(answered()).toEqual([
+    { attempt: 1, option: null },
+    { attempt: 2, option: null },
+    { attempt: 3, option: 2 },
+    { attempt: 4, option: null },
+  ])
+})

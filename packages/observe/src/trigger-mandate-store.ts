@@ -15,6 +15,7 @@ import {
   TriggerSettingsConflictError,
 } from '@zero-os/shared'
 import { MandateEffectStore } from './trigger-mandate-effects'
+import { noteRecordedSince } from './trigger-recorded-facts'
 
 const now = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 const taskFields = `id, mandate_id AS mandateId, business_key AS businessKey, title,
@@ -140,6 +141,15 @@ export class TriggerMandateStore extends MandateEffectStore {
     db.transaction(() => {
       if (!db.query("SELECT 1 FROM pragma_table_info('mandate_effects') WHERE name='triage'").get())
         db.exec('ALTER TABLE mandate_effects ADD COLUMN triage INTEGER NOT NULL DEFAULT 0')
+      // Read only by the Router summary. Earlier "notify anyway" retries erased their triage mark.
+      if (
+        !db
+          .query("SELECT 1 FROM pragma_table_info('mandate_effects') WHERE name='triage_restored'")
+          .get()
+      ) {
+        db.exec('ALTER TABLE mandate_effects ADD COLUMN triage_restored INTEGER NOT NULL DEFAULT 0')
+        noteRecordedSince(db, 'mandate_triage_restored')
+      }
       db.exec(`
         DROP TRIGGER IF EXISTS trigger_inbox_enqueue_route;
         CREATE TRIGGER IF NOT EXISTS trigger_inbox_enqueue_ungoverned_route AFTER INSERT ON trigger_inbox
