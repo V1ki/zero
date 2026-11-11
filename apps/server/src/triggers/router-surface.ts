@@ -279,8 +279,13 @@ export function buildRouterReplySurface(
 ): RouterSurfaceMessages | null {
   const id = `${surfaceId(scope)}-turn-${turnId}`
   const job = answer.job
-  // Only the latest completed step of a job in the general conversation can still be answered.
-  if (scope === 'general' && job?.status === 'completed' && !job.continued && job.report?.decision)
+  // Only the latest completed step of a job in the main or a task conversation can still be answered.
+  if (
+    typeof scope === 'string' &&
+    job?.status === 'completed' &&
+    !job.continued &&
+    job.report?.decision
+  )
     return buildDecisionSurface(id, job.report.decision)
   const evidence = answer.investigation
   if (evidence) {

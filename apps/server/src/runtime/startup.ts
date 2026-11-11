@@ -295,6 +295,19 @@ async function createStartupRuntimeShell({
         const directory = actor && (await checkout(repository, actor))
         return principals.authorized(job.scope, job.audience, repository) ? directory : null
       },
+      // Read when the step runs, and only while the task is active. Retention may have swept it.
+      taskBackground(job) {
+        const task = job.taskId != null ? store.mandates.getTask(job.taskId) : null
+        if (!task?.active) return null
+        const mandate = store.mandates
+          .getSettings()
+          .settings.mandates.find((m) => m.id === task.mandateId)
+        return {
+          title: task.title,
+          purpose: mandate?.purpose ?? '',
+          recentMatches: task.matches.flatMap((m) => (m.summary ? [m.summary] : [])).slice(0, 3),
+        }
+      },
       latestFailure(job, repository, signal, workflowFile) {
         const actor = jobActor(job)
         if (!actor || !principals.authorized(job.scope, job.audience, repository))

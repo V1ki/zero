@@ -22,6 +22,8 @@ interface NewJob {
   repository?: string
   /** Opaque origin pinned by the server, never supplied by the model. */
   audience?: string
+  /** The mandate task whose conversation created the job. Never consulted for authorization. */
+  taskId?: number
 }
 
 /** Bounds the report model call; the executor's result is already stored when it starts. */

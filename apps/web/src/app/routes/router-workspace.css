@@ -290,6 +290,15 @@
 .rw-work-action {
   justify-self: start;
 }
+.rw-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
 .rw-job-report {
   display: grid;
   gap: 6px;

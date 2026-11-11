@@ -52,7 +52,10 @@ type ListenerService = Pick<
 > & {
   webNotifications: Pick<ZeroOS['listeners']['webNotifications'], 'list' | 'latestId' | 'subscribe'>
   mandates?: MandateService
-  workspace: Pick<RouterWorkspaceService, 'get' | 'message' | 'action' | 'listEvents'> &
+  workspace: Pick<
+    RouterWorkspaceService,
+    'get' | 'message' | 'action' | 'listEvents' | 'taskJobs'
+  > &
     Partial<Pick<RouterWorkspaceService, 'commission'>>
   routing: Pick<
     ZeroOS['listeners']['routing'],
@@ -513,6 +516,11 @@ export function createListenerRoutes(service: ListenerService) {
     .get('/workspace/:scope', (c) =>
       c.json(service.workspace.get(workspaceScope(c.req.param('scope')))),
     )
+    .get('/workspace/:scope/jobs', (c) => {
+      const scope = workspaceScope(c.req.param('scope'))
+      if (typeof scope !== 'string' || scope === 'general') badInput('只有任务对话有关联的派工。')
+      return c.json(service.workspace.taskJobs(Number(scope.slice(5))))
+    })
     .post('/workspace/:scope/messages', async (c) => {
       const scope = workspaceScope(c.req.param('scope'))
       const body = fields(await requestJson(c), ['requestId', 'text', 'retry'])
