@@ -5,4 +5,8 @@ export * from './trigger-routing-policy'
 
 export * from './router-surface'
 
-export type { RouterWorkspaceSnapshot, RouterWorkspaceTask } from './router-workspace'
+export type {
+  RouterTaskJob,
+  RouterWorkspaceSnapshot,
+  RouterWorkspaceTask,
+} from './router-workspace'

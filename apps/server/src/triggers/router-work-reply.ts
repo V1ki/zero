@@ -19,6 +19,18 @@ export function fullResultRequest(jobId: number) {
   return `查看派工 #${jobId} 的完整结果`
 }
 
+/**
+ * Preset sentences of a GitHub task conversation's quick buttons. Each is sent as the owner's own
+ * message, so it is the executor's authoritative instruction and what the write check reads.
+ */
+export function taskFixRequest(repository: string) {
+  return `修复这项任务报告的问题：在 ${repository} 里查清原因，修改代码并运行相关测试，确认问题已经解决。`
+}
+
+export function taskAnalysisRequest(repository: string) {
+  return `深入分析这项任务报告的问题：查清 ${repository} 里的原因和影响范围，给出修复建议，先不要修改代码。`
+}
+
 export function jobReply(job: RouterJobReceipt): string {
   const executor = job.executor === 'codex' ? 'Codex' : 'ZeRo'
   const target = job.repository ? ` · ${job.repository}` : ''
@@ -95,6 +107,58 @@ export function sentenceNamesRepository(question: string, repository: string): b
   )
 }
 
+/** Full repository names written in the owner's sentence, including github.com links. */
+function writtenRepositories(question: string) {
+  return [
+    ...question.matchAll(
+      /(?<![a-z0-9./_-])(?:https?:\/\/github\.com\/)?([a-z0-9-]+\/[a-z0-9._-]*[a-z0-9_-])/giu,
+    ),
+  ].map((match) => match[1].replace(/\.git$/iu, ''))
+}
+
+/** Whether the sentence writes the bare name of this registered repository. */
+function namesBare(question: string, repository: string) {
+  const name = repository.split('/')[1]
+  return new RegExp(`(?<![a-z0-9._/-])${escapeRegExp(name)}(?![a-z0-9_/-]|\\.[a-z0-9])`, 'iu').test(
+    question,
+  )
+}
+
+/**
+ * The repository of work delegated from a task conversation: always the task's own repository,
+ * which comes from the owner's mandate. Another repository named by the model's argument or written
+ * in the owner's sentence (in full, or for Codex by the bare name of another registered checkout)
+ * is refused rather than redirected, because the task conversation is about this repository only.
+ */
+export function taskJobRepository(
+  question: string,
+  supplied: unknown,
+  repository: string,
+  registered: readonly string[] = [],
+): string {
+  const same = (candidate: string) => candidate.toLowerCase() === repository.toLowerCase()
+  const name = repository.split('/')[1]?.toLowerCase()
+  const elsewhere = (target: string) =>
+    new TriggerAgentError(
+      `这项任务的派工只能在 ${repository} 里进行${target ? `，不能改到 ${target}` : ''}。要处理其他仓库，请到 Router 主对话里提出。`,
+    )
+  if (supplied !== undefined) {
+    if (typeof supplied !== 'string' || !supplied.trim()) throw elsewhere('')
+    const wanted = supplied.trim()
+    if (!same(wanted) && wanted.toLowerCase() !== name) throw elsewhere(wanted)
+  }
+  const other =
+    writtenRepositories(question).find((candidate) => !same(candidate)) ??
+    registered.find(
+      (candidate) =>
+        !same(candidate) &&
+        candidate.split('/')[1]?.toLowerCase() !== name &&
+        namesBare(question, candidate),
+    )
+  if (other) throw elsewhere(other)
+  return repository
+}
+
 /**
  * The repository a Codex job may target. Only the owner's sentence picks it: a full name written
  * in it, or a bare name that matches exactly one checkout registered for this principal. When the
@@ -110,18 +174,8 @@ export function resolveCodexRepository(
 ): string {
   if (supplied !== undefined && (typeof supplied !== 'string' || !supplied.trim()))
     throw new TriggerAgentError(nameRepository)
-  const written = [
-    ...question.matchAll(
-      /(?<![a-z0-9./_-])(?:https?:\/\/github\.com\/)?([a-z0-9-]+\/[a-z0-9._-]*[a-z0-9_-])/giu,
-    ),
-  ].map((match) => match[1].replace(/\.git$/iu, ''))
-  const bare = registered.filter((repository) => {
-    const name = repository.split('/')[1]
-    return new RegExp(
-      `(?<![a-z0-9._/-])${escapeRegExp(name)}(?![a-z0-9_/-]|\\.[a-z0-9])`,
-      'iu',
-    ).test(question)
-  })
+  const written = writtenRepositories(question)
+  const bare = registered.filter((repository) => namesBare(question, repository))
   const unique = bare.filter(
     (repository) =>
       bare.filter((other) => other.split('/')[1] === repository.split('/')[1]).length === 1,

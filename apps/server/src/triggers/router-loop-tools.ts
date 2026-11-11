@@ -70,6 +70,10 @@ export function createRouterToolset(
   const { actions, task, event } = input
   const { inspectGithub, previewRoute, delegateTask, getTaskStatus, continueTask } = actions ?? {}
   const general = !event && !task
+  // An active GitHub task conversation owns work about its repository; the host decides the rest.
+  // A task context also carries its latest event, which does not make it an event conversation.
+  const taskWork = !!task && task.active && task.source === 'github'
+  const work = general || taskWork
   const bots = input.personalBots ?? []
   let job: RouterJobReceipt | undefined
   let workError: string | undefined
@@ -140,7 +144,7 @@ export function createRouterToolset(
         () => previewRoute(),
       )
   }
-  if (general) {
+  if (work) {
     const positiveInteger = (value: unknown, label: string): number => {
       if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1)
         reject(`请指定有效的${label}。`)
@@ -177,7 +181,9 @@ export function createRouterToolset(
     if (delegateTask)
       register(
         'delegate_task',
-        '将本轮用户原话派成一次独立工作，并用 brief 写明执行者需要的背景。只读的多步分析用 zero；要修改代码或在检出目录里跑测试才选 codex，服务器会再按用户本轮原话确认，可能拒绝。repository 填 owner/name 全名：zero 可填要分析的仓库；codex 的仓库须是用户本轮说出的仓库，没说时沿用本对话最近一项派工中用户写明过的仓库或 codex 派工的仓库。不要为查询进度或持续跟踪新建派工。',
+        taskWork
+          ? '为这项任务把本轮用户原话派成一次独立工作，派工记在任务下，汇报回到这段对话。只读的多步分析用 zero；要修改代码或在检出目录里跑测试才选 codex，服务器会再按用户本轮原话确认，可能拒绝。仓库固定为任务所在的仓库，repository 可省略；任务名称、目的和最近命中的摘要会由服务器作为背景交给执行者，brief 只写这段对话补充的内容。不要为查询进度或持续跟踪新建派工。'
+          : '将本轮用户原话派成一次独立工作，并用 brief 写明执行者需要的背景。只读的多步分析用 zero；要修改代码或在检出目录里跑测试才选 codex，服务器会再按用户本轮原话确认，可能拒绝。repository 填 owner/name 全名：zero 可填要分析的仓库；codex 的仓库须是用户本轮说出的仓库，没说时沿用本对话最近一项派工中用户写明过的仓库或 codex 派工的仓库。不要为查询进度或持续跟踪新建派工。',
         {
           executor: { type: 'string', enum: ['zero', 'codex'] },
           repository: { type: 'string' },
@@ -286,7 +292,7 @@ export function createRouterToolset(
       }
     },
     workReply(): TriggerConversationAnswer | undefined {
-      if (general && (job || workError)) {
+      if (work && (job || workError)) {
         // A status read is how the owner asks for the full result once a report replaces it.
         const full =
           job && statusRead && job.result && (job.report || job.reportPending)

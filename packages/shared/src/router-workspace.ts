@@ -1,6 +1,7 @@
 import type { RouterSurfaceMessages } from './router-surface'
 import type { TriggerInboxItem, TriggerSource } from './types/trigger'
 import type {
+  RouterJobReceipt,
   TriggerConversationScope,
   TriggerConversationTurn,
 } from './types/trigger-conversation'
@@ -39,4 +40,22 @@ export interface RouterWorkspaceSnapshot {
   settings: TriggerRoutingSettingsSnapshot
   surface: RouterSurfaceMessages
   turns: (TriggerConversationTurn & { surface: RouterSurfaceMessages | null })[]
+  /**
+   * Preset owner sentences the server offers in this conversation, sent as the owner's message
+   * when clicked. Present only where the server allows the work they ask for.
+   */
+  quickQuestions?: { label: string; question: string }[]
+}
+
+/** A delegated job created from a task conversation, as listed on the task page. */
+export interface RouterTaskJob {
+  id: number
+  executor: RouterJobReceipt['executor']
+  status: RouterJobReceipt['status']
+  updatedAt: string
+  /** The report's verdict, once the latest step has one. */
+  verdict?: string
+  reportPending?: true
+  /** The job's authorization changed since it was created; only its number and state are shown. */
+  unavailable?: true
 }

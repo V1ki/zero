@@ -11,6 +11,7 @@ import {
   readJobRepository,
   resolveCodexRepository,
   sentenceNamesRepository,
+  taskJobRepository,
 } from './router-work-reply'
 import type { RouterWriteCheck, RouterWriteRequest } from './router-write-check'
 
@@ -64,6 +65,31 @@ export function visibleWorkTurn(
   return { ...turn, answer: visible }
 }
 
+/**
+ * A task conversation that may own delegated work. The repository comes from the owner's mandate
+ * and is the only target; `active` is read again right before any job state changes.
+ */
+export interface RouterWorkTask {
+  id: number
+  repository: string
+  active(): boolean
+}
+
+/**
+ * The job request id of a turn. Job request ids are unique per job scope, which a task
+ * conversation shares with the main conversation, so a task turn's id is qualified by its thread.
+ */
+export function jobRequestId(
+  turn: Pick<TriggerConversationTurn, 'requestId'>,
+  task?: { id: number },
+) {
+  return task ? `task-${task.id}:${turn.requestId}` : turn.requestId
+}
+
+/**
+ * `scope` is the job scope: the Web owner's jobs use `'general'` whether the turn is in the main
+ * conversation or in a task conversation (`task`), so numbering and lookup stay single.
+ */
 export function createRouterWorkTurn(
   work: RouterWorkIntegrations,
   store: TriggerStore,
@@ -72,8 +98,10 @@ export function createRouterWorkTurn(
   turn: TriggerConversationTurn,
   history: readonly TriggerConversationTurn[],
   authorized: () => boolean,
+  task?: RouterWorkTask,
 ) {
   const { delegatedJobs, principals, checkout } = work
+  const requestId = jobRequestId(turn, task)
   const previous = history
     .filter((item) => item.status === 'completed' && item.answer)
     .slice(-8)
@@ -124,7 +152,15 @@ export function createRouterWorkTurn(
   function jobAudience(id: number, signal: AbortSignal) {
     const stored = store.jobs.get(scope, id)
     if (!stored) throw new TriggerAgentError('在当前 Router 对话中找不到这个工作任务。')
+    // A task conversation reaches only the work it owns; any job stays readable from the main one.
+    if (task && stored.taskId !== task.id)
+      throw new TriggerAgentError(`派工 #${id} 不属于这项任务。请在 Router 主对话里查看或继续它。`)
     return pin(!!stored.repository, signal)
+  }
+  /** Read right before a job changes: an inactive task conversation is read-only. */
+  function requireTask() {
+    if (task && !task.active())
+      throw new TriggerAgentError('这项任务已停止跟踪，不能再派工或继续派工。')
   }
   async function requireCheckout(job: { executor: string; repository?: string }) {
     if (job.executor === 'codex' && (!job.repository || !(await checkout?.(job.repository, actor))))
@@ -143,14 +179,17 @@ export function createRouterWorkTurn(
     ...(delegatedJobs &&
       principals && {
         delegateTask: async ({ brief, executor, repository: supplied }, signal, claim) => {
-          const repository =
-            executor === 'codex'
-              ? resolveCodexRepository(
-                  turn.question,
-                  supplied,
-                  work.registeredCheckouts?.(actor) ?? [],
-                  recentRepository,
-                )
+          const registered = work.registeredCheckouts?.(actor) ?? []
+          // In a task conversation the mandate's repository replaces the "most recent job" default.
+          const repository = task
+            ? taskJobRepository(
+                turn.question,
+                supplied,
+                task.repository,
+                executor === 'codex' ? registered : [],
+              )
+            : executor === 'codex'
+              ? resolveCodexRepository(turn.question, supplied, registered, recentRepository)
               : readJobRepository(supplied)
           const audience = pin(!!repository, signal)
           if (executor === 'codex') {
@@ -162,13 +201,15 @@ export function createRouterWorkTurn(
             await confirmWrite({ kind: 'submit', repository }, signal)
           }
           guard(signal)
+          requireTask()
           claim()
-          const job = delegatedJobs.submit(scope, turn.requestId, {
+          const job = delegatedJobs.submit(scope, requestId, {
             executor,
             ...(repository && { repository }),
             audience,
             instruction: turn.question,
             ...(brief && { brief }),
+            ...(task && { taskId: task.id }),
           })
           record(job)
           return job
@@ -199,11 +240,12 @@ export function createRouterWorkTurn(
               )
           }
           guard(signal)
+          requireTask()
           claim()
           const instruction = picked
             ? `${turn.question}\n（用户选择的是上一步提出的问题「${picked.question}」的选项：「${picked.option}」）`
             : turn.question
-          const job = delegatedJobs.continue(scope, id, turn.requestId, instruction, audience, {
+          const job = delegatedJobs.continue(scope, id, requestId, instruction, audience, {
             ...(brief && { brief }),
             // The step that was confirmed is the one continued.
             ...(original.executor === 'codex' && { expectedAttempt: original.attempt }),
@@ -231,16 +273,18 @@ export function createRouterWorkTurn(
       throw new TriggerAgentError('这个问题已经回答过，或任务已有新的进展。')
     await requireCheckout(original)
     guard(signal)
-    // One answer per decision, recorded with the request that gave it.
+    requireTask()
+    // One answer per decision, recorded with the request that gave it under the job's own scope,
+    // so the decision is answered once whichever conversation shows it.
     const once = store.conversations.applyActionOnce(
       scope,
       `decision-${choice.jobId}-${choice.attempt}`,
-      JSON.stringify([turn.requestId, choice.option]),
+      JSON.stringify([requestId, choice.option]),
       () => {},
     )
     if (once === 'conflict') throw new TriggerAgentError('这个问题已经回答过。')
     const instruction = `用户在网页上回答了这项派工上一步提出的问题「${decision.question}」，选择了：「${option}」。请按这个选择继续。`
-    const job = delegatedJobs.continue(scope, choice.jobId, turn.requestId, instruction, audience, {
+    const job = delegatedJobs.continue(scope, choice.jobId, requestId, instruction, audience, {
       expectedAttempt: choice.attempt,
     })
     record(job)

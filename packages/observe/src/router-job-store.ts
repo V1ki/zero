@@ -28,6 +28,8 @@ export interface RouterJob {
   /** JSON written by the server after validating a model report; read it through a validator. */
   report?: string | null
   reportState?: RouterJobReportState | null
+  /** The mandate task whose conversation created the job, carried to every later attempt. */
+  taskId?: number | null
   createdAt: string
   updatedAt: string
 }
@@ -36,6 +38,7 @@ type JobInput = Pick<RouterJob, 'executor' | 'instruction'> & {
   repository?: string
   audience?: string
   brief?: string
+  taskId?: number
 }
 type Outcome = {
   status: 'completed' | 'failed' | 'unknown'
@@ -54,7 +57,7 @@ export const ROUTER_JOB_BRIEF_LIMIT = 4000
 
 const columns = `job_id AS id, scope, request_id AS requestId, executor, instruction, brief,
   repository, audience, status, attempt, result, thread_id AS threadId, report,
-  report_state AS reportState, created_at AS createdAt, updated_at AS updatedAt`
+  report_state AS reportState, task_id AS taskId, created_at AS createdAt, updated_at AS updatedAt`
 const now = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 
 function validateRequest(
@@ -89,7 +92,7 @@ export class RouterJobStore {
       PRIMARY KEY(job_id,attempt), UNIQUE(scope,request_id));
       CREATE INDEX IF NOT EXISTS router_jobs_queued ON router_job_steps(created_at,job_id) WHERE status='queued';
       CREATE INDEX IF NOT EXISTS router_jobs_return ON router_job_steps(updated_at,job_id) WHERE return_state='pending';`)
-    // Added in place on existing installations; rows from before have no brief and no report.
+    // Added in place on existing installations; rows from before have no brief, report or task.
     db.transaction(() => {
       const present = new Set(
         db
@@ -103,6 +106,11 @@ export class RouterJobStore {
         db.exec(
           "ALTER TABLE router_job_steps ADD COLUMN report_state TEXT CHECK(report_state IN ('pending','ready','none'))",
         )
+      if (!present.has('task_id'))
+        db.exec('ALTER TABLE router_job_steps ADD COLUMN task_id INTEGER')
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS router_jobs_task ON router_job_steps(task_id,job_id) WHERE task_id IS NOT NULL',
+      )
     }).immediate()
   }
 
@@ -127,6 +135,17 @@ export class RouterJobStore {
       .reverse()
   }
 
+  /** The latest step of each job linked to a task, newest job first. Swept jobs are left out. */
+  listForTask(scope: RouterJobScope, taskId: number, limit = 20): RouterJob[] {
+    return this.db
+      .query<RouterJob, [RouterJobScope, number, number]>(
+        `SELECT ${columns} FROM router_job_steps s WHERE scope=?1 AND task_id=?2 AND retired=0
+       AND attempt=(SELECT max(attempt) FROM router_job_steps n WHERE n.job_id=s.job_id)
+       ORDER BY job_id DESC LIMIT ?3`,
+      )
+      .all(scope, taskId, Math.max(1, Math.min(50, limit)))
+  }
+
   private replay(scope: RouterJobScope, requestId: string) {
     const row = this.db
       .query<RouterJob & { retired: number }, [RouterJobScope, string]>(
@@ -146,6 +165,7 @@ export class RouterJobStore {
         const prior = this.replay(scope, requestId)
         const repository = input.repository ?? null
         const audience = input.audience ?? null
+        const taskId = input.taskId ?? null
         // A retried turn may phrase its brief differently; the first stored brief stands.
         if (prior) {
           if (
@@ -153,7 +173,8 @@ export class RouterJobStore {
             prior.executor !== input.executor ||
             prior.instruction !== input.instruction ||
             prior.repository !== repository ||
-            prior.audience !== audience
+            prior.audience !== audience ||
+            (prior.taskId ?? null) !== taskId
           )
             throw new RouterJobConflictError('请求编号已用于其他任务。')
           return prior
@@ -169,10 +190,11 @@ export class RouterJobStore {
               string | null,
               string | null,
               string | null,
+              number | null,
             ]
           >(
-            `INSERT INTO router_job_steps(job_id,attempt,scope,request_id,executor,instruction,brief,repository,audience,status,created_at,updated_at)
-         VALUES((SELECT COALESCE(MAX(job_id),0)+1 FROM router_job_steps),1,?,?,?,?,?,?,?,'queued',${now},${now})
+            `INSERT INTO router_job_steps(job_id,attempt,scope,request_id,executor,instruction,brief,repository,audience,task_id,status,created_at,updated_at)
+         VALUES((SELECT COALESCE(MAX(job_id),0)+1 FROM router_job_steps),1,?,?,?,?,?,?,?,?,'queued',${now},${now})
          RETURNING ${columns}`,
           )
           .get(
@@ -183,6 +205,7 @@ export class RouterJobStore {
             input.brief ?? null,
             repository,
             audience,
+            taskId,
           )
         if (!inserted) throw new Error('Failed to create Router job')
         return inserted
@@ -218,8 +241,8 @@ export class RouterJobStore {
         )
         const inserted = this.db
           .query<RouterJob, [string, string, string | null, number, number]>(
-            `INSERT INTO router_job_steps(job_id,attempt,scope,request_id,executor,instruction,brief,repository,audience,thread_id,status,created_at,updated_at)
-         SELECT job_id,attempt+1,scope,?,executor,?,?,repository,audience,thread_id,'queued',${now},${now}
+            `INSERT INTO router_job_steps(job_id,attempt,scope,request_id,executor,instruction,brief,repository,audience,thread_id,task_id,status,created_at,updated_at)
+         SELECT job_id,attempt+1,scope,?,executor,?,?,repository,audience,thread_id,task_id,'queued',${now},${now}
          FROM router_job_steps WHERE job_id=? AND attempt=? RETURNING ${columns}`,
           )
           .get(requestId, instruction, options.brief ?? null, id, job.attempt)

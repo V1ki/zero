@@ -30,7 +30,7 @@ import { RouterSurface } from '../components/RouterSurface'
 import { apiFetch, apiPost } from '../lib/api'
 import { ListenerRoutingSettings, useListenerRoutingConfig } from './config-listener-routing'
 import { RoutingPreview } from './config-routing-preview'
-import { EventMandateMatches, RouterMandateTasks } from './router-mandate-tasks'
+import { EventMandateMatches, RouterMandateTasks, taskJobsKey } from './router-mandate-tasks'
 import { RouterWebNotifications } from './router-web-notifications'
 import './config-listeners-tab.css'
 import './router-workspace.css'
@@ -274,6 +274,8 @@ function Conversation({
       cache.setQueryData(key, snapshot)
       if ('text' in op && !op.retry) clearSubmitted(op.text)
       if ('action' in op) void cache.invalidateQueries({ queryKey: eventsKey })
+      // A turn may have started work for this task; its page lists the task's jobs.
+      if (snapshot.task) void cache.invalidateQueries({ queryKey: taskJobsKey(snapshot.task.id) })
     },
     onError: async (_error, op) => {
       await cache.invalidateQueries({ queryKey: key, exact: true })
@@ -553,6 +555,22 @@ function Conversation({
             ask()
           }}
         >
+          {!!data.quickQuestions?.length && (
+            <fieldset className="rw-quick" aria-label="派工快捷操作">
+              {data.quickQuestions.map((quick) => (
+                <button
+                  key={quick.label}
+                  type="button"
+                  className="rw-inline-button rw-work-action"
+                  title={quick.question}
+                  disabled={busy}
+                  onClick={() => submit({ requestId: crypto.randomUUID(), text: quick.question })}
+                >
+                  {quick.label}
+                </button>
+              ))}
+            </fieldset>
+          )}
           {failed && (
             <div className="rw-failure" role="alert">
               <p className="rw-error">{send.error?.message}</p>

@@ -147,6 +147,21 @@ function fixture(mandates?: MandateService) {
             workspaceCalls.push(['action', scope, requestId, action, retry])
             throw new RouterWorkspaceError(409, '卡片已更新。')
           },
+          taskJobs(taskId) {
+            workspaceCalls.push(['jobs', taskId])
+            if (taskId !== 7) throw new RouterWorkspaceError(404, '找不到这个委托任务。')
+            return {
+              items: [
+                {
+                  id: 3,
+                  executor: 'codex',
+                  status: 'completed',
+                  updatedAt: '2026-11-04T00:00:00.000Z',
+                  verdict: '测试已修好。',
+                },
+              ],
+            }
+          },
         },
         routing: {
           getConfig: () => ({ settings: routingSettings, revision: routeRevision }),
@@ -388,6 +403,28 @@ describe('listener control plane', () => {
     const failure = await post('workspace/general/messages', { requestId, text: 'unexpected' })
     expect(failure.status).toBe(500)
     expect(await failure.text()).not.toContain('sensitive upstream body')
+  })
+
+  test('lists the jobs of a task conversation only', async () => {
+    const { req, workspaceCalls } = fixture()
+    for (const scope of ['general', '2'])
+      expect((await req(`workspace/${scope}/jobs`)).status).toBe(400)
+    expect(await (await req('workspace/task-7/jobs')).json()).toEqual({
+      items: [
+        {
+          id: 3,
+          executor: 'codex',
+          status: 'completed',
+          updatedAt: '2026-11-04T00:00:00.000Z',
+          verdict: '测试已修好。',
+        },
+      ],
+    })
+    expect((await req('workspace/task-8/jobs')).status).toBe(404)
+    expect(workspaceCalls).toEqual([
+      ['jobs', 7],
+      ['jobs', 8],
+    ])
   })
 
   test('rejects remote sockets, cross-origin reads, and forged proxy traffic before legacy CORS', async () => {

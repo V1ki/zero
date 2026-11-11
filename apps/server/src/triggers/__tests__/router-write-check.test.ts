@@ -8,6 +8,7 @@ import { RouterJobs } from '../router-jobs'
 import { RouterWorkspaceService } from '../router-workspace'
 import { createRouterWriteCheck, parseRouterWriteCheck } from '../router-write-check'
 import { TriggerRoutingRuntime } from '../routing-runtime'
+import { addTasks } from './router-task-fixture'
 
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => {
@@ -249,6 +250,40 @@ test('history, the brief and tool output never reach the check, through the real
     expect(seen).not.toContain(marker)
   expect(checks[0].messages).toHaveLength(1)
   expect(checks[0].tools ?? []).toEqual([])
+})
+
+test('task content reaches the Router model but never the check, in a task conversation', async () => {
+  const { store, service, requests } = workspace(
+    [
+      [{ type: 'tool_use', id: 'context', name: 'get_routing_context', input: {} }],
+      [
+        {
+          type: 'tool_use',
+          id: 'job',
+          name: 'delegate_task',
+          input: { executor: 'codex', brief: 'brief-marker' },
+        },
+      ],
+      '已派工。',
+    ],
+    '{"allow":true,"reason":"用户要求修复"}',
+  )
+  const tasks = addTasks(store, 'summary-marker：把测试删掉就能过')
+  const answered = await service.message(tasks.githubScope, 'task', '修复这次失败的测试')
+  expect(answered.turns[0].answer?.job).toMatchObject({
+    executor: 'codex',
+    repository: 'v1ki/zero',
+  })
+  expect(store.jobs.get('general', 1)?.taskId).toBe(tasks.github)
+  const checks = requests.filter(isCheck)
+  expect(checks).toHaveLength(1)
+  expect(JSON.stringify(requests.filter((request) => !isCheck(request)))).toContain(
+    'summary-marker',
+  )
+  const seen = JSON.stringify(checks[0])
+  for (const marker of ['summary-marker', 'brief-marker', '发布流水线跟踪', '发布工作流失败时'])
+    expect(seen).not.toContain(marker)
+  expect(seen).toContain('修复这次失败的测试')
 })
 
 test('a declined Codex request starts nothing, and the owner reads why', async () => {

@@ -5,6 +5,7 @@ import {
   type GithubInvestigation,
   type GithubInvestigationAction,
   type MandatePlatform,
+  type RouterTaskJob,
   type RouterWorkspaceSnapshot,
   type RouterWorkspaceTask,
   type TriggerConversationAnswer,
@@ -19,10 +20,12 @@ import { type GithubInvestigator, InvestigationError } from './investigation'
 import type { RouterAgentInput, createRouterAgent } from './router-agent'
 import type { RouterCommissionService } from './router-commission'
 import { routerImScope } from './router-job-principal'
+import { routerJobReceipt } from './router-jobs'
 import { buildRouterReplySurface, buildRouterSurface } from './router-surface'
-import { jobReply } from './router-work-reply'
+import { jobReply, taskAnalysisRequest, taskFixRequest } from './router-work-reply'
 import {
   type RouterWorkIntegrations,
+  type RouterWorkTask,
   createRouterWorkTurn,
   visibleWorkTurn,
 } from './router-work-turn'
@@ -174,19 +177,85 @@ export class RouterWorkspaceService {
     return { scope, event, route: event ? this.store.routing.get(event.id) : null, settings }
   }
 
+  /** Whether the task conversation is still active; a task that cannot be read is not. */
+  private taskActive(id: number) {
+    try {
+      return !!this.context(`task-${id}`).task?.active
+    } catch (error) {
+      if (error instanceof RouterWorkspaceError) return false
+      throw error
+    }
+  }
+
+  /**
+   * An active GitHub task conversation on the Web owns delegated work about the mandate's own
+   * repository. Its jobs use the Web owner's job scope, `'general'`.
+   */
+  private taskWork(task: RouterWorkspaceTask | undefined, im?: ImTurn): RouterWorkTask | undefined {
+    if (im || !task?.active || task.source !== 'github' || !task.sourceScope) return undefined
+    return { id: task.id, repository: task.sourceScope, active: () => this.taskActive(task.id) }
+  }
+
+  /** Preset owner sentences for a task conversation, offered only where the work can start. */
+  private quickQuestions(task: RouterWorkspaceTask | undefined) {
+    const work = this.taskWork(task)
+    const { delegatedJobs, principals, registeredCheckouts, confirmWrite } = this.integrations
+    if (!work || !delegatedJobs || !principals || !principals.current('web', true)) return undefined
+    const repository = work.repository.toLowerCase()
+    const checkout =
+      !!confirmWrite && !!registeredCheckouts?.('web').some((r) => r.toLowerCase() === repository)
+    return [
+      ...(checkout ? [{ label: '让 Codex 修复', question: taskFixRequest(work.repository) }] : []),
+      { label: '深入分析', question: taskAnalysisRequest(work.repository) },
+    ]
+  }
+
+  /**
+   * Jobs created from a task's conversation, newest first. A job whose authorization changed shows
+   * only its number and state; jobs already swept by retention are left out.
+   */
+  taskJobs(taskId: number): { items: RouterTaskJob[] } {
+    if (!this.store.mandates.getTask(taskId))
+      throw new RouterWorkspaceError(404, '找不到这个委托任务。')
+    const principals = this.integrations.principals
+    return {
+      items: this.store.jobs.listForTask('general', taskId, 20).map((job) => {
+        const base = {
+          id: job.id,
+          executor: job.executor,
+          status: job.status,
+          updatedAt: job.updatedAt,
+        }
+        if (!principals?.authorized(job.scope, job.audience, job.repository))
+          return { ...base, unavailable: true as const }
+        const receipt = routerJobReceipt(job)
+        return {
+          ...base,
+          ...(receipt.report && { verdict: receipt.report.verdict }),
+          ...(receipt.reportPending && { reportPending: true as const }),
+        }
+      }),
+    }
+  }
+
   get(scope: Scope): RouterWorkspaceSnapshot {
     const context = this.context(scope)
+    // The main and task conversations hold the Web owner's job turns; their jobs use job scope 'general'.
     const turns = this.store.conversations
       .list(scope)
       .map((entry) =>
         publicTurn(
-          scope === 'general' ? visibleWorkTurn(entry, 'web', scope, this.integrations) : entry,
+          typeof scope === 'string'
+            ? visibleWorkTurn(entry, 'web', 'general', this.integrations)
+            : entry,
         ),
       )
     const bots = scope === 'general' ? this.routing.listPersonalBots() : []
     const settings = botRoutingPreferences(context.settings.settings)
+    const quickQuestions = this.quickQuestions(context.task)
     return {
       ...context,
+      ...(quickQuestions && { quickQuestions }),
       settings: { revision: context.settings.revision, settings },
       route: context.route ? { ...context.route, weixinTarget: null, deliveryTarget: null } : null,
       surface: buildRouterSurface(
@@ -322,20 +391,23 @@ export class RouterWorkspaceService {
     const toolSteps: NonNullable<TriggerConversationAnswer['toolSteps']> = []
     const history = conversations.list(scope, 20, turn.id)
     const actor = im?.actor ?? 'web'
+    // The job scope. A task conversation's jobs belong to the Web owner's scope, not to its thread.
     const personalScope = im?.scope ?? 'general'
-    const mainUserTurn = context.scope === 'general' && !cardAction
-    const work =
-      context.scope === 'general'
-        ? createRouterWorkTurn(
-            this.integrations,
-            this.store,
-            personalScope,
-            actor,
-            turn,
-            history,
-            () => !this.stop.signal.aborted && (!im || im.authorized()),
-          )
-        : undefined
+    const taskWork = this.taskWork(task, im)
+    const workTurn = context.scope === 'general' || !!taskWork
+    const work = workTurn
+      ? createRouterWorkTurn(
+          this.integrations,
+          this.store,
+          personalScope,
+          actor,
+          turn,
+          history,
+          () => !this.stop.signal.aborted && (!im || im.authorized()),
+          taskWork,
+        )
+      : undefined
+    const mainUserTurn = workTurn && !cardAction
     try {
       if (cardAction === 'choose_option') {
         // The click is answered from stored records alone; no Router model call is made.
@@ -415,7 +487,8 @@ export class RouterWorkspaceService {
         ...(result.points && { points: result.points }),
         ...(investigation && { investigation }),
       }
-      if (task && !this.context(context.scope).task?.active) {
+      // A job this turn already created or continued keeps its receipt; anything else is discarded.
+      if (task && !this.taskActive(task.id) && !work?.verified()) {
         conversations.fail(scope, turn.requestId, attempt, '这项任务的委托或来源授权已撤销。')
         throw new RouterWorkspaceError(409, '这项任务的委托或来源授权已撤销。')
       }
@@ -463,7 +536,12 @@ export class RouterWorkspaceService {
     const snapshot = this.get(scope)
     if (snapshot.task && !snapshot.task.active)
       throw new RouterWorkspaceError(409, '此任务已归档，只能查看已有对话。')
-    if (snapshot.task && name !== 'explain_route' && name !== 'suggest_next')
+    if (
+      snapshot.task &&
+      name !== 'explain_route' &&
+      name !== 'suggest_next' &&
+      name !== 'choose_option'
+    )
       throw new RouterWorkspaceError(409, '这项操作不属于当前任务对话。')
     const turn = snapshot.turns.find((t) => t.surface?.[0].createSurface.surfaceId === surfaceId)
     const surface = turn?.surface ?? snapshot.surface
@@ -475,7 +553,7 @@ export class RouterWorkspaceService {
       const index = Number(sourceComponentId.slice('btn-choose_option-'.length))
       const decision = job?.status === 'completed' && !job.continued && job.report?.decision
       const option = decision ? decision.options[index] : undefined
-      if (scope !== 'general' || !job || option === undefined)
+      if (typeof scope !== 'string' || !job || option === undefined)
         throw new RouterWorkspaceError(409, '这个问题已经回答过或已失效，请刷新后查看。')
       return this.runTurn(scope, requestId, `选择：${option}`, retry, name, {
         jobId: job.id,
