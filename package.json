@@ -21,6 +21,7 @@
     "compaction:tool-io-digest": "bun run benchmarks/zero-runtime/tool-io-digest-benchmark.ts",
     "logs:storage-audit": "bun run benchmarks/zero-runtime/log-storage-audit.ts",
     "task-closure:prompt-bench": "bun run benchmarks/zero-runtime/task-closure-prompt-benchmark.ts",
+    "router:prompt-bench": "bun run benchmarks/zero-runtime/router-prompt-benchmark.ts",
     "prompt:bench": "bun run benchmarks/zero-runtime/prompt-benchmark.ts",
     "bench": "bun run benchmarks/platform/src/cli.ts",
     "bench:test": "bun test benchmarks/platform/src/__tests__"
