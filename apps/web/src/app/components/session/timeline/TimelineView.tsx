@@ -2,6 +2,7 @@ import { ArrowsClockwise, Brain, Robot, User, Warning } from '@phosphor-icons/re
 import { formatTime } from '../../../lib/format'
 import { TokenUsagePill } from '../TokenUsagePill'
 import { ToolCallBlock } from '../ToolCallBlock'
+import { ContextCheckpointCard } from '../context-panel/ContextCheckpointCard'
 import type { TokenUsageSummary } from '../context-panel/context-tokens'
 import { MemoryNudgeBlock } from '../memory/MemoryNudgeBlock'
 import { MemoryRetrievalBlock } from '../memory/MemoryRetrievalBlock'
@@ -103,6 +104,14 @@ export function TimelineView({
             )
           case 'compaction-block':
             return <TimelineCompactionBlock key={item.id} item={item} />
+          case 'context-checkpoint':
+            return (
+              <ContextCheckpointCard
+                key={getTimelineItemKey(item)}
+                checkpoint={item.checkpoint}
+                variant="timeline"
+              />
+            )
           case 'decision':
             if (item.decisionType === 'memory_retrieval') {
               return (
@@ -650,6 +659,8 @@ function getTimelineItemKey(item: TimelineItem): string {
       return `tool-${item.id}`
     case 'compaction-block':
       return `compaction-${item.id}`
+    case 'context-checkpoint':
+      return `context-checkpoint-${item.id}`
     case 'decision':
       return `decision-${item.id}`
     case 'task-closure':

@@ -2327,4 +2327,156 @@ describe('buildTrajectorySnapshot', () => {
     expect(compactRequest?.startedAt).toBe(Date.parse(T2))
     expect(compactRequest?.completedAt).toBe(Date.parse(T3))
   })
+
+  it('renders context_checkpoint spans as COMPACTED regions with the current summary', () => {
+    const checkpointSpan = (
+      partial: Partial<TraceSpan> & Pick<TraceSpan, 'id' | 'startTime'>,
+    ): TraceSpan =>
+      span({
+        name: 'context_checkpoint',
+        kind: 'context_compaction',
+        metadata: { purpose: 'compression', coveredMessageCount: 4, requestCount: 1 },
+        ...partial,
+      })
+    const failed = checkpointSpan({
+      id: 'cp_failed',
+      startTime: T1,
+      endTime: T2,
+      status: 'error',
+      metadata: {
+        purpose: 'compression',
+        coveredMessageCount: 4,
+        error: 'context checkpoint summary timed out after 120000ms',
+        usage: { input: 0, output: 0 },
+      },
+    })
+    const succeeded = checkpointSpan({
+      id: 'cp_ok',
+      startTime: T4,
+      endTime: T5,
+      data: {
+        compaction: {
+          model: 'summary-model',
+          provider: 'mock',
+          promptVersion: 'context_checkpoint_zh_md_v1',
+          coveredMessageCount: 3,
+          requestCount: 1,
+          summaryChars: 24,
+          usage: { input: 900, output: 80, cacheRead: 10 },
+          cost: 0.0042,
+          durationMs: 2000,
+        },
+      },
+    })
+    const root = span({ id: 'turn', name: 'turn', kind: 'turn', children: [failed, succeeded] })
+    const snapshot = buildTrajectorySnapshot(session, requests, [root], {
+      contextCheckpoint: {
+        id: 'checkpoint_1',
+        sessionId: 's1',
+        generation: 2,
+        prunedThroughMessageId: 'a2',
+        summarizedThroughMessageId: 'a2',
+        summary: '## 当前工作\ncheckpoint summary',
+        coveredMessageCount: 4,
+        tokensBefore: 5000,
+        tokensAfter: 700,
+        model: { model: 'summary-model', provider: 'mock', promptVersion: 'v1' },
+        createdAt: T6,
+      },
+    })
+
+    const views = snapshot.requests.filter((view) => view.purpose === 'compaction')
+    expect(views).toHaveLength(2)
+    const [failedView, okView] = views
+    if (failedView?.purpose !== 'compaction' || okView?.purpose !== 'compaction') {
+      throw new Error('compaction views missing')
+    }
+    expect(failedView.status).toBe('error')
+    expect(failedView.error).toContain('timed out')
+    expect(failedView.summary).toBeUndefined()
+    expect(failedView.facts).toEqual({ coveredMessageCount: 4 })
+    expect(okView).toMatchObject({
+      turn: null,
+      status: 'complete',
+      startedAt: Date.parse(T4),
+      completedAt: Date.parse(T5),
+      provenance: { model: 'summary-model', provider: 'mock' },
+      usage: { inputTokens: 900, outputTokens: 80, cacheReadTokens: 10 },
+      summary: [{ type: 'text', text: '## 当前工作\ncheckpoint summary' }],
+      facts: {
+        model: 'summary-model',
+        provider: 'mock',
+        coveredMessageCount: 3,
+        cost: 0.0042,
+        generation: 2,
+      },
+    })
+    const okNode = snapshot.eventNodes.find(
+      (node) => node.kind === 'compaction' && node.seq === okView.startSeq,
+    )
+    expect(okNode).toMatchObject({
+      summary: '## 当前工作\ncheckpoint summary',
+      shadowedTokenCount: 4300,
+    })
+
+    const turns = deriveTrajectoryLayout({
+      nodes: snapshot.eventNodes,
+      eventLocations: snapshot.eventLocations,
+      partial: snapshot.partial,
+      runningCalls: snapshot.runningCalls,
+      requests: snapshot.requests,
+    })
+    const compacted = turns
+      .flatMap((turn) => turn.groups.flatMap((group) => group.cells))
+      .filter((cell) => cell.kind === 'compacted')
+    expect(compacted).toHaveLength(2)
+    expect(compacted[0]).toMatchObject({ isError: true, text: failedView.error })
+    expect(compacted[1]).toMatchObject({
+      input: 900,
+      output: 80,
+      outputDetail: '## 当前工作\ncheckpoint summary',
+      compactionFacts: { coveredMessageCount: 3, cost: 0.0042, generation: 2 },
+    })
+  })
+
+  it('keeps the summary off checkpoint spans when the session has no checkpoint', () => {
+    const snapshot = buildTrajectorySnapshot(session, requests, [
+      span({
+        id: 'cp_ok',
+        name: 'context_checkpoint',
+        kind: 'context_compaction',
+        startTime: T4,
+        endTime: T5,
+        data: { compaction: { model: 'm', provider: 'p', coveredMessageCount: 2 } },
+      }),
+    ])
+    const view = snapshot.requests.find((candidate) => candidate.purpose === 'compaction')
+    if (view?.purpose !== 'compaction') throw new Error('compaction view missing')
+    expect(view.summary).toBeUndefined()
+    expect(view.facts).toEqual({ model: 'm', provider: 'p', coveredMessageCount: 2 })
+  })
+
+  it('still renders legacy timeline compaction blocks next to checkpoint spans', () => {
+    const legacySpan = span({
+      id: 'legacy',
+      name: 'timeline_compaction_block',
+      kind: 'context_compaction',
+      startTime: T2,
+      endTime: T3,
+      data: { compaction: { blockId: 'block-1' } },
+    })
+    const snapshot = buildTrajectorySnapshot(session, requests, [legacySpan], {
+      compactionBlocks: [
+        { id: 'block-1', summary: 'legacy summary', coveredMessageCount: 2, createdAt: T4 },
+      ],
+    })
+    const views = snapshot.requests.filter((view) => view.purpose === 'compaction')
+    expect(views).toHaveLength(1)
+    expect(views[0]).toMatchObject({
+      startedAt: Date.parse(T2),
+      completedAt: Date.parse(T3),
+      summary: [{ type: 'text', text: 'legacy summary' }],
+    })
+    if (views[0]?.purpose === 'compaction') expect(views[0].facts).toBeUndefined()
+  })
 })

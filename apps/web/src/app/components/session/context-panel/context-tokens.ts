@@ -1,4 +1,5 @@
-import { estimateTokens } from '@zero-os/shared'
+import { projectMessages } from '@zero-os/core/browser'
+import { type ContextCheckpoint, type Message, estimateTokens } from '@zero-os/shared'
 
 export interface ContentBlockLike {
   type: string
@@ -228,8 +229,23 @@ export function estimatedTokenUsage(total: number): TokenUsageSummary | undefine
   }
 }
 
+/**
+ * Messages the model sees: the canonical history with the context checkpoint
+ * projected — the summary replaces the covered prefix and tool results up to
+ * the prune watermark are clipped. Same projection the runtime uses.
+ */
+export function projectPromptMessages(
+  messages: MessageLike[],
+  checkpoint: ContextCheckpoint | null | undefined,
+): MessageLike[] {
+  if (!checkpoint) return messages
+  // The API serializes core Message objects; MessageLike is the loose client view of that JSON.
+  return projectMessages(messages as unknown as Message[], checkpoint) as unknown as MessageLike[]
+}
+
 export function buildContextTokenSummary(input: {
   messages: MessageLike[]
+  checkpoint?: ContextCheckpoint | null
   systemPrompt?: string
   llmRequests: LlmRequestLike[]
   totalTokens: number
@@ -254,21 +270,33 @@ export function buildContextTokenSummary(input: {
     tone: 'system',
   })
 
-  for (const message of input.messages) {
+  const checkpointId = input.checkpoint?.id
+  for (const message of projectPromptMessages(input.messages, input.checkpoint)) {
     if (message.messageType === 'notification') continue
 
     const parts = estimateContentTokenParts(message.content)
     const messageTokens = sumContentTokenParts(parts)
+    const isCheckpointSummary = message.id === checkpointId
     if (messageTokens > 0) {
       hotspots.push({
         id: message.id,
-        label: formatContextMessageLabel(message),
+        label: isCheckpointSummary ? 'Checkpoint' : formatContextMessageLabel(message),
         tokens: messageTokens,
-        detail: previewContextMessage(message),
+        detail: isCheckpointSummary
+          ? `summary of ${input.checkpoint?.coveredMessageCount ?? 0} messages`
+          : previewContextMessage(message),
       })
     }
 
-    if (message.role === 'user') {
+    if (isCheckpointSummary) {
+      addContextTokenSection(sections, {
+        key: 'checkpoint',
+        label: 'Checkpoint',
+        tokens: messageTokens,
+        detail: 'summary',
+        tone: 'cache',
+      })
+    } else if (message.role === 'user') {
       if (parts.toolResults > 0) {
         addContextTokenSection(sections, {
           key: 'tool-results',

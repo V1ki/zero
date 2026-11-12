@@ -1,3 +1,4 @@
+import type { ContextCheckpoint } from '@zero-os/shared'
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import type {
   SessionJudgeHistoryResponse,
@@ -562,6 +563,7 @@ interface Props {
   grossAvoidedInputCost?: number
   netSavings?: number
   contextTokenSummary?: ContextTokenSummary | null
+  contextCheckpoint?: ContextCheckpoint | null
   llmRequests?: LlmRequestEntry[]
   selectedDecision?: DecisionTimelineItem | null
   selectedTaskClosure?: TaskClosureTimelineItem | null
@@ -592,6 +594,7 @@ export function ContextPanel({
   grossAvoidedInputCost,
   netSavings,
   contextTokenSummary,
+  contextCheckpoint,
   llmRequests = [],
   selectedDecision = null,
   selectedTaskClosure = null,
@@ -687,6 +690,7 @@ export function ContextPanel({
           grossAvoidedInputCost={grossAvoidedInputCost}
           netSavings={netSavings}
           contextTokenSummary={contextTokenSummary}
+          contextCheckpoint={contextCheckpoint}
           llmRequests={llmRequests}
           relatedMemory={relatedMemory}
           traceEval={traceEval}

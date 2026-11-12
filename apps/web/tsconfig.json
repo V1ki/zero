@@ -10,6 +10,7 @@
     "types": ["bun-types"],
     "paths": {
       "@/*": ["./src/app/*"],
+      "@zero-os/core/browser": ["../../packages/core/src/browser.ts"],
       "@zero-os/shared": ["../../packages/shared/src/browser.ts"],
       "@zero-os/observe": ["../../packages/observe/src/browser.ts"]
     }

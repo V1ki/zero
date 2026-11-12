@@ -6,6 +6,7 @@ import {
   asString,
   flattenTraceSpans,
 } from '@zero-os/observe'
+import type { ContextCheckpoint } from '@zero-os/shared'
 import {
   type LlmRequestLike,
   type TokenUsageSummary,
@@ -284,6 +285,15 @@ export interface CompactionBlockTimelineItem {
   supersededByBlockId?: string
 }
 
+/** The context checkpoint in effect, marked after the last message it covers. */
+export interface ContextCheckpointTimelineItem {
+  type: 'context-checkpoint'
+  id: string
+  checkpoint: ContextCheckpoint
+  /** Anchor message time, so the marker sorts right after the covered messages. */
+  createdAt: string
+}
+
 export interface MemoryNudgeTimelineItem {
   type: 'memory-nudge'
   id: string
@@ -351,6 +361,7 @@ export type TimelineItem =
       resultTokenUsage?: TokenUsageSummary
     }
   | CompactionBlockTimelineItem
+  | ContextCheckpointTimelineItem
   | DecisionTimelineItem
   | TaskClosureTimelineItem
   | SystemEventTimelineItem
@@ -364,6 +375,7 @@ export function buildTimeline(
   decisions: SessionDecisionEvent[] = [],
   llmRequests: TimelineRequestLike[] = [],
   timelineCompactionBlocks: TimelineCompactionBlock[] = [],
+  contextCheckpoint?: ContextCheckpoint,
 ): TimelineItem[] {
   const items: TimelineItem[] = []
   const toolResults = buildToolResultMap(messages, traces, llmRequests)
@@ -380,6 +392,7 @@ export function buildTimeline(
     messages,
     timelineCompactionBlocks,
   )
+  const checkpointAfterMessage = buildContextCheckpointMarker(messages, contextCheckpoint)
   const decisionOwnership = assignDecisionOwners(buildDecisionEvents(decisions), traces, messages)
   let previousMessageId: string | null = null
 
@@ -388,6 +401,9 @@ export function buildTimeline(
       const compactionBlock = compactionBlocksAfterMessage.get(previousMessageId)
       if (compactionBlock) {
         items.push(compactionBlock)
+      }
+      if (checkpointAfterMessage?.messageId === previousMessageId) {
+        items.push(checkpointAfterMessage.item)
       }
     }
     previousMessageId = msg.id
@@ -575,8 +591,34 @@ export function buildTimeline(
     if (compactionBlock) {
       items.push(compactionBlock)
     }
+    if (checkpointAfterMessage?.messageId === previousMessageId) {
+      items.push(checkpointAfterMessage.item)
+    }
   }
   return items.sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+}
+
+/**
+ * Places the context checkpoint after the last message its summary replaces
+ * (the prune watermark when it has no summary). A checkpoint whose anchor is
+ * not in the history is not in effect and gets no marker.
+ */
+function buildContextCheckpointMarker(
+  messages: Message[],
+  checkpoint: ContextCheckpoint | undefined,
+): { messageId: string; item: ContextCheckpointTimelineItem } | undefined {
+  const anchorId = checkpoint?.summarizedThroughMessageId ?? checkpoint?.prunedThroughMessageId
+  const anchor = messages.find((message) => message.id === anchorId)
+  if (!checkpoint || !anchor) return undefined
+  return {
+    messageId: anchor.id,
+    item: {
+      type: 'context-checkpoint',
+      id: checkpoint.id,
+      checkpoint,
+      createdAt: anchor.createdAt,
+    },
+  }
 }
 
 /**

@@ -88,4 +88,4 @@ job 只针对 bash。bash 执行超过 5 秒转后台（其他工具仍是 60 �
 | 请求重建 | `projectUpTo(seq)` 的 messages + checkpoint 经 `prepareRequestMessages` 投影 + turn 区间内 injection（本 turn 的消息事件在 turn 结束时才写入，turn 内请求还需接上本 turn 的消息） |
 | 状态查询 | `getSystemPrompt` / `getToolSet` / `getLastSeq` |
 | 迁移/校验 | scripts-diag convert（播种 session/system/prompt/user·assistant·truncate/compaction-block/injection）+ rebuild（事件→DB 派生行） |
-| Web UI | ⏸ 尚未读取事件流（run.log raw 事件删除后，请求详情重建待接） |
+| Web UI | 会话详情 `GET /api/sessions/:id` 的 `contextCheckpoint`：活会话取 `Session.getContextCheckpoint()`，否则 `getContextCheckpointFromDB` → `store.project()`，无事件文件回退 DB;请求详情重建仍待接（run.log raw 事件已删除） |

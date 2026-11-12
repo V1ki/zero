@@ -3137,8 +3137,44 @@ export function TrajectoryTable({
                     </div>
                     <div>
                       <dt>Tokens</dt>
-                      <dd>—</dd>
+                      <dd>
+                        {selected.cell.input === undefined && selected.cell.output === undefined
+                          ? '—'
+                          : `${(selected.cell.input ?? 0).toLocaleString()} in · ${(selected.cell.output ?? 0).toLocaleString()} out`}
+                      </dd>
                     </div>
+                    {selected.cell.compactionFacts?.model !== undefined && (
+                      <div>
+                        <dt>Model</dt>
+                        <dd>
+                          {selected.cell.compactionFacts.model}
+                          {selected.cell.compactionFacts.provider === undefined
+                            ? ''
+                            : ` · ${selected.cell.compactionFacts.provider}`}
+                        </dd>
+                      </div>
+                    )}
+                    {selected.cell.compactionFacts?.coveredMessageCount !== undefined && (
+                      <div>
+                        <dt>Messages</dt>
+                        <dd>
+                          {selected.cell.compactionFacts.coveredMessageCount.toLocaleString()}{' '}
+                          summarized
+                        </dd>
+                      </div>
+                    )}
+                    {selected.cell.compactionFacts?.cost !== undefined && (
+                      <div>
+                        <dt>Cost</dt>
+                        <dd>${selected.cell.compactionFacts.cost.toFixed(4)}</dd>
+                      </div>
+                    )}
+                    {selected.cell.compactionFacts?.generation !== undefined && (
+                      <div>
+                        <dt>Checkpoint</dt>
+                        <dd>generation {selected.cell.compactionFacts.generation} · in effect</dd>
+                      </div>
+                    )}
                   </dl>
                   {selected.cell.outputDetail !== undefined && (
                     <div

@@ -1,3 +1,4 @@
+import type { ContextCheckpoint } from '@zero-os/shared'
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 import { apiFetch, isAbortError } from '../../../lib/api'
 import { useWebSocket } from '../../../useWebSocket'
@@ -107,6 +108,8 @@ export interface SessionDetail {
   updatedAt: string
   messages: Message[]
   timelineCompactionBlocks?: TimelineCompactionBlock[]
+  /** The session's current context checkpoint (null when it has none). */
+  contextCheckpoint?: ContextCheckpoint | null
   tags: string[]
   summary?: string
   systemPrompt?: string

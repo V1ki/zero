@@ -125,6 +125,18 @@ interface ContextCheckpoint {
 - **旧会话**：已有的 timeline 压缩块不再参与投影，历史按原文进入，压力够了由新方案重新压缩。旧块留在原来的事件和
   DB 行里。
 
+### 展示
+
+- API：`GET /api/sessions/:id` 在 `timelineCompactionBlocks` 之外返回 `contextCheckpoint`（没有时为 null）。活会话取
+  `Session.getContextCheckpoint()`，其余取 `SessionManager.getContextCheckpointFromDB()`，与恢复同源：事件流投影优先，
+  无事件文件回退 DB 行。
+- 会话详情：右侧 Summary 的「Context Checkpoint」卡片和 Timeline 里排在最后一条被摘要消息之后的 `context_checkpoint`
+  标记，显示代数、被取代的消息数、两个水位、tokens 前后、模型、创建时间和按 Markdown 渲染的摘要。
+- Context Load 的 token 分布按投影计算：被摘要取代的消息不计入，摘要计为 Checkpoint，裁剪区的 `tool_result` 按裁剪后的
+  长度计。投影函数经 `@zero-os/core/browser`（只依赖 `@zero-os/shared`）与运行时共用。
+- Trajectory：每个 `context_checkpoint` span 是一段 COMPACTED，显示状态、耗时、模型、usage、cost 和新纳入摘要的消息数；
+  产生当前检查点的那次附带摘要。旧会话的压缩块和 `timeline_compaction_block` span 照旧只读展示。
+
 ## 删除的东西
 
 - timeline 压缩块的生成、重压缩和投影；`EpisodeCompaction`、`WorkingStateCompaction`、topics 及其校验。
@@ -139,7 +151,7 @@ interface ContextCheckpoint {
 | --- | --- | --- |
 | 1 | 核心模块：检查点类型、投影、压缩两阶段、摘要请求，带单元测试，暂不接线 | 已完成 |
 | 2 | 接线与清理：接入 `Agent` 和 loop、会话状态与持久化、事件；删除旧方案；更新文档 | 已完成 |
-| 3 | Web 与 API：展示检查点，旧压缩块只读展示 | 待做 |
+| 3 | Web 与 API：展示检查点，旧压缩块只读展示 | 已完成 |
 | 4 | 基准脚本：删除只评估旧方案的脚本 | 已完成（随步骤 2） |
 
 ## 怎么判断有没有变好
