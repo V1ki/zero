@@ -58,9 +58,9 @@ export const CONTEXT_PARAMS = {
     transcriptToolResultHeadChars: 3000,
     transcriptToolResultTailChars: 1000,
     /** 单次摘要请求的转写稿上限，超过后分段滚动 */
-    transcriptMaxChars: 60000,
+    transcriptMaxChars: 240_000,
     summaryMaxTokens: 4096,
-    summaryTimeoutMs: 60000,
+    summaryTimeoutMs: 120_000,
   },
 
   /** Per-tool output token limits */

@@ -215,6 +215,20 @@ export async function compactContext(input: CompactContextInput): Promise<Compac
   while (cut < messages.length && messages[cut].content.some((b) => b.type === 'tool_result')) {
     cut++
   }
+  // 不论预算，尾部至少保留最后一个单元：最后一条消息，它带 tool_result 时连同发出对应 tool_use 的 assistant 消息。
+  const last = messages.length - 1
+  const lastResultIds = new Set(
+    messages[last]?.content.flatMap((b) => (b.type === 'tool_result' ? [b.toolUseId] : [])),
+  )
+  const toolUseIndex =
+    lastResultIds.size > 0
+      ? messages.findLastIndex(
+          (m) =>
+            m.role === 'assistant' &&
+            m.content.some((b) => b.type === 'tool_use' && lastResultIds.has(b.id)),
+        )
+      : -1
+  cut = Math.min(cut, toolUseIndex >= 0 ? toolUseIndex : last)
   const through = cut - 1
   if (through <= summarized) return { status: 'not_needed', tokens: tokensBefore }
 

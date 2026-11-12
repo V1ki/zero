@@ -266,6 +266,59 @@ describe('compactContext', () => {
     expect(projectMessages(messages, result.checkpoint)[1].id).toBe('a6')
   })
 
+  test('an oversized final tool result stays in the tail with its tool_use', async () => {
+    const messages = [...conversation(3), ...toolPair(4, 'z'.repeat(40_000))]
+    const { summarize, calls } = fakeSummarizer(['S'])
+    const result = await compactContext({
+      messages,
+      checkpoint: undefined,
+      sessionId: SESSION,
+      budget: { thresholdTokens: 3000, retainTokens: 100 },
+      fixedTokens: 0,
+      summarize,
+    })
+
+    if (result.status !== 'summarized') throw new Error(`unexpected ${result.status}`)
+    expect(result.checkpoint.summarizedThroughMessageId).toBe('u3')
+    expect(calls[0].messages.map((m) => m.id)).not.toContain('u4')
+    expect(projectMessages(messages, result.checkpoint).slice(1)).toEqual(messages.slice(-2))
+  })
+
+  test('an oversized final message stays in the tail', async () => {
+    for (const role of ['user', 'assistant'] as const) {
+      const messages = [...conversation(3), textMessage('last', role, 'w'.repeat(40_000))]
+      const { summarize, calls } = fakeSummarizer(['S'])
+      const result = await compactContext({
+        messages,
+        checkpoint: undefined,
+        sessionId: SESSION,
+        budget: { thresholdTokens: 3000, retainTokens: 100 },
+        fixedTokens: 0,
+        summarize,
+      })
+
+      if (result.status !== 'summarized') throw new Error(`unexpected ${result.status}`)
+      expect(result.checkpoint.summarizedThroughMessageId).toBe('u3')
+      expect(calls[0].messages.map((m) => m.id)).not.toContain('last')
+      expect(projectMessages(messages, result.checkpoint).slice(1)).toEqual(messages.slice(-1))
+    }
+  })
+
+  test('only a final unit is not compacted', async () => {
+    const messages = toolPair(1, 'z'.repeat(40_000))
+    const { summarize, calls } = fakeSummarizer(['S'])
+    const result = await compactContext({
+      messages,
+      checkpoint: undefined,
+      sessionId: SESSION,
+      budget: { thresholdTokens: 3000, retainTokens: 100 },
+      fixedTokens: 0,
+      summarize,
+    })
+    expect(result.status).toBe('not_needed')
+    expect(calls).toHaveLength(0)
+  })
+
   test('a second compaction rolls the previous summary forward', async () => {
     const first = conversation(6)
     const one = await compactContext({
@@ -438,7 +491,8 @@ describe('createCheckpointSummarizer', () => {
 
   test('rolls over chunks when the transcript exceeds the cap', async () => {
     const { adapter, requests } = fakeAdapter(['CHUNK 1', 'CHUNK 2'])
-    const messages = Array.from({ length: 30 }, (_, i) =>
+    // 100 × ~3000 字符超过 240k 上限，分成两段
+    const messages = Array.from({ length: 100 }, (_, i) =>
       textMessage(`m${i}`, 'user', `${i} ${'y'.repeat(3000)}`),
     )
     const result = await createCheckpointSummarizer({ adapter })({ sessionId: SESSION, messages })
