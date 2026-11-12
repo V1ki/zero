@@ -1,5 +1,4 @@
 import { expect, test } from 'bun:test'
-import type { PromptBenchmarkReport } from '../../../zero-runtime/src/compaction-prompt-benchmark'
 import type { Trial } from '../../../zero-runtime/src/prompt-bench/engine'
 import type { BenchmarkSummary } from '../../../zero-runtime/src/types'
 import { importCompaction, importPrompt, importRuntime } from '../adapters/legacy'
@@ -101,7 +100,8 @@ test('runtime import preserves validation scope and refuses an unqualified legac
 })
 
 test('compaction proxy metrics do not turn parse success into semantic acceptance', () => {
-  const summary: PromptBenchmarkReport = {
+  // Full shape of an old summary.json, including fields the importer ignores.
+  const summary = {
     generatedAt: 'test',
     dbPath: '/source.db',
     model: 'test/model',
