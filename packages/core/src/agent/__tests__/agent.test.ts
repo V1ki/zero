@@ -10,7 +10,6 @@ import type {
   CompletionResponse,
   Message,
   StreamEvent,
-  TimelineCompactionBlock,
   ToolContext,
 } from '@zero-os/shared'
 import { getSessionLogRelativeDir } from '@zero-os/shared'
@@ -454,36 +453,6 @@ class ActiveTurnCaptureAdapter implements ProviderAdapter {
   }
 }
 
-class InvalidCompactionAdapter implements ProviderAdapter {
-  readonly apiType = 'fake-invalid-compaction'
-  requests: CompletionRequest[] = []
-
-  async complete(req: CompletionRequest): Promise<CompletionResponse> {
-    this.requests.push(req)
-    return {
-      id: `resp_invalid_compaction_${this.requests.length}`,
-      content: [
-        {
-          type: 'text',
-          text: '<context_compaction><block_summary>invalid</block_summary></context_compaction>',
-        },
-      ],
-      stopReason: 'end_turn',
-      usage: { input: 12, output: 3 },
-      model: 'fake-flash',
-    }
-  }
-
-  async *stream(_req: CompletionRequest): AsyncIterable<StreamEvent> {
-    yield* []
-    throw new Error('stream not supported in test')
-  }
-
-  async healthCheck(): Promise<boolean> {
-    return true
-  }
-}
-
 class LargeInputToolAdapter implements ProviderAdapter {
   readonly apiType = 'fake-large-input'
   private completeCalls = 0
@@ -656,12 +625,11 @@ describe('Agent', () => {
     expect(toolResultBlock).toBeDefined()
   }, 30000)
 
-  test('run: active turn keeps fresh tool_result inline while old history is compacted', async () => {
+  test('run: active turn keeps fresh tool_result inline while old history is pruned', async () => {
     const workDir = mkdtempSync(join(tmpdir(), 'zero-agent-active-turn-'))
     const registry = new ToolRegistry()
     registry.register(new ActiveTurnTool())
     const adapter = new ActiveTurnCaptureAdapter()
-    const tracer = new Tracer(workDir)
     const agentConfig: AgentConfig = {
       name: 'test-agent',
       agentInstruction: 'Use active_turn_tool.',
@@ -672,7 +640,7 @@ describe('Agent', () => {
       sessionId: 'sess_agent_active_turn',
       workDir,
     }
-    const agent = new Agent(agentConfig, adapter, registry, localToolContext, { tracer })
+    const agent = new Agent(agentConfig, adapter, registry, localToolContext)
     const oldHistory: Message[] = Array.from({ length: 7 }).flatMap((_, index) => [
       {
         id: `old_user_${index}`,
@@ -721,186 +689,34 @@ describe('Agent', () => {
         createdAt: `2026-05-12T00:0${index}:03.000Z`,
       },
     ])
+    // U = 11000:阈值 8800、保留 2200。旧历史约 11k token,裁剪到 old_result_5 即可降到阈值以下
     const context: AgentContext = {
       systemPrompt: 'Use active_turn_tool.',
       conversationHistory: oldHistory,
       tools: registry.getDefinitions(),
+      maxContext: 12_000,
+      maxOutput: 1_000,
     }
+    const toolResultOf = (request: CompletionRequest, toolUseId: string) =>
+      request.messages
+        .flatMap((message) => message.content)
+        .find((block) => block.type === 'tool_result' && block.toolUseId === toolUseId)
 
     try {
       await agent.run(context, 'current active task')
-      expect(adapter.compactionRequests).toHaveLength(1)
+      expect(adapter.compactionRequests).toHaveLength(0)
       expect(adapter.requests.length).toBeGreaterThanOrEqual(2)
-      const requestText = (request: CompletionRequest) =>
-        request.messages
-          .flatMap((message) =>
-            message.content.map((block) => {
-              if (block.type === 'text') return block.text
-              if (block.type === 'tool_result') return block.content
-              if (block.type === 'tool_use') return JSON.stringify(block.input)
-              return ''
-            }),
-          )
-          .join('\n')
-      const firstRequestText = requestText(adapter.requests[0])
-      const secondRequestText = requestText(adapter.requests[1])
+      expect(context.checkpoint).toMatchObject({ prunedThroughMessageId: 'old_result_5' })
+      expect(context.checkpoint?.summary).toBeUndefined()
 
-      expect(firstRequestText).toContain('<context_compaction_summary source="model">')
-      expect(firstRequestText).not.toContain('OLD_RESULT_RAW_0_')
-      expect(firstRequestText).not.toContain('OLD_RESULT_RAW_1_')
-      expect(firstRequestText).not.toContain('OLD_RESULT_RAW_2_')
-      expect(firstRequestText).toContain('OLD_RESULT_RAW_6_')
-      expect(secondRequestText).toContain('ACTIVE_RESULT_RAW_')
-      expect(secondRequestText).not.toContain('OLD_RESULT_RAW_0_')
-
-      const compactionSpan = findSpanDeep(
-        tracer.getSessionTraces('sess_agent_active_turn'),
-        'timeline_compaction_block',
-      )
-      expect(compactionSpan?.kind).toBe('context_compaction')
-      expect(compactionSpan?.data?.compaction).toMatchObject({
-        event: 'timeline_compaction_block',
-        lifecycle: 'created',
-        episodesCreated: 1,
-        evidenceCount: 6,
-        toolUseIds: ['old_tool_0', 'old_tool_1', 'old_tool_2'],
-        validationStatus: 'legacy',
-        model: 'fake-compaction-model',
-        promptVersion: 'context_compaction_zh_xml_n10_n08_n02_n09_v1',
-        modelAttempts: 1,
-      })
-
-      const runLogPath = join(
-        workDir,
-        getSessionLogRelativeDir('sess_agent_active_turn'),
-        'run.log',
-      )
-      const runEntries = readFileSync(runLogPath, 'utf-8')
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line) as Record<string, unknown>)
-      expect(runEntries.some((entry) => entry.event === 'context_compaction.block')).toBe(true)
-      expect(runEntries.some((entry) => entry.event === 'trace.context_compaction.success')).toBe(
-        true,
-      )
-
-      const evidenceEntries = runEntries.filter(
-        (entry) =>
-          entry.event === 'tool_evidence.persisted' &&
-          (entry.data as { source?: string } | undefined)?.source === 'episode_compaction',
-      )
-      expect(evidenceEntries).toHaveLength(0)
-    } finally {
-      rmSync(workDir, { recursive: true, force: true })
-    }
-  })
-
-  test('run: rejects invalid context compaction without retrying', async () => {
-    const workDir = mkdtempSync(join(tmpdir(), 'zero-agent-compaction-invalid-'))
-    const registry = new ToolRegistry()
-    registry.register(new ActiveTurnTool())
-    const mainAdapter = new ActiveTurnCaptureAdapter()
-    const invalidCompaction = new InvalidCompactionAdapter()
-    const tracer = new Tracer(workDir)
-    const agentConfig: AgentConfig = {
-      name: 'test-agent',
-      agentInstruction: 'Use active_turn_tool.',
-    }
-    const agent = new Agent(
-      agentConfig,
-      mainAdapter,
-      registry,
-      {
-        ...toolContext,
-        sessionId: 'sess_agent_compaction_invalid',
-        workDir,
-        tracer,
-      },
-      {
-        tracer,
-        contextCompactionModelLabel: 'deepseek/deepseek-v4-flash',
-      },
-      undefined,
-      invalidCompaction,
-    )
-    const timelineCompactionBlocks: TimelineCompactionBlock[] = []
-    const oldHistory: Message[] = []
-    for (let index = 0; index < 7; index++) {
-      oldHistory.push(
-        {
-          id: `invalid_old_user_${index}`,
-          sessionId: 'sess_agent_compaction_invalid',
-          role: 'user',
-          messageType: 'message',
-          content: [{ type: 'text', text: `old task ${index}` }],
-          createdAt: `2026-05-12T01:0${index}:00.000Z`,
-        },
-        {
-          id: `invalid_old_tool_${index}`,
-          sessionId: 'sess_agent_compaction_invalid',
-          role: 'assistant',
-          messageType: 'message',
-          content: [
-            { type: 'text', text: 'checking old task' },
-            {
-              type: 'tool_use',
-              id: `invalid_tool_${index}`,
-              name: 'bash',
-              input: { command: `echo ${index}` },
-            },
-          ],
-          createdAt: `2026-05-12T01:0${index}:01.000Z`,
-        },
-        {
-          id: `invalid_result_${index}`,
-          sessionId: 'sess_agent_compaction_invalid',
-          role: 'user',
-          messageType: 'message',
-          content: [
-            {
-              type: 'tool_result',
-              toolUseId: `invalid_tool_${index}`,
-              content: `INVALID_OLD_RESULT_${index}_${'old inline '.repeat(500)}`,
-              outputSummary: `old result summary ${index}`,
-            },
-          ],
-          createdAt: `2026-05-12T01:0${index}:02.000Z`,
-        },
-        {
-          id: `invalid_old_done_${index}`,
-          sessionId: 'sess_agent_compaction_invalid',
-          role: 'assistant',
-          messageType: 'message',
-          content: [{ type: 'text', text: `old result handled ${index}` }],
-          createdAt: `2026-05-12T01:0${index}:03.000Z`,
-        },
-      )
-    }
-
-    try {
-      await agent.run(
-        {
-          systemPrompt: 'Use active_turn_tool.',
-          conversationHistory: oldHistory,
-          tools: registry.getDefinitions(),
-          onTimelineCompactionBlocksChanged: (blocks) => {
-            timelineCompactionBlocks.splice(0, timelineCompactionBlocks.length, ...blocks)
-          },
-        },
-        'current active task',
-      )
-
-      expect(
-        invalidCompaction.requests.filter((request) => request.meta?.purpose === 'compression'),
-      ).toHaveLength(1)
-      expect(timelineCompactionBlocks).toHaveLength(1)
-      expect(timelineCompactionBlocks[0]?.summary).toContain(
-        '<context_compaction_summary source="deterministic_fallback">',
-      )
-      expect(timelineCompactionBlocks[0]?.model?.usedModel).toBe('deterministic-fallback')
-      expect(timelineCompactionBlocks[0]?.validation?.warnings).toContain(
-        'semantic_compaction_unavailable; deterministic fallback preserved evidence pointers',
-      )
+      const prunedOld = toolResultOf(adapter.requests[0], 'old_tool_0')
+      if (prunedOld?.type !== 'tool_result') throw new Error('missing old tool result')
+      expect(prunedOld.content).toContain('…[省略 ')
+      expect(prunedOld.content.length).toBeLessThan(2000)
+      expect(toolResultOf(adapter.requests[0], 'old_tool_6')).toEqual(oldHistory[26].content[0])
+      const active = toolResultOf(adapter.requests[1], 'call_active_turn_1')
+      if (active?.type !== 'tool_result') throw new Error('missing active tool result')
+      expect(active.content).toBe(`ACTIVE_RESULT_RAW_${'still inline '.repeat(500)}`)
     } finally {
       rmSync(workDir, { recursive: true, force: true })
     }

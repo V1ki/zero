@@ -27,7 +27,6 @@ import type { SessionDeps } from './session-types'
 export interface SessionAgentRuntimeInitOptions {
   activeModel?: ResolvedModel
   getCurrentSnapshotId(): string | undefined
-  onContextCompressed: NonNullable<AgentObservability['onContextCompressed']>
 }
 
 export class SessionAgentRuntimeController {
@@ -98,7 +97,6 @@ export class SessionAgentRuntimeController {
       backgroundToolTasks: this.backgroundToolTasks,
       liveDocs: this.liveDocs,
       getCurrentSnapshotId: initOptions.getCurrentSnapshotId,
-      onContextCompressed: initOptions.onContextCompressed,
     })
     return this.agent
   }
@@ -142,7 +140,6 @@ function createSessionAgentRuntime(options: {
   backgroundToolTasks: BackgroundToolTaskManager
   liveDocs: Map<string, string>
   getCurrentSnapshotId: () => string | undefined
-  onContextCompressed: NonNullable<AgentObservability['onContextCompressed']>
 }): Agent {
   const resolved =
     options.activeModel ??
@@ -188,7 +185,6 @@ function createSessionAgentRuntime(options: {
       modelRouter: options.modelRouter,
       deps: options.deps,
       getCurrentSnapshotId: options.getCurrentSnapshotId,
-      onContextCompressed: options.onContextCompressed,
     }),
     closureResolved?.adapter,
     contextCompactionResolved?.adapter,
@@ -279,7 +275,6 @@ function createSessionAgentObservability(options: {
   modelRouter: ModelRouter
   deps: SessionDeps
   getCurrentSnapshotId: () => string | undefined
-  onContextCompressed: NonNullable<AgentObservability['onContextCompressed']>
 }): AgentObservability {
   return {
     metrics: options.deps.metrics,
@@ -301,6 +296,5 @@ function createSessionAgentObservability(options: {
       : undefined,
     contextCompactionPricing: options.contextCompactionResolved?.modelConfig.pricing,
     getCurrentSnapshotId: options.getCurrentSnapshotId,
-    onContextCompressed: options.onContextCompressed,
   }
 }

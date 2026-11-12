@@ -75,6 +75,7 @@ describe('Session event persistence (double-write)', () => {
       data,
       messages,
       timelineCompactionBlocks: [],
+      checkpoint: undefined,
     })
 
     const projection = store.project('sess_event_1')
@@ -98,6 +99,7 @@ describe('Session event persistence (double-write)', () => {
       data,
       messages: grown,
       timelineCompactionBlocks: [],
+      checkpoint: undefined,
     })
 
     const events = store.readEvents('sess_event_1')
@@ -117,6 +119,7 @@ describe('Session event persistence (double-write)', () => {
       data,
       messages: rolledBack,
       timelineCompactionBlocks: [],
+      checkpoint: undefined,
     })
 
     const events = store.readEvents('sess_event_1')
@@ -133,6 +136,7 @@ describe('Session event persistence (double-write)', () => {
       data,
       messages: [makeMessage('user', 'q')],
       timelineCompactionBlocks: [],
+      checkpoint: undefined,
       systemPrompt: 'prompt-v1',
     })
     persistSessionState({
@@ -141,6 +145,7 @@ describe('Session event persistence (double-write)', () => {
       data,
       messages: [makeMessage('user', 'q'), makeMessage('assistant', 'a')],
       timelineCompactionBlocks: [],
+      checkpoint: undefined,
       systemPrompt: 'prompt-v1',
     })
     persistSessionState({
@@ -149,6 +154,7 @@ describe('Session event persistence (double-write)', () => {
       data,
       messages: [makeMessage('user', 'q'), makeMessage('assistant', 'a')],
       timelineCompactionBlocks: [],
+      checkpoint: undefined,
       systemPrompt: 'prompt-v2',
     })
 
@@ -170,6 +176,7 @@ describe('Session event persistence (double-write)', () => {
       data,
       messages,
       timelineCompactionBlocks: [],
+      checkpoint: undefined,
     })
 
     // 事件文件是权威
@@ -189,6 +196,7 @@ describe('Session event persistence (double-write)', () => {
       data,
       messages,
       timelineCompactionBlocks: [],
+      checkpoint: undefined,
     })
     sessionDb.saveMessages('sess_restore_1', messages.slice(0, 1))
 

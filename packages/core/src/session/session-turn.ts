@@ -3,11 +3,11 @@ import { type RetrievedMemoryMatch, detectMemoryEcho } from '@zero-os/memory'
 import type { ModelRouter, ResolvedModel } from '@zero-os/model'
 import type { RequestMemoryInjectionEntry } from '@zero-os/observe'
 import type {
+  ContextCheckpoint,
   Message,
   ReasoningEffort,
   Session as SessionData,
   SessionTrigger,
-  TimelineCompactionBlock,
   ToolLogger,
 } from '@zero-os/shared'
 import { now } from '@zero-os/shared'
@@ -42,12 +42,12 @@ export interface ProcessSessionMessageTurnOptions {
   staticContext: SessionStaticContextProvider
   snapshotRecorder: SessionSnapshotRecorder
   messages: Message[]
-  timelineCompactionBlocks: TimelineCompactionBlock[]
+  checkpoint: ContextCheckpoint | undefined
   injectedMemoryIds: Map<string, string>
   getAgentName(): string
   getCurrentSnapshotContext(toolNames?: string[]): SessionSnapshotContext | null
   turnRuntime: SessionTurnRuntime
-  setTimelineCompactionBlocks(blocks: TimelineCompactionBlock[]): void
+  setCheckpoint(checkpoint: ContextCheckpoint | undefined): void
 }
 
 export async function processSessionMessageTurn({
@@ -63,12 +63,12 @@ export async function processSessionMessageTurn({
   staticContext,
   snapshotRecorder,
   messages,
-  timelineCompactionBlocks,
+  checkpoint,
   injectedMemoryIds,
   getAgentName,
   getCurrentSnapshotContext,
   turnRuntime,
-  setTimelineCompactionBlocks,
+  setCheckpoint,
 }: ProcessSessionMessageTurnOptions): Promise<Message[]> {
   const { currentModel, tools, toolNames, systemPrompt, projectRoot, workspacePath } =
     staticContext.ensure()
@@ -117,6 +117,7 @@ export async function processSessionMessageTurn({
       ]
     : undefined
 
+  let latestCheckpoint = checkpoint
   const context: AgentContext = {
     systemPrompt,
     identityMemory: deps.identityMemory,
@@ -125,14 +126,16 @@ export async function processSessionMessageTurn({
     injectedMemoryIds,
     imageDelegationFiles,
     conversationHistory: [...messages],
-    timelineCompactionBlocks,
-    onTimelineCompactionBlocksChanged: (blocks) => {
-      setTimelineCompactionBlocks(blocks)
-      deps.sessionDb?.saveCompactionBlocks(sessionData.id, blocks)
+    checkpoint,
+    // agent 已在压缩发生时写入 compaction/checkpoint 事件;这里更新会话状态并同步 DB 行
+    onCheckpointChanged: (next) => {
+      latestCheckpoint = next
+      setCheckpoint(next)
+      if (!deps.sessionEventsOnly) deps.sessionDb?.saveContextCheckpoint(sessionData.id, next)
       deps.bus?.emit('session:update', {
         sessionId: sessionData.id,
-        event: 'timeline_compaction_blocks_updated',
-        blockCount: blocks.filter((block) => block.status === 'active').length,
+        event: 'context_checkpoint_updated',
+        generation: next.generation,
       })
     },
     tools,
@@ -216,6 +219,14 @@ export async function processSessionMessageTurn({
         })
       },
     })
+
+    // 回滚掉的消息可能被本 turn 的检查点引用:恢复 turn 开始时的检查点并补写事件
+    if (rolledBack && latestCheckpoint !== checkpoint) {
+      setCheckpoint(checkpoint)
+      deps.sessionEvents?.append(sessionData.id, [
+        { type: 'compaction/checkpoint', data: { checkpoint: checkpoint ?? null } },
+      ])
+    }
 
     if (error instanceof Error) {
       ;(error as Error & { rolledBack?: boolean }).rolledBack = rolledBack

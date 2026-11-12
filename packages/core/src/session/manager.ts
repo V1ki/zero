@@ -8,6 +8,7 @@ import type { ModelRouter } from '@zero-os/model'
 import type { MetricsDB, SessionDB, SessionRow } from '@zero-os/observe'
 import type {
   ChannelSessionBinding,
+  ContextCheckpoint,
   Message,
   MessageChannelSource,
   SessionPlacement,
@@ -281,6 +282,10 @@ export class SessionManager {
     return this.store.getCompactionBlocksFromDB(id)
   }
 
+  getContextCheckpointFromDB(id: string): ContextCheckpoint | undefined {
+    return this.store.getContextCheckpointFromDB(id)
+  }
+
   listAllFromDB(filter?: { limit?: number; offset?: number }): SessionRow[] {
     return this.store.listAllFromDB(filter)
   }
@@ -509,6 +514,13 @@ class SessionManagerStore {
     return this.sessionDb?.loadSessionCompactionBlocks(id) ?? []
   }
 
+  /** 与 restoreSession 同源：事件流优先，无事件文件时回退 DB 行。 */
+  getContextCheckpointFromDB(id: string): ContextCheckpoint | undefined {
+    const projected = this.deps.sessionEvents?.project(id)
+    if (projected) return projected.checkpoint
+    return this.sessionDb?.loadContextCheckpoint(id)
+  }
+
   listAllFromDB(filter?: { limit?: number; offset?: number }): SessionRow[] {
     return (this.sessionDb?.loadAllSessions(filter) ?? []).map((row) =>
       normalizeSessionRow(row, this.modelRouter),
@@ -546,6 +558,9 @@ class SessionManagerStore {
     const timelineCompactionBlocks = projection
       ? projection.blocks
       : (this.sessionDb?.loadSessionCompactionBlocks(row.id) ?? [])
+    const checkpoint = projection
+      ? projection.checkpoint
+      : this.sessionDb?.loadContextCheckpoint(row.id)
     const modelScope = getModelScope(
       data.source,
       data.channelId,
@@ -560,6 +575,7 @@ class SessionManagerStore {
       this.createSessionDeps(data.source, modelScope),
       normalizedRow.systemPrompt,
       timelineCompactionBlocks,
+      checkpoint,
     )
 
     if (normalizedRow.agentConfigJson) {

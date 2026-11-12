@@ -1,4 +1,4 @@
-import type { TimelineCompactionBlock } from './context'
+import type { ContextCheckpoint, TimelineCompactionBlock } from './context'
 import type { Message, TokenUsage, ToolEvidence } from './message'
 import type { SessionSource } from './session'
 
@@ -7,7 +7,8 @@ import type { SessionSource } from './session'
  *
  * 权威事件流:文件第一行必须是 `session` 头事件(seq=0),之后 seq 严格递增。
  * 事件分三类:
- * - surface(投影源): user/message | assistant/message | messages/truncate | compaction/block
+ * - surface(投影源): user/message | assistant/message | messages/truncate | compaction/checkpoint |
+ *   compaction/block(只读的旧数据)
  * - request-scoped(重建某次请求输入): injection/context、step/start(锚点为其自身 seq)
  * - diagnostics(纯排障,可裁剪): 其余全部
  */
@@ -234,10 +235,32 @@ export interface CompactionPruneEventData {
   evidence?: ToolEvidence
 }
 
-export interface CompactionSummaryEventData {
-  scope: 'loop_only'
-  summary: string
-  budgetTokens?: number
+export type CompactionTrigger = 'turn_start' | 'in_turn'
+
+/** 压力达到阈值且尾部之外有内容,开始压缩 */
+export interface CompactionStartEventData {
+  compactionId: string
+  trigger: CompactionTrigger
+  /** 压缩前的估算压力(系统提示词 + 工具定义 + 投影后消息) */
+  tokens: number
+  thresholdTokens: number
+}
+
+/**
+ * 新的上下文检查点(投影源)。null 表示回到没有检查点(turn 失败回滚到 turn 开始时没有检查点的状态)。
+ */
+export interface CompactionCheckpointEventData {
+  checkpoint: ContextCheckpoint | null
+}
+
+export interface CompactionEndEventData {
+  compactionId: string
+  status: 'pruned' | 'summarized' | 'failed'
+  tokensBefore: number
+  tokensAfter: number
+  durationMs: number
+  usage?: TokenUsage
+  error?: string
 }
 
 export type TaskClosureAction = 'finish' | 'continue' | 'block'
@@ -436,9 +459,19 @@ export interface CompactionPruneEvent extends SessionEventBase {
   data: CompactionPruneEventData
 }
 
-export interface CompactionSummaryEvent extends SessionEventBase {
-  type: 'compaction/summary'
-  data: CompactionSummaryEventData
+export interface CompactionStartEvent extends SessionEventBase {
+  type: 'compaction/start'
+  data: CompactionStartEventData
+}
+
+export interface CompactionCheckpointEvent extends SessionEventBase {
+  type: 'compaction/checkpoint'
+  data: CompactionCheckpointEventData
+}
+
+export interface CompactionEndEvent extends SessionEventBase {
+  type: 'compaction/end'
+  data: CompactionEndEventData
 }
 
 export interface ClosureStartEvent extends SessionEventBase {
@@ -505,7 +538,9 @@ export type SessionEvent =
   | SubagentSpawnEvent
   | CompactionBlockEvent
   | CompactionPruneEvent
-  | CompactionSummaryEvent
+  | CompactionStartEvent
+  | CompactionCheckpointEvent
+  | CompactionEndEvent
   | ClosureStartEvent
   | ClosureEndEvent
   | MemoryRetrievalStartEvent
@@ -522,6 +557,7 @@ export const SURFACE_EVENT_TYPES = new Set<SessionEventType>([
   'user/message',
   'assistant/message',
   'messages/truncate',
+  'compaction/checkpoint',
   'compaction/block',
 ])
 
@@ -537,7 +573,10 @@ export type SessionEventInput = Omit<SessionEvent, 'seq' | 'ts'>
 
 export interface SessionEventProjection {
   messages: Message[]
+  /** 旧会话的 timeline 压缩块,只用于展示 */
   blocks: TimelineCompactionBlock[]
+  /** 最后一份仍然有效的上下文检查点(指向的消息都在 messages 里) */
+  checkpoint?: ContextCheckpoint
   /** 最后一条事件 seq;空文件为 -1 */
   lastSeq: number
   header: SessionEventData | null

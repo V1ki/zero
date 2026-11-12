@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import type { ContextCheckpoint } from '@zero-os/shared'
 import {
   type Message,
   type SessionDecisionEvent,
@@ -1724,6 +1725,58 @@ test('projects compaction blocks as appended markers while covered messages keep
     expect(block.createdAt).toBe('2026-03-08T00:00:03.000Z')
     expect(block.summary).toContain('summary')
   }
+})
+
+test('marks the context checkpoint after the last summarized message', () => {
+  const messages: Message[] = ['old_user', 'old_assistant', 'current_user'].map((id, index) => ({
+    id,
+    role: id.endsWith('assistant') ? 'assistant' : 'user',
+    messageType: 'message',
+    content: [{ type: 'text', text: id }],
+    createdAt: `2026-03-08T00:0${index}:00.000Z`,
+  }))
+  const checkpoint: ContextCheckpoint = {
+    id: 'checkpoint_1',
+    sessionId: 'sess_timeline',
+    generation: 3,
+    prunedThroughMessageId: 'old_assistant',
+    summarizedThroughMessageId: 'old_assistant',
+    summary: '## 当前工作\nsummary',
+    coveredMessageCount: 2,
+    tokensBefore: 1000,
+    tokensAfter: 200,
+    createdAt: '2026-03-08T00:05:00.000Z',
+  }
+
+  const items = buildTimeline(messages, [], [], [], [], [], checkpoint)
+  expect(items.map((item) => item.type)).toEqual([
+    'user-message',
+    'agent-text',
+    'context-checkpoint',
+    'user-message',
+  ])
+  const marker = items[2]
+  if (marker.type === 'context-checkpoint') {
+    expect(marker.checkpoint).toBe(checkpoint)
+    expect(marker.createdAt).toBe('2026-03-08T00:01:00.000Z')
+  }
+
+  // A prune-only checkpoint anchors on the prune watermark.
+  const pruneOnly = { ...checkpoint, summarizedThroughMessageId: undefined, summary: undefined }
+  expect(buildTimeline(messages, [], [], [], [], [], pruneOnly).map((item) => item.type)).toEqual([
+    'user-message',
+    'agent-text',
+    'context-checkpoint',
+    'user-message',
+  ])
+
+  // A checkpoint pointing outside the history is not in effect.
+  const stale = { ...checkpoint, summarizedThroughMessageId: 'gone' }
+  expect(
+    buildTimeline(messages, [], [], [], [], [], stale).some(
+      (item) => item.type === 'context-checkpoint',
+    ),
+  ).toBe(false)
 })
 
 test('does not render queued user messages as standalone timeline items', () => {

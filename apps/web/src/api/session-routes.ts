@@ -388,6 +388,7 @@ export function createSessionRoutes(zero: ZeroOS) {
           updatedAt: session.data.updatedAt,
           messages: session.getMessages(),
           timelineCompactionBlocks: session.getTimelineCompactionBlocks(),
+          contextCheckpoint: session.getContextCheckpoint() ?? null,
           tags: session.data.tags,
           summary: session.data.summary,
           modelHistory: session.data.modelHistory,
@@ -417,6 +418,7 @@ export function createSessionRoutes(zero: ZeroOS) {
       }
       const messages = zero.sessionManager.getMessagesFromDB(id)
       const timelineCompactionBlocks = zero.sessionManager.getCompactionBlocksFromDB(id)
+      const contextCheckpoint = zero.sessionManager.getContextCheckpointFromDB(id) ?? null
       const stats = zero.metrics.sessionStats(id)
       const auxiliaryCost = zero.metrics.sessionAuxiliaryCost(id)
       const purposeBreakdown = zero.metrics.sessionUsageByPurpose(id)
@@ -434,6 +436,7 @@ export function createSessionRoutes(zero: ZeroOS) {
         updatedAt: row.updatedAt,
         messages,
         timelineCompactionBlocks,
+        contextCheckpoint,
         tags: row.tags,
         summary: row.summary,
         modelHistory: row.modelHistory,

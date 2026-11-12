@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import {
+  type ContextCheckpoint,
   type Message,
   SESSION_EVENT_FILE,
   SESSION_EVENT_SCHEMA_VERSION,
@@ -22,6 +23,7 @@ import { externalizeImageData } from './image-ref'
  * 每个会话一个 `session.jsonl`(子代理为父目录下 `sub-<id>.jsonl`):
  * - 首条必为 `session` 头事件(seq=0),之后 seq 严格递增;
  * - canonical 消息/压缩块通过 syncCanonical 做 diff 追加(回滚产生 truncate 事件);
+ * - 上下文检查点由 agent 在压缩发生时直接 append(compaction/checkpoint);
  * - project() 重放 surface 事件得到 canonical 投影,是恢复路径的权威读取端。
  */
 export class SessionEventStore {
@@ -194,6 +196,7 @@ export class SessionEventStore {
     return {
       messages: clone(state.projection.messages),
       blocks: clone(state.projection.blocks),
+      checkpoint: clone(resolveCheckpoint(state.projection)),
       lastSeq: state.lastSeq,
       header: state.projection.header ? { ...state.projection.header } : null,
     }
@@ -382,7 +385,7 @@ interface SessionEventState {
 }
 
 function createSessionEventState(relative: string, events: SessionEvent[]): SessionEventState {
-  const projection = projectEvents(events)
+  const projection = foldSurfaceEvents(events)
   return {
     relative,
     lastSeq: events.length > 0 ? events[events.length - 1].seq : -1,
@@ -398,7 +401,7 @@ function createCorruptState(relative: string): SessionEventState {
     lastSeq: -1,
     syncCount: 0,
     corrupt: true,
-    projection: { header: null, messages: [], blocks: [] },
+    projection: { header: null, messages: [], blocks: [], checkpoints: [] },
   }
 }
 
@@ -419,23 +422,47 @@ export function checkSessionEvents(events: SessionEvent[]): SessionEventFileChec
 
 /** Fold surface events into the canonical projection. */
 export function projectEvents(events: SessionEvent[]): SessionEventProjection {
-  const projection: SessionEventProjection = {
-    header: null,
-    messages: [],
-    blocks: [],
-    lastSeq: -1,
+  const core = foldSurfaceEvents(events)
+  return {
+    header: core.header,
+    messages: core.messages,
+    blocks: core.blocks,
+    checkpoint: resolveCheckpoint(core),
+    lastSeq: events.length > 0 ? events[events.length - 1].seq : -1,
   }
-
-  for (const event of events) {
-    projection.lastSeq = event.seq
-    applySurfaceEvent(projection, event)
-  }
-  return projection
 }
 
 type ProjectionCore = Pick<SessionEventProjection, 'header' | 'messages' | 'blocks'> & {
+  /** 依次写入的检查点;null 表示回到没有检查点 */
+  checkpoints: Array<ContextCheckpoint | null>
   systemPrompt?: { hash: string; content: string }
   toolSet?: { hash: string; toolNames: string[] }
+}
+
+function foldSurfaceEvents(events: SessionEvent[]): ProjectionCore {
+  const projection: ProjectionCore = { header: null, messages: [], blocks: [], checkpoints: [] }
+  applySurfaceEvents(projection, events)
+  return projection
+}
+
+/**
+ * 重放规则:取最后一份指向的消息都在投影里的检查点;遇到更晚的无效检查点就往前回退,
+ * 回退到 null(回滚到没有检查点)或开头则没有检查点。
+ */
+function resolveCheckpoint(projection: ProjectionCore): ContextCheckpoint | undefined {
+  const ids = new Set(projection.messages.map((message) => message.id))
+  for (let i = projection.checkpoints.length - 1; i >= 0; i -= 1) {
+    const checkpoint = projection.checkpoints[i]
+    if (checkpoint === null) return undefined
+    const { summarizedThroughMessageId, prunedThroughMessageId } = checkpoint
+    if (
+      (summarizedThroughMessageId === undefined || ids.has(summarizedThroughMessageId)) &&
+      (prunedThroughMessageId === undefined || ids.has(prunedThroughMessageId))
+    ) {
+      return checkpoint
+    }
+  }
+  return undefined
 }
 
 function applySurfaceEvents(projection: ProjectionCore, events: SessionEvent[]): void {
@@ -455,6 +482,9 @@ function applySurfaceEvent(projection: ProjectionCore, event: SessionEvent): voi
       break
     case 'messages/truncate':
       projection.messages.length = event.data.toMessageIndex
+      break
+    case 'compaction/checkpoint':
+      projection.checkpoints.push(event.data.checkpoint)
       break
     case 'compaction/block':
       projection.blocks = event.data.blocks

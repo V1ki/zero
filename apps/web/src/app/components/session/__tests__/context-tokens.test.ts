@@ -1,5 +1,70 @@
 import { describe, expect, test } from 'bun:test'
-import { buildContextTokenSummary, estimateToolResultTokens } from '../context-panel/context-tokens'
+import type { ContextCheckpoint } from '@zero-os/shared'
+import {
+  type MessageLike,
+  buildContextTokenSummary,
+  estimateToolResultTokens,
+  projectPromptMessages,
+} from '../context-panel/context-tokens'
+
+const AT = '2026-04-24T01:00:00.000Z'
+
+function textMessage(id: string, role: string, text: string): MessageLike {
+  return { id, role, messageType: 'message', createdAt: AT, content: [{ type: 'text', text }] }
+}
+
+const LONG_OLD_TEXT = 'old history '.repeat(2000)
+const LONG_TOOL_OUTPUT = 'x'.repeat(10_000)
+
+const checkpointMessages: MessageLike[] = [
+  textMessage('m1', 'user', LONG_OLD_TEXT),
+  textMessage('m2', 'assistant', LONG_OLD_TEXT),
+  {
+    id: 'm3',
+    role: 'assistant',
+    messageType: 'message',
+    createdAt: AT,
+    content: [{ type: 'tool_use', id: 'call_1', name: 'bash', input: { command: 'ls' } }],
+  },
+  {
+    id: 'm4',
+    role: 'user',
+    messageType: 'message',
+    createdAt: AT,
+    content: [{ type: 'tool_result', toolUseId: 'call_1', content: LONG_TOOL_OUTPUT }],
+  },
+  textMessage('m5', 'user', 'latest question'),
+]
+
+const checkpoint: ContextCheckpoint = {
+  id: 'cp_1',
+  sessionId: 's1',
+  generation: 1,
+  summarizedThroughMessageId: 'm2',
+  prunedThroughMessageId: 'm4',
+  summary: '## 当前工作\nshort summary',
+  coveredMessageCount: 2,
+  tokensBefore: 6000,
+  tokensAfter: 500,
+  createdAt: AT,
+}
+
+function summarize(messages: MessageLike[], withCheckpoint?: ContextCheckpoint | null) {
+  return buildContextTokenSummary({
+    messages,
+    checkpoint: withCheckpoint,
+    llmRequests: [],
+    totalTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheWriteTokens: 0,
+    cacheReadTokens: 0,
+    reasoningTokens: 0,
+    effectiveInputTokens: 0,
+    totalCost: 0,
+    requestCount: 0,
+  })
+}
 
 describe('context token summary', () => {
   test('summarizes current context sections and latest request usage', () => {
@@ -90,5 +155,39 @@ describe('context token summary', () => {
         { type: 'image', mediaType: 'image/png', data: 'abc' },
       ]),
     ).toBeGreaterThan(300)
+  })
+
+  test('replaces the summarized prefix with the checkpoint summary and clips pruned results', () => {
+    const projected = projectPromptMessages(checkpointMessages, checkpoint)
+    expect(projected.map((message) => message.id)).toEqual(['cp_1', 'm3', 'm4', 'm5'])
+    const summaryText = projected[0]?.content[0]?.text
+    expect(typeof summaryText === 'string' && summaryText.includes('short summary')).toBe(true)
+    const prunedResult = projected[2]?.content[0]?.content
+    expect(typeof prunedResult === 'string' && prunedResult.length < LONG_TOOL_OUTPUT.length).toBe(
+      true,
+    )
+
+    const withoutCheckpoint = summarize(checkpointMessages, null)
+    const withCheckpoint = summarize(checkpointMessages, checkpoint)
+    expect(withCheckpoint.estimatedContextTokens).toBeLessThan(
+      withoutCheckpoint.estimatedContextTokens / 4,
+    )
+    const checkpointSection = withCheckpoint.sections.find(
+      (section) => section.key === 'checkpoint',
+    )
+    expect(checkpointSection?.tokens).toBeGreaterThan(0)
+    expect(withoutCheckpoint.sections.some((section) => section.key === 'checkpoint')).toBe(false)
+    expect(withCheckpoint.hotspots.some((hotspot) => hotspot.id === 'm1')).toBe(false)
+    expect(withCheckpoint.hotspots.find((hotspot) => hotspot.id === 'cp_1')?.label).toBe(
+      'Checkpoint',
+    )
+  })
+
+  test('ignores a checkpoint whose watermarks are not in the history', () => {
+    const stale = { ...checkpoint, summarizedThroughMessageId: 'gone' }
+    expect(projectPromptMessages(checkpointMessages, stale)).toEqual(checkpointMessages)
+    expect(summarize(checkpointMessages, stale).estimatedContextTokens).toBe(
+      summarize(checkpointMessages, null).estimatedContextTokens,
+    )
   })
 })

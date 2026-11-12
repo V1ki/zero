@@ -10,6 +10,7 @@ import type {
   UsagePurpose,
 } from '@zero-os/observe'
 import type {
+  CompactionTrigger,
   CompletionRequest,
   CompletionResponse,
   ContentBlock,
@@ -35,8 +36,6 @@ import {
   toRequestToolResults,
 } from './agent-trace'
 import type { AgentConfig, AgentContext, AgentObservability } from './agent-types'
-import { allocateBudget, shouldCompress } from './budget'
-import { estimateConversationTokens } from './context'
 import { retrieveMemoriesWithDecision } from './memory-retrieval'
 import { CONTEXT_PARAMS } from './params'
 import { wrapMemoryInjection } from './prompt'
@@ -84,6 +83,15 @@ export interface CreateAgentLoopHooksOptions {
   }
   requestPurposeRef: { current: UsagePurpose }
   traceRecorder: AgentTraceRecorder
+  compaction: AgentRequestCompaction
+}
+
+/** turn 开始和 turn 内共用的压缩与请求消息准备 */
+export interface AgentRequestCompaction {
+  /** 按压力压缩 canonical 消息;返回检查点是否变化 */
+  compact(messages: Message[], trigger: CompactionTrigger, parentSpanId?: string): Promise<boolean>
+  /** canonical 消息 + 当前检查点 → 请求消息 */
+  prepare(messages: Message[]): Message[]
 }
 
 function isMissingDeepSeekSignedThinkingError(error: unknown): boolean {
@@ -400,9 +408,12 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): Agen
     executionState,
     requestPurposeRef,
     traceRecorder,
+    compaction,
   } = options
 
   const baseUsagePurpose = obs.usagePurpose ?? 'agent_loop'
+  // 拼进请求消息的排队原文(只在请求里,不在 canonical):压缩重建请求消息后补回
+  const queuedInjectionBlocks = new Map<string, ContentBlock[]>()
   const memoryNudge = new AgentMemoryNudgeController({
     sessionId: toolContext.sessionId,
     agentName: config.name,
@@ -582,46 +593,36 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): Agen
       }
     },
     afterToolResults: async (ctx) => {
-      if (context.maxContext && context.maxOutput) {
-        const budget = allocateBudget(context.maxContext, context.maxOutput)
-        const currentTokens = estimateConversationTokens(ctx.messages)
-
-        if (shouldCompress(currentTokens, budget.conversation)) {
-          const { compressConversation } = await import('./compress')
-          const result = await compressConversation(
-            ctx.messages,
-            budget.conversation,
-            adapter,
-            toolContext.sessionId,
-            { parentSessionId: obs.parentSessionId },
-            {
-              tracer: obs.tracer,
-              parentSpanId: llmRequestHooks.getCurrentRequestSpanId(),
-              agentName: config.name,
-              providerName: obs.providerName,
-              modelLabel: obs.modelLabel,
-              pricing: obs.pricing,
-              secretFilter: obs.secretFilter,
-            },
-          )
-
-          ctx.messages.length = 0
-          ctx.messages.push(...result.retainedMessages)
-          obs.onContextCompressed?.({
-            summary: result.summary,
-            stats: result.stats,
-            decisionContext: {
-              currentTokens,
-              conversationBudget: budget.conversation,
-            },
-          })
-        }
+      // turn 内的 canonical = turn 开始时的历史 + 本 turn 的新消息;检查点变化时从投影重建请求消息,
+      // 并补回只在请求里的内容(首条 user 消息的动态上下文/图片委托、拼进去的排队消息)
+      const canonical = [...context.conversationHistory, ...ctx.newMessages]
+      if (
+        await compaction.compact(canonical, 'in_turn', llmRequestHooks.getCurrentRequestSpanId())
+      ) {
+        const turnUserMessageId = ctx.newMessages[0]?.id
+        const rebuilt = compaction.prepare(canonical).map((message) => {
+          const request =
+            message.id === turnUserMessageId
+              ? { ...message, content: buildAgentRequestUserContent(message.content, context) }
+              : message
+          const queued = queuedInjectionBlocks.get(message.id)
+          return queued ? { ...request, content: [...request.content, ...queued] } : request
+        })
+        ctx.messages.splice(0, ctx.messages.length, ...rebuilt)
       }
 
+      const lastBeforeInjection = ctx.messages.at(-1)
       queueGate.injectQueuedMessagesIntoLastUserMessage(ctx.messages)
 
       // 排队消息拼进请求首条 user 消息(API-only):补一条 queued_merge 注入事件
       const queuedInjection = queueGate.pendingInjection
+      const lastAfterInjection = ctx.messages.at(-1)
+      if (lastBeforeInjection && lastAfterInjection && lastAfterInjection !== lastBeforeInjection) {
+        queuedInjectionBlocks.set(
+          lastAfterInjection.id,
+          lastAfterInjection.content.slice(lastBeforeInjection.content.length),
+        )
+      }
       if (queuedInjection) {
         obs.sessionEvents?.append(toolContext.sessionId, [
           {
@@ -1398,7 +1399,8 @@ async function processAgentToolResults(
         thresholdChars: artifactized.thresholdChars,
         inlineContentChars: content.length,
       })
-
+    }
+    if (artifactPath) {
       // 持久替换:canonical tool_result 由原文降级为 artifact 引用,落 prune 事件留证
       options.sessionEvents?.append(options.toolContext.sessionId, [
         {

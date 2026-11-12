@@ -9,6 +9,7 @@
  * and timing overview are then empty.
  */
 
+import type { ContextCheckpoint } from '@zero-os/shared'
 import type {
   ContentBlock as LooseContentBlock,
   Message,
@@ -94,6 +95,62 @@ function toEpochMillis(value: string | undefined): number | null {
   if (value === undefined) return null
   const parsed = Date.parse(value)
   return Number.isNaN(parsed) ? null : parsed
+}
+
+interface CheckpointSpanFacts {
+  model?: string
+  provider?: string
+  coveredMessageCount?: number
+  usage?: Record<string, number>
+  cost?: number
+  error?: string
+}
+
+/**
+ * Facts recorded on a `context_checkpoint` span: success puts them under
+ * `data.compaction`, failure under `metadata` (error, usage, cost).
+ */
+function readCheckpointSpanFacts(span: TraceSpan): CheckpointSpanFacts {
+  const data = span.data?.compaction
+  const compaction: Record<string, unknown> =
+    typeof data === 'object' && data !== null ? (data as Record<string, unknown>) : {}
+  const metadata = span.metadata ?? {}
+  const pick = (key: string): unknown => compaction[key] ?? metadata[key]
+  const text = (key: string): string | undefined => {
+    const value = pick(key)
+    return typeof value === 'string' && value !== '' ? value : undefined
+  }
+  const count = (value: unknown): number | undefined =>
+    typeof value === 'number' && Number.isFinite(value) ? value : undefined
+  const rawUsage = pick('usage')
+  let usage: Record<string, number> | undefined
+  if (typeof rawUsage === 'object' && rawUsage !== null) {
+    const record = rawUsage as Record<string, unknown>
+    usage = {}
+    for (const [from, to] of [
+      ['input', 'inputTokens'],
+      ['output', 'outputTokens'],
+      ['cacheRead', 'cacheReadTokens'],
+      ['cacheWrite', 'cacheWriteTokens'],
+      ['reasoning', 'reasoningTokens'],
+    ] as const) {
+      const value = count(record[from])
+      if (value !== undefined) usage[to] = value
+    }
+  }
+  const model = text('model')
+  const provider = text('provider')
+  const coveredMessageCount = count(pick('coveredMessageCount'))
+  const cost = count(pick('cost'))
+  const error = text('error')
+  return {
+    ...(model === undefined ? {} : { model }),
+    ...(provider === undefined ? {} : { provider }),
+    ...(coveredMessageCount === undefined ? {} : { coveredMessageCount }),
+    ...(usage === undefined ? {} : { usage }),
+    ...(cost === undefined ? {} : { cost }),
+    ...(error === undefined ? {} : { error }),
+  }
 }
 
 function isTextBlock(block: LooseContentBlock): block is TextBlock {
@@ -356,8 +413,10 @@ function withinPairingJitter(left: string, right: string): boolean {
 }
 
 export interface BuildTrajectoryOptions {
-  /** Compaction blocks attached to the session (optional detail). */
+  /** Legacy timeline compaction blocks attached to the session (read-only). */
   compactionBlocks?: readonly CompactionBlockLike[]
+  /** The session's current context checkpoint; supplies the summary of the span that produced it. */
+  contextCheckpoint?: ContextCheckpoint
   /** Task-closure gate events (finish/continue/block) in log order. */
   taskClosureEvents?: readonly TaskClosureEventLike[]
   /**
@@ -1578,6 +1637,71 @@ export function buildTrajectorySnapshot(
       ...(block.summary !== undefined && block.summary !== ''
         ? { summary: [{ type: 'text', text: block.summary }] }
         : {}),
+    })
+  }
+
+  // Context-checkpoint summaries (docs/context-compaction.md): one
+  // `context_checkpoint` span per summarizer call, successful or not. The span
+  // carries model, usage, cost and the count of newly covered messages; the
+  // summary text lives on the checkpoint, so it rides on the span that produced
+  // the current checkpoint — the latest successful one ending by its creation.
+  const checkpointSpans = compactionSpans
+    .filter((span) => span.name === 'context_checkpoint')
+    .sort((left, right) => left.startTime.localeCompare(right.startTime))
+  const checkpoint = options.contextCheckpoint
+  const checkpointCreatedAt = toEpochMillis(checkpoint?.createdAt) ?? Number.NEGATIVE_INFINITY
+  const currentCheckpointSpan =
+    checkpoint?.summary === undefined
+      ? undefined
+      : checkpointSpans.findLast(
+          (span) =>
+            span.status === 'success' &&
+            (toEpochMillis(span.endTime) ?? Number.POSITIVE_INFINITY) <= checkpointCreatedAt,
+        )
+  for (const span of checkpointSpans) {
+    const facts = readCheckpointSpanFacts(span)
+    const current = span === currentCheckpointSpan ? checkpoint : undefined
+    const startedAt = toEpochMillis(span.startTime) ?? 0
+    const insertBefore = nodeAfter(startedAt)
+    const nodeSeq = claimSeqBefore(insertBefore === undefined ? undefined : insertBefore.seq)
+    nodes.push({
+      kind: 'compaction',
+      seq: nodeSeq,
+      time: startedAt,
+      summary: current?.summary ?? null,
+      summaryEventSeq: null,
+      shadowedItemCount: facts.coveredMessageCount ?? null,
+      shadowedTokenCount: current === undefined ? null : current.tokensBefore - current.tokensAfter,
+    })
+    eventLocations.set(nodeSeq, { kind: 'turn', turn: { turn } })
+    const completedAt = toEpochMillis(span.endTime)
+    requestViews.push({
+      purpose: 'compaction',
+      turn: null,
+      step: 0,
+      startSeq: nodeSeq,
+      startedAt,
+      completedAt: span.status === 'running' ? null : (completedAt ?? startedAt),
+      status:
+        span.status === 'error' ? 'error' : span.status === 'running' ? 'running' : 'complete',
+      ...(facts.error === undefined ? {} : { error: facts.error }),
+      ...(facts.model !== undefined && facts.provider !== undefined
+        ? { provenance: { model: facts.model, provider: facts.provider } }
+        : {}),
+      ...(facts.usage === undefined ? {} : { usage: facts.usage }),
+      replacementSeq: nodeSeq,
+      ...(current?.summary === undefined
+        ? {}
+        : { summary: [{ type: 'text', text: current.summary }] }),
+      facts: {
+        ...(facts.model === undefined ? {} : { model: facts.model }),
+        ...(facts.provider === undefined ? {} : { provider: facts.provider }),
+        ...(facts.coveredMessageCount === undefined
+          ? {}
+          : { coveredMessageCount: facts.coveredMessageCount }),
+        ...(facts.cost === undefined ? {} : { cost: facts.cost }),
+        ...(current === undefined ? {} : { generation: current.generation }),
+      },
     })
   }
 

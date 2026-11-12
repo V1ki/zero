@@ -113,6 +113,7 @@ export function SessionDetailScreen({
             decisions,
             llmRequests,
             session.timelineCompactionBlocks ?? [],
+            session.contextCheckpoint ?? undefined,
           )
         : [],
     [session, traces, taskClosureEvents, decisions, llmRequests],
@@ -210,6 +211,7 @@ export function SessionDetailScreen({
       session
         ? buildContextTokenSummary({
             messages: session.messages,
+            checkpoint: session.contextCheckpoint,
             systemPrompt: session.systemPrompt,
             llmRequests,
             totalTokens: session.totalTokens,
@@ -334,6 +336,7 @@ export function SessionDetailScreen({
             grossAvoidedInputCost={session.grossAvoidedInputCost}
             netSavings={session.netSavings}
             contextTokenSummary={contextTokenSummary}
+            contextCheckpoint={session.contextCheckpoint}
             llmRequests={llmRequests}
             selectedDecision={selectedDecision}
             selectedTaskClosure={selectedTaskClosure}

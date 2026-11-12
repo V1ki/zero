@@ -1,8 +1,10 @@
+import type { ContextCheckpoint } from '@zero-os/shared'
 import { type ReactNode, useMemo, useState } from 'react'
 import type { SessionJudgeResponse, StoredSessionJudgeEntry } from '../../../../session-judge-types'
 import { toolColors } from '../../../lib/colors'
 import { formatCost, formatModelHistory, formatNumber, formatTimeAgo } from '../../../lib/format'
 import type { MemoryInjectionEntry } from '../memory/memory-retrieval'
+import { ContextCheckpointCard } from './ContextCheckpointCard'
 import { ContextLoadPanel } from './ContextLoadPanel'
 import type { ContextTokenSummary } from './context-tokens'
 import type { EvalConfidence, EvalTone, EvalVerdict, TraceEvalReport } from './trace-eval'
@@ -138,6 +140,7 @@ export function ContextPanelSummaryTab({
   grossAvoidedInputCost,
   netSavings,
   contextTokenSummary,
+  contextCheckpoint,
   llmRequests,
   relatedMemory,
   traceEval,
@@ -169,6 +172,7 @@ export function ContextPanelSummaryTab({
   grossAvoidedInputCost?: number
   netSavings?: number
   contextTokenSummary?: ContextTokenSummary | null
+  contextCheckpoint?: ContextCheckpoint | null
   llmRequests: LlmRequestEntry[]
   relatedMemory: ContextPanelMemoryResult[]
   traceEval: TraceEvalReport
@@ -195,6 +199,12 @@ export function ContextPanelSummaryTab({
     <div className="space-y-4">
       {contextTokenSummary ? (
         <ContextLoadPanel summary={contextTokenSummary} layout="sidebar" />
+      ) : null}
+
+      {contextCheckpoint ? (
+        <Section title="Context Checkpoint">
+          <ContextCheckpointCard checkpoint={contextCheckpoint} variant="panel" />
+        </Section>
       ) : null}
 
       <Section title="Trace Eval">

@@ -1,11 +1,30 @@
 import { readFileSync } from 'node:fs'
-import type { PromptBenchmarkReport } from '../../../zero-runtime/src/compaction-prompt-benchmark'
 import type { Trial } from '../../../zero-runtime/src/prompt-bench/engine'
 import type { BenchmarkSummary } from '../../../zero-runtime/src/types'
 import { digest, hash, unknownMeasurements } from '../data'
 import type { Evaluation, TrialRecord } from '../types'
 
 export type LegacyFormat = 'prompt' | 'runtime' | 'compaction'
+
+/** summary.json written by the retired compaction:prompt-bench; only the fields imported here. */
+export interface LegacyCompactionReport {
+  variants: Array<{ id: string }>
+  results: Array<{
+    variantId: string
+    rep: number
+    sessionId: string
+    model: string
+    parseOk: boolean
+    compactScore: number | null
+    accuracyLossPercent: number | null
+    exactHandleScore: number | null
+    futureToolArgScore: number | null
+    inputTokens: number
+    outputTokens: number
+    durationMs: number
+    error?: string
+  }>
+}
 export const legacyFormats: LegacyFormat[] = ['prompt', 'runtime', 'compaction']
 
 function base(
@@ -166,7 +185,7 @@ export function importRuntime(
 }
 
 export function importCompaction(
-  summary: PromptBenchmarkReport,
+  summary: LegacyCompactionReport,
   source: string,
   sourceHash: string,
 ): TrialRecord[] {
@@ -245,6 +264,6 @@ export function importLegacy(format: LegacyFormat, source: string): TrialRecord[
     case 'runtime':
       return importRuntime(JSON.parse(raw) as BenchmarkSummary, source, sha256)
     case 'compaction':
-      return importCompaction(JSON.parse(raw) as PromptBenchmarkReport, source, sha256)
+      return importCompaction(JSON.parse(raw) as LegacyCompactionReport, source, sha256)
   }
 }

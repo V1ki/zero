@@ -496,6 +496,7 @@ export function deriveTrajectoryLayout(
           ? {}
           : { sourceBlocks: rawOutput.map((block) => sourceBlock(block)) }),
         ...(request.status === 'error' ? { isError: true } : {}),
+        ...(request.facts === undefined ? {} : { compactionFacts: request.facts }),
         timeSeconds:
           request.completedAt === null
             ? null

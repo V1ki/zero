@@ -92,15 +92,14 @@ bun run bench:test
 
 ## 旧 benchmark 迁移
 
-三类已有入口在原输出的 `platform/` 子目录提供统一记录，接入深度如下：
+两类已有入口在原输出的 `platform/` 子目录提供统一记录，接入深度如下：
 
 | 现有 benchmark | 接入状态 |
 |---|---|
 | prompt:bench | 已原生接入：平台调度和独立进程执行；Context 逐次记录模型/工具；evaluate 执行原机械评分；兼容报告由原生结果生成 |
 | zero-runtime Session | 已自动导出；保留原有机械验证范围 |
-| compaction:prompt-bench | 已自动导出代理指标；不伪造语义合格线 |
 | task-closure:prompt-bench、tool-io-digest | 下一批适配，原入口继续可用 |
-| compaction:quality、compaction:harness-eval | 下一批适配，需保留各自代理指标口径 |
+| compaction:harness-eval | 下一批适配，需保留代理指标口径 |
 | browser-comparison、x-search-usage-probe | 下一批适配，目标不强制是 LLM |
 | log-storage-audit、trace2skill-miner | 审计/提取工具，仅在需要对照评估时接入 |
 
@@ -109,7 +108,7 @@ bun run bench:test
 ```sh
 bun run bench import --format prompt --input /path/results.jsonl --out /path/new-import
 bun run bench import --format runtime --input /path/summary.json --out /path/new-import
-bun run bench import --format compaction --input /path/summary.json --out /path/new-import
+bun run bench import --format compaction --input /path/summary.json --out /path/new-import  # 已退役的 compaction:prompt-bench 的旧结果
 bun run bench report --input /path/results.jsonl --out /path/new-report
 ```
 

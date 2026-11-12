@@ -348,6 +348,17 @@ export interface AssistantRequestView extends RequestViewBase {
   activity?: RequestActivityView
 }
 
+/** Context-checkpoint facts a compaction carries beyond the request lifecycle. */
+export interface CompactionFactsView {
+  model?: string
+  provider?: string
+  /** Canonical messages newly folded into the summary by this compaction. */
+  coveredMessageCount?: number
+  cost?: number
+  /** Generation of the checkpoint this compaction produced, when it is the current one. */
+  generation?: number
+}
+
 /** One compaction provider request, turn-owned or standalone between turns. */
 export interface CompactionRequestView extends RequestViewBase {
   purpose: 'compaction'
@@ -356,6 +367,7 @@ export interface CompactionRequestView extends RequestViewBase {
   replacementSeq?: number
   summary?: readonly ContentBlock[]
   rawOutput?: readonly ContentBlock[]
+  facts?: CompactionFactsView
 }
 
 export type RequestView = AssistantRequestView | CompactionRequestView

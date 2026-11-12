@@ -53,8 +53,6 @@ export interface ToolResultBlock {
   isError?: boolean
   outputSummary?: string
   evidence?: ToolEvidence
-  /** Tracks the truncation level applied to this block for cache-friendly idempotency */
-  truncationLevel?: 'full' | 'summary' | 'status'
 }
 
 export interface ImageBlock {

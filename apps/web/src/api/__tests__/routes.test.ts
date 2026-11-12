@@ -9,7 +9,12 @@ import {
 } from '@zero-os/model'
 import type { ProviderAdapter } from '@zero-os/model'
 import { encryptSecrets } from '@zero-os/secrets'
-import type { Session as SessionData, TimelineCompactionBlock } from '@zero-os/shared'
+import type {
+  ContextCheckpoint,
+  Message,
+  Session as SessionData,
+  TimelineCompactionBlock,
+} from '@zero-os/shared'
 import { readYaml } from '@zero-os/shared/utils'
 import {
   createTestProjectRoot,
@@ -270,6 +275,78 @@ describe('API Routes (Real)', () => {
       zero.sessionManager = originalManager
       isolatedDb.close()
     }
+  })
+
+  for (const mode of ['live', 'stored'] as const) {
+    test(`GET /api/sessions/:id returns the context checkpoint for a ${mode} session`, async () => {
+      const createdAt = new Date().toISOString()
+      const sessionId = `sess_routes_checkpoint_${mode}`
+      const isolatedDb = SessionDB.createInMemory()
+      isolatedDb.saveSession({
+        id: sessionId,
+        createdAt,
+        updatedAt: createdAt,
+        source: 'web',
+        currentModel: 'openai-codex/gpt-5.4-medium',
+        modelHistory: [{ model: 'openai-codex/gpt-5.4-medium', from: createdAt, to: null }],
+        tags: [],
+        channelId: 'default',
+        channelName: 'web',
+      })
+      const messages: Message[] = ['msg_cp_1', 'msg_cp_2', 'msg_cp_3'].map((id, index) => ({
+        id,
+        sessionId,
+        role: index % 2 === 0 ? 'user' : 'assistant',
+        messageType: 'message',
+        content: [{ type: 'text', text: `message ${index}` }],
+        createdAt,
+      }))
+      isolatedDb.saveMessages(sessionId, messages)
+      const checkpoint: ContextCheckpoint = {
+        id: 'checkpoint_route',
+        sessionId,
+        generation: 2,
+        prunedThroughMessageId: 'msg_cp_2',
+        summarizedThroughMessageId: 'msg_cp_2',
+        summary: '## 用户请求与意图\nroute summary',
+        coveredMessageCount: 2,
+        tokensBefore: 900,
+        tokensAfter: 120,
+        model: { model: 'mock-model', provider: 'mock', promptVersion: 'v1' },
+        createdAt,
+      }
+      isolatedDb.saveContextCheckpoint(sessionId, checkpoint)
+      if (mode === 'live') isolatedDb.saveBinding('web', 'default', sessionId, 'web', createdAt)
+      const isolatedManager = new SessionManager(
+        zero.modelRouter,
+        zero.toolRegistry,
+        { sessionDb: isolatedDb, projectRoot: testProject.projectRoot },
+        isolatedDb,
+      )
+      isolatedManager.restoreFromDB()
+      expect(isolatedManager.get(sessionId) !== undefined).toBe(mode === 'live')
+
+      const originalManager = zero.sessionManager
+      zero.sessionManager = isolatedManager
+      try {
+        const res = await app.request(`/api/sessions/${sessionId}`)
+        expect(res.status).toBe(200)
+        const responseData = await res.json()
+        expect(responseData.contextCheckpoint).toEqual(checkpoint)
+        expect(responseData.timelineCompactionBlocks).toEqual([])
+      } finally {
+        zero.sessionManager = originalManager
+        isolatedDb.close()
+      }
+    })
+  }
+
+  test('GET /api/sessions/:id returns a null checkpoint when there is none', async () => {
+    const session = zero.sessionManager.create('web')
+    const res = await app.request(`/api/sessions/${session.data.id}`)
+    expect(res.status).toBe(200)
+    const responseData = await res.json()
+    expect(responseData.contextCheckpoint).toBeNull()
   })
 
   test('GET /api/memory returns memories', async () => {

@@ -16,7 +16,6 @@ import type {
   ToolEvidence,
   ToolLogger,
 } from '@zero-os/shared'
-import type { EpisodeCompactionTraceEvent } from './context'
 import type { QueuedInjectionTrace } from './queue'
 import type { ToolEvidenceReason } from './truncate'
 
@@ -38,69 +37,14 @@ export interface AgentTraceRecorderDeps {
 export class AgentTraceRecorder {
   constructor(private readonly deps: AgentTraceRecorderDeps) {}
 
-  recordEpisodeCompactionTrace(
-    event: EpisodeCompactionTraceEvent,
-    parentSpanId: string | undefined,
-    turnIndex: number,
-  ): void {
-    const payload = filterTraceValue(
-      {
-        ...event,
-        turnIndex,
-        agentName: this.deps.agentName,
-      },
-      this.deps.secretFilter,
-    ) as Record<string, unknown>
-    const span = this.deps.tracer?.startSpan(
-      this.deps.sessionId,
-      'timeline_compaction_block',
-      parentSpanId,
-      {
-        kind: 'context_compaction',
-        agentName: this.deps.agentName,
-        data: {
-          compaction: payload,
-        },
-        metadata: {
-          turnIndex,
-          lifecycle: event.lifecycle,
-          blockId: event.blockId,
-          strategy: event.strategy,
-          strategyVersion: event.strategyVersion,
-          episodesCreated: event.episodesCreated,
-          evidenceCount: event.evidenceCount,
-          messagesBefore: event.messagesBefore,
-          messagesAfter: event.messagesAfter,
-          compactedMessageCount: event.compactedMessageCount,
-        },
-      },
-    )
-
-    this.deps.tracer?.logSession?.(this.deps.sessionId, 'info', 'context_compaction.block', {
-      traceSpanId: span?.id,
-      ...payload,
-    })
-
-    if (span) {
-      this.deps.tracer?.endSpan(span.id, 'success', {
-        turnIndex,
-        lifecycle: event.lifecycle,
-        blockId: event.blockId,
-        episodesCreated: event.episodesCreated,
-        evidenceCount: event.evidenceCount,
-      })
-    }
-  }
-
   logToolEvidence(
     evidence: ToolEvidence,
     meta: {
-      source: 'active_tool_use' | 'active_tool_result' | 'episode_compaction'
-      reason: ToolEvidenceReason | 'large_tool_input' | 'replay_compaction' | 'tool_result_output'
+      source: 'active_tool_use' | 'active_tool_result'
+      reason: ToolEvidenceReason | 'large_tool_input' | 'tool_result_output'
       turnIndex: number
       traceSpanId?: string
       requestId?: string
-      compactionId?: string
       artifactPath?: string
       originalChars?: number
       originalTokens?: number
@@ -113,7 +57,6 @@ export class AgentTraceRecorder {
       {
         traceSpanId: meta.traceSpanId,
         requestId: meta.requestId,
-        compactionId: meta.compactionId,
         source: meta.source,
         reason: meta.reason,
         turnIndex: meta.turnIndex,

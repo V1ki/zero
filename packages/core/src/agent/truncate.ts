@@ -29,31 +29,6 @@ export interface ToolOutputArtifactization {
 }
 
 /**
- * Truncate tool output to fit within the tool's token budget.
- * Uses head 60% + tail 20% strategy with an omission marker in the middle.
- */
-export function truncateToolOutput(toolName: string, output: string): string {
-  const limit = toolOutputLimit(toolName)
-  const tokens = estimateTokens(output)
-  if (tokens <= limit) return output
-
-  const lines = output.split('\n')
-  const headCount = Math.ceil(lines.length * 0.6)
-  const tailCount = Math.ceil(lines.length * 0.2)
-  const head = lines.slice(0, headCount).join('\n')
-  const tail = lines.slice(-tailCount).join('\n')
-
-  return [
-    head,
-    '',
-    `... (输出已截断: 原始 ${tokens} tokens, 保留头尾约 ${limit} tokens)`,
-    '... (该内容作为 tool_result 写入会话消息，并会记录到后续请求对应的 llm_request trace span)',
-    '',
-    tail,
-  ].join('\n')
-}
-
-/**
  * For medium output that exceeds the per-tool prompt budget, save raw output
  * before any later replay compaction while keeping the active turn high fidelity.
  * For oversized output (>64KB chars), return a compact reference.

@@ -1,10 +1,10 @@
 # Zero Runtime Benchmark
 
 Shared execution/evaluation contracts and reports now live in the
-[benchmark platform](../platform/README.md). The Session, prompt comparison and compaction-prompt
+[benchmark platform](../platform/README.md). The Session and prompt comparison
 runners provide a `platform/` report alongside their original output. Prompt comparison now
 runs as a native platform plugin with per-operation telemetry and disposable-process execution;
-Session and compaction-prompt still use result adapters. Other benchmark
+Session still uses a result adapter. Other benchmark
 families can implement the plugin interface or add a legacy-result adapter incrementally.
 
 Benchmark for comparing model backends inside the real Zero runtime.
@@ -68,26 +68,6 @@ bun run benchmarks/zero-runtime/src/cli.ts run \
   --models chatgpt/gpt-5.5,qwen-local/qwen3.6-27b,dashscope-token-plan/qwen3.6-plus
 ```
 
-Run the offline compaction quality harness against the longest persisted sessions:
-
-```bash
-bun run compaction:quality --limit 10 --checkpoints 3
-```
-
-This reads `.zero/logs/sessions.db` in readonly mode, samples 3-5 checkpoints per long
-session, projects the current compaction history into a temporary artifact directory, and
-writes `summary.json` plus `report.md` under `benchmarks/zero-runtime/results/`. The score is
-a model-free proxy: it compares exact paths, URLs, tool arguments, and other terms reused by
-the next historical turn against the compacted prompt projection. It is meant to catch
-context-loss risk before paying for full model replay.
-
-The report also includes a Saving vs Score table (checkpoints bucketed by prompt saving) so
-variants are compared at matched compression levels, and a noise column: the share of
-degraded (`summary`/`status`) tool_result chars in the projection that contain no oracle
-term, i.e. dead weight kept after truncation. The offline compactor stub injects only a
-small, realistic number of terms into its summaries, so scores reflect what the deterministic
-pipeline retains rather than term-extraction leakage from the stub.
-
 Run the independent, read-only compaction harness against a frozen trace prefix:
 
 ```bash
@@ -108,18 +88,6 @@ This is deliberately a trace-sidecar evaluation. It does **not** claim that the 
 replace canonical session messages, and it does not measure future-answer semantic quality. A
 semantic compaction worker must separately consume a frozen message prefix, previous checkpoints,
 and the uncompacted tail, then run goal/constraint/decision/evidence-handle recall tests.
-
-Run the prompt-variant benchmark with official DeepSeek v4 flash:
-
-```bash
-bun run compaction:prompt-bench --limit 10 --reps 3 --concurrency 3
-```
-
-This selects one handle-heavy sample from each long session, then runs 10 Chinese prompt
-variants three times per session. The report ranks variants by exact handle recall, future
-tool-argument recall, compact score, and stability. By default it reads `deepseek_api_key`
-from the local Zero vault; use `--secret-source env` to read `ZERO_BENCH_SECRET_DEEPSEEK_API_KEY`
-instead.
 
 Run the tool IO digest benchmark with official DeepSeek v4 flash:
 

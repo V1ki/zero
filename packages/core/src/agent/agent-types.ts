@@ -2,16 +2,14 @@ import type {
   MetricsDB,
   RequestMemoryInjectionEntry,
   SessionEventStore,
-  SnapshotEntry,
   Tracer,
   UsagePurpose,
 } from '@zero-os/observe'
 import type {
-  CompressionResult,
+  ContextCheckpoint,
   Message,
   ReasoningEffort,
   SecretFilter,
-  TimelineCompactionBlock,
   ToolDefinition,
 } from '@zero-os/shared'
 
@@ -36,8 +34,9 @@ export interface AgentContext {
   /** Session-scoped memory ids already injected in prior layer1/layer2 retrievals. */
   injectedMemoryIds?: Map<string, string>
   conversationHistory: Message[]
-  timelineCompactionBlocks?: TimelineCompactionBlock[]
-  onTimelineCompactionBlocksChanged?: (blocks: TimelineCompactionBlock[]) => void
+  /** 当前上下文检查点(docs/context-compaction.md);压缩产生新检查点时由 agent 更新 */
+  checkpoint?: ContextCheckpoint
+  onCheckpointChanged?: (checkpoint: ContextCheckpoint) => void
   tools: ToolDefinition[]
   maxContext?: number
   maxOutput?: number
@@ -73,9 +72,4 @@ export interface AgentObservability {
   /** 权威事件流句柄;提供时 hook 层追加 step/tool/injection 诊断事件 */
   sessionEvents?: Pick<SessionEventStore, 'append' | 'getLastSeq'>
   getCurrentSnapshotId?: () => string | undefined
-  onContextCompressed?: (event: {
-    summary: string
-    stats: CompressionResult['stats']
-    decisionContext: NonNullable<SnapshotEntry['decisionContext']>
-  }) => void
 }

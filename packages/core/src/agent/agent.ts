@@ -1,17 +1,18 @@
 import type { ProviderAdapter } from '@zero-os/model'
 import type { UsagePurpose } from '@zero-os/observe'
-import type { Message, ToolContext, ToolResult } from '@zero-os/shared'
-import { isAbortableTool, now, toErrorMessage } from '@zero-os/shared'
+import type { CompactionTrigger, Message, ToolContext, ToolResult } from '@zero-os/shared'
+import { estimateTokens, generateId, isAbortableTool, now, toErrorMessage } from '@zero-os/shared'
 import type { ToolRegistry } from '../tool/registry'
-import { createAgentLoopHooks } from './agent-hooks'
+import { type AgentRequestCompaction, createAgentLoopHooks } from './agent-hooks'
 import { AgentLoop, type ToolExecutor } from './agent-loop'
 import { AgentTraceRecorder } from './agent-trace'
 import type { AgentConfig, AgentContext, AgentObservability } from './agent-types'
-import { generateContextCompaction } from './compress'
 import {
-  type EpisodeCompactionTraceEvent,
-  prepareConversationHistoryWithCompaction,
-} from './context'
+  compactContext,
+  computeCompactionBudget,
+  createCheckpointSummarizer,
+  prepareRequestMessages,
+} from './compaction'
 import type { QueuedMessage } from './queue'
 
 const BACKGROUND_BASH_TIMEOUT_MS = 60 * 60 * 1000
@@ -63,7 +64,6 @@ export class Agent {
     shouldAbort?: () => boolean,
   ): Promise<Message[]> {
     const turnIndex = requestLogMeta?.turnIndex ?? 1
-    const episodeCompactionEvents: EpisodeCompactionTraceEvent[] = []
     let emittedMessageCount = 0
 
     const rootSpan = this.obs.tracer?.startSpan(
@@ -77,42 +77,30 @@ export class Agent {
       },
     )
     const traceRecorder = this.createTraceRecorder()
-    const history = await prepareConversationHistoryWithCompaction(context.conversationHistory, {
-      requireThinkingForToolUse: this.adapter.apiType === 'anthropic-deepseek',
-      enableEpisodeCompaction: true,
-      evidenceWorkDir: this.toolContext.workDir,
-      sessionId: this.toolContext.sessionId,
-      timelineCompactionBlocks: context.timelineCompactionBlocks,
-      onTimelineCompactionBlocksChanged: context.onTimelineCompactionBlocksChanged,
-      onEpisodeCompaction: (event) => episodeCompactionEvents.push(event),
-      contextCompactor: (input) =>
-        generateContextCompaction(input, {
-          adapter: this.contextCompactionAdapter,
-          sessionId: this.toolContext.sessionId,
-          agentName: this.config.name,
-          parentSpanId: rootSpan?.id,
-          turnIndex,
-          reasoningEffort: context.reasoningEffort,
-          parentSessionId: this.obs.parentSessionId,
-          modelLabel: this.obs.contextCompactionModelLabel ?? this.obs.closureModelLabel,
-          providerName:
-            this.obs.contextCompactionProviderName ??
-            this.obs.closureProviderName ??
-            this.obs.providerName,
-          pricing: this.obs.contextCompactionPricing ?? this.obs.closurePricing ?? this.obs.pricing,
-          tracer: this.obs.tracer,
-          secretFilter: this.obs.secretFilter,
-          logger: this.toolContext.logger,
-        }),
-    })
-
-    for (const event of episodeCompactionEvents) {
-      traceRecorder.recordEpisodeCompactionTrace(event, rootSpan?.id, turnIndex)
-    }
 
     const systemParts: string[] = [context.systemPrompt]
     if (context.identityMemory) systemParts.push(context.identityMemory)
     const system = systemParts.join('\n\n')
+
+    const requireThinkingForToolUse = this.adapter.apiType === 'anthropic-deepseek'
+    // 摘要请求失败后,本 turn 内不再重试:否则长 turn 的每一步都要再等一次超时。下个 turn 重新尝试。
+    let summaryFailed = false
+    const compaction: AgentRequestCompaction = {
+      compact: async (messages, trigger, parentSpanId) => {
+        if (summaryFailed) return false
+        const outcome = await this.compactContextForRequest({
+          context,
+          system,
+          messages,
+          trigger,
+          parentSpanId,
+        })
+        summaryFailed = outcome.failed
+        return outcome.changed
+      },
+      prepare: (messages) =>
+        prepareRequestMessages(messages, context.checkpoint, { requireThinkingForToolUse }),
+    }
 
     const executionState = {
       currentRequestId: undefined as string | undefined,
@@ -123,6 +111,9 @@ export class Agent {
     }
 
     try {
+      await compaction.compact(context.conversationHistory, 'turn_start', rootSpan?.id)
+      const history = compaction.prepare(context.conversationHistory)
+
       const loopHooks = createAgentLoopHooks({
         config: this.config,
         adapter: this.adapter,
@@ -143,6 +134,7 @@ export class Agent {
         executionState,
         requestPurposeRef,
         traceRecorder,
+        compaction,
       })
       loopHooks.shouldAbort = shouldAbort
 
@@ -194,6 +186,93 @@ export class Agent {
       }
       throw error
     }
+  }
+
+  /**
+   * 请求前的压缩检查(turn 开始和 turn 内共用):模型声明了窗口时按压力压缩 canonical 消息,
+   * 产生新检查点时更新 context.checkpoint 并通知。返回检查点是否变化、摘要请求是否失败。
+   */
+  private async compactContextForRequest(options: {
+    context: AgentContext
+    system: string
+    /** canonical 消息 */
+    messages: Message[]
+    trigger: CompactionTrigger
+    parentSpanId?: string
+  }): Promise<{ changed: boolean; failed: boolean }> {
+    const { context, trigger } = options
+    if (!context.maxContext || !context.maxOutput) return { changed: false, failed: false }
+
+    const sessionId = this.toolContext.sessionId
+    const budget = computeCompactionBudget(context.maxContext, context.maxOutput)
+    const compactionId = generateId()
+    const startedAt = Date.now()
+    const result = await compactContext({
+      messages: options.messages,
+      checkpoint: context.checkpoint,
+      sessionId,
+      budget,
+      fixedTokens: estimateTokens(options.system) + estimateTokens(JSON.stringify(context.tools)),
+      summarize: createCheckpointSummarizer({
+        adapter: this.contextCompactionAdapter,
+        modelLabel: this.obs.contextCompactionModelLabel ?? this.obs.closureModelLabel,
+        providerName:
+          this.obs.contextCompactionProviderName ??
+          this.obs.closureProviderName ??
+          this.obs.providerName,
+        pricing: this.obs.contextCompactionPricing ?? this.obs.closurePricing ?? this.obs.pricing,
+        reasoningEffort: context.reasoningEffort,
+        parentSessionId: this.obs.parentSessionId,
+        agentName: this.config.name,
+        parentSpanId: options.parentSpanId,
+        tracer: this.obs.tracer,
+        secretFilter: this.obs.secretFilter,
+      }),
+      onStart: (tokens) => {
+        this.obs.sessionEvents?.append(sessionId, [
+          {
+            type: 'compaction/start',
+            data: { compactionId, trigger, tokens, thresholdTokens: budget.thresholdTokens },
+          },
+        ])
+      },
+    })
+    if (result.status === 'not_needed') return { changed: false, failed: false }
+
+    const { checkpoint } = result
+    const durationMs = Date.now() - startedAt
+    this.obs.sessionEvents?.append(sessionId, [
+      ...(checkpoint ? [{ type: 'compaction/checkpoint' as const, data: { checkpoint } }] : []),
+      {
+        type: 'compaction/end',
+        data: {
+          compactionId,
+          status: result.status,
+          tokensBefore: result.tokensBefore,
+          tokensAfter: result.tokensAfter,
+          durationMs,
+          ...(result.status === 'summarized' ? { usage: result.usage } : {}),
+          ...(result.status === 'failed' ? { error: result.error } : {}),
+        },
+      },
+    ])
+    this.toolContext.logger[result.status === 'failed' ? 'warn' : 'info']('context_compaction', {
+      compactionId,
+      trigger,
+      status: result.status,
+      tokensBefore: result.tokensBefore,
+      tokensAfter: result.tokensAfter,
+      thresholdTokens: budget.thresholdTokens,
+      generation: checkpoint?.generation,
+      durationMs,
+      ...(result.status === 'failed' ? { error: result.error } : {}),
+    })
+
+    if (checkpoint) {
+      context.checkpoint = checkpoint
+      context.onCheckpointChanged?.(checkpoint)
+    }
+    return { changed: checkpoint !== undefined, failed: result.status === 'failed' }
   }
 
   /** Backoff delay for transient retries. Override in tests to avoid real waits. */

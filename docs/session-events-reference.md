@@ -23,7 +23,8 @@
 | `user/message` ✅ | store `buildMessageSyncInputs`（diff 追加） | canonical 新增 user 消息（turn 输入、tool_result 消息、queued、layer2 提示、background 回注） | messageIndex、message 全量、source、hash | 唯一权威的消息正文;图片为 imageRef 文件引用 |
 | `assistant/message` ✅ | 同上 | canonical 新增 assistant 消息（含 text/thinking/tool_use blocks） | 同上 | 模型输出唯一权威全文 |
 | `messages/truncate` ✅ | 同上 | canonical 前缀缩短（turn 回滚 `applyFailedTurnRollback`、restore 修复） | toMessageIndex、reason | 折叠指令，历史事件永不删除 |
-| `compaction/block` ✅ | store `syncCanonical`（blocks 数组变化时） | timeline 压缩块创建/supersede/recompact | blocks 全量数组 + changed(blockId, lifecycle) | 投影取最新一份;取代 DB `session_compaction_blocks` 大字段 |
+| `compaction/checkpoint` ✅ | agent `compactContextForRequest`（压缩产生新检查点的那一刻，经 `obs.sessionEvents`，子代理写进自己的文件）;session-turn 失败回滚时补写 | 裁剪水位推进或新摘要;turn 回滚恢复 turn 开始时的检查点 | checkpoint（完整检查点，回滚到没有检查点时为 null） | 投影取最后一份指向的消息都在投影里的检查点，无效则往前回退，遇到 null 或到头则没有;DB 镜像为 `session_context_checkpoints` 行 |
+| `compaction/block` 💤 | 不再写入（旧 store `syncCanonical` 在 blocks 变化时写） | 旧 timeline 压缩块 | blocks 全量数组 + changed(blockId, lifecycle) | 只读的旧数据：投影取最新一份用于展示，不参与请求投影 |
 
 ## ② request-scoped（重建请求输入）
 
@@ -44,7 +45,9 @@
 | `step/end` ✅ | agent-hooks `onCompletionEnd` | 每次模型请求返回 | stepIndex、stopReason、requestId、usage、durationMs |
 | `tool/call` ✅ | agent-hooks `onToolCallStart` | 工具开始 | toolUseId、name、inputHash、inputPreview、spanId |
 | `tool/result` ✅ | agent-hooks `onToolCallEnd` | 工具返回 | toolUseId、name、status、durationMs、chars、summary |
-| `compaction/prune` ✅ | agent-hooks `processAgentToolResults`（artifactize） | 超大 tool_result 持久替换为 artifact 引用 | toolUseId、from(chars+hash)、to(artifact_ref)、evidence 指针 |
+| `compaction/prune` ✅ | agent-hooks `processAgentToolResults`（artifactize） | tool_result 内容真的被 artifact 引用替换时（只写了 evidence、原文仍在 canonical 的中等输出不发） | toolUseId、from(chars+hash)、to(artifact_ref)、evidence 指针 |
+| `compaction/start` ✅ | agent `compactContextForRequest` | 请求前压力达到阈值且保留尾部之外有内容 | compactionId、trigger(turn_start/in_turn)、tokens、thresholdTokens |
+| `compaction/end` ✅ | 同上 | 裁剪或摘要结束（紧跟在 `compaction/checkpoint` 之后） | compactionId、status(pruned/summarized/failed)、tokensBefore、tokensAfter、durationMs、usage、error |
 | `closure/end` ✅ | agent-hooks `onEndTurn` 三条路径 | 决策产出 | action(finish/continue/block/discarded)、reason、model、requestId、assistantMessageId、durationMs;discarded 原决策在 detail |
 | `memory/retrieval/start` ✅ | memory-retrieval `retrieveMemoriesWithDecision` | 检索 agent 侧循环开始（layer1 开场/layer2 工具失败后） | layer、turnIndex |
 | `memory/retrieval/end` ✅ | 同上（成功/失败两路径） | 检索结束 | layer、status(injected/skipped/failed)、queries、searchCount、selected、durationMs、usage、error |
@@ -77,18 +80,12 @@ job 只针对 bash。bash 执行超过 5 秒转后台（其他工具仍是 60 �
 | `model/selection` 其余触发 | init（会话创建）、fallback（pool failover）、reload（配置热更）、route | 目前只有 user_command |
 | `session/archive` | 会话归档/删除 | 待接入 |
 
-## 💤 保留未发射
-
-| type | 说明 |
-|---|---|
-| `compaction/summary` | 旧式 compressConversation 专用（scope=loop_only，只改 loop 内存不持久）;该路径按早前分析应删，删除时此类型一并移除 |
-
 ## 消费方
 
 | 消费 | 路径 |
 |---|---|
 | 会话恢复（权威） | `SessionManagerStore.restoreSessionById` / `getMessagesFromDB` → `store.project()`;无事件文件回退 DB |
-| 请求重建 | `projectUpTo(seq)` + turn 区间内 injection + compaction 确定性重放 |
+| 请求重建 | `projectUpTo(seq)` 的 messages + checkpoint 经 `prepareRequestMessages` 投影 + turn 区间内 injection（本 turn 的消息事件在 turn 结束时才写入，turn 内请求还需接上本 turn 的消息） |
 | 状态查询 | `getSystemPrompt` / `getToolSet` / `getLastSeq` |
 | 迁移/校验 | scripts-diag convert（播种 session/system/prompt/user·assistant·truncate/compaction-block/injection）+ rebuild（事件→DB 派生行） |
-| Web UI | ⏸ 尚未读取事件流（run.log raw 事件删除后，请求详情重建待接） |
+| Web UI | 会话详情 `GET /api/sessions/:id` 的 `contextCheckpoint`：活会话取 `Session.getContextCheckpoint()`，否则 `getContextCheckpointFromDB` → `store.project()`，无事件文件回退 DB;请求详情重建仍待接（run.log raw 事件已删除） |

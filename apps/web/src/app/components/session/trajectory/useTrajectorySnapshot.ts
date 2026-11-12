@@ -52,6 +52,7 @@ export function useTrajectorySnapshot(
       ...(session.timelineCompactionBlocks === undefined
         ? {}
         : { compactionBlocks: session.timelineCompactionBlocks }),
+      ...(session.contextCheckpoint ? { contextCheckpoint: session.contextCheckpoint } : {}),
       taskClosureEvents,
       ...(toolSchemas.length === 0 ? {} : { toolSchemas }),
       subAgentEvents,

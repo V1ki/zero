@@ -2,6 +2,7 @@ import type { ModelRouter, ModelSwitchResult, ResolvedModel } from '@zero-os/mod
 import type { SessionDB } from '@zero-os/observe'
 import type {
   ChannelCapabilities,
+  ContextCheckpoint,
   Message,
   MessageChannelSource,
   ReasoningEffort,
@@ -14,8 +15,6 @@ import type {
 import { now, toErrorMessage } from '@zero-os/shared'
 import type { Agent, AgentConfig } from '../agent/agent'
 import type { AgentSnapshot } from '../agent/agent-control'
-import { allocateBudget } from '../agent/budget'
-import { estimateConversationTokens } from '../agent/context'
 import type { ToolRegistry } from '../tool/registry'
 import type { BackgroundToolCompletionEvent } from './background-tool-tasks'
 import {
@@ -261,13 +260,13 @@ export class Session {
       staticContext: this.controllers.staticContext,
       snapshotRecorder: this.snapshotRecorder,
       messages: this.conversation.messages,
-      timelineCompactionBlocks: this.conversation.timelineCompactionBlocks,
+      checkpoint: this.conversation.checkpoint,
       injectedMemoryIds: this.conversation.injectedMemoryIds,
       getAgentName: () => this.getAgentName(),
       getCurrentSnapshotContext: (toolNames) => this.getCurrentSnapshotContext(toolNames),
       turnRuntime: this.turnRuntime,
-      setTimelineCompactionBlocks: (blocks) => {
-        this.conversation.replaceTimelineCompactionBlocks(blocks)
+      setCheckpoint: (checkpoint) => {
+        this.conversation.checkpoint = checkpoint
       },
     })
 
@@ -290,7 +289,6 @@ export class Session {
       data: this.data,
       modelRouter: this.modelRouter,
       deps: this.deps,
-      messages: this.conversation.messages,
       lastAgentConfig: this.agentRuntime.getAgentConfig(),
       snapshotRecorder: this.snapshotRecorder,
       setActiveModel: (model) => {
@@ -354,14 +352,6 @@ export class Session {
     return {
       activeModel: this.activeModel,
       getCurrentSnapshotId: () => this.snapshotRecorder.getCurrentSnapshotId(),
-      onContextCompressed: (event) => {
-        this.snapshotRecorder.logCompressionSnapshot(
-          this.getCurrentSnapshotContext(),
-          event.summary,
-          event.stats,
-          event.decisionContext,
-        )
-      },
     }
   }
 
@@ -383,6 +373,7 @@ export class Session {
       data: this.data,
       messages: this.conversation.messages,
       timelineCompactionBlocks: this.conversation.timelineCompactionBlocks,
+      checkpoint: this.conversation.checkpoint,
       agentConfig: this.agentRuntime.getAgentConfig(),
       systemPrompt: this.controllers.staticContext.getLastSystemPrompt() || undefined,
     })
@@ -399,6 +390,7 @@ export class Session {
     deps: SessionDeps = {},
     systemPrompt?: string,
     timelineCompactionBlocks: TimelineCompactionBlock[] = [],
+    checkpoint?: ContextCheckpoint,
   ): Session {
     const session = Object.create(Session.prototype) as Session
     Object.assign(
@@ -410,6 +402,7 @@ export class Session {
         toolRegistry,
         deps,
         timelineCompactionBlocks,
+        checkpoint,
         getAgentName: () => session.getAgentName(),
         onBackgroundToolCompletion: (event) => session.handleBackgroundToolCompletion(event),
       }),
@@ -446,6 +439,10 @@ export class Session {
 
   getTimelineCompactionBlocks(): TimelineCompactionBlock[] {
     return this.controllers.clientState.getTimelineCompactionBlocks()
+  }
+
+  getContextCheckpoint(): ContextCheckpoint | undefined {
+    return this.conversation.checkpoint
   }
 
   get currentSnapshotId(): string | undefined {
@@ -611,7 +608,6 @@ async function switchSessionModel(options: {
   data: SessionData
   modelRouter: ModelRouter
   deps: SessionDeps
-  messages: Message[]
   lastAgentConfig: AgentConfig | null
   snapshotRecorder: SessionSnapshotRecorder
   setActiveModel(model: ResolvedModel): void
@@ -667,43 +663,7 @@ async function switchSessionModel(options: {
     }
   }
 
-  if (options.messages.length > 0) {
-    const newBudget = allocateBudget(
-      result.model.modelConfig.maxContext,
-      result.model.modelConfig.maxOutput,
-    )
-    const currentTokens = estimateConversationTokens(options.messages)
-    if (currentTokens > newBudget.conversation) {
-      const { compressConversation } = await import('../agent/compress')
-      const compResult = await compressConversation(
-        options.messages,
-        newBudget.conversation,
-        result.model.adapter,
-        options.data.id,
-        {},
-        {
-          tracer: options.deps.tracer,
-          agentName: options.lastAgentConfig?.name,
-          providerName: result.model.providerName,
-          modelLabel: options.modelRouter.getModelLabel(result.model),
-          pricing: result.model.modelConfig.pricing,
-          secretFilter: options.deps.secretFilter,
-        },
-      )
-      options.messages.length = 0
-      options.messages.push(...compResult.retainedMessages)
-      options.snapshotRecorder.logCompressionSnapshot(
-        options.getCurrentSnapshotContext(),
-        compResult.summary,
-        compResult.stats,
-        {
-          currentTokens,
-          conversationBudget: newBudget.conversation,
-        },
-      )
-    }
-  }
-
+  // 不在这里压缩:下一次请求按新模型的窗口检查(docs/context-compaction.md)
   options.persistState()
   return result
 }

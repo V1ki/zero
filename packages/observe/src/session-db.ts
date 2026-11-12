@@ -2,6 +2,7 @@ import { Database, type SQLQueryBindings } from 'bun:sqlite'
 import { dirname } from 'node:path'
 import type {
   ChannelSessionBinding,
+  ContextCheckpoint,
   Message,
   ModelHistoryEntry,
   ReasoningEffort,
@@ -202,6 +203,21 @@ export class SessionDB {
     )
   }
 
+  /**
+   * Save the session's current context checkpoint; undefined removes it.
+   */
+  saveContextCheckpoint(sessionId: string, checkpoint: ContextCheckpoint | undefined): void {
+    if (!checkpoint) {
+      this.db.run('DELETE FROM session_context_checkpoints WHERE session_id = ?', [sessionId])
+      return
+    }
+    this.db.run(
+      `INSERT OR REPLACE INTO session_context_checkpoints (session_id, checkpoint_json, updated_at)
+       VALUES (?, ?, ?)`,
+      [sessionId, JSON.stringify(checkpoint), new Date().toISOString()],
+    )
+  }
+
   saveChannelModel(
     source: SessionSource,
     channelId: string,
@@ -340,6 +356,14 @@ export class SessionDB {
     return JSON.parse(row.blocks_json) as TimelineCompactionBlock[]
   }
 
+  loadContextCheckpoint(sessionId: string): ContextCheckpoint | undefined {
+    const row = this.db
+      .query('SELECT checkpoint_json FROM session_context_checkpoints WHERE session_id = ?')
+      .get(sessionId) as { checkpoint_json: string } | null
+    if (!row) return undefined
+    return JSON.parse(row.checkpoint_json) as ContextCheckpoint
+  }
+
   /**
    * Load all sessions with optional filtering.
    */
@@ -431,6 +455,7 @@ export class SessionDB {
 
   private deleteSessionPayload(sessionId: string): void {
     this.db.run('DELETE FROM session_compaction_blocks WHERE session_id = ?', [sessionId])
+    this.db.run('DELETE FROM session_context_checkpoints WHERE session_id = ?', [sessionId])
     this.db.run('DELETE FROM session_messages WHERE session_id = ?', [sessionId])
   }
 

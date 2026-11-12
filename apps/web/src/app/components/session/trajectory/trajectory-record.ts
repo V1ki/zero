@@ -1,7 +1,7 @@
 /** Shared trajectory record data and formatting contracts. */
 
 import type { HTMLAttributes } from 'react'
-import type { ConversationPromptSnapshot, ToolEvidenceView } from './types'
+import type { CompactionFactsView, ConversationPromptSnapshot, ToolEvidenceView } from './types'
 
 /** Closed set of trajectory record kinds. */
 export type TrajectoryCellKind =
@@ -79,6 +79,8 @@ export interface TrajectoryCellProps extends HTMLAttributes<HTMLDivElement> {
   callId?: string
   /** Tool-only persisted evidence pointer (path/chars/hash) for the details panel. */
   evidenceDetail?: ToolEvidenceView
+  /** Compacted-only context-checkpoint facts for the details panel. */
+  compactionFacts?: CompactionFactsView
   /** Tool-only result failure state. */
   isError?: boolean
   /** Own duration in seconds, or `null` when no duration is known. */

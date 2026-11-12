@@ -101,18 +101,24 @@ export {
   buildSkillReminder,
   wrapMemoryInjection,
 } from './agent/prompt'
-export { allocateBudget, shouldCompress } from './agent/budget'
-export { truncateToolOutput } from './agent/truncate'
+export { estimateConversationTokens } from './agent/context'
 export {
-  prepareConversationHistory,
-  prepareConversationHistoryWithCompaction,
-  estimateConversationTokens,
-} from './agent/context'
+  CONTEXT_CHECKPOINT_PROMPT_VERSION,
+  compactContext,
+  computeCompactionBudget,
+  createCheckpointSummarizer,
+  isCheckpointValid,
+  projectMessages,
+} from './agent/compaction'
 export type {
-  ContextCompactionModelInput,
-  ContextCompactionModelOutput,
-} from './agent/context'
-export { compressConversation } from './agent/compress'
+  CheckpointSummarizer,
+  CheckpointSummarizerOptions,
+  CheckpointSummary,
+  CheckpointSummaryInput,
+  CompactContextInput,
+  CompactContextResult,
+  CompactionBudget,
+} from './agent/compaction'
 export { CONTEXT_PARAMS } from './agent/params'
 export {
   buildQueuedInjectionText,

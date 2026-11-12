@@ -1,6 +1,11 @@
 import { createHash } from 'node:crypto'
 import type { SessionDB, SessionEventStore } from '@zero-os/observe'
-import type { Message, Session as SessionData, TimelineCompactionBlock } from '@zero-os/shared'
+import type {
+  ContextCheckpoint,
+  Message,
+  Session as SessionData,
+  TimelineCompactionBlock,
+} from '@zero-os/shared'
 import { SESSION_EVENT_SCHEMA_VERSION } from '@zero-os/shared'
 import type { AgentConfig } from '../agent/agent'
 
@@ -16,6 +21,8 @@ export interface PersistSessionMetadataOptions {
 export interface PersistSessionStateOptions extends PersistSessionMetadataOptions {
   messages: Message[]
   timelineCompactionBlocks: TimelineCompactionBlock[]
+  /** 事件流里的 compaction/checkpoint 由 agent 在压缩时写入;这里只同步 DB 行 */
+  checkpoint: ContextCheckpoint | undefined
 }
 
 export interface PersistableSessionSnapshot {
@@ -24,6 +31,7 @@ export interface PersistableSessionSnapshot {
   getSystemPrompt(): string
   getMessages(): Message[]
   getTimelineCompactionBlocks(): TimelineCompactionBlock[]
+  getContextCheckpoint(): ContextCheckpoint | undefined
 }
 
 export function persistSessionMetadata(options: PersistSessionMetadataOptions): void {
@@ -46,6 +54,7 @@ export function persistSessionState(options: PersistSessionStateOptions): void {
   }
   sessionDb?.saveMessages(data.id, messages)
   sessionDb?.saveCompactionBlocks(data.id, timelineCompactionBlocks)
+  sessionDb?.saveContextCheckpoint(data.id, options.checkpoint)
   persistSessionMetadata(options)
 }
 
@@ -64,6 +73,7 @@ export function persistSessionSnapshot(
     systemPrompt: session.getSystemPrompt() || undefined,
     messages: session.getMessages(),
     timelineCompactionBlocks: session.getTimelineCompactionBlocks(),
+    checkpoint: session.getContextCheckpoint(),
   })
 }
 
