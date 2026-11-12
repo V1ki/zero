@@ -15,28 +15,12 @@ export const CONTEXT_PARAMS = {
   },
   /** System Prompt fixed budget allocations (tokens) — static, built once per session */
   budget: {
-    role: 500,
-    toolRules: 800,
-    constraints: 300,
     executionMode: 500,
     safety: 300,
     toolCallStyle: 200,
-    identity: 3000,
     skillCatalog: 2000,
     runtime: 400,
     bootstrapContext: 8000,
-  },
-
-  /** Conversation compression */
-  compression: {
-    /** Trigger compression when conversation tokens reach this ratio of budget */
-    threshold: 0.85,
-    /** After compression, retained section gets this ratio of conversation budget */
-    retainRatio: 0.7,
-    /** Minimum recent turns to retain after compression */
-    minRetainTurns: 4,
-    /** Maximum tokens for the compression summary */
-    summaryMaxTokens: 800,
   },
 
   /** 检查点式上下文压缩（docs/context-compaction.md），比例都相对可用窗口 U = maxContext − maxOutput */
@@ -74,56 +58,12 @@ export const CONTEXT_PARAMS = {
     artifactThresholdChars: 65536,
     /** Default limit for unknown tools */
     default: 4000,
-    /** Head portion ratio when truncating */
-    headRatio: 0.6,
-    /** Tail portion ratio when truncating */
-    tailRatio: 0.2,
   },
 
-  /** Historical tool output progressive reduction */
+  /** Short previews of tool output (memory retrieval, tool evidence summaries) */
   history: {
-    /** Turns 0..N: full tool output preserved */
-    fullRetainTurns: 3,
-    /** Episode compaction keeps the latest active/current turns fully expanded */
-    episodeFullRetainTurns: 3,
-    /** Do not compact tiny newly-aged tails; wait until a meaningful episode is formed. */
-    episodeMinCompactTurns: 3,
-    /** Large tool-heavy tails may compact earlier even when they have fewer turns. */
-    episodeMinCompactChars: 12000,
-    /** Single-turn tails compact only when they are too large to keep waiting for a batch. */
-    episodeUrgentCompactChars: 65536,
-    /** Recompact many existing blocks from raw messages when the prompt lane becomes block-heavy. */
-    timelineRecompactBlockCountThreshold: 16,
-    /** Recompact existing blocks from raw messages when projected history remains large. */
-    timelineRecompactCharsThreshold: 280000,
-    /** Apply tool-result recency reduction when even the current projected prompt is oversized. */
-    promptPressureCharsThreshold: 180000,
-    /** Under prompt pressure, keep only the most recent N tool_result payloads fully expanded. */
-    promptPressureFullToolResults: 4,
-    /** Under prompt pressure, keep the next N tool_result payloads as short summaries. */
-    promptPressureSummaryToolResults: 16,
-    /** Prompt manifest cap; full evidence remains in artifact files and trace metadata. */
-    episodePromptEvidenceLimit: 12,
-    /** Prompt tool-observation cap; prevents deterministic fallback from becoming an IO dump. */
-    episodePromptObservationLimit: 16,
-    /** Max raw tool_result chars included per tool in the compaction model prompt. */
-    compactionPromptToolResultMaxChars: 8000,
-    /** Max covered_messages chars sent to the compaction model. */
-    compactionPromptTranscriptMaxChars: 60000,
-    /** Timeout for a single context compaction model request; on timeout the deterministic fallback is used. */
-    compactionModelTimeoutMs: 60000,
-    /** Turns N+1..M: tool output truncated to summary */
-    summaryRetainTurns: 8,
     /** Summary truncation length (chars) */
     summaryMaxChars: 200,
-    /** When truncating tool results, retain up to N exact handles (paths/URLs/filenames). */
-    handleRetentionMaxHandles: 8,
-    /** Char budget for the retained-handle line appended to truncated tool results. */
-    handleRetentionMaxChars: 400,
-    /** Handle-trail cap for a timeline compaction block; blocks cover many messages. */
-    blockHandleRetentionMaxHandles: 64,
-    /** Char budget for the handle trail embedded in a timeline compaction block summary. */
-    blockHandleRetentionMaxChars: 3200,
   },
 
   /** Memory retrieval */

@@ -107,33 +107,6 @@ export interface DynamicContext {
   retrievedMemories?: string
 }
 
-export interface ContextBudget {
-  role: number
-  toolRules: number
-  constraints: number
-  executionMode: number
-  safety: number
-  toolCallStyle: number
-  identity: number
-  skillCatalog: number
-  runtime: number
-  bootstrapContext: number
-  conversation: number
-  reserved: number
-}
-
-export interface CompressionResult {
-  summary: string
-  retainedMessages: import('./message').Message[]
-  stats: {
-    messagesBefore: number
-    messagesAfter: number
-    tokensBefore: number
-    tokensAfter: number
-    compressedRange?: string
-  }
-}
-
 /**
  * 上下文检查点：canonical 消息之外唯一的压缩状态。
  * 见 docs/context-compaction.md。
@@ -175,20 +148,7 @@ export interface EpisodeCompaction {
   messageIds: string[]
 }
 
-export interface WorkingStateCompaction {
-  currentGoal: string
-  scope: string[]
-  confirmedFacts: string[]
-  nextAction: string
-  blockers: string[]
-  doNot: string[]
-  evidencePointers: import('./message').ToolEvidence[]
-  sourceEpisodeIds: string[]
-}
-
 export type TimelineCompactionBlockStatus = 'active' | 'superseded'
-
-export type TimelineCompactionBlockLifecycle = 'created' | 'updated' | 'reused' | 'superseded'
 
 export interface TimelineCompactionBlockRange {
   startMessageId: string

@@ -2,8 +2,8 @@
 
 这份文档说明会话日志（`session.jsonl`）和 agent loop 接下来往哪里收敛、按什么顺序做。改动
 `packages/core/src/agent/`、`packages/core/src/session/` 的日志与上下文组装路径之前先读它。
-事件格式见 [session-event-log.md](session-event-log.md)，压缩块见
-[episode-context-compaction.md](episode-context-compaction.md)。
+事件格式见 [session-event-log.md](session-event-log.md)，上下文压缩见
+[context-compaction.md](context-compaction.md)。
 
 ## 目的
 
@@ -21,7 +21,7 @@
 | 约定 | dsh 的做法 | ZeRo 现状 | 差距 |
 | --- | --- | --- | --- |
 | 日志是事实来源 | loop 每产生一条消息就 `session.append()`；`deriveMessages()` 返回冻结的投影 | 内存里的 `Message[]` 是事实，turn 结束时 `syncCanonical` 把它和日志做前缀 diff | 日志是镜像。turn 中途崩溃丢本 turn 消息；内存数组一被改写，diff 就产生回滚事件 |
-| 投影不可变 | 冻结对象，改写历史在类型上不可表达；压缩用 `surfaceOp: replace` 落事件 | `reduceHistoricalToolOutput` 等在准备 prompt 时原地改 canonical 的 `tool_result` | 见下方「已复现的问题」 |
+| 投影不可变 | 冻结对象，改写历史在类型上不可表达；压缩用 `surfaceOp: replace` 落事件 | 请求消息由 `prepareRequestMessages(canonical, 检查点)` 投影得到，不修改 canonical（步骤 1、5） | 已对齐；修复前的问题见下方「已复现的问题」 |
 | 两条写路径 | 只有 `append` | 过程事件（step、tool、closure、injection）由 hooks 直接 `append`，消息事件由 `syncCanonical` 事后补 | `step/start` 的 seq 早于它发出的 `user/message` |
 | 每个 loop 都落日志 | 子代理有自己的 Session | `spawn_agent` 的子代理有自己的事件文件（过程事件，暂无消息）；记忆检索、压缩模型、任务闭合、Router 的 8 个调用点都不写事件流；Router 用 `logger: console` | 这些模型调用只能从 usage 账本看到花费，看不到输入输出 |
 | loop 只有一份 | `agent`（接口）与 `agent-loop`（驱动）分离，扩展点是事件 | `AgentLoop` 本身是通用的，但「能用的 agent」那一层写了三遍 | 见下方「loop 重复在哪里」 |
@@ -29,7 +29,8 @@
 
 ### 已复现的问题
 
-用 8～10 个 turn 的模拟会话复现（每个 turn 一次 2000 字符的工具输出）：
+步骤 1 之前，用 8～10 个 turn 的模拟会话复现（每个 turn 一次 2000 字符的工具输出）。两个问题都已由步骤 1 修复，
+相关代码随步骤 5 删除：
 
 - **每个 turn 都在回滚重写。** 准备 prompt 时会给上一 turn 的 `tool_result` 原地打上
   `truncationLevel`，之后按年龄把内容截到约 200 字符。`syncCanonical` 的前缀 diff 因此判定历史变了：
@@ -62,7 +63,7 @@
                      ▲ 写                                   │ 读
                      │                                      ▼
    runAgentLoop（基座）──────────────────────── assemble（纯函数投影）
-     step/tool/message 事件、usage、                 压缩块投影 → 工具输出降级 → 请求消息
+     step/tool/message 事件、usage、                 检查点投影（摘要 + 裁剪）→ 请求消息
      超时取消、预算、最终文本                         不改输入，输出可重算
         ▲            ▲              ▲
    主会话 Agent   记忆检索/压缩/闭合   Router 各调用点
@@ -71,8 +72,8 @@
 
 三个部件各自的约定：
 
-- **组装是纯函数。** 输入 canonical 消息和压缩块，输出本次请求的消息。不修改输入；同样的输入得到同样的输出。
-  不可重算的状态变化（压缩块、artifact 替换）才落事件，沿用现有的 `compaction/block`、`compaction/prune`。
+- **组装是纯函数。** 输入 canonical 消息和检查点，输出本次请求的消息。不修改输入；同样的输入得到同样的输出。
+  不可重算的状态变化（检查点、artifact 替换）才落事件：`compaction/checkpoint`、`compaction/prune`。
 - **loop 写事实。** 消息、step、tool 事件在产生的那一刻由基座写入，顺序就是发生顺序。`syncCanonical`
   退回到只处理非 loop 的修改（回滚、撤回、恢复期修复），并写对原因。
 - **基座只有一份。** 调用方提供模型、提示词、工具和策略；基座负责其余。主会话特有的东西（排队消息、任务闭合、
@@ -84,15 +85,18 @@
 
 | 步骤 | 内容 | 状态 |
 | --- | --- | --- |
-| 1 | 组装改为纯函数投影：准备 prompt 不再修改 canonical 消息；evidence 和压缩模型读原文 | 本 PR |
-| 2 | loop 基座 `runAgentLoop`；记忆检索和 Router 改为基座的配置 | 本 PR |
+| 1 | 组装改为纯函数投影：准备 prompt 不再修改 canonical 消息；evidence 和压缩模型读原文 | 已完成 |
+| 2 | loop 基座 `runAgentLoop`；记忆检索和 Router 改为基座的配置 | 已完成 |
 | 3 | 主会话的 loop 直接写消息事件，取代 turn 结束时的 diff；`syncCanonical` 只留给非 loop 修改 | 后续 |
 | 4 | 旁路 loop（记忆检索、压缩、闭合、Router）落事件流 | 后续，见待定事项 |
-| 5 | 删除旧式 `compressConversation` 和切换模型时对 canonical 的覆盖；预算改为按压缩后的投影判断 | 运行时已改用[检查点压缩](context-compaction.md)，旧代码待删 |
+| 5 | 删除旧式 `compressConversation` 和切换模型时对 canonical 的覆盖；预算改为按压缩后的投影判断 | 已完成：[检查点压缩](context-compaction.md)是唯一的压缩机制，旧代码已删除 |
 | 6 | 主会话 `Agent` 改为「基座 + 会话插件」，拆分 `agent-hooks.ts` | 后续 |
 | 7 | Web 读事件流；切 `file-only`；`run.log` 与 trace 里与事件流重复的部分退役 | 后续 |
 
 ### 步骤 1：组装改为纯函数投影
+
+下面是步骤 1 当时的做法。按年龄的降级和 prompt 压力降级已在步骤 5 随旧方案删除，现行规则见
+[context-compaction.md](context-compaction.md)。
 
 - `reduceHistoricalToolOutput`、`reduceToolOutputsUnderPromptPressure` 改为返回新对象，不给输入的 block 赋值。
   降级结果只进入发给模型的消息。
@@ -100,7 +104,7 @@
   与现在一致。差别只在两处：状态级的 `retained_handles` 改从原文提取（现在是从已截断的摘要里提取）；
   prompt 压力解除后，受影响的工具输出会回到按年龄计算的等级。后者只发生在压缩块新建或回滚之后，
   那时 prompt 前缀本来就变了，不额外损失缓存命中。
-- 已经被旧版本改写过的历史消息（带 `truncationLevel` 且内容已截断）原文无法恢复，按现有等级继续使用，不再升级回完整。
+- 已经被旧版本改写过的历史消息（内容已截断）原文无法恢复，按截断后的内容继续使用。
 - 带来的结果：canonical 保留原文；evidence 和压缩模型拿到原文；事件流不再每个 turn 回滚重写。
 - 代价：内存和 `sessions.db`（双写期）里的旧工具输出不再随年龄变小。单条上限仍是 64KB（更大的在执行时已转 artifact）。
 

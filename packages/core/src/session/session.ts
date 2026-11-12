@@ -352,14 +352,6 @@ export class Session {
     return {
       activeModel: this.activeModel,
       getCurrentSnapshotId: () => this.snapshotRecorder.getCurrentSnapshotId(),
-      onContextCompressed: (event) => {
-        this.snapshotRecorder.logCompressionSnapshot(
-          this.getCurrentSnapshotContext(),
-          event.summary,
-          event.stats,
-          event.decisionContext,
-        )
-      },
     }
   }
 

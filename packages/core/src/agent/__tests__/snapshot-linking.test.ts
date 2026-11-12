@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { ProviderAdapter } from '@zero-os/model'
-import { type SnapshotEntry, Tracer } from '@zero-os/observe'
+import { Tracer } from '@zero-os/observe'
 import type {
   CompletionRequest,
   CompletionResponse,
@@ -96,18 +96,12 @@ function createMessage(index: number): Message {
 }
 
 describe('Agent snapshot linking', () => {
-  // 检查点压缩不再写压缩快照(onContextCompressed 只属于旧式 compressConversation):
-  // 压缩发生后请求日志仍关联当前快照
+  // 检查点压缩不写压缩快照:压缩发生后请求日志仍关联当前快照
   test('request logs keep the current snapshot id when context is compacted', async () => {
     const registry = new ToolRegistry()
     registry.register(new NoopTool())
 
-    const compressionEvents: Array<{
-      summary: string
-      stats: { compressedRange?: string }
-      decisionContext: NonNullable<SnapshotEntry['decisionContext']>
-    }> = []
-    let currentSnapshotId = 'snap_initial'
+    const currentSnapshotId = 'snap_initial'
     const tracer = new Tracer()
 
     const toolContext: ToolContext = {
@@ -129,10 +123,6 @@ describe('Agent snapshot linking', () => {
       {
         tracer,
         getCurrentSnapshotId: () => currentSnapshotId,
-        onContextCompressed: (event) => {
-          compressionEvents.push(event)
-          currentSnapshotId = 'snap_compressed'
-        },
       },
     )
 
@@ -154,7 +144,6 @@ describe('Agent snapshot linking', () => {
     expect(requests).toHaveLength(2)
     expect(requests[0]?.snapshotId).toBe('snap_initial')
     expect(requests[1]?.snapshotId).toBe('snap_initial')
-    expect(compressionEvents).toHaveLength(0)
   })
 })
 

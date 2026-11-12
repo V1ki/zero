@@ -36,7 +36,7 @@ export class SessionConversationState {
   checkpoint: ContextCheckpoint | undefined
 
   /** 旧会话的 timeline 压缩块,只用于展示,不再参与投影 */
-  private compactionBlocks: TimelineCompactionBlock[]
+  private readonly compactionBlocks: TimelineCompactionBlock[]
 
   constructor(
     options: {
@@ -58,10 +58,6 @@ export class SessionConversationState {
 
   get messageCount(): number {
     return this.messages.length
-  }
-
-  replaceTimelineCompactionBlocks(blocks: TimelineCompactionBlock[]): void {
-    this.compactionBlocks = blocks
   }
 
   markExternalMessageRecalled(options: {

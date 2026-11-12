@@ -1,6 +1,5 @@
 import type { ModelRouter, ResolvedModel } from '@zero-os/model'
 import type { ObservabilityStore, SnapshotEntry, Tracer } from '@zero-os/observe'
-import type { CompressionResult } from '@zero-os/shared'
 import { buildSnapshot } from '../agent/snapshot'
 
 type BuiltSnapshot = Omit<SnapshotEntry, 'ts'>
@@ -75,23 +74,6 @@ export class SessionSnapshotRecorder {
     this.writeSnapshot(trigger, context)
   }
 
-  logCompressionSnapshot(
-    context: SessionSnapshotContext | null,
-    summary: string,
-    stats: CompressionResult['stats'],
-    decisionContext?: SnapshotEntry['decisionContext'],
-  ): void {
-    if (!context) return
-
-    this.writeSnapshot('context_compression', context, {
-      compressedSummary: summary,
-      messagesBefore: stats.messagesBefore,
-      messagesAfter: stats.messagesAfter,
-      compressedRange: stats.compressedRange,
-      decisionContext,
-    })
-  }
-
   restoreFromLogger(): void {
     const lastSnapshot = this.deps.observability?.readSessionSnapshots(this.deps.sessionId).at(-1)
     if (!lastSnapshot) return
@@ -100,11 +82,7 @@ export class SessionSnapshotRecorder {
     this.lastSnapshotContext = SessionSnapshotRecorder.snapshotContextFromEntry(lastSnapshot)
   }
 
-  writeSnapshot(
-    trigger: string,
-    context: SessionSnapshotContext,
-    extra: Partial<Omit<SnapshotEntry, 'id' | 'sessionId' | 'trigger' | 'ts'>> = {},
-  ): string | undefined {
+  writeSnapshot(trigger: string, context: SessionSnapshotContext): string | undefined {
     if (!this.deps.observability) return undefined
 
     const snapshot = buildSnapshot({
@@ -114,12 +92,7 @@ export class SessionSnapshotRecorder {
       systemPrompt: context.systemPrompt,
       tools: [...context.tools],
       identityMemory: context.identityMemory,
-      parentSnapshot: extra.parentSnapshot ?? this.currentSnapshotId,
-      compressedSummary: extra.compressedSummary,
-      messagesBefore: extra.messagesBefore,
-      messagesAfter: extra.messagesAfter,
-      compressedRange: extra.compressedRange,
-      decisionContext: extra.decisionContext,
+      parentSnapshot: this.currentSnapshotId,
     })
 
     if (!this.deps.tracer) {
@@ -144,11 +117,6 @@ export class SessionSnapshotRecorder {
             systemPrompt: snapshot.systemPrompt,
             tools: snapshot.tools,
             identityMemory: snapshot.identityMemory,
-            compressedSummary: snapshot.compressedSummary,
-            messagesBefore: snapshot.messagesBefore,
-            messagesAfter: snapshot.messagesAfter,
-            compressedRange: snapshot.compressedRange,
-            decisionContext: snapshot.decisionContext,
           },
         },
       },

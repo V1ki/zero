@@ -24,8 +24,9 @@
 - **事件分三类**：surface（投影源：`user/message`、`assistant/message`、
   `messages/truncate`、`compaction/checkpoint`，以及只读的旧数据 `compaction/block`）；
   request-scoped（重建某次请求输入）；diagnostics（纯排障，可裁剪）。
-- **只有改变持久状态或不可重算的操作才落事件**：确定性投影变换（如按 turn
-  年龄的工具输出截断）不落，重放时按规则重算。
+- **只有改变持久状态或不可重算的操作才落事件**：检查点在产生的那一刻落
+  `compaction/checkpoint`；由 canonical 和检查点算出的请求投影（摘要替换前缀、
+  裁剪水位前的超大 tool_result 只留头尾）不落，重放时按同一投影函数重算。
 - **消息正文只存一份**：canonical 消息事件带全量 Message；过程事件
   （tool/call、tool/result）只带 hash/预览/evidence 指针；超大工具 IO 由
   evidence 文件承载。

@@ -1,7 +1,7 @@
 # 上下文压缩：检查点方案
 
-这份文档定义主会话和子代理的上下文压缩。它取代 [episode-context-compaction.md](episode-context-compaction.md)
-描述的 timeline 压缩块方案，以及旧式的 `compressConversation`。事件流约定见
+这份文档定义主会话和子代理的上下文压缩。它取代了 timeline 压缩块方案和旧式的 `compressConversation`，
+两者的代码已删除，旧会话里已有的压缩块只读展示。事件流约定见
 [session-event-log.md](session-event-log.md)，整体方向见
 [agent-loop-session-log-design.md](agent-loop-session-log-design.md)。
 
@@ -62,7 +62,7 @@ interface ContextCheckpoint {
 - 可用窗口 `U = maxContext − maxOutput`。
 - 压力 = 系统提示词 + 工具定义 + 投影后消息的估算 token。
 - 阈值 `U × 0.8`，保留预算 `U × 0.2`。两个比例放在 `CONTEXT_PARAMS` 里。
-- 模型没有声明 `maxContext` 或 `maxOutput` 时不压缩，行为与现在的旧式压缩一致。
+- 模型没有声明 `maxContext` 或 `maxOutput` 时不压缩（与旧式压缩相同）。
 
 估算沿用 `estimateTokens`（按字符数）。用上一次响应的真实 input token 校准、以及 provider 报上下文溢出后压缩重试，
 是后续工作。
@@ -113,7 +113,7 @@ interface ContextCheckpoint {
 
 - `compaction/block`：不再写入。类型和读取保留，只用于展示旧会话里已有的压缩块。
 - `compaction/summary`：删除，它对应的旧式压缩一并删除。
-- `compaction/prune`：只在 `tool_result` 的内容真的被 artifact 引用替换时发。现在只要写了 evidence 就发，
+- `compaction/prune`：只在 `tool_result` 的内容真的被 artifact 引用替换时发。此前只要写了 evidence 就发，
   中等大小的输出没被替换也会记成 `artifact_ref`。
 
 ### 回滚与恢复
@@ -135,12 +135,12 @@ interface ContextCheckpoint {
 
 ## 实施步骤
 
-| 步骤 | 内容 |
-| --- | --- |
-| 1 | 核心模块：检查点类型、投影、压缩两阶段、摘要请求，带单元测试，暂不接线 |
-| 2 | 接线与清理：接入 `Agent` 和 loop、会话状态与持久化、事件；删除旧方案；更新文档 |
-| 3 | Web 与 API：展示检查点，旧压缩块只读展示 |
-| 4 | 基准脚本：删除只评估旧方案的脚本 |
+| 步骤 | 内容 | 状态 |
+| --- | --- | --- |
+| 1 | 核心模块：检查点类型、投影、压缩两阶段、摘要请求，带单元测试，暂不接线 | 已完成 |
+| 2 | 接线与清理：接入 `Agent` 和 loop、会话状态与持久化、事件；删除旧方案；更新文档 | 已完成 |
+| 3 | Web 与 API：展示检查点，旧压缩块只读展示 | 待做 |
+| 4 | 基准脚本：删除只评估旧方案的脚本 | 已完成（随步骤 2） |
 
 ## 怎么判断有没有变好
 

@@ -55,7 +55,7 @@ export function persistToolEvidence(input: EvidenceWriteInput): ToolEvidence {
   }
 }
 
-export function persistToolInputEvidence(params: {
+function persistToolInputEvidence(params: {
   workDir: string
   sessionId: string
   toolUse: ToolUseBlock
@@ -121,7 +121,7 @@ export function attachLargeToolUseEvidence(
   })
 }
 
-export function summarizeToolInput(
+function summarizeToolInput(
   toolName: string,
   input: Record<string, unknown>,
 ): { strategy: string; summary: string; scope: string[] } {
@@ -188,11 +188,7 @@ export function summarizeToolInput(
   }
 }
 
-export function summarizeToolResult(
-  toolName: string,
-  content: string,
-  outputSummary?: string,
-): string {
+function summarizeToolResult(toolName: string, content: string, outputSummary?: string): string {
   const normalized = toolName.toLowerCase()
   const source =
     outputSummary?.trim() ||
@@ -218,7 +214,7 @@ export function summarizeToolResult(
   }
 }
 
-export function truncateOneLine(value: string, maxChars: number): string {
+function truncateOneLine(value: string, maxChars: number): string {
   const normalized = value.replace(/\s+/g, ' ').trim()
   return normalized.length > maxChars ? `${normalized.slice(0, maxChars)}...` : normalized
 }

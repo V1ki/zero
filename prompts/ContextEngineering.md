@@ -42,7 +42,7 @@
 ┌─────────────────────────────────────────────────────────────┐
 │                      Messages                                │
 │                                                              │
-│  [压缩摘要（如果触发过压缩）]                                 │
+│  [检查点摘要（如果触发过压缩）]                               │
 │  [对话历史 msg_1 ... msg_N]                                  │
 │  [用户最新消息]                                               │
 │                                                              │
@@ -272,46 +272,10 @@ function buildSystemPrompt(components: PromptComponents): string {
 └─────────────────────────────────────────────────────────────┘
 ```
 
-```typescript
-// packages/core/src/agent/budget.ts
-
-interface ContextBudget {
-  /** 固定预算：System Prompt 各分区 */
-  role: number              // 角色定义 + 行为规则
-  toolRules: number         // 工具使用规则
-  constraints: number       // 输出约束
-  identity: number          // 身份记忆（全局 + Agent）
-  memo: number              // 备忘录
-  retrievedMemory: number   // 检索记忆
-
-  /** 弹性预算：对话区 */
-  conversation: number      // 对话历史 + 工具输出
-
-  /** 预留：模型输出 */
-  reserved: number          // = maxOutput
-}
-
-function allocateBudget(maxContext: number, maxOutput: number): ContextBudget {
-  const reserved = maxOutput
-
-  // 固定预算的上限（非实际占用，是各分区允许的最大 token 数）
-  const fixedLimits = {
-    role: 500,
-    toolRules: 800,           // 6 个工具（Read/Write/Edit/Bash/Fetch/Task），每个约 100 tokens
-    constraints: 300,
-    identity: 3000,           // 全局 ~1k + Agent ~2k
-    memo: 1500,               // 备忘录应保持精简
-    retrievedMemory: 2000,    // Top 5 条，每条 ~400 tokens
-  }
-
-  const fixedTotal = Object.values(fixedLimits).reduce((a, b) => a + b, 0)
-  // fixedTotal ≈ 8,100 tokens
-
-  const conversation = maxContext - reserved - fixedTotal
-
-  return { ...fixedLimits, conversation, reserved }
-}
-```
+System Prompt 各分区的上限在 `CONTEXT_PARAMS.budget`（`packages/core/src/agent/params.ts`），由
+`enforceFixedBudget` 逐区截断（见下文「固定预算超限处理」）。对话区不单独分配预算：上下文压缩按可用窗口
+`U = maxContext − maxOutput` 计算压力（系统提示词 + 工具定义 + 投影后的消息），见
+[docs/context-compaction.md](../docs/context-compaction.md)。
 
 ### 各模型的预算实际分配
 
@@ -322,7 +286,7 @@ function allocateBudget(maxContext: number, maxOutput: number): ContextBudget {
 | gpt-4o | 128,000 | 16,384 | ~8k | ~104k | 充裕 |
 | deepseek-r1 | 65,536 | 8,192 | ~8k | ~49k | 偏紧，需更积极压缩 |
 
-对话区的可用空间在降级到小上下文模型时会显著收窄。模型切换时应检查当前对话历史是否超出新模型的预算，超出则立即触发压缩。
+对话区的可用空间在降级到小上下文模型时会显著收窄。切换模型不单独处理：每次模型请求前都按当前模型的窗口检查压力，超过阈值就压缩。
 
 ### 固定预算超限处理
 
@@ -382,219 +346,24 @@ messages: [
 
 ### 工具输出截断
 
-工具输出是上下文膨胀的最大来源。一个 `bash ls -laR` 可能返回几万行，一个 `Read` 可能读到一个大文件。必须在 Tool 层就控制输出 token 数。
+工具输出是上下文膨胀的最大来源。执行时由 `artifactizeToolOutput`（`packages/core/src/agent/truncate.ts`）处理：
 
-```typescript
-// packages/core/src/tool/base.ts — 在 afterExecute 钩子中
-
-const TOOL_OUTPUT_LIMITS: Record<string, number> = {
-  Read: 8000,       // 文件内容，保留更多
-  Write: 500,       // 写入结果，极简
-  Edit: 1000,       // 编辑结果 + diff 摘要
-  Bash: 4000,       // 命令输出
-  Fetch: 6000,      // 网页内容（readability 提取后的 markdown）
-  Task: 2000,       // SubAgent 结果摘要
-}
-
-function truncateToolOutput(
-  tool: string,
-  output: string,
-): string {
-  const limit = TOOL_OUTPUT_LIMITS[tool] ?? 4000
-  const tokens = countTokens(output)
-  if (tokens <= limit) return output
-
-  // 保留头部和尾部，中间用省略标记
-  const lines = output.split('\n')
-  const headCount = Math.ceil(lines.length * 0.6)
-  const tailCount = Math.ceil(lines.length * 0.2)
-  const head = lines.slice(0, headCount).join('\n')
-  const tail = lines.slice(-tailCount).join('\n')
-
-  return [
-    head,
-    '',
-    `... (输出已截断: 原始 ${tokens} tokens, 保留头尾约 ${limit} tokens)`,
-    `... (该内容作为 tool_result 写入会话消息，并会记录到后续请求对应的 llm_request trace span)`,
-    '',
-    tail,
-  ].join('\n')
-}
-```
-
-截断策略偏向保留头部（60%）——命令输出的开头通常包含最重要的信息（错误消息、表头、状态摘要），尾部包含最终结果。中间的重复性输出（如大量文件列表）可以丢弃。
+- 不超过 64KB 字符（`toolOutput.artifactThresholdChars`）的输出原样进入 `tool_result`；超过该工具的 token 上限
+  （`toolOutput.read` / `bash` 等）时把原文另存为 evidence 文件，内容不变。
+- 超过 64KB 的输出落盘为 artifact，`tool_result` 换成路径加头尾片段，模型需要时用 Read 读完整内容。
 
 完整输出不进入全局 `events.jsonl`。`events.jsonl` 只保留便于扫描的事件摘要；需要追查完整执行路径时，模型应优先读取对应 Session 下的 `trace.jsonl`，必要时再回退到 legacy ledgers（`requests.jsonl` / `snapshots.jsonl` / `closure.jsonl`）——这是“上下文中放摘要，详情按需检索”的通用模式。
 
-### 历史消息的工具输出递减
-
-距离当前越远的对话轮次，其工具输出的价值越低。系统对历史消息中的工具输出做渐进式压缩：
-
-```typescript
-// packages/core/src/agent/context.ts
-
-interface MessageWithMeta {
-  message: Message
-  turnIndex: number        // 对话轮次序号，0 = 最新
-  toolOutputTokens: number // 该消息中工具输出的 token 数
-}
-
-function compressHistoricalToolOutputs(
-  messages: MessageWithMeta[],
-  currentTurn: number,
-): Message[] {
-  return messages.map(m => {
-    if (m.message.role !== 'user') return m.message
-
-    const age = currentTurn - m.turnIndex
-    // 最近 3 轮保留完整工具输出
-    if (age <= 3) return m.message
-    // 3-8 轮前的工具输出截断为摘要
-    if (age <= 8) return replaceToolResultsWithSummaries(m.message)
-    // 8 轮以上的工具输出只保留状态（成功/失败）
-    return replaceToolResultsWithStatus(m.message)
-  })
-}
-```
-
-```
-距离当前的轮次     工具输出保留策略
-─────────────────────────────────
- 0 - 3 轮         完整保留
- 4 - 8 轮         替换为 outputSummary（来自 ToolResult）
- 9+ 轮            仅保留 "✓ 成功" / "✗ 失败 + 错误摘要"
-```
-
-这样做的效果：最近的操作上下文完整保留（模型需要看到最新的文件内容、命令结果），远期的操作只保留"做了什么、结果如何"的骨架（足够模型理解对话脉络），大幅节省 token。
-
----
-
 ## 对话历史压缩
 
-当对话历史的 token 数接近弹性预算上限时，触发压缩。
+压缩按 token 压力触发，状态只有 canonical 消息和至多一份检查点，设计见
+[docs/context-compaction.md](../docs/context-compaction.md)。要点：
 
-### 触发条件
-
-```typescript
-function shouldCompress(
-  conversationTokens: number,
-  budget: number,
-): boolean {
-  return conversationTokens >= budget * 0.85 // 85% 阈值，留 15% 缓冲
-}
-```
-
-85% 阈值的考量：留出缓冲应对下一轮工具调用可能产生的大量输出。如果压缩后紧接着一个返回 5000 tokens 的 Bash 命令，15% 缓冲能吸收这个峰值而不触发二次压缩。
-
-### 压缩策略：滑动窗口 + 摘要
-
-```
-压缩前：
-  [msg_1] [msg_2] ... [msg_30] | [msg_31] ... [msg_42]
-  ←───── 历史区（压缩为摘要）──→  ←── 保留区（原文保留）──→
-
-压缩后：
-  [summary_msg]  [msg_31] ... [msg_42]
-```
-
-```typescript
-// packages/core/src/agent/compress.ts
-
-interface CompressionResult {
-  summary: string           // 压缩摘要，作为第一条 user 消息注入
-  retainedMessages: Message[]
-  stats: {
-    messagesBefore: number
-    messagesAfter: number
-    compressedRange?: string
-  }
-}
-
-async function compressConversation(
-  messages: Message[],
-  conversationBudget: number,
-  compressionModel: string,    // 用便宜模型做压缩
-): Promise<CompressionResult> {
-
-  // 1. 从后往前找保留区的起始点
-  //    保留区占 70% 预算，留 30% 给摘要和缓冲
-  const retainBudget = Math.floor(conversationBudget * 0.70)
-  let retainedTokens = 0
-  let splitIndex = messages.length
-
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msgTokens = countTokens(messages[i])
-    if (retainedTokens + msgTokens > retainBudget) break
-    retainedTokens += msgTokens
-    splitIndex = i
-  }
-
-  // 确保至少保留最近 4 轮（8 条消息）
-  const minRetain = Math.max(0, messages.length - 8)
-  splitIndex = Math.min(splitIndex, minRetain)
-
-  const toSummarize = messages.slice(0, splitIndex)
-  const retained = messages.slice(splitIndex)
-
-  // 2. 用便宜模型生成摘要
-  const summary = await generateSummary(toSummarize, compressionModel)
-
-  return {
-    summary,
-    retainedMessages: retained,
-    stats: {
-      messagesBefore: messages.length,
-      messagesAfter: retained.length + 1, // +1 for summary
-      compressedRange: `0..${splitIndex - 1}`,
-    },
-  }
-}
-```
-
-### 摘要生成的 Prompt
-
-摘要生成用独立的单轮调用，使用便宜模型（如 claude-haiku 或 gpt-4o-mini）：
-
-```xml
-<instruction>
-将以下对话历史压缩为一段简洁的摘要。
-摘要必须保留：
-1. 用户的原始目标和意图
-2. 已完成的关键操作及其结果
-3. 当前的进展状态
-4. 未解决的问题或待办事项
-5. 重要的文件路径、变量名、错误信息等具体细节
-
-摘要不需要保留：
-- 工具调用的具体输入输出（保留结论即可）
-- 寒暄和确认性对话
-- 已被后续操作覆盖的中间状态
-
-输出格式：纯文本，不超过 800 tokens。
-</instruction>
-
-<conversation>
-{对话历史}
-</conversation>
-```
-
-摘要作为一条特殊的 user 消息注入到保留区之前：
-
-```typescript
-const summaryMessage: Message = {
-  role: 'user',
-  content: `[以下是之前对话的摘要]\n\n${summary}\n\n[摘要结束，以下是最近的对话]`,
-}
-```
-
-### 压缩与 Snapshot 的关系
-
-每次压缩产生一条新的 Snapshot（写入 `trace.jsonl` 的 snapshot span；旧 `snapshots.jsonl` 仅保留兼容 fallback），记录压缩前后的消息数量、压缩范围、摘要内容。Session 层还会把压缩决策的上下文一并写入 `decision_context`，至少包含：
-
-- `current_tokens`：压缩前估算的当前对话 token 数
-- `conversation_budget`：本轮会话区预算
-
-这样事后回放 Session 时不仅能看到“压缩发生了”，还能知道“为什么会压缩”。
+- 每次模型请求前检查压力，达到可用窗口的 80% 才处理；低于阈值时历史原样进入，不调模型。
+- 先从最新消息往回划出保留尾部（可用窗口的 20%），再把尾部之前超大的 `tool_result` 裁成头尾加
+  `retained_handles`；仍超阈值时调压缩模型，把尾部之前的内容（含上一份摘要）合并成一份新摘要。
+- 摘要作为第一条 user 消息、包在 `<context_checkpoint>` 里进入请求，不放进 System Prompt（理由见文末设计决策）。
+- 检查点在产生时写 `compaction/start` → `compaction/checkpoint` → `compaction/end` 事件，不再写压缩 Snapshot。
 
 ---
 
@@ -1163,18 +932,7 @@ async function migrateContext(
   //    Anthropic 和 OpenAI 的 system 参数格式不同
   const newPrompt = rebuildSystemPrompt(session, toModel)
 
-  // 2. 检查对话历史是否超出新模型的预算
-  const newBudget = allocateBudget(toModel.maxContext, toModel.maxOutput)
-  const currentTokens = countConversationTokens(session.messages)
-
-  if (currentTokens > newBudget.conversation) {
-    // 立即触发压缩，适配新模型的窗口
-    await compressConversation(
-      session.messages,
-      newBudget.conversation,
-      getCompressionModel(),
-    )
-  }
+  // 2. 对话历史不在切换时压缩：下一次请求按新模型的窗口检查压力
 
   // 3. 检查 Tool Schema 格式
   //    Anthropic 和 OpenAI 的工具定义格式不同，由 Provider Adapter 处理
@@ -1215,11 +973,12 @@ async function migrateContext(
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `compression.threshold` | 0.85 | 对话区占用达到预算的 85% 时触发压缩 |
-| `compression.retainRatio` | 0.70 | 压缩后保留区占对话预算的 70% |
-| `compression.minRetainTurns` | 4 | 压缩后至少保留最近 4 轮对话原文 |
-| `compression.summaryMaxTokens` | 800 | 压缩摘要的最大 token 数 |
-| `compression.model` | 降级链最便宜模型 | 用于生成压缩摘要的模型 |
+| `compaction.thresholdRatio` | 0.8 | 压力达到可用窗口的该比例时压缩 |
+| `compaction.retainRatio` | 0.2 | 原文保留尾部占可用窗口的比例 |
+| `compaction.summaryMaxTokens` | 4,096 | 检查点摘要的最大输出 token 数 |
+| `context_compaction_model` | 未配置时沿用回退链 | 用于生成检查点摘要的模型 |
+
+完整参数见 `CONTEXT_PARAMS.compaction`。
 
 ### 工具输出
 
@@ -1231,16 +990,7 @@ async function migrateContext(
 | `toolOutput.Bash` | 4,000 tokens | Bash 命令输出上限 |
 | `toolOutput.Fetch` | 6,000 tokens | Fetch 网页内容上限 |
 | `toolOutput.Task` | 2,000 tokens | SubAgent 结果摘要上限 |
-| `toolOutput.headRatio` | 0.6 | 截断时头部保留比例 |
-| `toolOutput.tailRatio` | 0.2 | 截断时尾部保留比例 |
-
-### 历史工具输出递减
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `history.fullRetainTurns` | 3 | 最近 N 轮保留完整工具输出 |
-| `history.summaryRetainTurns` | 8 | N 轮内的工具输出替换为摘要 |
-| `history.beyondSummary` | 仅状态 | 超出范围仅保留 ✓/✗ 状态 |
+| `toolOutput.artifactThresholdChars` | 65,536 | 超过该字符数的输出落盘为 artifact |
 
 ### 记忆检索
 
