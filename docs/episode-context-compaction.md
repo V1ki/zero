@@ -4,7 +4,7 @@
 
 - `Session.processMessage()` 会从已持久化的 session 消息构造 `conversationHistory`，随后由 `Agent.run()` 准备这段历史并发送给模型提供方。
 - `AgentLoop` 会把当前活跃 turn 保留在内存中，并在下一次模型调用前追加新的 `tool_use` / `tool_result` 消息。
-- `Agent.processToolResults()` 已经会把特别大的工具输出转成 artifact；旧版 `prepareConversationHistory()` 还会原地修改历史 `tool_result` block。这样能减少 replay 体积，但有丢失 session DB 中原始证据的风险。
+- `Agent.processToolResults()` 已经会把特别大的工具输出转成 artifact。`prepareConversationHistory()` / `prepareConversationHistoryWithCompaction()` 是纯函数投影：按年龄或 prompt 压力降级的 `tool_result` 只出现在返回给模型的消息里，canonical 消息保留原文，evidence 文件和压缩模型读到的也是原文。旧版本曾原地改写历史 `tool_result`（写入 `truncationLevel` 并截断内容）；这类已持久化的 block 原文无法恢复，按其记录的等级继续使用：`status` 原样保留，`summary` 不再重复摘要，足够旧时仍可降到 `status`。
 - Provider adapter 要求 `tool_use` / `tool_result` 必须合法配对。任何压缩方案都必须保留合法配对，或者把两侧一起移出并替换成文本摘要。
 - `task_closure=block` 不是任务完成信号。最新/当前 turn 仍保持高保真；没有配对结果的 `tool_use` turn 会被明确排除在 episode 压缩之外。
 

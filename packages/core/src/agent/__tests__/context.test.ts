@@ -381,7 +381,8 @@ describe('prepareConversationHistory', () => {
     const toolResult = expectDefined(
       result[2].content.find((block) => block.type === 'tool_result'),
     )
-    expect(toolResult.truncationLevel).toBe('full')
+    expect(toolResult.content).toBe('tool output')
+    expect(toolResult.truncationLevel).toBeUndefined()
   })
 
   test('excludes notification messages from prompt history', () => {
@@ -398,21 +399,25 @@ describe('prepareConversationHistory', () => {
     expect(result.some((message) => message.messageType === 'notification')).toBe(false)
   })
 
-  test('mutates tool_result blocks in place to persist truncation levels', () => {
+  test('reduces tool_result blocks only in the returned messages, never in the input', () => {
     const messages = buildConversation(6)
-    const oldestToolResult = expectDefined(
-      messages[2].content.find((b) => b.type === 'tool_result'),
-    )
-    const newestToolResult = expectDefined(
-      messages[messages.length - 2].content.find((b) => b.type === 'tool_result'),
-    )
+    const snapshot = structuredClone(messages)
 
     const result = prepareConversationHistory(messages)
+    const oldestResult = expectDefined(result[2].content.find((b) => b.type === 'tool_result'))
+    const newestResult = expectDefined(
+      result[result.length - 2].content.find((b) => b.type === 'tool_result'),
+    )
 
     expect(result).not.toBe(messages)
-    expect(oldestToolResult.truncationLevel).toBe('summary')
-    expect(oldestToolResult.content.length).toBeLessThanOrEqual(210)
-    expect(newestToolResult.truncationLevel).toBe('full')
+    expect(messages).toEqual(snapshot)
+    expect(oldestResult.truncationLevel).toBe('summary')
+    expect(oldestResult.content.length).toBeLessThanOrEqual(210)
+    expect(newestResult.truncationLevel).toBeUndefined()
+    expect(newestResult.content).toBe(
+      expectDefined(snapshot[snapshot.length - 2].content.find((b) => b.type === 'tool_result'))
+        .content,
+    )
   })
 
   test('preserves full tool output for turns 0-3 (most recent)', () => {
@@ -450,8 +455,8 @@ describe('prepareConversationHistory', () => {
     expect(toolResults[0]?.truncationLevel).toBe('status')
     expect(toolResults[5]?.truncationLevel).toBe('summary')
     expect(toolResults[5]?.content.length).toBeLessThan(260)
-    expect(toolResults.at(-1)?.truncationLevel).toBe('full')
-    expect(toolResults.at(-1)?.content).toContain('ACTIVE_RAW_23_')
+    expect(toolResults.at(-1)?.truncationLevel).toBeUndefined()
+    expect(toolResults.at(-1)?.content).toBe('ACTIVE_RAW_23_'.repeat(900))
   })
 
   test('truncates tool output to ~200 chars for turns 4-8', () => {
@@ -662,26 +667,34 @@ describe('prepareConversationHistory', () => {
     expect(block.truncationLevel).toBe('summary')
   })
 
-  test('repeated calls are idempotent for already summarized blocks', () => {
+  test('repeated calls yield identical output and leave summarized blocks raw in the input', () => {
     const messages = buildConversation(6)
+    const rawContent = expectDefined(
+      messages[2].content.find((b) => b.type === 'tool_result'),
+    ).content
 
-    prepareConversationHistory(messages)
-    const block = expectDefined(messages[2].content.find((b) => b.type === 'tool_result'))
-    const firstContent = block.content
+    const first = prepareConversationHistory(messages)
+    const repeated = prepareConversationHistory(messages)
+    const repeatedBlock = expectDefined(repeated[2].content.find((b) => b.type === 'tool_result'))
 
-    const result = prepareConversationHistory(messages)
-    const repeatedBlock = expectDefined(result[2].content.find((b) => b.type === 'tool_result'))
-
-    expect(repeatedBlock.content).toBe(firstContent)
+    expect(repeated).toEqual(first)
     expect(repeatedBlock.truncationLevel).toBe('summary')
+    const inputBlock = expectDefined(messages[2].content.find((b) => b.type === 'tool_result'))
+    expect(inputBlock.content).toBe(rawContent)
+    expect(inputBlock.truncationLevel).toBeUndefined()
   })
 
-  test('previously summarized blocks can later degrade to status', () => {
+  test('legacy blocks persisted at summary keep their content and later degrade to status', () => {
     const messages = buildConversation(6)
-    prepareConversationHistory(messages)
+    const legacyBlock = expectDefined(
+      messages[2].content.find((b): b is ToolResultBlock => b.type === 'tool_result'),
+    )
+    legacyBlock.content = 'legacy truncated summary...'
+    legacyBlock.truncationLevel = 'summary'
 
-    const firstBlock = expectDefined(messages[2].content.find((b) => b.type === 'tool_result'))
-    expect(firstBlock.truncationLevel).toBe('summary')
+    const summaryBand = prepareConversationHistory(messages)
+    const keptBlock = expectDefined(summaryBand[2].content.find((b) => b.type === 'tool_result'))
+    expect(keptBlock).toBe(legacyBlock)
 
     const extended = [...messages, ...buildConversation(4)]
     const result = prepareConversationHistory(extended)
@@ -689,6 +702,20 @@ describe('prepareConversationHistory', () => {
 
     expect(degradedBlock.content).toBe('\u2713 success')
     expect(degradedBlock.truncationLevel).toBe('status')
+    expect(legacyBlock.content).toBe('legacy truncated summary...')
+  })
+
+  test('legacy blocks persisted at status are replayed unchanged', () => {
+    const messages = buildConversation(2)
+    const legacyBlock = expectDefined(
+      messages[2].content.find((b): b is ToolResultBlock => b.type === 'tool_result'),
+    )
+    legacyBlock.content = '\u2713 success'
+    legacyBlock.truncationLevel = 'status'
+
+    const result = prepareConversationHistory(messages)
+
+    expect(result[2].content[0]).toBe(legacyBlock)
   })
 
   test('preserves user text messages that are not tool results', () => {

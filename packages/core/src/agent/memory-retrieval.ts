@@ -7,14 +7,13 @@ import { type ProviderAdapter, computeCost } from '@zero-os/model'
 import type { SessionEventStore, Tracer } from '@zero-os/observe'
 import type {
   LoopRunner,
-  LoopToolCallRecord,
   MemoryRetrievalLayer,
   ModelPricing,
   ReasoningEffort,
   SecretFilter,
   ToolLogger,
 } from '@zero-os/shared'
-import { AgentLoop, type ToolExecutor } from './agent-loop'
+import { runAgentLoop } from './agent-run'
 import { CONTEXT_PARAMS } from './params'
 
 interface RetrieveMemoriesWithDecisionOptions {
@@ -169,74 +168,36 @@ export function createLoopRunner(
   capture?: MemoryRetrievalSideLoopCapture,
 ): LoopRunner {
   return async (config) => {
-    const startedAt = Date.now()
-    const usage = { input: 0, output: 0 }
-    const toolCalls: LoopToolCallRecord[] = []
     if (capture && config.system !== undefined) capture.system = config.system
-
-    const toolExecutor: ToolExecutor = {
-      has: (name) => config.tools.some((tool) => tool.name === name),
-      execute: async (name, _toolUseId, input) => {
-        const result = await config.toolHandler(name, input)
-        return {
-          output: result.output,
-          outputSummary: summarizeLoopToolOutput(result.output),
-          success: !result.isError,
-        }
-      },
-    }
-
-    const loop = new AgentLoop(
-      {
-        adapter,
-        sessionId,
-        meta: {
-          sessionId,
-          purpose: 'memory_retrieval',
-        },
-        toolExecutor,
-        system: config.system,
-        tools: config.tools.map((tool) => ({
-          name: tool.name,
-          description: tool.description,
-          parameters: tool.inputSchema,
-        })),
-        maxOutputTokens: config.maxTokens ?? 512,
-        reasoningEffort,
-        maxIterations: config.maxIterations ?? 3,
-        stream: false,
-        logger,
-      },
-      {
-        onCompletionEnd(_request, response) {
-          usage.input += response.usage.input
-          usage.output += response.usage.output
-        },
-        onToolCallEnd(toolName, _toolUseId, input, result) {
-          toolCalls.push({
-            name: toolName,
-            input,
+    const { finalText, toolCalls, usage, durationMs } = await runAgentLoop({
+      adapter,
+      sessionId,
+      meta: { sessionId, purpose: 'memory_retrieval' },
+      system: config.system,
+      prompt: config.userMessage,
+      tools: config.tools.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.inputSchema,
+      })),
+      toolExecutor: {
+        has: (name) => config.tools.some((tool) => tool.name === name),
+        execute: async (name, _toolUseId, input) => {
+          const result = await config.toolHandler(name, input)
+          return {
             output: result.output,
-          })
+            outputSummary: summarizeLoopToolOutput(result.output),
+            success: !result.isError,
+          }
         },
       },
-    )
-
-    const messages = await loop.run(config.userMessage, [])
-    const finalText =
-      [...messages]
-        .reverse()
-        .find((message) => message.role === 'assistant')
-        ?.content.filter((block) => block.type === 'text')
-        .map((block) => block.text)
-        .join('\n') ?? ''
-
-    return {
-      finalText,
-      toolCalls,
-      usage,
-      durationMs: Date.now() - startedAt,
-    }
+      maxOutputTokens: config.maxTokens ?? 512,
+      reasoningEffort,
+      maxIterations: config.maxIterations ?? 3,
+      stream: false,
+      logger,
+    })
+    return { finalText, toolCalls, usage, durationMs }
   }
 }
 
