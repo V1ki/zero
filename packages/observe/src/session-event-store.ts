@@ -62,6 +62,7 @@ export class SessionEventStore {
   /**
    * Register a subagent session: its event file lives in the parent session
    * directory as `sub-<childId>.jsonl`, tracked in a rebuildable index.
+   * Returns the file path relative to the logs root, or null when no file was created.
    */
   registerSubagent(registration: {
     childSessionId: string
@@ -69,7 +70,7 @@ export class SessionEventStore {
     spawnedByRequestId?: string
     name?: string
     role?: string
-  }): boolean {
+  }): string | null {
     const parentRelative = getSessionLogRelativeDir(registration.parentSessionId)
     const relative = join(
       parentRelative,
@@ -79,7 +80,7 @@ export class SessionEventStore {
 
     const state = this.loadState(registration.childSessionId)
     // 文件已存在(含损坏)时不创建
-    if (state) return false
+    if (state) return null
 
     const created = this.appendEvents(
       registration.childSessionId,
@@ -102,7 +103,7 @@ export class SessionEventStore {
       ],
       relative,
     )
-    return created !== null
+    return created === null ? null : relative
   }
 
   /** Append diagnostics events (seq/ts assigned here). Returns first assigned seq. */

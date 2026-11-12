@@ -23,7 +23,7 @@
 | 日志是事实来源 | loop 每产生一条消息就 `session.append()`；`deriveMessages()` 返回冻结的投影 | 内存里的 `Message[]` 是事实，turn 结束时 `syncCanonical` 把它和日志做前缀 diff | 日志是镜像。turn 中途崩溃丢本 turn 消息；内存数组一被改写，diff 就产生回滚事件 |
 | 投影不可变 | 冻结对象，改写历史在类型上不可表达；压缩用 `surfaceOp: replace` 落事件 | `reduceHistoricalToolOutput` 等在准备 prompt 时原地改 canonical 的 `tool_result` | 见下方「已复现的问题」 |
 | 两条写路径 | 只有 `append` | 过程事件（step、tool、closure、injection）由 hooks 直接 `append`，消息事件由 `syncCanonical` 事后补 | `step/start` 的 seq 早于它发出的 `user/message` |
-| 每个 loop 都落日志 | 子代理有自己的 Session | 记忆检索、压缩模型、任务闭合、Router 的 8 个调用点都不写事件流；Router 用 `logger: console` | 这些模型调用只能从 usage 账本看到花费，看不到输入输出 |
+| 每个 loop 都落日志 | 子代理有自己的 Session | `spawn_agent` 的子代理有自己的事件文件（过程事件，暂无消息）；记忆检索、压缩模型、任务闭合、Router 的 8 个调用点都不写事件流；Router 用 `logger: console` | 这些模型调用只能从 usage 账本看到花费，看不到输入输出 |
 | loop 只有一份 | `agent`（接口）与 `agent-loop`（驱动）分离，扩展点是事件 | `AgentLoop` 本身是通用的，但「能用的 agent」那一层写了三遍 | 见下方「loop 重复在哪里」 |
 | 旁路日志 | 无；查询走派生索引 | `run.log`、`trace.jsonl`、`events.jsonl`、`sessions.db` 大字段与事件流并存；Web 还没读事件流 | 双写观察期未结束 |
 
@@ -124,7 +124,7 @@
 需要先定下来才能做步骤 4：
 
 - **旁路 loop 的事件放在哪里。** 记忆检索、压缩、闭合属于某个会话的某个 turn，适合写进父会话目录下的
-  `sub-<id>.jsonl`（`registerSubagent` 已预留）。Router 的调用没有父会话：分诊每个事件一次调用，
+  `sub-<id>.jsonl`（`spawn_agent` 的子代理已经这样做）。Router 的调用没有父会话：分诊每个事件一次调用，
   派工、对话各有自己的编号。每次调用一个文件会产生大量小文件，需要决定按什么归并（按任务、按天、按派工）以及保留多久。
 - **Router 事件流里放什么。** 事件正文、仓库内容都是外部资料，落盘前要过 `secretFilter`；是否保存全文还是只存
   hash 与预览，取决于排障时到底要看什么。

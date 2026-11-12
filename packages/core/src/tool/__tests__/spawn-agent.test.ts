@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ModelRouter, ProviderAdapter } from '@zero-os/model'
-import { MetricsDB } from '@zero-os/observe'
+import { MetricsDB, SessionEventStore } from '@zero-os/observe'
 import type {
   AgentControlHandle,
   CompletionRequest,
@@ -13,6 +13,7 @@ import type {
   ToolContext,
   ToolResult,
 } from '@zero-os/shared'
+import { AgentControl } from '../../agent/agent-control'
 import { BaseTool } from '../base'
 import { BashTool } from '../bash'
 import { SUB_AGENT_BLOCKED_TOOLS } from '../constants'
@@ -341,6 +342,66 @@ describe('SpawnAgentTool', () => {
       mode: 'interactive',
       model: 'test-provider/fake-spawn-subagent-model',
     })
+  })
+
+  test('records the spawn in the parent log and gives the sub-agent its own event file', async () => {
+    const logsDir = mkdtempSync(join(tmpdir(), 'zero-spawn-events-'))
+    try {
+      const sessionEvents = new SessionEventStore({ basePath: logsDir })
+      sessionEvents.ensureSession({
+        v: 1,
+        sessionId: ctx.sessionId,
+        schemaVersion: 1,
+        source: 'web',
+      })
+      const tool = new SpawnAgentTool(
+        createStubRouter(new StaticResponseAdapter()),
+        createToolRegistry(),
+        undefined,
+        sessionEvents,
+      )
+      const agentControl = new AgentControl()
+
+      const result = await tool.run(
+        { ...ctx, agentControl, currentRequestId: 'req_parent_1' },
+        { instruction: 'Summarize the repository.', label: 'Worker' },
+      )
+      expect(result.success).toBe(true)
+      const agentId = (JSON.parse(result.output) as { agent_id: string }).agent_id
+      await agentControl.waitAll([agentId], 5000)
+      expect(agentControl.getStatus(agentId)?.state).toBe('completed')
+
+      const parentEvents = sessionEvents.readEvents(ctx.sessionId)
+      const spawns = parentEvents.filter((event) => event.type === 'subagent/spawn')
+      expect(spawns.map((event) => event.data)).toEqual([
+        {
+          childSessionId: agentId,
+          name: 'Worker',
+          spawnedByRequestId: 'req_parent_1',
+          logFile: join('sessions', ctx.sessionId, `sub-${agentId}.jsonl`),
+        },
+      ])
+      // 子代理的过程事件不混入父会话
+      expect(parentEvents.some((event) => event.type === 'step/start')).toBe(false)
+
+      const childEvents = sessionEvents.readEvents(agentId)
+      expect(childEvents[0]).toMatchObject({
+        type: 'session',
+        data: {
+          origin: 'subagent',
+          parentSessionId: ctx.sessionId,
+          spawnedByRequestId: 'req_parent_1',
+          name: 'Worker',
+        },
+      })
+      const childTypes = childEvents.map((event) => event.type)
+      expect(childTypes).toContain('system/prompt')
+      expect(childTypes).toContain('tools/set')
+      expect(childTypes).toContain('step/start')
+      expect(childTypes).toContain('step/end')
+    } finally {
+      rmSync(logsDir, { recursive: true, force: true })
+    }
   })
 
   test('rejects unknown sub-agent roles instead of treating them as instructions', async () => {

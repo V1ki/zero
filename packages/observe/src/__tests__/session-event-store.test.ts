@@ -182,13 +182,12 @@ describe('SessionEventStore', () => {
       const { store } = createStore(dir)
       store.ensureSession({ v: 1, sessionId: 'sess_parent', schemaVersion: 1, source: 'feishu' })
 
-      expect(
-        store.registerSubagent({
-          childSessionId: 'sess_child',
-          parentSessionId: 'sess_parent',
-          name: 'worker-1',
-        }),
-      ).toBe(true)
+      const logFile = store.registerSubagent({
+        childSessionId: 'sess_child',
+        parentSessionId: 'sess_parent',
+        name: 'worker-1',
+      })
+      expect(logFile).toEndWith('sub-sess_child.jsonl')
 
       const header = store.readEvents('sess_child')[0]
       expect(header.type).toBe('session')
@@ -204,6 +203,7 @@ describe('SessionEventStore', () => {
       expect(relative).toContain('sess_child')
       expect(relative).toContain('sub-sess_child.jsonl')
       const index = JSON.parse(relative) as { children: Record<string, string> }
+      expect(index.children.sess_child).toBe(logFile as string)
       expect(existsSync(join(dir, index.children.sess_child))).toBe(true)
     } finally {
       rmSync(dir, { recursive: true, force: true })

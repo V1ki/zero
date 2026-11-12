@@ -113,6 +113,8 @@ export interface AgentControlHandle {
       logger?: ToolLogger
       secretFilter?: SecretFilter
       sessionId?: string
+      /** 调用方预先分配的子代理编号;缺省由 AgentControl 生成 */
+      agentId?: string
     },
   ): { agentId: string; label: string } | { error: string }
   waitAny(

@@ -214,23 +214,6 @@ export interface SubagentSpawnEventData {
   logFile: string
 }
 
-export interface SubagentCatalogChild {
-  id: string
-  name?: string
-  status: 'running' | 'settled' | 'interrupted'
-  taskSummary?: string
-}
-
-export interface SubagentCatalogEventData {
-  children: SubagentCatalogChild[]
-}
-
-export interface SubagentSettledEventData {
-  childSessionId: string
-  outcome: 'completed' | 'failed' | 'interrupted'
-  resultRef?: { messageIndex: number }
-}
-
 export type CompactionBlockLifecycle = 'created' | 'reused' | 'superseded'
 
 export interface CompactionBlockEventData {
@@ -441,16 +424,6 @@ export interface SubagentSpawnEvent extends SessionEventBase {
   data: SubagentSpawnEventData
 }
 
-export interface SubagentCatalogEvent extends SessionEventBase {
-  type: 'subagent/catalog'
-  data: SubagentCatalogEventData
-}
-
-export interface SubagentSettledEvent extends SessionEventBase {
-  type: 'subagent/settled'
-  data: SubagentSettledEventData
-}
-
 export interface CompactionBlockEvent extends SessionEventBase {
   type: 'compaction/block'
   data: CompactionBlockEventData
@@ -528,8 +501,6 @@ export type SessionEvent =
   | JobRegisterEvent
   | JobSettledEvent
   | SubagentSpawnEvent
-  | SubagentCatalogEvent
-  | SubagentSettledEvent
   | CompactionBlockEvent
   | CompactionPruneEvent
   | CompactionSummaryEvent
