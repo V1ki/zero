@@ -118,12 +118,32 @@ export interface EpisodeCompactionTraceEvent {
   supersededByBlockId?: string
 }
 
+type ToolResultLevel = NonNullable<ToolResultBlock['truncationLevel']>
+
+const TOOL_RESULT_LEVEL_RANK: Record<ToolResultLevel, number> = { full: 0, summary: 1, status: 2 }
+
+/**
+ * Reduce tool_result blocks by turn age (and, when `underPromptPressure`, also
+ * by tool-result recency; the stricter level wins). Pure: returns new blocks
+ * and never modifies the input, so every level is computed from the block as
+ * stored in canonical history.
+ */
 export function reduceHistoricalToolOutput(
   messages: Message[],
   turnBoundaries: number[],
+  underPromptPressure = false,
 ): Message[] {
   // Assign turn indices by scanning from the end.
   const turnAgeMap = buildTurnAgeMap(messages, turnBoundaries)
+  const toolResultCount = underPromptPressure
+    ? messages
+        .filter((msg) => msg.role === 'user')
+        .reduce(
+          (count, msg) => count + msg.content.filter((b) => b.type === 'tool_result').length,
+          0,
+        )
+    : 0
+  let toolResultIndex = 0
 
   return messages.map((msg, idx) => {
     if (msg.role !== 'user') return msg
@@ -131,34 +151,38 @@ export function reduceHistoricalToolOutput(
     if (!hasToolResult) return msg
 
     const age = turnAgeMap.get(idx) ?? turnBoundaries.length
+    const ageLevel: ToolResultLevel =
+      age <= CONTEXT_PARAMS.history.fullRetainTurns
+        ? 'full'
+        : age <= CONTEXT_PARAMS.history.summaryRetainTurns
+          ? 'summary'
+          : 'status'
     const newContent = msg.content.map((block) => {
       if (block.type !== 'tool_result') return block
 
-      // Already at maximum truncation; never re-process.
-      if (block.truncationLevel === 'status') return block
-
-      if (age <= CONTEXT_PARAMS.history.fullRetainTurns) {
-        if (!block.truncationLevel) block.truncationLevel = 'full'
-        return block
+      let level = ageLevel
+      if (underPromptPressure) {
+        const recency = toolResultCount - 1 - toolResultIndex++
+        const fullRetain = CONTEXT_PARAMS.history.promptPressureFullToolResults
+        const pressureLevel: ToolResultLevel =
+          recency < fullRetain
+            ? 'full'
+            : recency < fullRetain + CONTEXT_PARAMS.history.promptPressureSummaryToolResults
+              ? 'summary'
+              : 'status'
+        if (TOOL_RESULT_LEVEL_RANK[pressureLevel] > TOOL_RESULT_LEVEL_RANK[level]) {
+          level = pressureLevel
+        }
       }
 
-      if (block.truncationLevel === 'summary' && age <= CONTEXT_PARAMS.history.summaryRetainTurns) {
-        return block
+      // Blocks persisted by older versions already carry truncated content at
+      // `truncationLevel`; it cannot be recovered, so they are never upgraded
+      // and a stored summary is not summarized again.
+      if (level === 'full' || block.truncationLevel === 'status') return block
+      if (level === 'summary') {
+        return block.truncationLevel === 'summary' ? block : summarizeToolResult(block)
       }
-
-      if (age <= CONTEXT_PARAMS.history.summaryRetainTurns) {
-        const summarized = summarizeToolResult(block)
-        block.content = summarized.content
-        block.contentItems = undefined
-        block.truncationLevel = 'summary'
-        return block
-      }
-
-      const statusOnly = statusOnlyToolResult(block)
-      block.content = statusOnly.content
-      block.contentItems = undefined
-      block.truncationLevel = 'status'
-      return block
+      return statusOnlyToolResult(block)
     })
 
     return { ...msg, content: newContent }
@@ -166,7 +190,11 @@ export function reduceHistoricalToolOutput(
 }
 
 function reducePromptToolOutputs(messages: Message[], turnBoundaries: number[]): Message[] {
-  return reduceToolOutputsUnderPromptPressure(reduceHistoricalToolOutput(messages, turnBoundaries))
+  const reduced = reduceHistoricalToolOutput(messages, turnBoundaries)
+  if (JSON.stringify(reduced).length <= CONTEXT_PARAMS.history.promptPressureCharsThreshold) {
+    return reduced
+  }
+  return reduceHistoricalToolOutput(messages, turnBoundaries, true)
 }
 
 function findTurnBoundaries(messages: Message[]): number[] {
@@ -261,47 +289,6 @@ export function estimateConversationTokens(messages: Message[]): number {
     total += 4 // overhead per message (role, metadata)
   }
   return total
-}
-
-function reduceToolOutputsUnderPromptPressure(messages: Message[]): Message[] {
-  if (JSON.stringify(messages).length <= CONTEXT_PARAMS.history.promptPressureCharsThreshold) {
-    return messages
-  }
-
-  const toolResults: ToolResultBlock[] = []
-  for (const message of messages) {
-    if (message.role !== 'user') continue
-    for (const block of message.content) {
-      if (block.type === 'tool_result') toolResults.push(block)
-    }
-  }
-
-  const fullRetain = CONTEXT_PARAMS.history.promptPressureFullToolResults
-  const summaryRetain = CONTEXT_PARAMS.history.promptPressureSummaryToolResults
-  for (let index = 0; index < toolResults.length; index++) {
-    const block = toolResults[index]
-    const age = toolResults.length - 1 - index
-    if (block.truncationLevel === 'status') continue
-    if (age < fullRetain) {
-      if (!block.truncationLevel) block.truncationLevel = 'full'
-      continue
-    }
-
-    if (age < fullRetain + summaryRetain) {
-      const summarized = summarizeToolResult(block)
-      block.content = summarized.content
-      block.contentItems = undefined
-      block.truncationLevel = 'summary'
-      continue
-    }
-
-    const statusOnly = statusOnlyToolResult(block)
-    block.content = statusOnly.content
-    block.contentItems = undefined
-    block.truncationLevel = 'status'
-  }
-
-  return messages
 }
 
 function summarizeToolResult(block: ToolResultBlock): ToolResultBlock {
@@ -1063,9 +1050,9 @@ export function mergeInterleavedQueuedMessages(messages: Message[]): Message[] {
 
 /**
  * Prepare conversation history with progressive tool output reduction.
- * Mutates tool_result blocks in the input messages array to persist truncation
- * levels across turns for cache-friendly idempotency. Returns a shallow copy
- * of the prepared messages array.
+ * Pure projection: the input messages and their blocks are never modified;
+ * reduced tool results exist only in the returned messages, and the same
+ * input always yields the same output (which keeps the prompt prefix stable).
  *
  * Turn counting: each user message with a text block starts a new turn.
  * Turns are numbered from the end: most recent turn = 0.
