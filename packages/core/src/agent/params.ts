@@ -39,6 +39,30 @@ export const CONTEXT_PARAMS = {
     summaryMaxTokens: 800,
   },
 
+  /** 检查点式上下文压缩（docs/context-compaction.md），比例都相对可用窗口 U = maxContext − maxOutput */
+  compaction: {
+    /** 压力（系统提示词 + 工具定义 + 投影后消息）达到 U × 该比例时压缩 */
+    thresholdRatio: 0.8,
+    /** 原文保留尾部的预算 = U × 该比例 */
+    retainRatio: 0.2,
+    /** 裁剪区内超过该字符数的 tool_result 只保留头尾 */
+    prunedToolResultMaxChars: 2000,
+    prunedToolResultHeadChars: 1200,
+    prunedToolResultTailChars: 400,
+    /** 裁剪后附带的 retained_handles 上限 */
+    retainedHandlesMaxCount: 8,
+    retainedHandlesMaxChars: 400,
+    /** 摘要转写稿中 tool_use 输入和 tool_result 的头尾字符数 */
+    transcriptToolInputHeadChars: 600,
+    transcriptToolInputTailChars: 200,
+    transcriptToolResultHeadChars: 3000,
+    transcriptToolResultTailChars: 1000,
+    /** 单次摘要请求的转写稿上限，超过后分段滚动 */
+    transcriptMaxChars: 60000,
+    summaryMaxTokens: 4096,
+    summaryTimeoutMs: 60000,
+  },
+
   /** Per-tool output token limits */
   toolOutput: {
     read: 8000,

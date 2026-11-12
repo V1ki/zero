@@ -113,6 +113,23 @@ export type {
   ContextCompactionModelOutput,
 } from './agent/context'
 export { compressConversation } from './agent/compress'
+export {
+  CONTEXT_CHECKPOINT_PROMPT_VERSION,
+  compactContext,
+  computeCompactionBudget,
+  createCheckpointSummarizer,
+  isCheckpointValid,
+  projectMessages,
+} from './agent/compaction'
+export type {
+  CheckpointSummarizer,
+  CheckpointSummarizerOptions,
+  CheckpointSummary,
+  CheckpointSummaryInput,
+  CompactContextInput,
+  CompactContextResult,
+  CompactionBudget,
+} from './agent/compaction'
 export { CONTEXT_PARAMS } from './agent/params'
 export {
   buildQueuedInjectionText,

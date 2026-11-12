@@ -134,6 +134,29 @@ export interface CompressionResult {
   }
 }
 
+/**
+ * 上下文检查点：canonical 消息之外唯一的压缩状态。
+ * 见 docs/context-compaction.md。
+ */
+export interface ContextCheckpoint {
+  id: string
+  sessionId: string
+  /** 第一份为 1，每被新检查点取代一次加 1 */
+  generation: number
+  /** 到这条消息为止（含）的 tool_result 以裁剪形式进入 prompt */
+  prunedThroughMessageId?: string
+  /** 到这条消息为止（含）的消息由 summary 取代 */
+  summarizedThroughMessageId?: string
+  /** 与 summarizedThroughMessageId 同时存在 */
+  summary?: string
+  /** 被 summary 取代的 canonical 消息数 */
+  coveredMessageCount: number
+  tokensBefore: number
+  tokensAfter: number
+  model?: { model: string; provider: string; promptVersion: string }
+  createdAt: string
+}
+
 export interface EpisodeCompaction {
   id: string
   sessionId: string
