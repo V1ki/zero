@@ -13,7 +13,7 @@
 
 | type | 发射点 | 触发 | data 要点 | 投影行为 |
 |---|---|---|---|---|
-| `session` ✅ | persistence `ensureSessionEventHeader`（经 persistSessionMetadata/State） | 会话首次持久化，幂等 | v、sessionId、schemaVersion、source、channelId/Name；子代理才有 origin+血缘 | projection.header；第 0 条不变式锚点 |
+| `session` ✅ | persistence `ensureSessionEventHeader`（经 persistSessionMetadata/State）;子代理文件由 store `registerSubagent`（spawn-agent 工具调用） | 会话首次持久化，幂等;子代理派生时 | v、sessionId、schemaVersion、source、channelId/Name；子代理才有 origin+血缘 | projection.header；第 0 条不变式锚点 |
 | `checkpoint` ✅ | store `syncCanonical`/`syncMessages` 每批变更后 | 消息/块变化落一批后 | atSeq、messageCount、projectionHash | 不折叠;冷启动快进与对账标记，可重算 |
 
 ## ① surface（canonical 投影源）
@@ -54,6 +54,11 @@
 | `agent/inbox/enqueued` ✅ | session `handleSessionMessageEntry` 排队分支 | turn 进行中消息入队 | messageIndex（canonical 下标）、reason、interrupt |
 | `agent/inbox/drained` ✅ | queueGate `injectQueuedMessagesIntoLastUserMessage` | loop 取走排队消息 | count |
 | `agent/inbox/spliced` ✅ | 同上 | 拼进首条 user 消息 | strategy=inject_into_last_user、count |
+| `subagent/spawn` ✅ | spawn-agent 工具，`agentControl.spawn` 成功之后 | 派生子代理;写在父会话事件流，位于 spawn_agent 的 `tool/call` 与 `tool/result` 之间 | childSessionId（即 agent_id）、name、role、spawnedByRequestId、logFile（子事件文件相对 logs 根的路径） |
+
+子代理自己的事件写在 `logFile` 指向的文件里：`session` 头、`system/prompt`、`tools/set`，以及由同一套 agent hooks
+发出的 step、tool 等过程事件。目前不含消息事件和 `turn/*`，原因见
+[session-event-log.md](./session-event-log.md)。子代理结束不另落事件，结果在父会话后续 `wait_agent` 的 `tool/result` 里。
 
 ## ⏸ 类型就绪、发射点未接
 
@@ -62,7 +67,6 @@
 | `job/register` `job/settled` | background-tool-tasks.ts（60s 转后台机制） | 待接入;settled 与 user/message(source=background) 由 deliveredAs 关联 |
 | `llm/retry` | model 包 adapter 层（openai-resp transport、model-pool failover） | 需要 model 包回接事件流句柄 |
 | `model/selection` 其余触发 | init（会话创建）、fallback（pool failover）、reload（配置热更）、route | 目前只有 user_command |
-| `subagent/spawn` `catalog` `settled` | 父会话视角索引 | 当前 spawn 机制进程内运行、与父共用 sessionId;store 的 `registerSubagent`（父目录 sub-<id>.jsonl）待独立子会话落地 |
 | `session/archive` | 会话归档/删除 | 待接入 |
 
 ## 💤 保留未发射

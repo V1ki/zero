@@ -112,6 +112,7 @@ export class AgentControl {
       logger?: ToolLogger
       secretFilter?: SecretFilter
       sessionId?: string
+      agentId?: string
     },
   ): { agentId: string; label: string } | { error: string } {
     if (!agent || typeof agent.run !== 'function') {
@@ -124,7 +125,7 @@ export class AgentControl {
       return { error: 'Instruction is required.' }
     }
 
-    const agentId = generatePrefixedId('agent')
+    const agentId = options?.agentId ?? generatePrefixedId('agent')
     const label = options?.label?.trim() || `agent-${this.entries.size + 1}`
     const entry: AgentEntry = {
       id: agentId,

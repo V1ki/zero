@@ -1,9 +1,10 @@
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ModelRouter } from '@zero-os/model'
-import type { MetricsDB } from '@zero-os/observe'
+import type { MetricsDB, SessionEventStore } from '@zero-os/observe'
 import type { ToolContext, ToolDefinition, ToolResult } from '@zero-os/shared'
-import { generateId } from '@zero-os/shared'
+import { generateId, generatePrefixedId } from '@zero-os/shared'
 import { Agent, type AgentConfig, type AgentContext, type AgentObservability } from '../agent/agent'
 import { buildSystemPrompt } from '../agent/prompt'
 import { loadRoles, resolveRole } from '../agent/roles'
@@ -70,6 +71,7 @@ export class SpawnAgentTool extends BaseTool {
     private modelRouter: ModelRouter,
     private baseToolRegistry: ToolRegistry,
     private metrics?: MetricsDB,
+    private sessionEvents?: SessionEventStore,
   ) {
     super()
   }
@@ -190,6 +192,19 @@ export class SpawnAgentTool extends BaseTool {
       backgroundTaskWait: true,
     }
 
+    // 子代理有自己的事件文件(父会话目录下 sub-<agentId>.jsonl):它的过程事件写进这份文件,
+    // 不混入父会话的事件流
+    const agentId = generatePrefixedId('agent')
+    const spawnedRole = roleDefinition ? requestedRoleId : undefined
+    const sessionEvents = this.sessionEvents
+    const logFile = sessionEvents?.registerSubagent({
+      childSessionId: agentId,
+      parentSessionId: ctx.sessionId,
+      spawnedByRequestId: ctx.currentRequestId,
+      name: agentLabel,
+      role: spawnedRole,
+    })
+
     const agentConfig: AgentConfig = {
       name: agentLabel,
       agentInstruction: resolvedAgentInstruction,
@@ -205,6 +220,13 @@ export class SpawnAgentTool extends BaseTool {
       providerName: resolvedModel?.providerName,
       modelLabel: resolvedModelLabel,
       pricing: resolvedModel?.modelConfig.pricing,
+      sessionEvents:
+        sessionEvents && logFile
+          ? {
+              append: (_sessionId, events) => sessionEvents.append(agentId, events),
+              getLastSeq: () => sessionEvents.getLastSeq(agentId),
+            }
+          : undefined,
     }
 
     const agent = new Agent(agentConfig, adapter, scopedRegistry, toolContext, agentObs)
@@ -224,6 +246,21 @@ export class SpawnAgentTool extends BaseTool {
       tools: toolDefinitions,
     }
 
+    if (sessionEvents && logFile) {
+      const toolNames = toolDefinitions.map((definition) => definition.name)
+      const sha256 = (value: string) => `sha256:${createHash('sha256').update(value).digest('hex')}`
+      sessionEvents.append(agentId, [
+        {
+          type: 'system/prompt',
+          data: { hash: sha256(systemPrompt), chars: systemPrompt.length, content: systemPrompt },
+        },
+        {
+          type: 'tools/set',
+          data: { hash: sha256(JSON.stringify(toolNames)), toolNames, count: toolNames.length },
+        },
+      ])
+    }
+
     // Record the full system prompt in the sub_agent span for debugging/auditing
     if (subAgentSpan?.id && ctx.tracer) {
       const safeSystemPrompt = ctx.secretFilter
@@ -237,7 +274,7 @@ export class SpawnAgentTool extends BaseTool {
     const spawnResult = ctx.agentControl.spawn(agent, agentContext, trimmedInstruction, {
       mode,
       label: agentLabel,
-      role: roleDefinition ? requestedRoleId : undefined,
+      role: spawnedRole,
       model: resolvedModelLabel,
       depth: 1,
       traceSpanId: subAgentSpan?.id,
@@ -245,6 +282,7 @@ export class SpawnAgentTool extends BaseTool {
       logger: ctx.logger,
       secretFilter: ctx.secretFilter,
       sessionId: ctx.sessionId,
+      agentId,
     })
 
     if ('error' in spawnResult) {
@@ -264,6 +302,21 @@ export class SpawnAgentTool extends BaseTool {
         output: spawnResult.error,
         outputSummary: 'Sub-agent spawn failed',
       }
+    }
+
+    if (sessionEvents && logFile) {
+      sessionEvents.append(ctx.sessionId, [
+        {
+          type: 'subagent/spawn',
+          data: {
+            childSessionId: agentId,
+            name: agentLabel,
+            role: spawnedRole,
+            spawnedByRequestId: ctx.currentRequestId,
+            logFile,
+          },
+        },
+      ])
     }
 
     if (ctx.currentTraceSpanId) {

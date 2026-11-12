@@ -196,7 +196,7 @@ async function createAgentRuntimeComponents({
   bus,
   forkEffect,
 }: CreateAgentRuntimeComponentsOptions) {
-  const { metrics, sessionDb, heartbeat } = observabilityRuntime
+  const { metrics, sessionDb, sessionEvents, heartbeat } = observabilityRuntime
   const modelRuntime = await createModelRouterRuntime({
     zeroDir,
     config,
@@ -216,6 +216,7 @@ async function createAgentRuntimeComponents({
     vault,
     modelRouter: modelRuntime.modelRouter,
     metrics,
+    sessionEvents,
     worker,
   })
   console.log(`[ZeRo OS] ${toolRegistry.list().length} tools registered`)

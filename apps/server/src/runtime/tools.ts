@@ -22,7 +22,7 @@ import {
   loadFuseList,
 } from '@zero-os/core'
 import { type ModelRouter, getXPremiumAuthorizationScheme } from '@zero-os/model'
-import type { MetricsDB } from '@zero-os/observe'
+import type { MetricsDB, SessionEventStore } from '@zero-os/observe'
 import type { Vault } from '@zero-os/secrets'
 import type { SystemConfig } from '@zero-os/shared'
 import { getManagedOAuthKindForProvider } from '../providers/managed-oauth'
@@ -34,6 +34,7 @@ export interface RuntimeToolRegistryOptions {
   vault: Vault
   modelRouter: ModelRouter
   metrics: MetricsDB
+  sessionEvents: SessionEventStore
   worker: WorkerTool
 }
 
@@ -85,6 +86,7 @@ export function createRuntimeToolRegistry({
   vault,
   modelRouter,
   metrics,
+  sessionEvents,
   worker,
 }: RuntimeToolRegistryOptions): ToolRegistry {
   const fuseRules = loadFuseList(join(zeroDir, 'fuse_list.yaml'))
@@ -106,7 +108,7 @@ export function createRuntimeToolRegistry({
   const xSearchTool = createXSearchTool({ config, vault })
   if (xSearchTool) toolRegistry.register(xSearchTool)
 
-  toolRegistry.register(new SpawnAgentTool(modelRouter, toolRegistry, metrics))
+  toolRegistry.register(new SpawnAgentTool(modelRouter, toolRegistry, metrics, sessionEvents))
   toolRegistry.register(new WaitAgentTool())
   toolRegistry.register(new CloseAgentTool())
   toolRegistry.register(new SendInputTool())

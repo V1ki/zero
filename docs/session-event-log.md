@@ -6,9 +6,16 @@
 .zero/logs/sessions/<dateDir>/<sessionId>/session.jsonl
 ```
 
-子代理预留形态：父会话目录下 `sub-<childSessionId>.jsonl`，header 带
-`origin:"subagent"` 与 `parentSessionId` 血缘（`SessionEventStore.registerSubagent`；
-当前 spawn-agent 机制在进程内运行、与父会话共用 sessionId，尚未使用该形态）。
+子代理有自己的事件文件：父会话目录下 `sub-<agentId>.jsonl`，header 带
+`origin:"subagent"` 与 `parentSessionId` 血缘。`spawn_agent` 工具在派生时调用
+`SessionEventStore.registerSubagent` 建立这份文件，并在父会话事件流里记一条 `subagent/spawn`
+（带子文件的相对路径）。子代理的 `system/prompt`、`tools/set` 和 step、tool 等过程事件写进子文件，
+不混入父会话。子代理仍在进程内运行，trace 和 usage 账本继续沿用父会话的 sessionId。
+
+子文件目前不含 `user/message` / `assistant/message`，也没有 `turn/*`：消息事件现在由
+`Session` 在 turn 结束时写入，子代理不经过 `Session`。等 loop 直接写消息事件
+（[设计说明](agent-loop-session-log-design.md) 的步骤 3）之后，子文件会自动带上消息。
+子代理的结束状态不另落事件：结果由父会话后续 `wait_agent` 的 `tool/result` 承载。
 
 ## 设计原则
 
@@ -58,10 +65,11 @@
 {"type":"agent/inbox/drained","data":{"count":2}}
 {"type":"agent/inbox/spliced","data":{"strategy":"inject_into_last_user","count":2}}
 {"type":"compaction/prune","data":{"toolUseId":"toolu_...","from":{"chars":91000,"hash":"sha256:..."},"to":{"chars":120,"mode":"artifact_ref"},"evidence":{"path":"...","sha256":"..."}}}
+{"type":"subagent/spawn","data":{"childSessionId":"agent_...","name":"Worker","role":"researcher","spawnedByRequestId":"resp_...","logFile":"sessions/<dateDir>/<sessionId>/sub-agent_....jsonl"}}
 {"type":"checkpoint","data":{"atSeq":94,"messageCount":148,"projectionHash":"sha256:..."}}
 ```
 
-全部 34 种事件的发射点、触发条件与消费方式见 [session-events-reference.md](./session-events-reference.md);
+全部 32 种事件的发射点、触发条件与消费方式见 [session-events-reference.md](./session-events-reference.md);
 类型定义在 `packages/shared/src/types/session-events.ts`。
 
 系统提示词与工具集都是 model-visible 请求输入:`system/prompt`（内容变化时发射，
@@ -150,7 +158,7 @@ API-only 注入（`<system-reminder>`/`<memory_inject>`）转为 injection 事�
 ## 后续（未实施）
 
 - 事件文件轮转或 zstd 压缩、保留策略。
-- `job/*`（后台任务）、`llm/retry`（适配器层）、`subagent/*`（spawn 机制进程内运行、
-  与父会话共用 sessionId，待独立子会话落地后接入）事件的发射点。
+- `job/*`（后台任务）、`llm/retry`（适配器层）事件的发射点。
+- 子代理事件文件里的消息事件（见上文，随 loop 直接写消息事件一起落地）。
 - web 日志查看器改为基于事件流的请求详情重建。
 - DB 派生索引的检索增强（如 FTS，对齐 dsh 的 session-query-sqlite 角色）。
