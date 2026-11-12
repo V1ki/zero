@@ -236,6 +236,8 @@ export interface BackgroundToolExecutionInput {
   toolName: string
   toolUseId: string
   inputSummary: string
+  /** 调用方工作目录;转后台且输出被截断时,完整输出落在其 .artifacts 下 */
+  workDir?: string
   execute(): Promise<ToolResult>
 }
 

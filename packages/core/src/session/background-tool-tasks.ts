@@ -1,14 +1,21 @@
+import type { SessionEventStore } from '@zero-os/observe'
 import type {
   BackgroundToolExecutionInput,
   BackgroundToolProgressInput,
   BackgroundToolTaskSink,
   SecretFilter,
+  ToolEvidence,
   ToolLogger,
   ToolResult,
 } from '@zero-os/shared'
 import { generateId, now, toErrorMessage } from '@zero-os/shared'
+import { persistToolResultEvidence } from '../agent/tool-evidence'
 
 export const BACKGROUND_TOOL_TIMEOUT_MS = 60_000
+/** bash 执行超过该时长即转后台;每次 bash 执行都是事件流里的一个 job。 */
+export const BACKGROUND_BASH_THRESHOLD_MS = 5_000
+
+const JOB_TOOL_NAME = 'bash'
 
 const MAX_OUTPUT_CHARS = 8_000
 const MAX_SUMMARY_CHARS = 500
@@ -29,6 +36,8 @@ export interface BackgroundToolTaskRecord {
   durationMs?: number
   outputSummary?: string
   output?: string
+  /** 输出被截断时,完整输出的落盘位置 */
+  evidence?: ToolEvidence
 }
 
 export interface BackgroundToolCompletionEvent {
@@ -47,7 +56,10 @@ export interface BackgroundToolChannelBinding {
 
 interface BackgroundToolTaskManagerOptions {
   sessionId: string
+  /** Overrides the foreground wait for every tool (default: bash 5s, other tools 60s). */
   thresholdMs?: number
+  /** 提供时,bash 执行落 job/registered 与 job/settled 事件 */
+  sessionEvents?: Pick<SessionEventStore, 'append'>
   /** Steady-state progress heartbeat interval (default 15s). */
   progressIntervalMs?: number
   /** Floor between any two progress emissions (default 1s). */
@@ -77,6 +89,7 @@ type ToolSettledResult =
 
 export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
   readonly thresholdMs: number
+  readonly bashThresholdMs: number
   readonly progressIntervalMs: number
   readonly progressMinIntervalMs: number
   readonly progressOutputDeltaChars: number
@@ -87,6 +100,7 @@ export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
 
   constructor(private readonly options: BackgroundToolTaskManagerOptions) {
     this.thresholdMs = options.thresholdMs ?? BACKGROUND_TOOL_TIMEOUT_MS
+    this.bashThresholdMs = options.thresholdMs ?? BACKGROUND_BASH_THRESHOLD_MS
     this.progressIntervalMs = options.progressIntervalMs ?? 15_000
     this.progressMinIntervalMs = options.progressMinIntervalMs ?? 1_000
     this.progressOutputDeltaChars = options.progressOutputDeltaChars ?? 4_096
@@ -95,13 +109,23 @@ export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
   async run(input: BackgroundToolExecutionInput): Promise<ToolResult> {
     const startedAtMs = Date.now()
     const startedAt = now()
+    const jobId = input.toolName === JOB_TOOL_NAME ? generateId() : undefined
+    if (jobId) {
+      this.options.sessionEvents?.append(this.options.sessionId, [
+        {
+          type: 'job/registered',
+          data: { jobId, toolUseId: input.toolUseId, toolName: input.toolName },
+        },
+      ])
+    }
+    const thresholdMs = jobId ? this.bashThresholdMs : this.thresholdMs
     const execution = input.execute()
     const foreground: Promise<ToolSettledResult> = execution
       .then<ToolSettledResult>((result) => ({ type: 'result', result }))
       .catch((error) => ({ type: 'error', error }))
     let thresholdTimer: ReturnType<typeof setTimeout> | undefined
     const background = new Promise<ToolSettledResult>((resolve) => {
-      thresholdTimer = setTimeout(() => resolve({ type: 'background' }), this.thresholdMs)
+      thresholdTimer = setTimeout(() => resolve({ type: 'background' }), thresholdMs)
     })
 
     const first = await Promise.race([foreground, background])
@@ -110,15 +134,30 @@ export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
     if (first.type !== 'background' && thresholdTimer) {
       clearTimeout(thresholdTimer)
     }
+    if (first.type !== 'background' && jobId) {
+      this.options.sessionEvents?.append(this.options.sessionId, [
+        {
+          type: 'job/settled',
+          data: {
+            jobId,
+            status: first.type === 'result' && first.result.success ? 'success' : 'error',
+            durationMs: Date.now() - startedAtMs,
+            backgrounded: false,
+          },
+        },
+      ])
+    }
     if (first.type === 'result') return first.result
     if (first.type === 'error') throw first.error
 
     const task = this.startTask({
+      id: jobId ?? generateId(),
       toolName: input.toolName,
       toolUseId: input.toolUseId,
       inputSummary: input.inputSummary,
       startedAt,
       startedAtMs,
+      thresholdMs,
     })
 
     void foreground.then((settled) => {
@@ -129,6 +168,7 @@ export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
           outputSummary: settled.result.outputSummary,
           completedAtMs: Date.now(),
           startedAtMs,
+          workDir: input.workDir,
         })
         return
       }
@@ -141,6 +181,7 @@ export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
           outputSummary: `Tool execution failed: ${message.slice(0, 100)}`,
           completedAtMs: Date.now(),
           startedAtMs,
+          workDir: input.workDir,
         })
       }
     })
@@ -271,14 +312,16 @@ export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
   }
 
   private startTask(input: {
+    id: string
     toolName: string
     toolUseId: string
     inputSummary: string
     startedAt: string
     startedAtMs: number
+    thresholdMs: number
   }): BackgroundToolTaskRecord {
     const task: BackgroundToolTaskRecord = {
-      id: generateId(),
+      id: input.id,
       sessionId: this.options.sessionId,
       toolName: input.toolName,
       toolUseId: input.toolUseId,
@@ -303,7 +346,7 @@ export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
       inputSummary: task.inputSummary,
       status: task.status,
       startedAt: task.startedAt,
-      thresholdMs: this.thresholdMs,
+      thresholdMs: input.thresholdMs,
       ...this.getChannelEventData(),
     })
     return task
@@ -317,6 +360,7 @@ export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
       outputSummary: string
       completedAtMs: number
       startedAtMs: number
+      workDir?: string
     },
   ): void {
     const task = this.tasks.get(taskId)
@@ -330,6 +374,32 @@ export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
     task.output = this.filterAndTruncate(result.output, MAX_OUTPUT_CHARS)
     this.progress.delete(taskId)
     this.stopProgressTickerIfIdle()
+
+    if (task.toolName === JOB_TOOL_NAME) {
+      const fullOutput = this.options.secretFilter?.filter(result.output) ?? result.output
+      if (result.workDir && fullOutput.length > MAX_OUTPUT_CHARS) {
+        task.evidence = persistToolResultEvidence({
+          workDir: result.workDir,
+          sessionId: task.sessionId,
+          toolUseId: task.toolUseId,
+          toolName: task.toolName,
+          content: fullOutput,
+          outputSummary: task.outputSummary,
+        })
+      }
+      this.options.sessionEvents?.append(task.sessionId, [
+        {
+          type: 'job/settled',
+          data: {
+            jobId: task.id,
+            status: task.status,
+            durationMs: task.durationMs,
+            backgrounded: true,
+            ...(task.evidence ? { evidence: task.evidence } : {}),
+          },
+        },
+      ])
+    }
 
     const channelBinding = this.getChannelBinding()
     this.options.emitBusEvent?.('background_tool:completed', {
@@ -392,11 +462,14 @@ export class BackgroundToolTaskManager implements BackgroundToolTaskSink {
 }
 
 function taskResultFromRecord(task: BackgroundToolTaskRecord): ToolResult {
+  const output =
+    task.output ??
+    `<system_event type="background_tool.completed"><background_task id="${task.id}" status="${task.status}"/></system_event>`
   return {
     success: task.status === 'success',
-    output:
-      task.output ??
-      `<system_event type="background_tool.completed"><background_task id="${task.id}" status="${task.status}"/></system_event>`,
+    output: task.evidence
+      ? `${output}\n[Output truncated. Complete output (${task.evidence.chars} chars): ${task.evidence.path}]`
+      : output,
     outputSummary:
       task.outputSummary ?? `Background task ${task.id} finished with status ${task.status}.`,
   }
@@ -420,7 +493,11 @@ export function buildBackgroundToolCompletionXml(task: BackgroundToolTaskRecord)
     task.durationMs ?? 0
   }">
 <output_summary>${escapeXmlText(task.outputSummary ?? '')}</output_summary>
-<output>${escapeXmlText(task.output ?? '')}</output>
+<output>${escapeXmlText(task.output ?? '')}</output>${
+    task.evidence
+      ? `\n<full_output path="${escapeXmlAttribute(task.evidence.path)}" chars="${task.evidence.chars}">The output above is truncated. Read this file when the complete output is needed.</full_output>`
+      : ''
+  }
 </background_task>
 </system_event>`
 }

@@ -1,10 +1,12 @@
 import { afterAll, describe, expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ProviderAdapter } from '@zero-os/model'
 import type {
   CompletionRequest,
   CompletionResponse,
   SecretFilter,
+  SessionEventInput,
   StreamEvent,
   ToolContext,
   ToolResult,
@@ -211,6 +213,124 @@ describe('BackgroundToolTaskManager', () => {
     expect(completion.task.status).toBe('success')
     expect(completion.xml).toContain('<system_event type="background_tool.completed">')
     expect(completion.xml).toContain('<output_summary>slow done</output_summary>')
+  })
+
+  test('waits 5s for bash and 60s for other tools by default', () => {
+    const manager = new BackgroundToolTaskManager({
+      sessionId: 'sess-defaults',
+      logger: createLogger(),
+      onComplete: () => {},
+    })
+
+    expect(manager.bashThresholdMs).toBe(5_000)
+    expect(manager.thresholdMs).toBe(60_000)
+  })
+
+  test('registers every bash execution as a job and settles it in the foreground', async () => {
+    const events: SessionEventInput[] = []
+    const manager = new BackgroundToolTaskManager({
+      sessionId: 'sess-job-fast',
+      thresholdMs: 20,
+      sessionEvents: { append: (_sessionId, batch) => events.push(...batch) },
+      logger: createLogger(),
+      onComplete: () => {},
+    })
+
+    const result = await manager.run({
+      toolName: 'bash',
+      toolUseId: 'call_bash_fast',
+      inputSummary: '{"command":"true"}',
+      execute: async () => {
+        // 登记发生在命令开始执行之前
+        expect(events.map((event) => event.type)).toEqual(['job/registered'])
+        return { success: false, output: 'boom', outputSummary: 'failed' }
+      },
+    })
+
+    expect(result.backgroundTaskId).toBeUndefined()
+    expect(events.map((event) => event.type)).toEqual(['job/registered', 'job/settled'])
+    const [registered, settled] = events
+    expect(registered.data).toMatchObject({ toolUseId: 'call_bash_fast', toolName: 'bash' })
+    expect(settled.data).toMatchObject({
+      jobId: (registered.data as { jobId: string }).jobId,
+      status: 'error',
+      backgrounded: false,
+    })
+  })
+
+  test('settles a backgrounded bash job with evidence for the complete output', async () => {
+    const events: SessionEventInput[] = []
+    const completions: BackgroundToolCompletionEvent[] = []
+    const deferred = createDeferred<ToolResult>()
+    const manager = new BackgroundToolTaskManager({
+      sessionId: 'sess-job-slow',
+      thresholdMs: 5,
+      sessionEvents: { append: (_sessionId, batch) => events.push(...batch) },
+      logger: createLogger(),
+      onComplete: (event) => {
+        completions.push(event)
+      },
+    })
+
+    const started = await manager.run({
+      toolName: 'bash',
+      toolUseId: 'call_bash_slow',
+      inputSummary: '{"command":"make"}',
+      workDir: testProject.projectRoot,
+      execute: () => deferred.promise,
+    })
+    // 转后台时先返回结果,此时 job 尚未结束
+    expect(events.map((event) => event.type)).toEqual(['job/registered'])
+    const jobId = (events[0].data as { jobId: string }).jobId
+    expect(started.backgroundTaskId).toBe(jobId)
+
+    const fullOutput = `${'x'.repeat(20_000)}TAIL-MARKER`
+    deferred.resolve({ success: true, output: fullOutput, outputSummary: 'built' })
+    const completion = await waitFor(() => completions[0])
+
+    expect(events.map((event) => event.type)).toEqual(['job/registered', 'job/settled'])
+    const settled = events[1].data as {
+      jobId: string
+      status: string
+      backgrounded: boolean
+      evidence?: { path: string; chars: number }
+    }
+    expect(settled).toMatchObject({ jobId, status: 'success', backgrounded: true })
+    expect(settled.evidence?.chars).toBe(fullOutput.length)
+    expect(readFileSync(settled.evidence?.path as string, 'utf-8')).toBe(fullOutput)
+
+    expect(completion.task.output).not.toContain('TAIL-MARKER')
+    expect(completion.xml).toContain(`<full_output path="${settled.evidence?.path}"`)
+    const waited = await manager.waitForCompletion(jobId)
+    expect(waited.output).toContain(settled.evidence?.path as string)
+  })
+
+  test('does not record job events for tools other than bash', async () => {
+    const events: SessionEventInput[] = []
+    const completions: BackgroundToolCompletionEvent[] = []
+    const deferred = createDeferred<ToolResult>()
+    const manager = new BackgroundToolTaskManager({
+      sessionId: 'sess-job-other',
+      thresholdMs: 5,
+      sessionEvents: { append: (_sessionId, batch) => events.push(...batch) },
+      logger: createLogger(),
+      onComplete: (event) => {
+        completions.push(event)
+      },
+    })
+
+    await manager.run({
+      toolName: 'slow_tool',
+      toolUseId: 'call_other',
+      inputSummary: '{}',
+      workDir: testProject.projectRoot,
+      execute: () => deferred.promise,
+    })
+    deferred.resolve({ success: true, output: 'y'.repeat(20_000), outputSummary: 'done' })
+    const completion = await waitFor(() => completions[0])
+
+    expect(events).toEqual([])
+    expect(completion.xml).not.toContain('<full_output')
   })
 
   test('waitForCompletion resolves when the background task finishes', async () => {

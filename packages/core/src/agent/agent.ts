@@ -279,6 +279,7 @@ function createAgentToolExecutor(options: {
         toolName,
         toolUseId,
         inputSummary: summarizeToolInput(executionInput, options.toolContext),
+        workDir: options.toolContext.workDir,
         execute: runTool,
       })
 
