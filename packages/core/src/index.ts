@@ -37,6 +37,13 @@ export type {
   ToolExecutionResult,
   ToolExecutor,
 } from './agent/agent-loop'
+export { AgentLoopStoppedError, runAgentLoop } from './agent/agent-run'
+export type {
+  AgentLoopRun,
+  AgentLoopRunOptions,
+  AgentLoopRunToolExecutor,
+  AgentLoopStopReason,
+} from './agent/agent-run'
 export type { AgentSnapshot, AgentState } from './agent/agent-control'
 export type { RoleDefinition } from './agent/roles'
 

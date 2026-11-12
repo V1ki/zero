@@ -1,4 +1,4 @@
-import { AgentLoop } from '@zero-os/core'
+import { AgentLoopStoppedError, runAgentLoop } from '@zero-os/core'
 import type { ProviderAdapter } from '@zero-os/model'
 import type {
   Message,
@@ -95,48 +95,42 @@ export async function runTriggerModel(
 ): Promise<string> {
   const model = modelRouter.getDefaultModel() ?? modelRouter.getCurrentModel()
   if (!model) throw new TriggerAgentError('没有可用的模型，请先配置 ZeRo 模型。')
-  const timeout = AbortSignal.timeout(90_000)
-  const stop = signal ? AbortSignal.any([signal, timeout]) : timeout
-  const cancellation = () =>
-    new TriggerAgentError(timeout.aborted ? `${label}超过 90 秒，请稍后重试。` : `${label}已取消。`)
-  if (stop.aborted) throw cancellation()
   const names = new Set(toolset?.definitions.map((definition) => definition.name))
   const seen = new Set<string>()
   const dispatchErrors = new Set<string>()
 
-  const loop = new AgentLoop(
-    {
-      adapter: model.adapter,
-      sessionId,
-      meta: { sessionId, purpose: 'agent_loop' },
-      system,
-      tools: toolset?.definitions ?? [],
-      toolExecutor: {
-        has: (name) => names.has(name),
-        async execute(name, id, input) {
-          if (!toolset || stop.aborted) throw cancellation()
-          try {
-            const output = await toolset.execute(name, input, stop)
-            return { success: true, output, outputSummary: '操作已完成。' }
-          } catch (error) {
-            const output =
-              error instanceof TriggerAgentError ? error.message : '无法完成该工具操作。'
-            dispatchErrors.add(id)
-            return { success: false, output, outputSummary: output }
-          }
-        },
+  const { messages, finalText } = await runAgentLoop({
+    adapter: model.adapter,
+    sessionId,
+    meta: { sessionId, purpose: 'agent_loop' },
+    system,
+    prompt,
+    history,
+    tools: toolset?.definitions,
+    toolExecutor: toolset && {
+      has: (name) => names.has(name),
+      async execute(name, id, input, stop) {
+        try {
+          const output = await toolset.execute(name, input, stop)
+          return { success: true, output, outputSummary: '操作已完成。' }
+        } catch (error) {
+          const output = error instanceof TriggerAgentError ? error.message : '无法完成该工具操作。'
+          dispatchErrors.add(id)
+          return { success: false, output, outputSummary: output }
+        }
       },
-      maxIterations: toolset ? maxModelSteps : 1,
-      maxOutputTokens: 2048,
-      reasoningEffort: 'low',
-      stream: false,
-      logger: console,
     },
-    {
-      shouldAbort: () => stop.aborted,
+    maxIterations: toolset ? maxModelSteps : 1,
+    maxToolCalls,
+    maxOutputTokens: 2048,
+    reasoningEffort: 'low',
+    stream: false,
+    timeoutMs: 90_000,
+    signal,
+    logger: console,
+    hooks: {
       onEmptyResponse: () => 'break',
-      onCompletionEnd(_request, response, _duration, ctx) {
-        if (stop.aborted) throw cancellation()
+      onCompletionEnd(_request, response) {
         if (response.stopReason === 'max_tokens') {
           throw new TriggerAgentError(`${label}达到输出上限，请重试。`)
         }
@@ -146,11 +140,11 @@ export async function runTriggerModel(
         }
         if ((response.stopReason === 'tool_use') !== calls.length > 0)
           throw new TriggerAgentError('模型返回了不完整的工具调用，请重试。')
-        if (!calls.length) return
-        // Reject the entire batch before the first call when the model cannot finish within budget.
-        if (ctx.iteration >= maxModelSteps || seen.size + calls.length > maxToolCalls)
-          throw new TriggerAgentError(`${label}达到工具调用上限，请缩小问题范围后重试。`)
-        for (const call of calls) {
+        // Next the base checks the batch against the step and call budget, then validation below runs.
+      },
+      filterAssistantContent(content) {
+        for (const call of content) {
+          if (call.type !== 'tool_use') continue
           if (
             !call.id ||
             seen.has(call.id) ||
@@ -161,12 +155,10 @@ export async function runTriggerModel(
             throw new TriggerAgentError('模型返回了无效或重复的工具调用，请重试。')
           seen.add(call.id)
         }
-      },
-      onToolCallStart() {
-        if (stop.aborted) throw cancellation()
+        return content
       },
       onToolCallEnd(name, _id, _input, result) {
-        if (!stop.aborted) toolset?.onToolStep?.(names.has(name) ? name : 'unknown', result.success)
+        toolset?.onToolStep?.(names.has(name) ? name : 'unknown', result.success)
       },
       async processToolResults(blocks) {
         // Native diagnostics for unknown tools and malformed JSON may contain raw provider text.
@@ -180,30 +172,22 @@ export async function runTriggerModel(
         }
       },
       onCompletionError(_request, error) {
-        throw error instanceof TriggerAgentError ? error : providerError(error)
+        throw error instanceof TriggerAgentError || error instanceof AgentLoopStoppedError
+          ? error
+          : providerError(error)
       },
     },
-  )
-
-  const cancelled = Promise.withResolvers<never>()
-  const onAbort = () => cancelled.reject(cancellation())
-  stop.addEventListener('abort', onAbort, { once: true })
-  try {
-    // Adapters own their transport. A late completion must never release an expired job for delivery.
-    const messages = await Promise.race([loop.run(prompt, history), cancelled.promise])
-    const final = messages.at(-1)
-    const output =
-      final?.role === 'assistant' &&
-      final.content
-        .filter((block) => block.type === 'text')
-        .map((block) => block.text)
-        .join('\n')
-        .trim()
-    if (!output) throw new TriggerAgentError('模型没有返回可展示的文字，请重试。')
-    return output
-  } finally {
-    stop.removeEventListener('abort', onAbort)
-  }
+  }).catch((error: unknown) => {
+    if (!(error instanceof AgentLoopStoppedError)) throw error
+    if (error.reason === 'tool_budget')
+      throw new TriggerAgentError(`${label}达到工具调用上限，请缩小问题范围后重试。`)
+    throw new TriggerAgentError(
+      error.reason === 'timeout' ? `${label}超过 90 秒，请稍后重试。` : `${label}已取消。`,
+    )
+  })
+  const output = messages.at(-1)?.role === 'assistant' && finalText.trim()
+  if (!output) throw new TriggerAgentError('模型没有返回可展示的文字，请重试。')
+  return output
 }
 
 function triageFailure(): never {
