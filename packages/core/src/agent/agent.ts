@@ -83,9 +83,21 @@ export class Agent {
     const system = systemParts.join('\n\n')
 
     const requireThinkingForToolUse = this.adapter.apiType === 'anthropic-deepseek'
+    // 摘要请求失败后,本 turn 内不再重试:否则长 turn 的每一步都要再等一次超时。下个 turn 重新尝试。
+    let summaryFailed = false
     const compaction: AgentRequestCompaction = {
-      compact: (messages, trigger, parentSpanId) =>
-        this.compactContextForRequest({ context, system, messages, trigger, parentSpanId }),
+      compact: async (messages, trigger, parentSpanId) => {
+        if (summaryFailed) return false
+        const outcome = await this.compactContextForRequest({
+          context,
+          system,
+          messages,
+          trigger,
+          parentSpanId,
+        })
+        summaryFailed = outcome.failed
+        return outcome.changed
+      },
       prepare: (messages) =>
         prepareRequestMessages(messages, context.checkpoint, { requireThinkingForToolUse }),
     }
@@ -178,7 +190,7 @@ export class Agent {
 
   /**
    * 请求前的压缩检查(turn 开始和 turn 内共用):模型声明了窗口时按压力压缩 canonical 消息,
-   * 产生新检查点时更新 context.checkpoint 并通知。返回检查点是否变化。
+   * 产生新检查点时更新 context.checkpoint 并通知。返回检查点是否变化、摘要请求是否失败。
    */
   private async compactContextForRequest(options: {
     context: AgentContext
@@ -187,9 +199,9 @@ export class Agent {
     messages: Message[]
     trigger: CompactionTrigger
     parentSpanId?: string
-  }): Promise<boolean> {
+  }): Promise<{ changed: boolean; failed: boolean }> {
     const { context, trigger } = options
-    if (!context.maxContext || !context.maxOutput) return false
+    if (!context.maxContext || !context.maxOutput) return { changed: false, failed: false }
 
     const sessionId = this.toolContext.sessionId
     const budget = computeCompactionBudget(context.maxContext, context.maxOutput)
@@ -225,7 +237,7 @@ export class Agent {
         ])
       },
     })
-    if (result.status === 'not_needed') return false
+    if (result.status === 'not_needed') return { changed: false, failed: false }
 
     const { checkpoint } = result
     const durationMs = Date.now() - startedAt
@@ -256,10 +268,11 @@ export class Agent {
       ...(result.status === 'failed' ? { error: result.error } : {}),
     })
 
-    if (!checkpoint) return false
-    context.checkpoint = checkpoint
-    context.onCheckpointChanged?.(checkpoint)
-    return true
+    if (checkpoint) {
+      context.checkpoint = checkpoint
+      context.onCheckpointChanged?.(checkpoint)
+    }
+    return { changed: checkpoint !== undefined, failed: result.status === 'failed' }
   }
 
   /** Backoff delay for transient retries. Override in tests to avoid real waits. */

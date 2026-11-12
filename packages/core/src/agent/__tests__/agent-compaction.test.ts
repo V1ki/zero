@@ -367,6 +367,37 @@ describe('Agent context compaction at turn start', () => {
 })
 
 describe('Agent context compaction inside a turn', () => {
+  test('a failed summary is not retried within the same turn', async () => {
+    const steps = Array.from({ length: 6 }, (_, i) => ({
+      size: 10_000,
+      text: `step ${i + 1} ${'t'.repeat(7000)}`,
+    }))
+    const adapter = new ScriptedAdapter(steps)
+    const summaryAdapter = new SummaryAdapter(new Error('provider down'))
+    const store = createEventStore()
+    const { agent, tools } = createAgent({ adapter, summaryAdapter, obs: { sessionEvents: store } })
+    const context: AgentContext = {
+      systemPrompt: 'Test prompt',
+      conversationHistory: [],
+      tools,
+      maxContext: 16_000,
+      maxOutput: 1_000,
+    }
+
+    const newMessages = await agent.run(context, 'long task')
+
+    // 压力在多个步骤上都超过阈值,但失败后的步骤不再调用压缩模型
+    expect(adapter.requests).toHaveLength(7)
+    expect(summaryAdapter.requests).toHaveLength(1)
+    expect(newMessages.at(-1)?.content).toEqual([{ type: 'text', text: 'done' }])
+    const ends = compactionEvents(store.readEvents(SESSION)).filter(
+      (event) => event.type === 'compaction/end',
+    )
+    expect(
+      ends.filter((event) => (event.data as { status: string }).status === 'failed'),
+    ).toHaveLength(1)
+  })
+
   test('a long turn compacts between steps and keeps tool pairs intact', async () => {
     // 每步:约 2000 token 的 assistant 文本 + 约 2860 token 的工具结果
     const steps = Array.from({ length: 6 }, (_, i) => ({
