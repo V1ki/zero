@@ -22,8 +22,8 @@
 - **model-visible ⟺ logged**：凡是模型看到过的输入，都能从事件流投影重建；
   API-only 注入（dynamicContext、memory 注入）以 `injection/context` 事件补记。
 - **事件分三类**：surface（投影源：`user/message`、`assistant/message`、
-  `messages/truncate`、`compaction/block`）；request-scoped（重建某次请求输入）；
-  diagnostics（纯排障，可裁剪）。
+  `messages/truncate`、`compaction/checkpoint`，以及只读的旧数据 `compaction/block`）；
+  request-scoped（重建某次请求输入）；diagnostics（纯排障，可裁剪）。
 - **只有改变持久状态或不可重算的操作才落事件**：确定性投影变换（如按 turn
   年龄的工具输出截断）不落，重放时按规则重算。
 - **消息正文只存一份**：canonical 消息事件带全量 Message；过程事件
@@ -50,7 +50,10 @@
 {"type":"user/message","data":{"messageIndex":86,"message":{...canonical Message...},"hash":"sha256:..."}}
 {"type":"assistant/message","data":{"messageIndex":87,"message":{...含 text/thinking/tool_use blocks...},"hash":"sha256:..."}}
 {"type":"messages/truncate","data":{"toMessageIndex":86,"reason":"turn_failed"}}
-{"type":"compaction/block","data":{"blocks":[...TimelineCompactionBlock 全量...],"changed":{"blockId":"...","lifecycle":"created|reused|superseded"}}}
+{"type":"compaction/start","data":{"compactionId":"...","trigger":"turn_start|in_turn","tokens":151000,"thresholdTokens":134400}}
+{"type":"compaction/checkpoint","data":{"checkpoint":{...ContextCheckpoint 全量,回滚到没有检查点时为 null...}}}
+{"type":"compaction/end","data":{"compactionId":"...","status":"pruned|summarized|failed","tokensBefore":151000,"tokensAfter":41000,"durationMs":18000,"usage":{},"error":"..."}}
+{"type":"compaction/block","data":{"blocks":[...TimelineCompactionBlock 全量...],"changed":{"blockId":"...","lifecycle":"created|reused|superseded"}}}  // 旧会话的只读数据,不再写入
 {"type":"injection/context","data":{"kind":"dynamic|memory|memory_hint|queued_merge|image_delegation","content":"...原文..."}}
 {"type":"model/selection","data":{"from":"...","to":{"label":"...","provider":"...","modelId":"..."},"trigger":"init|user_command|fallback|reload|route"}}
 {"type":"closure/start","data":{"turnIndex":12,"requestId":"resp_...","model":"..."}}
@@ -71,7 +74,7 @@
 {"type":"checkpoint","data":{"atSeq":94,"messageCount":148,"projectionHash":"sha256:..."}}
 ```
 
-全部 32 种事件的发射点、触发条件与消费方式见 [session-events-reference.md](./session-events-reference.md);
+全部 34 种事件的发射点、触发条件与消费方式见 [session-events-reference.md](./session-events-reference.md);
 类型定义在 `packages/shared/src/types/session-events.ts`。
 
 系统提示词与工具集都是 model-visible 请求输入:`system/prompt`（内容变化时发射，
@@ -86,6 +89,12 @@ persistSessionState 做 hash 比对）与 `tools/set`（turn 开始时比对名�
 
 工具输出降级:超大 tool_result 在进入 canonical 前被替换为 artifact 引用
 （evidence 文件 + sha256），`compaction/prune` 记录替换前后体积与 evidence 指针。
+只写了 evidence、原文仍留在 canonical 的中等输出不发 `compaction/prune`。
+
+上下文压缩（[context-compaction.md](./context-compaction.md)）：agent 在压缩发生的那一刻经
+`obs.sessionEvents` 写 `compaction/start` → `compaction/checkpoint` → `compaction/end`，都在随后的
+`step/start` 之前；子代理写进自己的文件。投影的 `checkpoint` 取最后一份仍然有效的检查点。
+检查点也镜像到 sessions.db 的 `session_context_checkpoints`（file-only 模式不写），无事件文件时从那里恢复。
 
 memory 相关覆盖说明：检索决策是成对事件 `memory/retrieval/start|end`（end 带
 queries、搜索数、选中记忆与是否注入，失败也落 end）；注入原文落在
@@ -123,8 +132,8 @@ memory 工具的完整调用过程仍由 `tool/call`+`tool/result` 承载。任�
 
 环境变量 `ZERO_SESSION_STORE=file-only` 启用后：
 
-- `session_messages` / `session_compaction_blocks` 不再写入；事件文件是唯一
-  消息存储。
+- `session_messages` / `session_compaction_blocks` / `session_context_checkpoints` 不再写入；
+  事件文件是唯一消息存储。
 - sessions 元数据、channel_models、channel_session_bindings 等小行仍写 DB
   （可变、需索引的检索型数据）。
 - DB 大字段降级为**可随时重建的派生索引**（dsh 模式）：需要时运行迁移脚本

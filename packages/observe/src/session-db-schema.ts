@@ -44,6 +44,14 @@ export function initializeSessionDbSchema(db: Database): void {
   `)
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS session_context_checkpoints (
+      session_id TEXT PRIMARY KEY,
+      checkpoint_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `)
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS channel_models (
       source TEXT NOT NULL,
       channel_name TEXT NOT NULL DEFAULT '',

@@ -1295,6 +1295,7 @@ describe('Agent task closure gate', () => {
       executionState: {},
       requestPurposeRef: { current: 'agent_loop' },
       traceRecorder,
+      compaction: { compact: async () => false, prepare: (messages) => messages },
     })
 
     const assistantMessage: Message = {

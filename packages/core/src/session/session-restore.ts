@@ -1,6 +1,7 @@
 import type { ModelRouter, ResolvedModel } from '@zero-os/model'
 import type { SessionRow } from '@zero-os/observe'
 import type {
+  ContextCheckpoint,
   Message,
   Session as SessionData,
   TimelineCompactionBlock,
@@ -122,6 +123,7 @@ export function createRestoredSessionRuntime(options: {
   toolRegistry: ToolRegistry
   deps: SessionDeps
   timelineCompactionBlocks: TimelineCompactionBlock[]
+  checkpoint: ContextCheckpoint | undefined
   getAgentName: () => string
   onBackgroundToolCompletion(event: BackgroundToolCompletionEvent): Promise<void> | void
 }): Record<string, unknown> {
@@ -137,6 +139,7 @@ export function createRestoredSessionRuntime(options: {
     conversation: new SessionConversationState({
       messages: restored.messages,
       timelineCompactionBlocks: options.timelineCompactionBlocks,
+      checkpoint: options.checkpoint,
     }),
     modelRouter: options.modelRouter,
     toolRegistry: options.toolRegistry,

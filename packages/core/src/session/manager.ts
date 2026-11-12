@@ -546,6 +546,9 @@ class SessionManagerStore {
     const timelineCompactionBlocks = projection
       ? projection.blocks
       : (this.sessionDb?.loadSessionCompactionBlocks(row.id) ?? [])
+    const checkpoint = projection
+      ? projection.checkpoint
+      : this.sessionDb?.loadContextCheckpoint(row.id)
     const modelScope = getModelScope(
       data.source,
       data.channelId,
@@ -560,6 +563,7 @@ class SessionManagerStore {
       this.createSessionDeps(data.source, modelScope),
       normalizedRow.systemPrompt,
       timelineCompactionBlocks,
+      checkpoint,
     )
 
     if (normalizedRow.agentConfigJson) {

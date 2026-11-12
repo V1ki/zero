@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { Message, TimelineCompactionBlock } from '@zero-os/shared'
+import type { ContextCheckpoint, Message, TimelineCompactionBlock } from '@zero-os/shared'
 import { SessionEventStore, checkSessionEvents } from '../session-event-store'
 
 function createStore(basePath: string) {
@@ -34,6 +34,23 @@ function assistantMessage(text: string): Message {
     content: [{ type: 'text', text }],
     createdAt: '2026-11-09T00:00:00.000Z',
   } as unknown as Message
+}
+
+function contextCheckpoint(
+  id: string,
+  fields: Pick<ContextCheckpoint, 'summarizedThroughMessageId' | 'prunedThroughMessageId'>,
+): ContextCheckpoint {
+  return {
+    id,
+    sessionId: 'sess_1',
+    generation: 1,
+    ...fields,
+    summary: fields.summarizedThroughMessageId ? `summary ${id}` : undefined,
+    coveredMessageCount: 0,
+    tokensBefore: 0,
+    tokensAfter: 0,
+    createdAt: '2026-11-09T00:00:00.000Z',
+  }
 }
 
 function compactionBlock(id: string): TimelineCompactionBlock {
@@ -285,5 +302,115 @@ describe('SessionEventStore', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  describe('context checkpoint replay', () => {
+    function setup(dir: string) {
+      const { store } = createStore(dir)
+      store.ensureSession({ v: 1, sessionId: 'sess_1', schemaVersion: 1, source: 'web' })
+      const messages = [userMessage('a'), assistantMessage('b'), userMessage('c')]
+      store.syncCanonical('sess_1', { messages, blocks: [] })
+      return store
+    }
+
+    test('the latest valid checkpoint is projected and survives a reload', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'ses-test-'))
+      try {
+        const store = setup(dir)
+        const checkpoint = contextCheckpoint('cp_1', { summarizedThroughMessageId: 'msg_a' })
+        store.append('sess_1', [{ type: 'compaction/checkpoint', data: { checkpoint } }])
+
+        expect(store.project('sess_1')?.checkpoint).toEqual(checkpoint)
+        expect(new SessionEventStore({ basePath: dir }).project('sess_1')?.checkpoint).toEqual(
+          checkpoint,
+        )
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    test('an invalid latest checkpoint falls back to the most recent valid one', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'ses-test-'))
+      try {
+        const store = setup(dir)
+        const valid = contextCheckpoint('cp_1', { prunedThroughMessageId: 'msg_b' })
+        store.append('sess_1', [
+          { type: 'compaction/checkpoint', data: { checkpoint: valid } },
+          {
+            type: 'compaction/checkpoint',
+            data: {
+              checkpoint: contextCheckpoint('cp_2', {
+                summarizedThroughMessageId: 'msg_b',
+                prunedThroughMessageId: 'msg_lost',
+              }),
+            },
+          },
+          {
+            type: 'compaction/checkpoint',
+            data: {
+              checkpoint: contextCheckpoint('cp_3', { summarizedThroughMessageId: 'msg_x' }),
+            },
+          },
+        ])
+
+        expect(store.project('sess_1')?.checkpoint).toEqual(valid)
+        expect(new SessionEventStore({ basePath: dir }).project('sess_1')?.checkpoint).toEqual(
+          valid,
+        )
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    test('no valid checkpoint projects none', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'ses-test-'))
+      try {
+        const store = setup(dir)
+        store.append('sess_1', [
+          {
+            type: 'compaction/checkpoint',
+            data: {
+              checkpoint: contextCheckpoint('cp_1', { summarizedThroughMessageId: 'msg_x' }),
+            },
+          },
+        ])
+        expect(store.project('sess_1')?.checkpoint).toBeUndefined()
+
+        // 截断掉检查点指向的消息后同样回退
+        store.append('sess_1', [
+          {
+            type: 'compaction/checkpoint',
+            data: {
+              checkpoint: contextCheckpoint('cp_2', { summarizedThroughMessageId: 'msg_c' }),
+            },
+          },
+        ])
+        expect(store.project('sess_1')?.checkpoint?.id).toBe('cp_2')
+        store.syncCanonical('sess_1', {
+          messages: [userMessage('a'), assistantMessage('b')],
+          blocks: [],
+        })
+        expect(store.project('sess_1')?.checkpoint).toBeUndefined()
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    test('a null checkpoint resets to none and earlier checkpoints are not revived', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'ses-test-'))
+      try {
+        const store = setup(dir)
+        store.append('sess_1', [
+          {
+            type: 'compaction/checkpoint',
+            data: { checkpoint: contextCheckpoint('cp_1', { prunedThroughMessageId: 'msg_a' }) },
+          },
+          { type: 'compaction/checkpoint', data: { checkpoint: null } },
+        ])
+        expect(store.project('sess_1')?.checkpoint).toBeUndefined()
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
   })
 })

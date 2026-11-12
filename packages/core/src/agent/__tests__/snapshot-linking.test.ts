@@ -34,7 +34,7 @@ class CompressionAdapter implements ProviderAdapter {
   private normalCallCount = 0
 
   async complete(_request: CompletionRequest): Promise<CompletionResponse> {
-    if (_request.messages[0]?.sessionId === 'compression') {
+    if (_request.meta?.purpose === 'compression') {
       return {
         id: 'resp_summary',
         content: [{ type: 'text', text: 'compressed summary' }],
@@ -90,13 +90,15 @@ function createMessage(index: number): Message {
     sessionId: 'test-session',
     role,
     messageType: 'message',
-    content: [{ type: 'text', text: `history-${index} ${'x'.repeat(200)}` }],
+    content: [{ type: 'text', text: `history-${index} ${'x'.repeat(4000)}` }],
     createdAt: now(),
   }
 }
 
 describe('Agent snapshot linking', () => {
-  test('request logs switch to the new snapshot id after compression', async () => {
+  // 检查点压缩不再写压缩快照(onContextCompressed 只属于旧式 compressConversation):
+  // 压缩发生后请求日志仍关联当前快照
+  test('request logs keep the current snapshot id when context is compacted', async () => {
     const registry = new ToolRegistry()
     registry.register(new NoopTool())
 
@@ -148,15 +150,11 @@ describe('Agent snapshot linking', () => {
       .map((span) => span.data?.request as Record<string, unknown> | undefined)
       .filter((entry): entry is Record<string, unknown> => Boolean(entry))
 
+    expect(context.checkpoint?.summary).toBe('compressed summary')
     expect(requests).toHaveLength(2)
     expect(requests[0]?.snapshotId).toBe('snap_initial')
-    expect(requests[1]?.snapshotId).toBe('snap_compressed')
-    expect(compressionEvents).toHaveLength(1)
-    expect(compressionEvents[0]?.summary).toBe('compressed summary')
-    expect(compressionEvents[0]?.stats.compressedRange).toBeTruthy()
-    expect(compressionEvents[0]?.decisionContext.currentTokens).toBeGreaterThan(
-      compressionEvents[0]?.decisionContext.conversationBudget ?? 0,
-    )
+    expect(requests[1]?.snapshotId).toBe('snap_initial')
+    expect(compressionEvents).toHaveLength(0)
   })
 })
 

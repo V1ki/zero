@@ -240,10 +240,13 @@ export class SpawnAgentTool extends BaseTool {
       projectRoot: ctx.projectRoot,
       promptMode: agentConfig.promptMode,
     })
+    // 声明窗口后,长时间运行的子代理在 turn 内也按压力压缩
     const agentContext: AgentContext = {
       systemPrompt,
       conversationHistory: [],
       tools: toolDefinitions,
+      maxContext: resolvedModel?.modelConfig.maxContext,
+      maxOutput: resolvedModel?.modelConfig.maxOutput,
     }
 
     if (sessionEvents && logFile) {

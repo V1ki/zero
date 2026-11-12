@@ -88,7 +88,7 @@
 | 2 | loop 基座 `runAgentLoop`；记忆检索和 Router 改为基座的配置 | 本 PR |
 | 3 | 主会话的 loop 直接写消息事件，取代 turn 结束时的 diff；`syncCanonical` 只留给非 loop 修改 | 后续 |
 | 4 | 旁路 loop（记忆检索、压缩、闭合、Router）落事件流 | 后续，见待定事项 |
-| 5 | 删除旧式 `compressConversation` 和切换模型时对 canonical 的覆盖；预算改为按压缩后的投影判断 | 后续 |
+| 5 | 删除旧式 `compressConversation` 和切换模型时对 canonical 的覆盖；预算改为按压缩后的投影判断 | 运行时已改用[检查点压缩](context-compaction.md)，旧代码待删 |
 | 6 | 主会话 `Agent` 改为「基座 + 会话插件」，拆分 `agent-hooks.ts` | 后续 |
 | 7 | Web 读事件流；切 `file-only`；`run.log` 与 trace 里与事件流重复的部分退役 | 后续 |
 

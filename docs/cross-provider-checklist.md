@@ -131,13 +131,13 @@
 - 当前代码现状
   - token usage 归一化在 `OpenAIChatAdapter.parseUsage()`、`OpenAIResponsesAdapter.parseUsage()`、`AnthropicAdapter.complete()/stream()` 中已有实现。
   - 真正的上下文预算检查和压缩不在 `packages/model`，而在 `packages/core/src/session/session.ts` 的 `switchModel()` 与 `packages/core/src/agent/agent.ts`。
-  - `Session.switchModel()` 在切换到更小上下文窗口模型后，会计算新 budget，必要时调用 `compressConversation()`。
+  - `Session.switchModel()` 不再压缩；下一次请求前 `Agent` 按新模型的 `maxContext` / `maxOutput` 检查压力并压缩（[context-compaction.md](context-compaction.md)）。
   - `packages/model` 本身没有“拒绝超上下文切换”的逻辑。
 - 需要的测试类型
   - `unit`
   - `integration`
 - 建议测试场景
-  - session 在切到小窗口模型时触发压缩。
+  - 切到小窗口模型后，下一次请求前触发压缩。
   - 跨 provider 切换前后 usage bucket 仍符合统一语义。
   - 明确测试当前行为是“压缩后继续”，而不是“在 model router 层拒绝”。
 
@@ -168,7 +168,7 @@
 - 当前代码现状
   - Anthropic / OpenAI Chat / Responses 都会只序列化成对的 tool_use/tool_result，避免重放 dangling tool call。
   - `mergeInterleavedQueuedMessages()` 专门处理 queued message 打断 tool_use -> tool_result 的情况。
-  - `prepareConversationHistory()` 会进一步对老旧 tool_result 做渐进压缩，但不会生成新的 provider-specific repair。
+  - `prepareRequestMessages()` 先按检查点投影，再做同样的配对修复，不会生成新的 provider-specific repair。
   - model 层目前没有“半完成 assistant text + reasoning + tool call” 的复原抽象，只能依赖 unified message 的现有字段。
 - 需要的测试类型
   - `unit`

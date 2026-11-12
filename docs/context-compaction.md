@@ -99,11 +99,15 @@ interface ContextCheckpoint {
 | type | 类别 | data |
 | --- | --- | --- |
 | `compaction/start` | diagnostics | compactionId、trigger（`turn_start` / `in_turn`）、tokens、thresholdTokens |
-| `compaction/checkpoint` | surface | checkpoint（完整的新检查点） |
+| `compaction/checkpoint` | surface | checkpoint（完整的新检查点；turn 回滚到没有检查点时为 null） |
 | `compaction/end` | diagnostics | compactionId、status（`pruned` / `summarized` / `failed`）、tokensBefore、tokensAfter、durationMs、usage、error |
 
 `compaction/checkpoint` 是投影源：重放时取最后一份有效的检查点。`step/start` 之前的检查点已经在日志里，
-所以 `projectUpTo(seq)` 加上投影函数就是那次请求的消息。
+所以 `projectUpTo(seq)` 加上投影函数（`prepareRequestMessages`）就是那次请求的消息。消息事件目前仍由 Session
+在 turn 结束时写入，turn 内的请求要接上本 turn 的消息；指向本 turn 消息的检查点在 turn 结束前按重放规则视为无效，
+等 loop 直接写消息事件后这一缺口消失。
+
+检查点同时镜像到 sessions.db 的 `session_context_checkpoints` 行（file-only 模式不写），没有事件文件的会话从这里恢复。
 
 同时调整：
 
@@ -115,7 +119,7 @@ interface ContextCheckpoint {
 ### 回滚与恢复
 
 - **turn 失败回滚**：turn 内产生的检查点可能指向被回滚掉的消息。会话在回滚时把检查点恢复成 turn 开始时的那份，
-  并补写一条 `compaction/checkpoint`。
+  并补写一条 `compaction/checkpoint`（turn 开始时没有检查点则写 null）。
 - **崩溃后恢复**：重放事件时，最后一份检查点指向的消息不在投影出的消息里，就回退到更早的、仍然有效的那份；
   都无效则视为没有检查点。
 - **旧会话**：已有的 timeline 压缩块不再参与投影，历史按原文进入，压力够了由新方案重新压缩。旧块留在原来的事件和

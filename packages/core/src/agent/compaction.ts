@@ -9,7 +9,12 @@ import type {
   TokenUsage,
 } from '@zero-os/shared'
 import { generateId, now, toErrorMessage } from '@zero-os/shared'
-import { estimateConversationTokens, extractRetainedHandles } from './context'
+import {
+  estimateConversationTokens,
+  extractRetainedHandles,
+  mergeInterleavedQueuedMessages,
+  sanitizeConversationHistoryForSignedThinkingToolUse,
+} from './context'
 import { CONTEXT_PARAMS } from './params'
 
 /**
@@ -142,6 +147,26 @@ export function projectMessages(
   return [summaryMessage, ...rest]
 }
 
+/**
+ * 一次模型请求的历史:先在 canonical 上投影检查点(水位指向 canonical 的消息 id),
+ * 再做 prompt 卫生:去掉 notification、合并打断 tool_use/tool_result 配对的排队消息、
+ * 按 adapter 需要清理签名 thinking。
+ */
+export function prepareRequestMessages(
+  messages: Message[],
+  checkpoint: ContextCheckpoint | undefined,
+  options: { requireThinkingForToolUse: boolean },
+): Message[] {
+  const paired = mergeInterleavedQueuedMessages(
+    projectMessages(messages, checkpoint).filter(
+      (message) => message.messageType !== 'notification',
+    ),
+  )
+  return options.requireThinkingForToolUse
+    ? sanitizeConversationHistoryForSignedThinkingToolUse(paired)
+    : paired
+}
+
 export interface CheckpointSummaryInput {
   sessionId: string
   /** 上一份检查点的摘要 */
@@ -168,6 +193,8 @@ export interface CompactContextInput {
   /** 系统提示词 + 工具定义的估算 token */
   fixedTokens: number
   summarize: CheckpointSummarizer
+  /** 压力达到阈值且尾部之外有内容、开始裁剪或摘要之前调用 */
+  onStart?: (tokens: number) => void
 }
 
 export type CompactContextResult =
@@ -231,6 +258,7 @@ export async function compactContext(input: CompactContextInput): Promise<Compac
   cut = Math.min(cut, toolUseIndex >= 0 ? toolUseIndex : last)
   const through = cut - 1
   if (through <= summarized) return { status: 'not_needed', tokens: tokensBefore }
+  input.onStart?.(tokensBefore)
 
   const prunedThrough = Math.max(pruned, through)
   const nextCheckpoint = (

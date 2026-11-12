@@ -1,4 +1,9 @@
-import type { Message, MessageChannelSource, TimelineCompactionBlock } from '@zero-os/shared'
+import type {
+  ContextCheckpoint,
+  Message,
+  MessageChannelSource,
+  TimelineCompactionBlock,
+} from '@zero-os/shared'
 import {
   type SessionTailRollbackRemovedMessage,
   summarizeRollbackMessage,
@@ -27,18 +32,23 @@ export interface SessionMessageRecallResult {
 export class SessionConversationState {
   readonly messages: Message[]
   readonly injectedMemoryIds: Map<string, string>
+  /** 当前上下文检查点(docs/context-compaction.md) */
+  checkpoint: ContextCheckpoint | undefined
 
+  /** 旧会话的 timeline 压缩块,只用于展示,不再参与投影 */
   private compactionBlocks: TimelineCompactionBlock[]
 
   constructor(
     options: {
       messages?: Message[]
       timelineCompactionBlocks?: TimelineCompactionBlock[]
+      checkpoint?: ContextCheckpoint
       injectedMemoryIds?: Map<string, string>
     } = {},
   ) {
     this.messages = options.messages ?? []
     this.compactionBlocks = options.timelineCompactionBlocks ?? []
+    this.checkpoint = options.checkpoint
     this.injectedMemoryIds = options.injectedMemoryIds ?? new Map<string, string>()
   }
 
