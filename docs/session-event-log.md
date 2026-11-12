@@ -65,6 +65,8 @@
 {"type":"agent/inbox/drained","data":{"count":2}}
 {"type":"agent/inbox/spliced","data":{"strategy":"inject_into_last_user","count":2}}
 {"type":"compaction/prune","data":{"toolUseId":"toolu_...","from":{"chars":91000,"hash":"sha256:..."},"to":{"chars":120,"mode":"artifact_ref"},"evidence":{"path":"...","sha256":"..."}}}
+{"type":"job/registered","data":{"jobId":"...","toolUseId":"toolu_...","toolName":"bash"}}
+{"type":"job/settled","data":{"jobId":"...","status":"success|error","durationMs":41200,"backgrounded":true,"evidence":{"path":"...","sha256":"..."}}}
 {"type":"subagent/spawn","data":{"childSessionId":"agent_...","name":"Worker","role":"researcher","spawnedByRequestId":"resp_...","logFile":"sessions/<dateDir>/<sessionId>/sub-agent_....jsonl"}}
 {"type":"checkpoint","data":{"atSeq":94,"messageCount":148,"projectionHash":"sha256:..."}}
 ```
@@ -158,7 +160,9 @@ API-only 注入（`<system-reminder>`/`<memory_inject>`）转为 injection 事�
 ## 后续（未实施）
 
 - 事件文件轮转或 zstd 压缩、保留策略。
-- `job/*`（后台任务）、`llm/retry`（适配器层）事件的发射点。
+- `llm/retry`（适配器层）事件的发射点。
+- 恢复会话时处理丢失的 job：有 `job/registered` 没有 `job/settled` 的 bash 执行在进程重启后不会再有完成事件。
+- bash 以外的工具转后台时不落 job 事件，输出超过 8000 字符的部分也没有 evidence。
 - 子代理事件文件里的消息事件（见上文，随 loop 直接写消息事件一起落地）。
 - web 日志查看器改为基于事件流的请求详情重建。
 - DB 派生索引的检索增强（如 FTS，对齐 dsh 的 session-query-sqlite 角色）。

@@ -54,6 +54,7 @@ export class SessionAgentRuntimeController {
     })
     this.backgroundToolTasks = new BackgroundToolTaskManager({
       sessionId: options.data.id,
+      sessionEvents: options.deps.sessionEvents,
       logger: options.logger,
       secretFilter: options.deps.secretFilter,
       getChannelBinding: () => createBackgroundToolChannelBinding(options.data),

@@ -189,20 +189,22 @@ export interface ModelSelectionEventData {
   turnIndex?: number
 }
 
-export interface JobRegisterEventData {
+/** 一次 bash 执行即一个 job:工具开始时登记,真正结束时(无论是否已转后台)落 settled */
+export interface JobRegisteredEventData {
+  /** 转后台后即 background task id */
   jobId: string
-  toolUseId?: string
+  toolUseId: string
   toolName: string
-  timeoutMs?: number
-  turnIndex?: number
 }
 
 export interface JobSettledEventData {
   jobId: string
-  status: 'completed' | 'failed' | 'timeout'
-  durationMs?: number
+  status: 'success' | 'error'
+  durationMs: number
+  /** 结束前是否已转后台(已转后台时 tool/result 早于本事件) */
+  backgrounded: boolean
+  /** 转后台且输出被截断时,完整输出的落盘指针 */
   evidence?: ToolEvidence
-  deliveredAs?: { messageIndex: number; source: string }
 }
 
 export interface SubagentSpawnEventData {
@@ -409,9 +411,9 @@ export interface ModelSelectionEvent extends SessionEventBase {
   data: ModelSelectionEventData
 }
 
-export interface JobRegisterEvent extends SessionEventBase {
-  type: 'job/register'
-  data: JobRegisterEventData
+export interface JobRegisteredEvent extends SessionEventBase {
+  type: 'job/registered'
+  data: JobRegisteredEventData
 }
 
 export interface JobSettledEvent extends SessionEventBase {
@@ -498,7 +500,7 @@ export type SessionEvent =
   | ToolResultEvent
   | LlmRetryEvent
   | ModelSelectionEvent
-  | JobRegisterEvent
+  | JobRegisteredEvent
   | JobSettledEvent
   | SubagentSpawnEvent
   | CompactionBlockEvent

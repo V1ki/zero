@@ -54,7 +54,16 @@
 | `agent/inbox/enqueued` ✅ | session `handleSessionMessageEntry` 排队分支 | turn 进行中消息入队 | messageIndex（canonical 下标）、reason、interrupt |
 | `agent/inbox/drained` ✅ | queueGate `injectQueuedMessagesIntoLastUserMessage` | loop 取走排队消息 | count |
 | `agent/inbox/spliced` ✅ | 同上 | 拼进首条 user 消息 | strategy=inject_into_last_user、count |
+| `job/registered` ✅ | `BackgroundToolTaskManager.run`（经 agent 的工具执行器） | 每次 bash 执行开始，紧跟该调用的 `tool/call` | jobId、toolUseId、toolName |
+| `job/settled` ✅ | 同上;前台结束在 `run`，转后台后结束在 `completeTask` | bash 执行真正结束 | jobId、status(success/error)、durationMs、backgrounded、evidence（转后台且输出超过 8000 字符时，完整输出的落盘指针） |
 | `subagent/spawn` ✅ | spawn-agent 工具，`agentControl.spawn` 成功之后 | 派生子代理;写在父会话事件流，位于 spawn_agent 的 `tool/call` 与 `tool/result` 之间 | childSessionId（即 agent_id）、name、role、spawnedByRequestId、logFile（子事件文件相对 logs 根的路径） |
+
+job 只针对 bash。bash 执行超过 5 秒转后台（其他工具仍是 60 秒，且不落 job 事件）：转后台时
+`tool/result` 立刻返回 `background_tool.started`，此时 jobId 就是 background task id；真正结束时先落
+`job/settled`，再把 `background_tool.completed` 作为 control 消息送回会话。5 秒内结束的 bash 顺序是
+`tool/call` → `job/registered` → `job/settled` → `tool/result`。事件流里有 `job/registered` 而没有对应
+`job/settled` 的 job，就是仍在运行或因进程重启而丢失的 job。子代理与父会话共用同一个后台任务管理器，
+它的 bash job 事件写在父会话文件里，对应的 `tool/call` 在子代理自己的文件里，用 toolUseId 关联。
 
 子代理自己的事件写在 `logFile` 指向的文件里：`session` 头、`system/prompt`、`tools/set`，以及由同一套 agent hooks
 发出的 step、tool 等过程事件。目前不含消息事件和 `turn/*`，原因见
@@ -64,7 +73,6 @@
 
 | type | 计划发射点 | 未接原因 |
 |---|---|---|
-| `job/register` `job/settled` | background-tool-tasks.ts（60s 转后台机制） | 待接入;settled 与 user/message(source=background) 由 deliveredAs 关联 |
 | `llm/retry` | model 包 adapter 层（openai-resp transport、model-pool failover） | 需要 model 包回接事件流句柄 |
 | `model/selection` 其余触发 | init（会话创建）、fallback（pool failover）、reload（配置热更）、route | 目前只有 user_command |
 | `session/archive` | 会话归档/删除 | 待接入 |
