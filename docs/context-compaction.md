@@ -102,12 +102,10 @@ interface ContextCheckpoint {
 | `compaction/checkpoint` | surface | checkpoint（完整的新检查点；turn 回滚到没有检查点时为 null） |
 | `compaction/end` | diagnostics | compactionId、status（`pruned` / `summarized` / `failed`）、tokensBefore、tokensAfter、durationMs、usage、error |
 
-`compaction/checkpoint` 是投影源：重放时取最后一份有效的检查点。`step/start` 之前的检查点已经在日志里，
-所以 `projectUpTo(seq)` 加上投影函数（`prepareRequestMessages`）就是那次请求的消息。消息事件在产生时写入
-（[session-log-replay.md](session-log-replay.md) 步骤 1），turn 内每次请求带的消息都在它的 `step/start` 之前，
-指向本 turn 消息的检查点在重放时同样有效，原先「turn 内的请求要接上本 turn 的消息」的缺口已消失。
-仍要另外补上的是只在请求里的内容：本 turn 首条 user 消息的注入（`injection/context`）和拼进去的排队原文；
-记忆提醒阶段的请求还原不出，留给 session-log-replay 的步骤 2。
+`compaction/checkpoint` 是投影源：恢复时取最后一份有效的检查点。还原某次请求时，`loop/start` 处的检查点决定请求历史的
+投影，loop 内的 `compaction/checkpoint` 是 turn 内的重建点：`assembleRequest` 在那里从 loop 的历史 + 已追加的消息重新调用
+`prepareRequestMessages`，再补回只在请求里的内容（首条 user 消息的注入、排队拼接）。turn 内压缩后的运行时重建走的就是
+`assembleRequest`，完整规则见 [session-event-log.md](session-event-log.md)「请求重建」。
 
 检查点同时镜像到 sessions.db 的 `session_context_checkpoints` 行（file-only 模式不写），没有事件文件的会话从这里恢复。
 
@@ -160,5 +158,5 @@ interface ContextCheckpoint {
 
 - 上下文低于阈值的会话里，压缩模型调用次数为 0，发给模型的历史与 canonical 一致。
 - 事件流里压缩相关事件的体积与摘要文本同量级。
-- 任意一次请求的消息都能由 `projectUpTo(step/start 的 seq)` 加投影函数重建。
+- 任意一次请求都能由日志经 `assembleRequest` 重建，hash 等于 `step/start.requestHash`。
 - 长 turn 内的压缩和 turn 之间的压缩走同一条代码路径。

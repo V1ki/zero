@@ -19,8 +19,9 @@
 
 ## 设计原则
 
-- **model-visible ⟺ logged**：凡是模型看到过的输入，都能从事件流投影重建；
-  API-only 注入（dynamicContext、memory 注入）以 `injection/context` 事件补记。
+- **model-visible ⟺ logged**：凡是模型看到过的输入，都能从事件流重建；
+  不进 canonical 的请求内容以 request-scoped 事件补记：注入（dynamicContext、图片委托、排队拼接）是
+  `injection/context`，记忆提醒阶段的消息是 `request/message`。
 - **事件分三类**：surface（投影源：`user/message`、`assistant/message`、
   `messages/truncate`、`compaction/checkpoint`，以及只读的旧数据 `compaction/block`）；
   request-scoped（重建某次请求输入）；diagnostics（纯排障，可裁剪）。
@@ -44,7 +45,8 @@
 {"seq":0,"ts":"...","type":"session","data":{"v":1,"sessionId":"...","schemaVersion":1,"source":"feishu","channelId":"oc_..."}}
 {"type":"turn/start","data":{"turnIndex":12,"trigger":"channel|control|queued_drain","model":"...","agentName":"..."}}
 {"type":"turn/end","data":{"turnIndex":12,"status":"completed|failed|aborted","durationMs":83400}}  // 恢复时补写的封口另带 "reason":"process_restart"
-{"type":"step/start","data":{"stepIndex":3,"requestSpanId":"span_...","model":"...","messageCount":21}}
+{"type":"loop/start","data":{"requireThinkingForToolUse":false}}  // 每次 Agent.run 开始,早于 turn 开始的压缩
+{"type":"step/start","data":{"stepIndex":3,"requestSpanId":"span_...","model":"...","messageCount":21,"requestHash":"sha256:..."}}
 {"type":"step/end","data":{"stepIndex":3,"stopReason":"end_turn|tool_use|error|aborted","requestId":"resp_...","usage":{},"durationMs":12400}}
 {"type":"tool/call","data":{"toolUseId":"toolu_...","name":"bash","inputHash":"sha256:...","inputPreview":"...","spanId":"span_..."}}
 {"type":"tool/result","data":{"toolUseId":"toolu_...","name":"bash","status":"success","durationMs":9800,"chars":45210,"summary":"..."}}
@@ -55,14 +57,15 @@
 {"type":"compaction/checkpoint","data":{"checkpoint":{...ContextCheckpoint 全量,回滚到没有检查点时为 null...}}}
 {"type":"compaction/end","data":{"compactionId":"...","status":"pruned|summarized|failed","tokensBefore":151000,"tokensAfter":41000,"durationMs":18000,"usage":{},"error":"..."}}
 {"type":"compaction/block","data":{"blocks":[...TimelineCompactionBlock 全量...],"changed":{"blockId":"...","lifecycle":"created|reused|superseded"}}}  // 旧会话的只读数据,不再写入
-{"type":"injection/context","data":{"kind":"dynamic|memory|memory_hint|queued_merge|image_delegation","content":"...原文..."}}
+{"type":"injection/context","data":{"kind":"dynamic|memory|memory_hint|queued_merge|image_delegation","content":"...原文...","messageId":"...被改写的请求消息","blocks":[...仅 queued_merge:拼接的 blocks...]}}
+{"type":"request/message","data":{"message":{...只在请求里的 Message...},"reason":"memory_nudge"}}
 {"type":"model/selection","data":{"from":"...","to":{"label":"...","provider":"...","modelId":"..."},"trigger":"init|user_command|fallback|reload|route"}}
 {"type":"closure/start","data":{"turnIndex":12,"requestId":"resp_...","model":"..."}}
 {"type":"closure/end","data":{"turnIndex":12,"action":"finish|continue|block|discarded","reason":"...","model":"...","requestId":"resp_...","assistantMessageId":"...","durationMs":4200}}
 {"type":"memory/retrieval/start","data":{"layer":"layer1|layer2","turnIndex":12}}
 {"type":"memory/retrieval/end","data":{"layer":"layer1","status":"injected|skipped|failed","queries":["..."],"searchCount":3,"selected":[{"id":"mem_...","title":"...","score":0.8}],"durationMs":1500,"usage":{"input":0,"output":0}}}
 {"type":"memory/recorded","data":{"action":"create|update","memoryId":"mem_...","memoryType":"fact","title":"...","toolUseId":"toolu_..."}}
-{"type":"system/prompt","data":{"hash":"sha256:...","chars":10303,"content":"...完整系统提示词..."}}
+{"type":"system/prompt","data":{"hash":"sha256:...","chars":10303,"content":"...静态系统提示词...","identity":"...identityMemory..."}}  // hash/chars 描述实际发出的 system
 {"type":"tools/set","data":{"hash":"sha256:...","toolNames":["read","bash","..."],"count":79}}
 {"type":"params/reasoning","data":{"from":"medium","to":"high"}}
 {"type":"agent/inbox/enqueued","data":{"messageIndex":91,"reason":"turn_in_progress","interrupt":true}}
@@ -75,12 +78,13 @@
 {"type":"checkpoint","data":{"atSeq":94,"messageCount":148,"projectionHash":"sha256:..."}}
 ```
 
-全部 34 种事件的发射点、触发条件与消费方式见 [session-events-reference.md](./session-events-reference.md);
+全部 36 种事件的发射点、触发条件与消费方式见 [session-events-reference.md](./session-events-reference.md);
 类型定义在 `packages/shared/src/types/session-events.ts`。
 
-系统提示词与工具集都是 model-visible 请求输入:`system/prompt`（内容变化时发射，
-persistSessionState 做 hash 比对）与 `tools/set`（turn 开始时比对名字列表 hash）
-由此进入事件流;DB 的 sessions.system_prompt 列只存最新一份，迁移时已播种为首个
+系统提示词与工具集都是 model-visible 请求输入:`system/prompt`（请求的 system =
+`content` + `\n\n` + `identity`（有 identityMemory 时）;这段文本的 hash 变化时发射，turn 开始时与
+persistSessionState 都做比对）与 `tools/set`（turn 开始时比对名字列表 hash，空工具集也记）
+都写在 turn 的第一个 step/start 之前;DB 的 sessions.system_prompt 列只存最新一份静态提示词，迁移时已播种为首个
 事件（657 个有值会话）。`params/reasoning` 记录 /think 等入口的 effort 变更。
 
 排队消息链路:入队时先写 `agent/inbox/enqueued`（带 canonical 下标），canonical 追加 'queued' 消息的同一刻
@@ -104,10 +108,35 @@ memory 工具的完整调用过程仍由 `tool/call`+`tool/result` 承载。任�
 成对事件 `closure/start|end`：本 turn 未评估时不产生任何 closure 事件；
 `discarded` 表示决策因排队消息被丢弃（原始决策在 detail.originalAction）。
 
-`step/start` 自身的 seq 是请求重建锚点：消息在产生时写入，一次请求带的 canonical 消息都在它的
-`step/start` 之前，`projectUpTo(seq)` 的消息经 `prepareRequestMessages` 投影，再补上只在请求里的内容
-（本 turn 首条 user 消息的 `injection/context`、拼进去的排队原文 `queued_merge`），就是该次请求的消息。
-还原不出的部分见 [session-log-replay.md](session-log-replay.md)：记忆提醒阶段的请求、system 里的 identityMemory。
+### 请求重建（step/start 的 seq = S）
+
+运行时与重放共用 `assembleRequest`（`packages/core/src/agent/request-assembly.ts`）；它的输入由
+`buildRequestAssemblyInput(events, S)`（`@zero-os/observe`，只需要事件，`SessionEventStore.getRequestAssemblyInput`
+是它的包装）从日志取得：
+
+1. **所属 loop**：S 之前最近的 `loop/start`（seq = L）。`Agent.run` 每次开始时写一条，早于 turn 开始的压缩。
+2. **history 与 checkpoint**：`projectUpTo(L)` 的消息与检查点，即 loop 开始时的 canonical 投影。
+3. **system 与工具名**：S 之前最后一条 `system/prompt`（system = `content`，有 `identity` 时接上 `\n\n` + identity）
+   与最后一条 `tools/set`。
+4. **entries**：L 与 S 之间、按日志顺序的
+   - `user/message` / `assistant/message`：loop 追加进请求的 canonical 消息。排队消息除外——紧跟在
+     `agent/inbox/enqueued` 之后、下标等于其 `messageIndex` 的那条：它进 canonical，但原文是经 `queued_merge` 拼进请求的；
+   - `request/message`：记忆提醒阶段只在请求里的消息；
+   - 带 `messageId` 的 `injection/context`（dynamic、image_delegation、queued_merge；迁移播种的旧事件没有 `messageId`，不参与）；
+   - `compaction/checkpoint`。
+   loop 内出现 `messages/truncate`（turn 进行中的撤回原地改写了请求里的消息）时还原不出，返回 null。
+5. **组装**：第一条消息之前，请求历史 = `prepareRequestMessages(history, 当时的检查点)`；message 追加到末尾；
+   dynamic / image_delegation 按顺序作为前缀改写 `messageId` 那条消息（有图片委托时去掉它的图片）；queued_merge 把
+   `blocks` 接到 `messageId` 那条消息末尾；已有消息之后的 checkpoint（turn 内压缩）从 history + 已追加的消息重新投影，
+   并补回注入与排队拼接（同一条消息拼接多次时只补回最后一次，与运行时一致）。
+6. **核对**：`hashRequest(assembleRequest(input)) == step/start.requestHash`。`requestHash` 覆盖 system、工具名和传给
+   adapter 的消息（键排序 JSON 的 sha256）；图片换成 `{type, mediaType, sha256}`，sha256 是解码后字节的 hash
+   （运行时取 `data`，日志与恢复后的消息取 `imageRef.sha256`，同一个 `decodeImageData`）。
+
+turn 内压缩后运行时也经 `assembleRequest` 重建请求消息（它记下同样的 entries）；其余步骤 loop 逐条追加，
+一致性由 `requestHash` 核对（`request-replay.test.ts` 对每个 step/start 做三方比对）。
+
+仍还原不出的情形见 [session-log-replay.md](session-log-replay.md)。
 
 ### 上下文锚点（baseSeq）
 
@@ -122,7 +151,7 @@ memory 工具的完整调用过程仍由 `tool/call`+`tool/result` 承载。任�
 
 - 消息写入：**在产生的那一刻写**，入口只有 `SessionEventStore.appendMessage`（外置图片、按投影长度分配
   下标）。loop 产生的消息由 agent hooks 在转给调用方时写（`onNewMessage`；记忆提醒阶段的消息不转给调用方，
-  也不写）；turn 进行中排队的消息由 `queueMessage` 在追加进 canonical 时写。已写入的消息不再原地修改
+  不进 canonical，写成 `request/message`）；turn 进行中排队的消息由 `queueMessage` 在追加进 canonical 时写。已写入的消息不再原地修改
   （任务结束判定只记在 `closure/end`，不再写回 assistant 消息的 `taskClosure`）。
 - 改动已有消息的一方当场调用 `syncMessages(sessionId, messages, reason)`：前缀缩短时写
   `messages/truncate`，再追加之后的消息。原因：turn 失败回滚 `turn_failed`、尾部回滚命令 `admin`、

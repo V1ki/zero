@@ -21,7 +21,7 @@ turn 结束的对账走 `syncCanonical`，其余事件走 `append`。seq 写入�
 
 | type | 发射点 | 触发 | data 要点 | 说明 |
 |---|---|---|---|---|
-| `user/message` ✅ | store `appendMessage`：agent-hooks `onNewMessage`（loop 产生的消息转给调用方的那一刻，子代理写进自己的文件）、session `queueMessage`（排队消息进 canonical 的那一刻）;`syncMessages` 截断后重新追加 | canonical 新增 user 消息（turn 输入、tool_result 消息、queued、control、layer2 提示、background 回注）;记忆提醒阶段的消息不进 canonical，不写 | messageIndex（按投影长度分配）、message 全量、source、hash | 唯一权威的消息正文;图片为 imageRef 文件引用 |
+| `user/message` ✅ | store `appendMessage`：agent-hooks `onNewMessage`（loop 产生的消息转给调用方的那一刻，子代理写进自己的文件）、session `queueMessage`（排队消息进 canonical 的那一刻）;`syncMessages` 截断后重新追加 | canonical 新增 user 消息（turn 输入、tool_result 消息、queued、control、layer2 提示、background 回注）;记忆提醒阶段的消息不进 canonical，写成 `request/message` | messageIndex（按投影长度分配）、message 全量、source、hash | 唯一权威的消息正文;图片为 imageRef 文件引用 |
 | `assistant/message` ✅ | 同上（agent-hooks `onNewMessage`） | canonical 新增 assistant 消息（含 text/thinking/tool_use blocks） | 同上 | 模型输出唯一权威全文;写入后不再原地修改 |
 | `messages/truncate` ✅ | store `syncMessages`（改动方声明原因）;`syncCanonical` 对账发现未声明的差异 | reason：`turn_failed`（turn 失败回滚 `applyFailedTurnRollback`）、`admin`（尾部回滚命令）、`recall`（外部消息撤回，原地改写旧消息后截断到它并重新追加）、`restore_repair`（恢复修复、没封口的 turn）、`unexpected`（对账时发现没经过 store 的改动，同时经 `onError` 上报）;`interrupt` 保留未用 | toMessageIndex、reason | 折叠指令，历史事件永不删除;正常运行的会话里没有 |
 | `compaction/checkpoint` ✅ | agent `compactContextForRequest`（压缩产生新检查点的那一刻，经 `obs.sessionEvents`，子代理写进自己的文件）;session-turn 失败回滚时补写 | 裁剪水位推进或新摘要;turn 回滚恢复 turn 开始时的检查点 | checkpoint（完整检查点，回滚到没有检查点时为 null） | 投影取最后一份指向的消息都在投影里的检查点，无效则往前回退，遇到 null 或到头则没有;DB 镜像为 `session_context_checkpoints` 行 |
@@ -31,10 +31,12 @@ turn 结束的对账走 `syncCanonical`，其余事件走 `append`。seq 写入�
 
 | type | 发射点 | 触发 | data 要点 | 重建规则 |
 |---|---|---|---|---|
-| `injection/context` ✅ | ① `buildRequestUserContent`（agent-hooks）每 turn 首条请求前;② afterToolResults 队列拼接后;③ 迁移播种 🌱 | kind=dynamic（system-reminder 含记忆检索）、image_delegation、queued_merge;memory/memory_hint 仅迁移期从 run.log 抽取 | kind、content 原文、refs | 按 turn 区间/请求关联取用;投影 canonical 时忽略 |
-| `system/prompt` ✅ | persistence `ensureSessionPromptEvent`（hash 比对） | 初始化、agent 重建、能力变更导致 prompt 重建 | hash、chars、content 全文 | getSystemPrompt;DB 列只存最新一份，事件流保留谱系 |
-| `tools/set` ✅ | session-turn `ensureToolsSetEvent`（turn 开始比对名字列表 hash） | 工具集变化 | hash、toolNames、count | getToolSet;完整定义由代码版本推导 |
-| `step/start` ✅ | agent-hooks `onCompletionStart` | 每次模型请求开始 | stepIndex、requestSpanId、model、messageCount | **事件自身 seq 即请求重建锚点**：该请求带的 canonical 消息都写在它之前，projectUpTo(seq) 经投影 + 该请求注入 |
+| `loop/start` ✅ | agent `Agent.run` 开头（早于 turn 开始的压缩;子代理写进自己的文件） | 每次 agent loop 开始（会话每 turn 一次;交互式子代理每次输入一次） | requireThinkingForToolUse | 请求历史 = 此处的 canonical 投影与检查点;其后到 step/start 之间的事件是该 loop 的 entries |
+| `injection/context` ✅ | ① agent-hooks `buildRequestUserContent` loop 首条 user 消息进请求时;② afterToolResults 队列拼接后;③ 迁移播种 🌱 | kind=dynamic（system-reminder 含记忆检索）、image_delegation、queued_merge;memory/memory_hint 仅迁移期从 run.log 抽取 | kind、content 原文、refs、messageId（被改写的请求消息）、blocks（queued_merge 拼接的 blocks，含排队图片，图片外置为 imageRef） | 带 messageId 的参与请求组装;投影 canonical 时忽略 |
+| `request/message` ✅ | agent-hooks `onNewMessage`（记忆提醒进行中;store `append` 把图片外置） | 记忆提醒阶段 loop 追加进请求的消息：提醒 prompt、提醒回复、提醒阶段的工具结果 | message 全量、reason=memory_nudge | 只追加进本 loop 之后的请求,不进 canonical,后续 turn 看不到 |
+| `system/prompt` ✅ | persistence `ensureSessionPromptEvent`（hash 比对）：session-turn 每 turn 开始、persistSessionState;子代理由 spawn-agent 写 | 请求的 system 文本变化（prompt 重建、identityMemory 变化） | hash 与 chars（描述发出的 system = content + `\n\n` + identity）、content（静态系统提示词）、identity | getSystemPrompt;DB 列只存最新一份静态提示词，事件流保留谱系 |
+| `tools/set` ✅ | session-turn `ensureToolsSetEvent`（turn 开始比对名字列表 hash，空列表也记） | 工具集变化 | hash、toolNames、count | getToolSet;完整定义由代码版本推导 |
+| `step/start` ✅ | agent-hooks `onCompletionStart` | 每次模型请求开始 | stepIndex、requestSpanId、model、messageCount、requestHash（`hashRequest`：system、工具名、传给 adapter 的消息，图片按内容 hash 归一） | **事件自身 seq 即请求重建锚点**，规则见 session-event-log.md「请求重建」;`hashRequest(assembleRequest(...))` 应等于 requestHash |
 | `closure/start` ✅ | agent-hooks `onEndTurn` | closure 评估开始 | turnIndex、requestId、model、baseSeq、messageCount | 分类器看到的消息都在 baseSeq 之前;messageCount 对账;未评估不产生任何 closure 事件 |
 
 ## ③ diagnostics（时间线/排障）
@@ -86,7 +88,7 @@ job 只针对 bash。bash 执行超过 5 秒转后台（其他工具仍是 60 �
 | 消费 | 路径 |
 |---|---|
 | 会话恢复（权威） | `SessionManagerStore.restoreSessionById` → 先封口没封口的 turn，再 `store.project()`;无事件文件回退 DB 并把快照写进事件流;`getMessagesFromDB` 只读投影 |
-| 请求重建 | `projectUpTo(step/start 的 seq)` 的 messages + checkpoint 经 `prepareRequestMessages` 投影，补上本 turn 首条 user 消息的 injection 与排队拼接原文;记忆提醒阶段的请求和 system 里的 identityMemory 还原不出（[session-log-replay.md](./session-log-replay.md) 步骤 2） |
+| 请求重建 | `store.getRequestAssemblyInput(id, step/start 的 seq)`（或对事件数组调 `buildRequestAssemblyInput`）→ `assembleRequest` → `hashRequest` 与 `step/start.requestHash` 核对;规则见 [session-event-log.md](./session-event-log.md)「请求重建」 |
 | 状态查询 | `getSystemPrompt` / `getToolSet` / `getLastSeq` |
 | 迁移/校验 | scripts-diag convert（播种 session/system/prompt/user·assistant·truncate/compaction-block/injection）+ rebuild（事件→DB 派生行） |
 | Web UI | 会话详情 `GET /api/sessions/:id` 的 `contextCheckpoint`：活会话取 `Session.getContextCheckpoint()`，否则 `getContextCheckpointFromDB` → `store.project()`，无事件文件回退 DB;请求详情重建仍待接（run.log raw 事件已删除） |
