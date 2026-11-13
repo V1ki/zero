@@ -70,4 +70,4 @@ Router 工作台的「效果统计」按需从已有记录算出近 7 天或 30 
 
 推送变少、被找回的过滤变少、原样采纳变多，才说明注意力真的省下来了。委托线的找回和用户所选的选项是这一版才开始记录的（`mandate_effects.triage_restored`、`router_job_steps.answered_option`，两个回答路径都写），统计会注明哪段时间早于记录开始；个人线的找回从保存的分诊结论补记（`trigger_routes.triage_restored`）。这些列只给统计读，不影响重试、分诊参考和按钮。
 
-提示词在真实模型和真实事件上的表现，测试覆盖不到，只能靠这些数字和用户发回来的反例来改。
+提示词在真实模型和真实事件上的表现，测试覆盖不到，只能靠这些数字和用户发回来的反例来改。改提示词前后，可以用 `bun run router:prompt-bench` 在固定的合成用例上让真实模型把四个判断各跑一遍，看通过率和危险错误，见 [提示词 benchmark](prompt-benchmark.md#router-提示词-benchmark)。

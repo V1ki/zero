@@ -34,6 +34,14 @@ bun run prompt:bench help
 This separate prompt benchmark does not run a live `Session`. It includes task behavior and
 labeled task-closure cases; see [the prompt benchmark guide](../../docs/prompt-benchmark.md).
 
+Run the shipped Router judgements (write check, triage, job report, GitHub investigation) on fixed
+synthetic cases with a real model, or with scripted answers and no model:
+
+```bash
+bun run router:prompt-bench --model provider/model
+bun run router:prompt-bench --dry-run
+```
+
 Preview the current matrix without calling any model:
 
 ```bash
