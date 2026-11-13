@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import type { ProviderAdapter } from '@zero-os/model'
 import type {
   CompletionRequest,
@@ -11,6 +12,7 @@ import {
   AgentLoop,
   type AgentLoopConfig,
   type AgentLoopHooks,
+  type AgentLoopJournal,
   type ToolExecutionResult,
 } from './agent-loop'
 
@@ -47,6 +49,14 @@ export interface AgentLoopRunOptions {
   timeoutMs?: number
   signal?: AbortSignal
   logger: AgentLoopConfig['logger']
+  /**
+   * Session events of this run. The base writes `system/prompt`, `tools/set` and `loop/start`
+   * before the loop writes its steps, tool calls and messages, so every request can be rebuilt
+   * from the file. The file must already hold exactly `history` as its canonical messages; a run
+   * without history takes a new file. A response or tool result that lands after the run stopped
+   * is still written: it happened, even though the caller no longer receives it.
+   */
+  journal?: AgentLoopJournal
   /**
    * Caller policy. `onCompletionEnd`, `onToolCallStart`, `onToolCallEnd` and `shouldAbort` are
    * composed with the base's bookkeeping; every other hook is passed to `AgentLoop` unchanged.
@@ -89,10 +99,32 @@ export async function runAgentLoop(options: AgentLoopRunOptions): Promise<AgentL
   const toolCalls: LoopToolCallRecord[] = []
   let acceptedToolCalls = 0
 
+  if (options.journal) {
+    const sha256 = (value: string) => `sha256:${createHash('sha256').update(value).digest('hex')}`
+    const toolNames = (options.tools ?? []).map((tool) => tool.name)
+    options.journal.events.append(options.sessionId, [
+      {
+        type: 'system/prompt',
+        data: {
+          hash: sha256(options.system),
+          chars: options.system.length,
+          content: options.system,
+        },
+      },
+      {
+        type: 'tools/set',
+        data: { hash: sha256(JSON.stringify(toolNames)), toolNames, count: toolNames.length },
+      },
+      // History goes to the adapter as given, without the signed-thinking cleanup.
+      { type: 'loop/start', data: { requireThinkingForToolUse: false } },
+    ])
+  }
+
   const loop = new AgentLoop(
     {
       adapter: options.adapter,
       sessionId: options.sessionId,
+      journal: options.journal,
       meta: options.meta,
       system: options.system,
       tools: options.tools ?? [],

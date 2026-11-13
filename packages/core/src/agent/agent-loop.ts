@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto'
 import type { ProviderAdapter } from '@zero-os/model'
+import type { SessionEventStore } from '@zero-os/observe'
 import type {
   CompletionRequest,
   CompletionRequestMeta,
@@ -6,6 +8,9 @@ import type {
   ContentBlock,
   Message,
   ReasoningEffort,
+  RequestMessageEventData,
+  SecretFilter,
+  StepStopReason,
   ToolDefinition,
   ToolLogger,
   ToolResult,
@@ -17,7 +22,9 @@ import {
   now,
   toErrorMessage,
 } from '@zero-os/shared'
+import { filterToolInput } from './agent-trace'
 import { CONTEXT_PARAMS } from './params'
+import { hashRequest } from './request-assembly'
 
 const MAX_TRANSIENT_STREAM_RETRIES = 3
 const MAX_TRANSPORT_STREAM_RETRIES = 1
@@ -49,9 +56,28 @@ export interface LoopIterationContext {
   state: Record<string, unknown>
 }
 
+/**
+ * Where the loop writes its session events. With a journal, every request, tool call and message
+ * is written at the moment it happens, to the file of `AgentLoopConfig.sessionId`.
+ */
+export interface AgentLoopJournal {
+  events: Pick<SessionEventStore, 'append' | 'appendMessage'>
+  /** Recorded as the model of each `step/start`. */
+  modelLabel?: string
+  /** Applied to tool input before it is hashed and previewed in `tool/call`. */
+  secretFilter?: SecretFilter
+  /** Trace span of the request that just started. Read after `onCompletionStart`. */
+  requestSpanId?(): string | undefined
+  /** Trace span of the tool call that just started. Read after `onToolCallStart`. */
+  toolSpanId?(toolUseId: string): string | undefined
+  /** A reason while new messages belong to the request only and stay out of the canonical history. */
+  requestOnly?(): RequestMessageEventData['reason'] | undefined
+}
+
 export interface AgentLoopConfig {
   adapter: ProviderAdapter
   sessionId: string
+  journal?: AgentLoopJournal
   toolExecutor: ToolExecutor
   system: string
   tools: ToolDefinition[]
@@ -446,6 +472,7 @@ function parseAnthropicStreamErrorPayload(
 export class AgentLoop {
   private config: AgentLoopConfig
   private hooks: AgentLoopHooks
+  private stepIndex = 0
 
   constructor(config: AgentLoopConfig, hooks: AgentLoopHooks = {}) {
     this.config = config
@@ -458,6 +485,7 @@ export class AgentLoop {
     userImages?: Array<{ mediaType: string; data: string }>,
     userMessageEntry?: Message,
   ): Promise<Message[]> {
+    this.stepIndex = 0
     const messages: Message[] = [...conversationHistory]
     const newMessages: Message[] = []
     const ctx: LoopIterationContext = {
@@ -701,6 +729,13 @@ export class AgentLoop {
 
   private notifyNewMessage(message: Message, ctx: LoopIterationContext): void {
     ctx.newMessages.push(message)
+    const { journal, sessionId } = this.config
+    if (journal) {
+      const reason = journal.requestOnly?.()
+      if (reason)
+        journal.events.append(sessionId, [{ type: 'request/message', data: { message, reason } }])
+      else journal.events.appendMessage(sessionId, message)
+    }
     this.hooks.onNewMessage?.(message, ctx)
   }
 
@@ -708,11 +743,13 @@ export class AgentLoop {
     request: CompletionRequest,
     ctx: LoopIterationContext,
   ): Promise<CompletionResponse> {
+    this.stepIndex += 1
     return completeAgentLoopRequest({
       config: this.config,
       hooks: this.hooks,
       request,
       ctx,
+      stepIndex: this.stepIndex,
     })
   }
 }
@@ -722,6 +759,7 @@ interface CompleteAgentLoopRequestOptions {
   hooks: AgentLoopHooks
   request: CompletionRequest
   ctx: LoopIterationContext
+  stepIndex: number
 }
 
 async function completeAgentLoopRequest({
@@ -729,8 +767,26 @@ async function completeAgentLoopRequest({
   hooks,
   request,
   ctx,
+  stepIndex,
 }: CompleteAgentLoopRequestOptions): Promise<CompletionResponse> {
+  const { journal, sessionId } = config
   hooks.onCompletionStart?.(request, ctx)
+  journal?.events.append(sessionId, [
+    {
+      type: 'step/start',
+      data: {
+        stepIndex,
+        requestSpanId: journal.requestSpanId?.(),
+        model: journal.modelLabel,
+        messageCount: request.messages.length,
+        requestHash: hashRequest({
+          system: request.system ?? '',
+          toolNames: (request.tools ?? []).map((tool) => tool.name),
+          messages: request.messages,
+        }),
+      },
+    },
+  ])
   const startedAt = Date.now()
 
   try {
@@ -739,7 +795,20 @@ async function completeAgentLoopRequest({
         ? await config.adapter.complete({ ...request, stream: false })
         : await completeWithStreamFallback({ config, hooks, request, ctx })
 
-    hooks.onCompletionEnd?.(request, response, Date.now() - startedAt, ctx)
+    const durationMs = Date.now() - startedAt
+    journal?.events.append(sessionId, [
+      {
+        type: 'step/end',
+        data: {
+          stepIndex,
+          stopReason: mapStopReason(response.stopReason),
+          requestId: response.id,
+          usage: response.usage,
+          durationMs,
+        },
+      },
+    ])
+    hooks.onCompletionEnd?.(request, response, durationMs, ctx)
     return response
   } catch (error) {
     hooks.onCompletionError?.(request, error, Date.now() - startedAt, ctx)
@@ -752,7 +821,7 @@ async function completeWithStreamFallback({
   hooks,
   request,
   ctx,
-}: CompleteAgentLoopRequestOptions): Promise<CompletionResponse> {
+}: Omit<CompleteAgentLoopRequestOptions, 'stepIndex'>): Promise<CompletionResponse> {
   let transientAttempts = 0
 
   while (true) {
@@ -848,42 +917,68 @@ async function executeAgentLoopToolCalls(options: {
   const toolResultBlocks: ContentBlock[] = []
   const failedToolAttempts: FailedToolAttempt[] = []
 
+  const { journal, sessionId } = options.config
+
   for (const block of options.response.content) {
     if (block.type !== 'tool_use') continue
 
     options.hooks.onToolCallStart?.(block.name, block.id, block.input, options.ctx)
+    if (journal) {
+      const input = JSON.stringify(filterToolInput(block.input, journal.secretFilter))
+      journal.events.append(sessionId, [
+        {
+          type: 'tool/call',
+          data: {
+            toolUseId: block.id,
+            name: block.name,
+            inputHash: `sha256:${createHash('sha256').update(input).digest('hex')}`,
+            inputPreview: input.length > 512 ? `${input.slice(0, 512)}…` : input,
+            spanId: journal.toolSpanId?.(block.id),
+          },
+        },
+      ])
+    }
     const startedAt = Date.now()
+    const end = (result: ToolExecutionResult) => {
+      toolResultBlocks.push(buildToolResultBlock(block.id, result))
+      const durationMs = Date.now() - startedAt
+      options.hooks.onToolCallEnd?.(
+        block.name,
+        block.id,
+        block.input,
+        result,
+        durationMs,
+        options.ctx,
+      )
+      journal?.events.append(sessionId, [
+        {
+          type: 'tool/result',
+          data: {
+            toolUseId: block.id,
+            name: block.name,
+            status: result.success ? 'success' : 'error',
+            durationMs,
+            chars: result.output.length,
+            summary: result.outputSummary,
+          },
+        },
+      ])
+    }
 
     const malformedInputError =
       typeof block.input.__parse_error === 'string' ? block.input.__parse_error : undefined
 
     if (malformedInputError) {
-      const result = buildToolFailure(
-        `Tool input JSON was malformed (likely truncated by max_tokens). ${malformedInputError}. Please retry with shorter content or split into multiple calls.`,
-      )
-      toolResultBlocks.push(buildToolResultBlock(block.id, result))
-      options.hooks.onToolCallEnd?.(
-        block.name,
-        block.id,
-        block.input,
-        result,
-        Date.now() - startedAt,
-        options.ctx,
+      end(
+        buildToolFailure(
+          `Tool input JSON was malformed (likely truncated by max_tokens). ${malformedInputError}. Please retry with shorter content or split into multiple calls.`,
+        ),
       )
       continue
     }
 
     if (!options.config.toolExecutor.has(block.name)) {
-      const result = buildToolFailure(`Unknown tool: ${block.name}`)
-      toolResultBlocks.push(buildToolResultBlock(block.id, result))
-      options.hooks.onToolCallEnd?.(
-        block.name,
-        block.id,
-        block.input,
-        result,
-        Date.now() - startedAt,
-        options.ctx,
-      )
+      end(buildToolFailure(`Unknown tool: ${block.name}`))
       continue
     }
 
@@ -909,15 +1004,7 @@ async function executeAgentLoopToolCalls(options: {
       })
     }
 
-    toolResultBlocks.push(buildToolResultBlock(block.id, result))
-    options.hooks.onToolCallEnd?.(
-      block.name,
-      block.id,
-      block.input,
-      result,
-      Date.now() - startedAt,
-      options.ctx,
-    )
+    end(result)
   }
 
   return { toolResultBlocks, failedToolAttempts }
@@ -942,4 +1029,11 @@ function buildToolFailure(message: string): ToolExecutionResult {
     output: message,
     outputSummary: message,
   }
+}
+
+function mapStopReason(stopReason: string | undefined): StepStopReason {
+  if (stopReason === 'tool_use') return 'tool_use'
+  if (stopReason === 'aborted' || stopReason === 'interrupted') return 'aborted'
+  if (stopReason === 'error' || stopReason === 'max_tokens') return 'error'
+  return 'end_turn'
 }

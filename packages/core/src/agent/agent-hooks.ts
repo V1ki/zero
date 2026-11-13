@@ -27,7 +27,7 @@ import type {
   ToolResult,
 } from '@zero-os/shared'
 import { generateId, now, toErrorMessage } from '@zero-os/shared'
-import type { AgentLoopHooks, FailedToolAttempt } from './agent-loop'
+import type { AgentLoopHooks, AgentLoopJournal, FailedToolAttempt } from './agent-loop'
 import type { AgentTraceRecorder } from './agent-trace'
 import {
   cloneMemoryInjections,
@@ -53,7 +53,7 @@ import {
   injectQueuedMessagesWithTrace,
   isTaskComplete,
 } from './queue'
-import { applyUserInjections, assembleRequest, hashRequest } from './request-assembly'
+import { applyUserInjections, assembleRequest } from './request-assembly'
 import {
   TASK_CLOSURE_CLASSIFIER_SYSTEM_PROMPT,
   type TaskClosureDecision,
@@ -398,7 +398,11 @@ class AgentQueueGate {
   }
 }
 
-export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): AgentLoopHooks {
+export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
+  hooks: AgentLoopHooks
+  /** loop 写 step、tool、消息事件的入口;没有事件流句柄时为 undefined */
+  journal: AgentLoopJournal | undefined
+} {
   const {
     config,
     adapter,
@@ -491,7 +495,7 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): Agen
     turnIndex,
   })
 
-  return {
+  const hooks: AgentLoopHooks = {
     buildRequestUserContent: (message) => {
       // 注入内容只进 API 不落 canonical;在此补记为 request-scoped 事件
       const injections: Array<InjectionContextEventData & { messageId: string }> = []
@@ -515,15 +519,10 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): Agen
     },
     onNewMessage: (message) => {
       requestEntries.push({ kind: 'message', message })
+      // 消息事件由 loop 在这之前写入:转给调用方的是 canonical 消息,记忆提醒阶段的是 request/message
       if (!memoryNudge.isActive) {
-        // 转给调用方的即 canonical 消息:在这一刻写消息事件(子代理经重定向写进自己的文件)
-        obs.sessionEvents?.appendMessage(toolContext.sessionId, message)
         options.onNewMessage?.(message)
       } else {
-        // 记忆提醒阶段的消息只进请求、不进 canonical:记为 request-scoped 事件,重放时还原这几次请求
-        obs.sessionEvents?.append(toolContext.sessionId, [
-          { type: 'request/message', data: { message, reason: 'memory_nudge' } },
-        ])
         if (message.role === 'assistant') {
           const text = extractTextFromMessage(message).trim()
           if (text !== '') {
@@ -643,6 +642,19 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): Agen
       }
     },
     shouldInterrupt: () => queueGate.shouldKeepInterrupting(),
+  }
+
+  return {
+    hooks,
+    journal: obs.sessionEvents && {
+      events: obs.sessionEvents,
+      modelLabel: obs.modelLabel,
+      secretFilter: obs.secretFilter,
+      requestSpanId: () => llmRequestHooks.getCurrentRequestSpanId(),
+      toolSpanId: (toolUseId) => toolCallHooks.getToolSpanId(toolUseId),
+      // 记忆提醒阶段的消息只进请求、不进 canonical:重放时由 request/message 还原这几次请求
+      requestOnly: () => (memoryNudge.isActive ? 'memory_nudge' : undefined),
+    },
   }
 }
 
@@ -1613,7 +1625,6 @@ function createAgentLLMRequestHooks({
   let currentRequestToolResults: RequestToolResultEntry[] = []
   let pendingMemoryInjections = cloneMemoryInjections(initialMemoryInjections)
   let currentRequestSpanId: string | undefined
-  let stepIndex = 0
 
   return {
     getCurrentRequestSpanId: () => currentRequestSpanId,
@@ -1623,7 +1634,7 @@ function createAgentLLMRequestHooks({
     setPendingMemoryInjections: (memoryInjections) => {
       pendingMemoryInjections = cloneMemoryInjections(memoryInjections)
     },
-    onCompletionStart: (request) => {
+    onCompletionStart: () => {
       const llmSpan = obs.tracer?.startSpan(toolContext.sessionId, 'llm_request', rootSpanId, {
         kind: 'llm_request',
         agentName: config.name,
@@ -1634,40 +1645,10 @@ function createAgentLLMRequestHooks({
         },
       })
       currentRequestSpanId = llmSpan?.id
-      stepIndex += 1
-      obs.sessionEvents?.append(toolContext.sessionId, [
-        {
-          type: 'step/start',
-          data: {
-            stepIndex,
-            requestSpanId: currentRequestSpanId,
-            model: obs.modelLabel,
-            messageCount: request.messages.length,
-            requestHash: hashRequest({
-              system: request.system ?? '',
-              toolNames: (request.tools ?? []).map((tool) => tool.name),
-              messages: request.messages,
-            }),
-          },
-        },
-      ])
     },
     onCompletionEnd: (request, response, durationMs) => {
       response.model = obs.modelLabel ?? response.model
       executionState.currentRequestId = response.id
-
-      obs.sessionEvents?.append(toolContext.sessionId, [
-        {
-          type: 'step/end',
-          data: {
-            stepIndex,
-            stopReason: mapStopReason(response.stopReason),
-            requestId: response.id,
-            usage: response.usage,
-            durationMs,
-          },
-        },
-      ])
 
       traceRecorder.logLLMRequest({
         request,
@@ -1728,6 +1709,7 @@ interface CreateAgentToolCallHooksOptions {
 
 interface AgentToolCallHooks {
   toolNamesByUseId: Map<string, string>
+  getToolSpanId(toolUseId: string): string | undefined
   onToolCallStart: (toolName: string, toolUseId: string, input: Record<string, unknown>) => void
   onToolCallEnd: (
     toolName: string,
@@ -1747,10 +1729,10 @@ function createAgentToolCallHooks({
 }: CreateAgentToolCallHooksOptions): AgentToolCallHooks {
   const toolSpanIds = new Map<string, string>()
   const toolNamesByUseId = new Map<string, string>()
-  const toolStartTimes = new Map<string, number>()
 
   return {
     toolNamesByUseId,
+    getToolSpanId: (toolUseId) => toolSpanIds.get(toolUseId),
     onToolCallStart: (toolName, toolUseId, input) => {
       toolNamesByUseId.set(toolUseId, toolName)
       const filteredToolInput = filterToolInput(input, obs.secretFilter)
@@ -1782,19 +1764,6 @@ function createAgentToolCallHooks({
         toolSpanIds.set(toolUseId, toolSpan.id)
       }
       executionState.currentTraceSpanId = toolSpan?.id
-      toolStartTimes.set(toolUseId, Date.now())
-      obs.sessionEvents?.append(toolContext.sessionId, [
-        {
-          type: 'tool/call',
-          data: {
-            toolUseId,
-            name: toolName,
-            inputHash: hashTraceValue(filteredToolInput),
-            inputPreview: previewTraceValue(filteredToolInput),
-            spanId: toolSpan?.id,
-          },
-        },
-      ])
     },
     onToolCallEnd: (toolName, toolUseId, input, result) => {
       if (toolName === 'memory' && result.success) {
@@ -1827,9 +1796,6 @@ function createAgentToolCallHooks({
 
       const toolSpanId = toolSpanIds.get(toolUseId)
       const filteredToolInput = filterToolInput(input, obs.secretFilter)
-      const startedAt = toolStartTimes.get(toolUseId)
-      toolStartTimes.delete(toolUseId)
-      const durationMs = startedAt !== undefined ? Date.now() - startedAt : undefined
       // span 只带有界载荷:完整工具 IO 不再重复写入 trace.jsonl/run.log
       const slimResult = slimToolResultForTrace(result)
       if (toolSpanId) {
@@ -1855,20 +1821,6 @@ function createAgentToolCallHooks({
           outputSummary: result.outputSummary,
         })
       }
-      obs.sessionEvents?.append(toolContext.sessionId, [
-        {
-          type: 'tool/result',
-          data: {
-            toolUseId,
-            name: toolName,
-            status: result.success ? 'success' : 'error',
-            durationMs,
-            chars: result.output.length,
-            summary: result.outputSummary,
-          },
-        },
-      ])
-
       obs.bus?.emit('tool:result', {
         sessionId: toolContext.sessionId,
         tool: toolName,
@@ -1941,25 +1893,4 @@ function slimToolResultForTrace(result: ToolResult): Record<string, unknown> {
         : output,
     ...(result.backgroundTaskId ? { backgroundTaskId: result.backgroundTaskId } : {}),
   }
-}
-
-function hashTraceValue(value: unknown): string {
-  return `sha256:${createHash('sha256')
-    .update(JSON.stringify(value) ?? 'null')
-    .digest('hex')}`
-}
-
-function previewTraceValue(value: unknown, maxLength = 512): string {
-  const text = typeof value === 'string' ? value : JSON.stringify(value)
-  if (text === undefined) return ''
-  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text
-}
-
-function mapStopReason(
-  stopReason: string | undefined,
-): 'end_turn' | 'tool_use' | 'error' | 'aborted' {
-  if (stopReason === 'tool_use') return 'tool_use'
-  if (stopReason === 'aborted' || stopReason === 'interrupted') return 'aborted'
-  if (stopReason === 'error' || stopReason === 'max_tokens') return 'error'
-  return 'end_turn'
 }

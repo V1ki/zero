@@ -12,7 +12,7 @@
 （带子文件的相对路径）。子代理的 `system/prompt`、`tools/set` 和 step、tool 等过程事件写进子文件，
 不混入父会话。子代理仍在进程内运行，trace 和 usage 账本继续沿用父会话的 sessionId。
 
-子文件也带子代理自己的 `user/message` / `assistant/message`：消息由 agent hooks 经 `obs.sessionEvents`
+子文件也带子代理自己的 `user/message` / `assistant/message`：消息由 loop 经 `obs.sessionEvents`
 在产生时写入，spawn_agent 把这个句柄重定向到子文件，下标从 0 开始。子文件没有 `turn/*`，子代理不经过 `Session`。
 子代理消息里的图片写进父会话目录的 `images/`，与子文件放在一起。
 子代理的结束状态不另落事件：结果由父会话后续 `wait_agent` 的 `tool/result` 承载。
@@ -150,7 +150,7 @@ turn 内压缩后运行时也经 `assembleRequest` 重建请求消息（它记�
 ## 写入与读取
 
 - 消息写入：**在产生的那一刻写**，入口只有 `SessionEventStore.appendMessage`（外置图片、按投影长度分配
-  下标）。loop 产生的消息由 agent hooks 在转给调用方时写（`onNewMessage`；记忆提醒阶段的消息不转给调用方，
+  下标）。loop 产生的消息由 `AgentLoop` 在转给调用方之前写（记忆提醒阶段的消息不转给调用方，
   不进 canonical，写成 `request/message`）；turn 进行中排队的消息由 `queueMessage` 在追加进 canonical 时写。已写入的消息不再原地修改
   （任务结束判定只记在 `closure/end`，不再写回 assistant 消息的 `taskClosure`）。
 - 改动已有消息的一方当场调用 `syncMessages(sessionId, messages, reason)`：前缀缩短时写

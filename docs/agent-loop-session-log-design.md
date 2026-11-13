@@ -24,7 +24,7 @@ dsh 把功能拆成插件，ZeRo 用调用处传入的模块，见「目标形�
 | --- | --- | --- | --- |
 | 日志是事实来源 | loop 每产生一条消息就 `session.append()`；`deriveMessages()` 返回冻结的投影 | loop 每产生一条消息就 `appendMessage`（步骤 3）；内存里的 `Message[]` 仍由 `Session` 持有，turn 结束时 `syncCanonical` 只对账 | 恢复从 `projectForRestore` 重建内存状态，不改写 canonical（[session-log-replay.md](session-log-replay.md) 步骤 4、5）；改动已有消息要当场声明原因 |
 | 投影不可变 | 冻结对象，改写历史在类型上不可表达；压缩用 `surfaceOp: replace` 落事件 | 请求消息由 `prepareRequestMessages(canonical, 检查点)` 投影得到，不修改 canonical（步骤 1、5） | 已对齐；修复前的问题见下方「已复现的问题」 |
-| 两条写路径 | 只有 `append` | 过程事件和消息事件都由 hooks 在发生时写入（步骤 3） | 已对齐 |
+| 两条写路径 | 只有 `append` | 过程事件和消息事件都由 loop 在发生时写入（步骤 3、4a） | 已对齐 |
 | 每个 loop 都落日志 | 子代理有自己的 Session | `spawn_agent` 的子代理有自己的事件文件（过程事件和消息）；记忆检索、压缩模型、任务闭合、Router 的 8 个调用点都不写事件流；Router 用 `logger: console` | 这些模型调用只能从 usage 账本看到花费，看不到输入输出 |
 | loop 只有一份 | `agent`（接口）与 `agent-loop`（驱动）分离，扩展点是事件 | `AgentLoop` 本身是通用的，但「能用的 agent」那一层写了三遍 | 见下方「loop 重复在哪里」 |
 | 旁路日志 | 无；查询走派生索引 | `run.log`、`trace.jsonl`、`events.jsonl`、`sessions.db` 大字段与事件流并存；Web 还没读事件流 | 双写观察期未结束 |
@@ -62,12 +62,13 @@ dsh 把功能拆成插件，ZeRo 用调用处传入的模块，见「目标形�
 
 | 层 | 代码 | 谁在用 | 写事件流 |
 | --- | --- | --- | --- |
-| loop | `AgentLoop`（`agent-loop.ts`） | 所有调用方 | 否 |
-| 基座 | `runAgentLoop`（`agent-run.ts`） | 记忆检索、Router | 否 |
-| 会话 Agent | `Agent` + `agent-hooks.ts` | 主会话、`spawn_agent` 子代理 | 是 |
+| loop | `AgentLoop`（`agent-loop.ts`） | 所有调用方 | 步骤 4a 起：给了事件句柄就写 step、tool、消息事件 |
+| 基座 | `runAgentLoop`（`agent-run.ts`） | 记忆检索、Router | 步骤 4a 起：给了事件句柄就写 `system/prompt`、`tools/set`、`loop/start` |
+| 会话 Agent | `Agent` + `agent-hooks.ts` | 主会话、`spawn_agent` 子代理 | 注入、压缩、闭合、记忆等会话特有的事件 |
 
-`step/start`、`requestHash`、`tool/call`、消息事件的写入都在第三层，和排队、任务闭合、记忆提醒、压缩写在同一批
-hooks 里。「日志可重放」因此只对用 `Agent` 的调用成立，接在基座上的调用方什么都没继承到。
+步骤 4a 之前，`step/start`、`requestHash`、`tool/call`、消息事件的写入都在第三层，和排队、任务闭合、记忆提醒、压缩
+写在同一批 hooks 里。「日志可重放」因此只对用 `Agent` 的调用成立，接在基座上的调用方什么都没继承到。记忆检索和
+Router 现在还没有传事件句柄（步骤 4b、4c），所以仍然没有日志。
 
 `AgentLoopHooks` 的每个扩展点只能放一个函数。主会话的几项功能要共用同一批扩展点，只能在 `createAgentLoopHooks`
 里手工拼在一起，功能之间还直接引用对方（排队会打断记忆提醒，工具 hook 要通知记忆「写入成功」）。缺的不是扩展点，
@@ -157,7 +158,7 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
 | 1 | 组装改为纯函数投影：准备 prompt 不再修改 canonical 消息；evidence 和压缩模型读原文 | 已完成 |
 | 2 | loop 基座 `runAgentLoop`；记忆检索和 Router 改为基座的配置 | 已完成 |
 | 3 | 主会话的 loop 直接写消息事件，取代 turn 结束时的 diff；`syncCanonical` 只留给非 loop 修改 | 已完成：即 [session-log-replay.md](session-log-replay.md) 的步骤 1，子代理一并写消息；非 loop 修改经 `syncMessages` 声明原因，`syncCanonical` 只对账 |
-| 4 | 基座写事件流；记忆检索、Router、Codex Worker 依次接入 | 后续，分 4a～4d，见下 |
+| 4 | 基座写事件流；记忆检索、Router、Codex Worker 依次接入 | 4a 已完成；4b～4d 后续，见下 |
 | 5 | 删除旧式 `compressConversation` 和切换模型时对 canonical 的覆盖；预算改为按压缩后的投影判断 | 已完成：[检查点压缩](context-compaction.md)是唯一的压缩机制，旧代码已删除 |
 | 6 | 主会话 `Agent` 改为「基座 + 模块」，从 `agent-hooks.ts` 一次搬出一项功能 | 后续，见下 |
 | 7 | Web 读事件流；切 `file-only`；`run.log` 与 trace 里与事件流重复的部分退役 | 后续 |
@@ -196,11 +197,19 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
 
 分四步，每一步单独合并。4a、4b 不依赖待定事项。
 
-- **4a 基座接事件流。** `runAgentLoop` 接受事件句柄（`AgentObservability.sessionEvents` 现在的形状），
-  `loop/start`、`step/start`（含 `requestHash`）、`step/end`、`tool/call`、`tool/result` 和消息事件的写入从
-  `agent.ts`、`agent-hooks.ts` 下移到基座。主会话的事件载荷不变：`step/start.requestSpanId` 和 `tool/call.spanId` 在类型上
-  已是可选，主会话的 span 编号仍由 trace 一侧交给基座，没有 tracer 的调用方不带。`request-replay.test.ts`
-  对每个 `step/start` 的三方比对是这一步的验收。迁移期间句柄可缺省，全部调用方接入后改为必填。
+- **4a 基座接事件流（已完成）。** 写事件落在两层，入口是同一个 `AgentLoopJournal`：
+  - `AgentLoop` 写 `step/start`（含 `requestHash`）、`step/end`、`tool/call`、`tool/result` 和消息事件。主会话和
+    `runAgentLoop` 都经过它，所以这几类事件只有一份实现，`agent-hooks.ts` 里的对应代码已删除。
+  - `runAgentLoop` 在 loop 之前写 `system/prompt`、`tools/set`、`loop/start`。主会话的这三类事件仍由 `Session` 和
+    `Agent.run` 写：`loop/start` 必须早于 turn 开始的压缩，要等压缩成为模块（步骤 6）才能并过来。
+  - 主会话特有的三样东西经 `AgentLoopJournal` 的回调交给 loop：请求和工具的 span 编号（trace 一侧提供，没有 tracer
+    的调用方不带）、「此刻的消息只进请求」（记忆提醒阶段，写成 `request/message`）。
+  - `step/end` 写在 `onCompletionEnd` hook 之前：调用方的策略拒绝这次响应（Router 的输出上限、无效工具调用）时，
+    这次请求仍有记录。
+  - 事件句柄指向的文件，canonical 消息必须正好等于传入的 `history`；没有历史的一次运行用新文件。带历史的调用方
+    怎么满足这一条在 4c 定。
+  - 验收：主会话在同一脚本下改动前后的事件流逐条相同（类型、顺序、载荷，除随机编号和时间）；`request-replay.test.ts`
+    的三方比对不变；`agent-run.test.ts` 对 `runAgentLoop` 做同样的三方比对。句柄目前可缺省，全部调用方接入后改为必填。
 - **4b 记忆检索接入。** 它属于父会话的某个 turn，写父会话目录下的 `sub-<id>.jsonl`，与 `spawn_agent` 的子代理
   相同。它现在写进父会话的 `memory/retrieval/start|end` 保留。
 - **4c Router 接入。** 8 个调用点传入事件句柄，`logger: console` 换成与主会话相同的 logger。传入的历史在 loop

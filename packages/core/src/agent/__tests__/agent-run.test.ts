@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { ProviderAdapter } from '@zero-os/model'
+import { SessionEventStore } from '@zero-os/observe'
 import type {
   CompletionRequest,
   CompletionResponse,
@@ -8,6 +12,7 @@ import type {
   ToolUseBlock,
 } from '@zero-os/shared'
 import { type AgentLoopRunOptions, AgentLoopStoppedError, runAgentLoop } from '../agent-run'
+import { assembleRequest, hashRequest } from '../request-assembly'
 
 class ScriptedAdapter implements ProviderAdapter {
   readonly apiType = 'fake-agent-run'
@@ -285,5 +290,133 @@ describe('runAgentLoop', () => {
 
     expect(run.toolCalls).toEqual([])
     expect(run.messages.map((message) => message.role)).toEqual(['user'])
+  })
+})
+
+describe('runAgentLoop with a journal', () => {
+  const sessionId = 'sess-agent-run'
+
+  async function journaled(
+    adapter: ProviderAdapter,
+    overrides: Partial<AgentLoopRunOptions> = {},
+    journal: Omit<NonNullable<AgentLoopRunOptions['journal']>, 'events'> = {},
+  ) {
+    const logs = mkdtempSync(join(tmpdir(), 'zero-agent-run-journal-'))
+    try {
+      const store = new SessionEventStore({ basePath: logs })
+      store.ensureSession({ v: 1, sessionId, schemaVersion: 1, source: 'web' })
+      const outcome = await runAgentLoop(
+        options(adapter, { journal: { events: store, ...journal }, ...overrides }),
+      ).catch((error: unknown) => error)
+      const events = store.readEvents(sessionId)
+      const replayed = events
+        .filter((event) => event.type === 'step/start')
+        .map((event) => {
+          const input = store.getRequestAssemblyInput(sessionId, event.seq)
+          if (!input) throw new Error(`step ${event.seq} cannot be rebuilt`)
+          return { logged: event.data.requestHash, rebuilt: hashRequest(assembleRequest(input)) }
+        })
+      return { outcome, events, replayed }
+    } finally {
+      rmSync(logs, { recursive: true, force: true })
+    }
+  }
+
+  test('every request can be rebuilt from the log and matches what the adapter received', async () => {
+    const received: string[] = []
+    const adapter = new ScriptedAdapter((request, index) => {
+      received.push(
+        hashRequest({
+          system: request.system ?? '',
+          toolNames: (request.tools ?? []).map((tool) => tool.name),
+          messages: request.messages,
+        }),
+      )
+      return index === 0 ? toolRound(use('a', { q: 1 })) : answer('done')
+    })
+
+    const { events, replayed } = await journaled(adapter)
+
+    expect(events.map((event) => event.type)).toEqual([
+      'session',
+      'system/prompt',
+      'tools/set',
+      'loop/start',
+      'user/message',
+      'step/start',
+      'step/end',
+      'assistant/message',
+      'tool/call',
+      'tool/result',
+      'user/message',
+      'step/start',
+      'step/end',
+      'assistant/message',
+    ])
+    expect(replayed).toHaveLength(2)
+    expect(replayed.map((step) => step.logged)).toEqual(received)
+    expect(replayed.map((step) => step.rebuilt)).toEqual(received)
+  })
+
+  test('step and tool events carry the outcome, and tool input is filtered before it is logged', async () => {
+    const adapter = new ScriptedAdapter((_request, index) =>
+      index === 0 ? toolRound(use('a', { q: 'token-123' }), use('b', { q: 2 })) : answer('done'),
+    )
+
+    const { events } = await journaled(
+      adapter,
+      {
+        toolExecutor: {
+          has: (name) => name === 'lookup',
+          execute: async (_name, id) =>
+            id === 'a'
+              ? { success: true, output: 'found', outputSummary: 'found' }
+              : { success: false, output: 'no such record', outputSummary: 'missing' },
+        },
+      },
+      {
+        modelLabel: 'provider/model',
+        secretFilter: {
+          filter: (text) => text.replaceAll('token-123', '[redacted]'),
+          addSecret() {},
+          removeSecret() {},
+        },
+      },
+    )
+    const data = (type: string) =>
+      events.filter((event) => event.type === type).map((event) => event.data)
+
+    expect(data('step/start')).toMatchObject([
+      { stepIndex: 1, model: 'provider/model', messageCount: 1 },
+      { stepIndex: 2, model: 'provider/model', messageCount: 3 },
+    ])
+    expect(data('step/end')).toMatchObject([
+      { stepIndex: 1, stopReason: 'tool_use', requestId: 'resp_tools', usage: { input: 3 } },
+      { stepIndex: 2, stopReason: 'end_turn', requestId: 'resp_answer', usage: { input: 5 } },
+    ])
+    expect(data('tool/call')).toMatchObject([
+      { toolUseId: 'a', name: 'lookup', inputPreview: '{"q":"[redacted]"}' },
+      { toolUseId: 'b', name: 'lookup', inputPreview: '{"q":2}' },
+    ])
+    expect(data('tool/result')).toMatchObject([
+      { toolUseId: 'a', name: 'lookup', status: 'success', chars: 5, summary: 'found' },
+      { toolUseId: 'b', name: 'lookup', status: 'error', chars: 14, summary: 'missing' },
+    ])
+  })
+
+  test('a response the caller rejects is still logged', async () => {
+    const adapter = new ScriptedAdapter(() => answer('too long'))
+
+    const { outcome, events } = await journaled(adapter, {
+      hooks: {
+        onCompletionEnd() {
+          throw new Error('rejected by policy')
+        },
+      },
+    })
+
+    expect(outcome).toBeInstanceOf(Error)
+    expect(events.map((event) => event.type).slice(-2)).toEqual(['step/start', 'step/end'])
+    expect(events.at(-1)?.data).toMatchObject({ stepIndex: 1, stopReason: 'end_turn' })
   })
 })

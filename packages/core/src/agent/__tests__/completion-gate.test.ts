@@ -1290,7 +1290,7 @@ describe('Agent task closure gate', () => {
 
     let interruptChecks = 0
     let drained = false
-    const hooks = createAgentLoopHooks({
+    const { hooks } = createAgentLoopHooks({
       config,
       adapter,
       closureAdapter: adapter,

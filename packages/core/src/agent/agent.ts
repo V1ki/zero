@@ -118,7 +118,7 @@ export class Agent {
         requireThinkingForToolUse,
       })
 
-      const loopHooks = createAgentLoopHooks({
+      const { hooks: loopHooks, journal } = createAgentLoopHooks({
         config: this.config,
         adapter: this.adapter,
         closureAdapter: this.closureAdapter,
@@ -147,6 +147,7 @@ export class Agent {
         {
           adapter: this.adapter,
           sessionId: this.toolContext.sessionId,
+          journal,
           toolExecutor: createAgentToolExecutor({
             toolRegistry: this.toolRegistry,
             toolContext: this.toolContext,
