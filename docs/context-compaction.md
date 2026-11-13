@@ -103,9 +103,11 @@ interface ContextCheckpoint {
 | `compaction/end` | diagnostics | compactionId、status（`pruned` / `summarized` / `failed`）、tokensBefore、tokensAfter、durationMs、usage、error |
 
 `compaction/checkpoint` 是投影源：重放时取最后一份有效的检查点。`step/start` 之前的检查点已经在日志里，
-所以 `projectUpTo(seq)` 加上投影函数（`prepareRequestMessages`）就是那次请求的消息。消息事件目前仍由 Session
-在 turn 结束时写入，turn 内的请求要接上本 turn 的消息；指向本 turn 消息的检查点在 turn 结束前按重放规则视为无效，
-等 loop 直接写消息事件后这一缺口消失。
+所以 `projectUpTo(seq)` 加上投影函数（`prepareRequestMessages`）就是那次请求的消息。消息事件在产生时写入
+（[session-log-replay.md](session-log-replay.md) 步骤 1），turn 内每次请求带的消息都在它的 `step/start` 之前，
+指向本 turn 消息的检查点在重放时同样有效，原先「turn 内的请求要接上本 turn 的消息」的缺口已消失。
+仍要另外补上的是只在请求里的内容：本 turn 首条 user 消息的注入（`injection/context`）和拼进去的排队原文；
+记忆提醒阶段的请求还原不出，留给 session-log-replay 的步骤 2。
 
 检查点同时镜像到 sessions.db 的 `session_context_checkpoints` 行（file-only 模式不写），没有事件文件的会话从这里恢复。
 

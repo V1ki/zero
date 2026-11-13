@@ -17,7 +17,7 @@ assembleRequest(projectUpTo(step/start 的 seq)) == 那次请求实际发给模�
 ## 现状的缺口
 
 1. **本 turn 的消息到 turn 结束才写日志。** 消息事件由 `syncCanonical` 在 turn 结束时做前缀 diff 补写，所以
-   `step/start` 的 seq 早于它发出的消息；turn 中途崩溃，本 turn 的消息全部丢失。
+   `step/start` 的 seq 早于它发出的消息；turn 中途崩溃，本 turn 的消息全部丢失。（步骤 1 已关闭）
 2. **记忆提醒阶段的消息不进 canonical，也不落任何事件。** 它们发给了模型，这几次请求还原不出来。
 3. **系统提示词只记了一部分。** 请求里的 system 是「系统提示词 + identityMemory」，`system/prompt` 只记了前者。
 4. **恢复时会改写 canonical。** 恢复把重排后的工具结果、以及（当前模型是 DeepSeek 时）删掉无签名 thinking 的工具调用
@@ -30,7 +30,11 @@ assembleRequest(projectUpTo(step/start 的 seq)) == 那次请求实际发给模�
 ## 约定
 
 - **消息在产生的那一刻写入。** 写入口只有一个：`SessionEventStore.appendMessage`，下标由 store 按当前投影长度分配。
-  主会话和子代理的 loop 都经 `obs.sessionEvents` 调它，所以子代理的事件文件自动带上消息。
+  主会话和子代理的 loop 都经 `obs.sessionEvents` 调它，所以子代理的事件文件自动带上消息。loop 之外进 canonical 的
+  只有 turn 进行中排队的消息，`queueMessage` 在追加的同一刻调它。已写入的消息不再原地修改：任务结束判定只记在
+  `closure/end`，不再写回 assistant 消息的 `taskClosure`。
+- **改动已有消息的一方声明原因。** 回滚、撤回、恢复修复当场调 `syncMessages(sessionId, messages, reason)`；
+  `syncCanonical` 不带原因，它发现的差异一律算没有声明。
 - **`syncCanonical` 只做对账。** 正常运行时它找不到差异。出现前缀缩短（回滚、撤回、恢复修复）时写
   `messages/truncate`，原因由调用方声明：`turn_failed`、`admin`、`recall`、`restore_repair`、`interrupt`。
   没有声明原因却出现差异，说明有代码在别处改了 canonical：按 `unexpected` 记录并经 `onError` 上报。
@@ -48,13 +52,17 @@ assembleRequest(projectUpTo(step/start 的 seq)) == 那次请求实际发给模�
 
 ## 步骤
 
-| 步骤 | 内容 | 关闭的缺口 |
-| --- | --- | --- |
-| 1 | 消息即时写入；`syncCanonical` 只做对账并写对截断原因；恢复时处理没封口的 turn | 1 |
-| 2 | 记忆提醒消息和 identityMemory 落事件 | 2、3 |
-| 3 | `assembleRequest` 供运行时和重放共用；`step/start` 记请求 hash；重放核对的测试 | 核对空白 |
-| 4 | 恢复不再改写 canonical | 4 |
-| 5 | 恢复只读日志：系统提示词、turn 编号、已注入记忆表 | 5、6 |
+| 步骤 | 内容 | 关闭的缺口 | 状态 |
+| --- | --- | --- | --- |
+| 1 | 消息即时写入；`syncCanonical` 只做对账并写对截断原因；恢复时处理没封口的 turn | 1 | 已完成 |
+| 2 | 记忆提醒消息和 identityMemory 落事件 | 2、3 | 后续 |
+| 3 | `assembleRequest` 供运行时和重放共用；`step/start` 记请求 hash；重放核对的测试 | 核对空白 | 后续 |
+| 4 | 恢复不再改写 canonical | 4 | 后续 |
+| 5 | 恢复只读日志：系统提示词、turn 编号、已注入记忆表 | 5、6 | 后续 |
+
+步骤 1 之后，不在记忆提醒阶段的请求，消息部分已能由 `projectUpTo(step/start 的 seq)` 经 `prepareRequestMessages`
+投影、再补上本 turn 首条 user 消息的注入和排队拼接原文得到（`agent-message-events.test.ts` 逐步核对）；
+system 里的 identityMemory 和记忆提醒阶段的请求要等步骤 2。没有事件文件的旧会话恢复时，DB 快照先写进事件流。
 
 记忆提醒阶段的消息只落注入事件，不进 canonical：模型以后看不到它们，行为与现在一致，只是多一份可还原的记录。
 

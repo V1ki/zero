@@ -20,10 +20,10 @@
 
 | 约定 | dsh 的做法 | ZeRo 现状 | 差距 |
 | --- | --- | --- | --- |
-| 日志是事实来源 | loop 每产生一条消息就 `session.append()`；`deriveMessages()` 返回冻结的投影 | 内存里的 `Message[]` 是事实，turn 结束时 `syncCanonical` 把它和日志做前缀 diff | 日志是镜像。turn 中途崩溃丢本 turn 消息；内存数组一被改写，diff 就产生回滚事件 |
+| 日志是事实来源 | loop 每产生一条消息就 `session.append()`；`deriveMessages()` 返回冻结的投影 | loop 每产生一条消息就 `appendMessage`（步骤 3）；内存里的 `Message[]` 仍由 `Session` 持有，turn 结束时 `syncCanonical` 只对账 | 恢复仍从投影重建内存数组；改动已有消息要当场声明原因 |
 | 投影不可变 | 冻结对象，改写历史在类型上不可表达；压缩用 `surfaceOp: replace` 落事件 | 请求消息由 `prepareRequestMessages(canonical, 检查点)` 投影得到，不修改 canonical（步骤 1、5） | 已对齐；修复前的问题见下方「已复现的问题」 |
-| 两条写路径 | 只有 `append` | 过程事件（step、tool、closure、injection）由 hooks 直接 `append`，消息事件由 `syncCanonical` 事后补 | `step/start` 的 seq 早于它发出的 `user/message` |
-| 每个 loop 都落日志 | 子代理有自己的 Session | `spawn_agent` 的子代理有自己的事件文件（过程事件，暂无消息）；记忆检索、压缩模型、任务闭合、Router 的 8 个调用点都不写事件流；Router 用 `logger: console` | 这些模型调用只能从 usage 账本看到花费，看不到输入输出 |
+| 两条写路径 | 只有 `append` | 过程事件和消息事件都由 hooks 在发生时写入（步骤 3） | 已对齐 |
+| 每个 loop 都落日志 | 子代理有自己的 Session | `spawn_agent` 的子代理有自己的事件文件（过程事件和消息）；记忆检索、压缩模型、任务闭合、Router 的 8 个调用点都不写事件流；Router 用 `logger: console` | 这些模型调用只能从 usage 账本看到花费，看不到输入输出 |
 | loop 只有一份 | `agent`（接口）与 `agent-loop`（驱动）分离，扩展点是事件 | `AgentLoop` 本身是通用的，但「能用的 agent」那一层写了三遍 | 见下方「loop 重复在哪里」 |
 | 旁路日志 | 无；查询走派生索引 | `run.log`、`trace.jsonl`、`events.jsonl`、`sessions.db` 大字段与事件流并存；Web 还没读事件流 | 双写观察期未结束 |
 
@@ -87,7 +87,7 @@
 | --- | --- | --- |
 | 1 | 组装改为纯函数投影：准备 prompt 不再修改 canonical 消息；evidence 和压缩模型读原文 | 已完成 |
 | 2 | loop 基座 `runAgentLoop`；记忆检索和 Router 改为基座的配置 | 已完成 |
-| 3 | 主会话的 loop 直接写消息事件，取代 turn 结束时的 diff；`syncCanonical` 只留给非 loop 修改 | 后续 |
+| 3 | 主会话的 loop 直接写消息事件，取代 turn 结束时的 diff；`syncCanonical` 只留给非 loop 修改 | 已完成：即 [session-log-replay.md](session-log-replay.md) 的步骤 1，子代理一并写消息；非 loop 修改经 `syncMessages` 声明原因，`syncCanonical` 只对账 |
 | 4 | 旁路 loop（记忆检索、压缩、闭合、Router）落事件流 | 后续，见待定事项 |
 | 5 | 删除旧式 `compressConversation` 和切换模型时对 canonical 的覆盖；预算改为按压缩后的投影判断 | 已完成：[检查点压缩](context-compaction.md)是唯一的压缩机制，旧代码已删除 |
 | 6 | 主会话 `Agent` 改为「基座 + 会话插件」，拆分 `agent-hooks.ts` | 后续 |
