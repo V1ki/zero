@@ -155,19 +155,23 @@ turn 内压缩后运行时也经 `assembleRequest` 重建请求消息（它记�
   （任务结束判定只记在 `closure/end`，不再写回 assistant 消息的 `taskClosure`）。
 - 改动已有消息的一方当场调用 `syncMessages(sessionId, messages, reason)`：前缀缩短时写
   `messages/truncate`，再追加之后的消息。原因：turn 失败回滚 `turn_failed`、尾部回滚命令 `admin`、
-  外部消息撤回（原地改写一条旧消息）`recall`、恢复修复 `restore_repair`。
+  外部消息撤回（原地改写一条旧消息）`recall`、恢复时封口没封口的 turn `restore_repair`。
 - turn 结束（`persistSessionState`）：**事件流先写，DB 后写**。`syncCanonical` 只做对账，正常找不到消息差异；
   消息或压缩块自上一条 `checkpoint` 后有变化时补一条 `checkpoint`。对账发现差异说明有改动没经过 store：
   截断记 `unexpected`，与补写的消息一起经 `onError` 上报。历史事件永不改写。
 - DB 的 `session_messages` 仍在 turn 结束时整体写入（file-only 模式不写），turn 内事件流领先于 DB，
   恢复优先读事件流。
-- 读取（`SessionManagerStore.restoreSessionById` / `getMessagesFromDB`）：
-  优先 `SessionEventStore.project()`，无事件文件（迁移前的旧会话）时回退
-  sessions.db 快照行。
+- 读取：恢复（`SessionManagerStore.restoreSessionById`）读 `SessionEventStore.projectForRestore()`：投影加上最后一份
+  系统提示词、最大的 turn 编号、已注入记忆表，会话元数据之外的状态都由重放得到，不读 trace 的请求记录、不读 DB 大字段
+  （见 [session-log-replay.md](session-log-replay.md)「恢复读什么」）；`getMessagesFromDB` 等只读 `project()`。
+  无事件文件（迁移前的旧会话）时回退 sessions.db 快照行。
 - 双写等价性：store 在采样的 sync 上从磁盘重放并比对投影，不一致记
   `session_event_store_error`（events.jsonl）。
 
 ### 恢复时的修复
+
+恢复不改写 canonical：面向 provider 的清理（排队消息并进 tool_result、DeepSeek 风格 adapter 的签名 thinking）
+只在请求组装时做。恢复写事件只有下面两种情形。
 
 - **没封口的 turn。** 进程在 turn 中途退出，日志里最后一个 `turn/start` 之后没有 `turn/end`。恢复
   （`SessionManagerStore.restoreSession` → `sealInterruptedTurn`）按 turn 失败的规则（`applyFailedTurnRollback`）

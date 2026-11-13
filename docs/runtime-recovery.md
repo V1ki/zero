@@ -74,6 +74,17 @@ performed external side effects.
 Feishu streaming card updates and terminal cleanup are also bounded. A hung update cannot block
 `complete`, `abort`, `dismiss`, or server shutdown indefinitely.
 
+## Session restore after a restart
+
+Sessions are restored lazily from their event log (`session.jsonl`). Restore is read-only apart
+from sealing a turn the crash left open (it is rolled back by the failed-turn rule and closed with
+`turn/end` `reason: process_restart`). Canonical messages are not reordered or sanitized on restore;
+provider-specific clean-up happens when each request is assembled, so switching models never loses
+history. The system prompt, next turn number and the set of memories already injected come from
+the log; session metadata (model, channel, tags, agent config) comes from `sessions.db`. Sessions
+without an event file fall back to their `sessions.db` snapshot. Running background jobs and
+sub-agents are not restored after a crash. Details: [session-log-replay.md](session-log-replay.md).
+
 ## Configuration
 
 All fields are optional:

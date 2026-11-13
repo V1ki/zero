@@ -23,7 +23,7 @@ turn 结束的对账走 `syncCanonical`，其余事件走 `append`。seq 写入�
 |---|---|---|---|---|
 | `user/message` ✅ | store `appendMessage`：agent-hooks `onNewMessage`（loop 产生的消息转给调用方的那一刻，子代理写进自己的文件）、session `queueMessage`（排队消息进 canonical 的那一刻）;`syncMessages` 截断后重新追加 | canonical 新增 user 消息（turn 输入、tool_result 消息、queued、control、layer2 提示、background 回注）;记忆提醒阶段的消息不进 canonical，写成 `request/message` | messageIndex（按投影长度分配）、message 全量、source、hash | 唯一权威的消息正文;图片为 imageRef 文件引用 |
 | `assistant/message` ✅ | 同上（agent-hooks `onNewMessage`） | canonical 新增 assistant 消息（含 text/thinking/tool_use blocks） | 同上 | 模型输出唯一权威全文;写入后不再原地修改 |
-| `messages/truncate` ✅ | store `syncMessages`（改动方声明原因）;`syncCanonical` 对账发现未声明的差异 | reason：`turn_failed`（turn 失败回滚 `applyFailedTurnRollback`）、`admin`（尾部回滚命令）、`recall`（外部消息撤回，原地改写旧消息后截断到它并重新追加）、`restore_repair`（恢复修复、没封口的 turn）、`unexpected`（对账时发现没经过 store 的改动，同时经 `onError` 上报）;`interrupt` 保留未用 | toMessageIndex、reason | 折叠指令，历史事件永不删除;正常运行的会话里没有 |
+| `messages/truncate` ✅ | store `syncMessages`（改动方声明原因）;`syncCanonical` 对账发现未声明的差异 | reason：`turn_failed`（turn 失败回滚 `applyFailedTurnRollback`）、`admin`（尾部回滚命令）、`recall`（外部消息撤回，原地改写旧消息后截断到它并重新追加）、`restore_repair`（恢复时封口没封口的 turn;恢复不再重排或清理 canonical）、`unexpected`（对账时发现没经过 store 的改动，同时经 `onError` 上报）;`interrupt` 保留未用 | toMessageIndex、reason | 折叠指令，历史事件永不删除;正常运行的会话里没有 |
 | `compaction/checkpoint` ✅ | agent `compactContextForRequest`（压缩产生新检查点的那一刻，经 `obs.sessionEvents`，子代理写进自己的文件）;session-turn 失败回滚时补写 | 裁剪水位推进或新摘要;turn 回滚恢复 turn 开始时的检查点 | checkpoint（完整检查点，回滚到没有检查点时为 null） | 投影取最后一份指向的消息都在投影里的检查点，无效则往前回退，遇到 null 或到头则没有;DB 镜像为 `session_context_checkpoints` 行 |
 | `compaction/block` 💤 | 不再写入（旧 store `syncCanonical` 在 blocks 变化时写） | 旧 timeline 压缩块 | blocks 全量数组 + changed(blockId, lifecycle) | 只读的旧数据：投影取最新一份用于展示，不参与请求投影 |
 
@@ -43,7 +43,7 @@ turn 结束的对账走 `syncCanonical`，其余事件走 `append`。seq 写入�
 
 | type | 发射点 | 触发 | data 要点 |
 |---|---|---|---|
-| `turn/start` ✅ | session-turn | 每 turn 开始 | turnIndex、trigger、model、agentName、baseSeq（本 turn 消息 seq 均大于它） |
+| `turn/start` ✅ | session-turn | 每 turn 开始 | turnIndex、trigger、model、agentName、baseSeq（本 turn 消息 seq 均大于它）;恢复时下一个 turn 编号 = 最大 turnIndex + 1 |
 | `turn/end` ✅ | session-turn 成功/异常两条路径;恢复时 `sealInterruptedTurn` 补写 | turn 结束;进程在 turn 中途退出后恢复（最后一个 `turn/start` 之后没有 `turn/end`） | turnIndex、status(completed/failed/aborted)、durationMs;补写的封口为 status=failed、reason=process_restart |
 | `step/end` ✅ | agent-hooks `onCompletionEnd` | 每次模型请求返回 | stepIndex、stopReason、requestId、usage、durationMs |
 | `tool/call` ✅ | agent-hooks `onToolCallStart` | 工具开始 | toolUseId、name、inputHash、inputPreview、spanId |
@@ -53,7 +53,7 @@ turn 结束的对账走 `syncCanonical`，其余事件走 `append`。seq 写入�
 | `compaction/end` ✅ | 同上 | 裁剪或摘要结束（紧跟在 `compaction/checkpoint` 之后） | compactionId、status(pruned/summarized/failed)、tokensBefore、tokensAfter、durationMs、usage、error |
 | `closure/end` ✅ | agent-hooks `onEndTurn` 三条路径 | 决策产出 | action(finish/continue/block/discarded)、reason、model、requestId、assistantMessageId、durationMs;discarded 原决策在 detail;判定只记在这里，不写回 assistant 消息 |
 | `memory/retrieval/start` ✅ | memory-retrieval `retrieveMemoriesWithDecision` | 检索 agent 侧循环开始（layer1 开场/layer2 工具失败后） | layer、turnIndex |
-| `memory/retrieval/end` ✅ | 同上（成功/失败两路径） | 检索结束 | layer、status(injected/skipped/failed)、queries、searchCount、selected、durationMs、usage、error |
+| `memory/retrieval/end` ✅ | 同上（成功/失败两路径） | 检索结束 | layer、status(injected/skipped/failed)、queries、searchCount、selected（id、title 必填、score）、durationMs、usage、error;status=injected 时 selected 就是记进会话已注入记忆表的记忆，恢复按它重建 |
 | `memory/recorded` ✅ | agent-hooks `onToolCallEnd` memory 分支 | memory 工具 create/update 成功 | action、memoryId、memoryType、title、toolUseId |
 | `model/selection` ✅（仅 1/4 触发点） | session `switchSessionModel` | /model 命令 | from、to(label/provider/modelId)、trigger=user_command、detail |
 | `params/reasoning` ✅ | session-controllers `updateSessionReasoningEffort` | /think 变更 effort | from、to |
@@ -87,7 +87,7 @@ job 只针对 bash。bash 执行超过 5 秒转后台（其他工具仍是 60 �
 
 | 消费 | 路径 |
 |---|---|
-| 会话恢复（权威） | `SessionManagerStore.restoreSessionById` → 先封口没封口的 turn，再 `store.project()`;无事件文件回退 DB 并把快照写进事件流;`getMessagesFromDB` 只读投影 |
+| 会话恢复（权威） | `SessionManagerStore.restoreSessionById` → 先封口没封口的 turn，再 `store.projectForRestore()`:canonical 投影、检查点、最后一条 `system/prompt` 的 content、最大的 `turn/start.turnIndex`、`memory/retrieval/end`(injected) 折出的已注入记忆表;恢复不写其他事件;无事件文件回退 DB 并把快照写进事件流;`getMessagesFromDB` 只读投影;规则见 [session-log-replay.md](./session-log-replay.md)「恢复读什么」 |
 | 请求重建 | `store.getRequestAssemblyInput(id, step/start 的 seq)`（或对事件数组调 `buildRequestAssemblyInput`）→ `assembleRequest` → `hashRequest` 与 `step/start.requestHash` 核对;规则见 [session-event-log.md](./session-event-log.md)「请求重建」 |
 | 状态查询 | `getSystemPrompt` / `getToolSet` / `getLastSeq` |
 | 迁移/校验 | scripts-diag convert（播种 session/system/prompt/user·assistant·truncate/compaction-block/injection）+ rebuild（事件→DB 派生行） |
