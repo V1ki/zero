@@ -260,7 +260,7 @@ describe('Session snapshot lifecycle', () => {
       router,
       registry,
       { observability, tracer, projectRoot: testProject.projectRoot },
-      session.getSystemPrompt(),
+      { systemPrompt: session.getSystemPrompt() },
     )
     restored.initAgent({ name: 'snapshot-agent', agentInstruction: 'Test snapshot prompt' })
     installFakeAgent(restored)
@@ -297,7 +297,7 @@ describe('Session snapshot lifecycle', () => {
       router,
       registry,
       { observability, tracer, projectRoot: testProject.projectRoot },
-      session.getSystemPrompt(),
+      { systemPrompt: session.getSystemPrompt() },
     )
     restored.initAgent({ name: 'snapshot-agent', agentInstruction: 'Test snapshot prompt' })
 

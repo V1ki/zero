@@ -281,7 +281,7 @@ describe('Agent context compaction at turn start', () => {
   test('events are written before the request and reproduce it from the log', async () => {
     const store = createEventStore()
     const history = textHistory()
-    store.syncCanonical(SESSION, { messages: history, blocks: [] })
+    for (const message of history) store.appendMessage(SESSION, message)
     const adapter = new ScriptedAdapter([])
     const { agent, tools } = createAgent({
       adapter,
@@ -296,7 +296,7 @@ describe('Agent context compaction at turn start', () => {
       maxOutput: 2_000,
     }
 
-    const newMessages = await agent.run(context, 'next question')
+    await agent.run(context, 'next question')
 
     const events = store.readEvents(SESSION)
     const stepStart = events.find((event) => event.type === 'step/start')
@@ -315,12 +315,12 @@ describe('Agent context compaction at turn start', () => {
       usage: { input: 10, output: 5 },
     })
 
-    // 本 turn 的消息事件在 turn 结束时才由 Session 写入,这里把本次请求的 user 消息接到投影后面
+    // 本 turn 的 user 消息在产生时写入,位于 step/start 之前
     const upTo = store.projectUpTo(SESSION, stepStart.seq)
     if (!upTo) throw new Error('missing projection')
     expect(upTo.checkpoint).toEqual(context.checkpoint)
     expect(
-      prepareRequestMessages([...upTo.messages, newMessages[0]], upTo.checkpoint, {
+      prepareRequestMessages(upTo.messages, upTo.checkpoint, {
         requireThinkingForToolUse: false,
       }),
     ).toEqual(adapter.requests[0].messages)

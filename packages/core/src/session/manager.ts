@@ -19,8 +19,14 @@ import type { AgentSnapshot } from '../agent/agent-control'
 import type { ToolRegistry } from '../tool/registry'
 import { Session, type SessionDeps } from './session'
 import type { SessionMessageRecallResult } from './session-conversation-state'
-import { persistSessionSnapshot } from './session-persistence'
-import { normalizeAgentConfig, normalizeSessionRow, sessionDataFromRow } from './session-restore'
+import { ensureSessionEventHeader, persistSessionSnapshot } from './session-persistence'
+import {
+  type RestoredSessionContext,
+  normalizeAgentConfig,
+  normalizeSessionRow,
+  sealInterruptedTurn,
+  sessionDataFromRow,
+} from './session-restore'
 import { allocateUniqueSessionId } from './session-runtime'
 
 export interface InterruptedSessionRef {
@@ -550,17 +556,35 @@ class SessionManagerStore {
 
     const normalizedRow = normalizeSessionRow(row, this.modelRouter)
     const data = sessionDataFromRow(normalizedRow)
-    // 事件流优先(写入序为事件先于 DB,只会更新);无事件文件时回退 DB 快照
-    const projection = this.deps.sessionEvents?.project(row.id)
+    const sessionEvents = this.deps.sessionEvents
+    if (sessionEvents) sealInterruptedTurn(sessionEvents, row.id)
+    // 有事件文件时,会话元数据之外的状态全部由重放日志得到(docs/session-log-replay.md「恢复读什么」);
+    // 没有事件文件的旧会话回退 DB 行
+    const projection = sessionEvents?.projectForRestore(row.id)
     const messages = projection
       ? projection.messages
       : (this.sessionDb?.loadSessionMessages(row.id) ?? [])
-    const timelineCompactionBlocks = projection
-      ? projection.blocks
-      : (this.sessionDb?.loadSessionCompactionBlocks(row.id) ?? [])
-    const checkpoint = projection
-      ? projection.checkpoint
-      : this.sessionDb?.loadContextCheckpoint(row.id)
+    // 没有事件文件的旧会话:先把 DB 快照写进事件流,之后的消息才能按下标即时追加
+    // (文件已存在但损坏时 store 拒绝写入,两步都不生效)
+    if (sessionEvents && !projection) {
+      ensureSessionEventHeader(sessionEvents, data)
+      sessionEvents.syncMessages(row.id, messages, 'restore_repair')
+    }
+    const restored: RestoredSessionContext = projection
+      ? {
+          systemPrompt: projection.systemPrompt,
+          timelineCompactionBlocks: projection.blocks,
+          checkpoint: projection.checkpoint,
+          injectedMemoryIds: projection.injectedMemoryIds,
+          // 没有 turn 事件(DB 快照导入的旧会话)时按 trace 与消息推算
+          nextTurnIndex:
+            projection.lastTurnIndex === undefined ? undefined : projection.lastTurnIndex + 1,
+        }
+      : {
+          systemPrompt: normalizedRow.systemPrompt,
+          timelineCompactionBlocks: this.sessionDb?.loadSessionCompactionBlocks(row.id) ?? [],
+          checkpoint: this.sessionDb?.loadContextCheckpoint(row.id),
+        }
     const modelScope = getModelScope(
       data.source,
       data.channelId,
@@ -573,9 +597,7 @@ class SessionManagerStore {
       this.modelRouter,
       this.toolRegistry,
       this.createSessionDeps(data.source, modelScope),
-      normalizedRow.systemPrompt,
-      timelineCompactionBlocks,
-      checkpoint,
+      restored,
     )
 
     if (normalizedRow.agentConfigJson) {

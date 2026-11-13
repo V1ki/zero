@@ -4,6 +4,9 @@ import { dirname, join, resolve } from 'node:path'
 import {
   type ContextCheckpoint,
   type Message,
+  type MessagesTruncateReason,
+  type RequestAssemblyInput,
+  type RequestEntry,
   SESSION_EVENT_FILE,
   SESSION_EVENT_SCHEMA_VERSION,
   SUBAGENT_EVENT_FILE_PREFIX,
@@ -12,8 +15,10 @@ import {
   type SessionEventFileCheck,
   type SessionEventInput,
   type SessionEventProjection,
+  type SessionRestoreProjection,
   type TimelineCompactionBlock,
   getSessionLogRelativeDir,
+  isMessageAppendEvent,
 } from '@zero-os/shared'
 import { externalizeImageData } from './image-ref'
 
@@ -22,9 +27,12 @@ import { externalizeImageData } from './image-ref'
  *
  * 每个会话一个 `session.jsonl`(子代理为父目录下 `sub-<id>.jsonl`):
  * - 首条必为 `session` 头事件(seq=0),之后 seq 严格递增;
- * - canonical 消息/压缩块通过 syncCanonical 做 diff 追加(回滚产生 truncate 事件);
+ * - canonical 消息在产生的那一刻经 appendMessage 追加(唯一写入口,下标按投影长度分配);
+ * - 改动已有消息的一方(回滚、撤回、恢复修复)经 syncMessages 声明截断原因;
+ * - syncCanonical 在 turn 结束时对账:正常找不到差异,没有声明原因的差异记 unexpected 并上报;
  * - 上下文检查点由 agent 在压缩发生时直接 append(compaction/checkpoint);
- * - project() 重放 surface 事件得到 canonical 投影,是恢复路径的权威读取端。
+ * - project() 重放 surface 事件得到 canonical 投影;projectForRestore() 再加上恢复需要的其余状态,
+ *   是恢复路径的权威读取端。
  */
 export class SessionEventStore {
   private readonly states = new Map<string, SessionEventState>()
@@ -108,16 +116,45 @@ export class SessionEventStore {
     return created === null ? null : relative
   }
 
-  /** Append diagnostics events (seq/ts assigned here). Returns first assigned seq. */
+  /**
+   * Append non-message events (seq/ts assigned here). Returns first assigned seq.
+   * 事件里的图片(request/message、queued_merge 的 blocks)与消息一样外置为 imageRef。
+   */
   append(sessionId: string, events: SessionEventInput[]): number | null {
     if (events.length === 0) return null
     const state = this.loadState(sessionId)
     if (!state || state.corrupt) return null
-    return this.appendEvents(sessionId, state, events)
+    return this.appendEvents(
+      sessionId,
+      state,
+      externalizeImageData(events, {
+        logsBasePath: this.basePath,
+        sessionId: state.projection.header?.parentSessionId ?? sessionId,
+      }),
+    )
   }
 
   /**
-   * Diff-sync canonical messages and compaction blocks, then append a checkpoint.
+   * 追加一条 canonical 消息:下标取当前投影长度,不与已有消息比对。
+   * 子代理的图片落在父会话目录下,与它的事件文件放在一起。
+   */
+  appendMessage(sessionId: string, message: Message): void {
+    const state = this.loadState(sessionId)
+    if (!state || state.corrupt) return
+
+    const [externalized] = externalizeImageData([message], {
+      logsBasePath: this.basePath,
+      sessionId: state.projection.header?.parentSessionId ?? sessionId,
+    })
+    this.appendEvents(sessionId, state, [
+      buildMessageEventInput(state.projection.messages.length, externalized),
+    ])
+  }
+
+  /**
+   * 对账 canonical 消息与压缩块,有变化时补一条 checkpoint。
+   * 消息已由 appendMessage 即时写入,这里正常找不到差异;出现差异说明有改动没经过 store,
+   * 截断记 `unexpected`,两种情况都经 onError 上报。
    * 双写期的等价性校验:按采样规则从磁盘重放并与输入比对,不一致时上报。
    */
   syncCanonical(
@@ -133,9 +170,16 @@ export class SessionEventStore {
     })
     const blocks = input.blocks
 
-    const pending: SessionEventInput[] = [
-      ...buildMessageSyncInputs(state.projection.messages, messages),
-    ]
+    const messageInputs = buildMessageSyncInputs(state.projection.messages, messages, 'unexpected')
+    if (messageInputs.length > 0) {
+      const truncated = messageInputs[0].type === 'messages/truncate'
+      this.options.onError?.(
+        `[SessionEventStore] session ${sessionId} canonical changed outside the store: ` +
+          `${truncated ? 'unexpected truncate, ' : ''}` +
+          `${messageInputs.length - (truncated ? 1 : 0)} message(s) appended at sync`,
+      )
+    }
+    const pending: SessionEventInput[] = [...messageInputs]
 
     if (!stableEqual(state.projection.blocks, blocks)) {
       pending.push({
@@ -144,28 +188,16 @@ export class SessionEventStore {
       })
     }
 
-    if (pending.length > 0) {
-      this.appendEvents(sessionId, state, pending)
-      this.appendEvents(sessionId, state, [
-        {
-          type: 'checkpoint',
-          data: {
-            atSeq: state.lastSeq,
-            messageCount: messages.length,
-            projectionHash: hashProjection(messages, blocks),
-          },
-        },
-      ])
-    }
-
+    this.appendEvents(sessionId, state, pending)
+    this.appendCheckpointIfChanged(sessionId, state)
     this.maybeVerify(sessionId, state, { messages, blocks })
   }
 
   /**
-   * 只同步 canonical 消息,不动压缩块状态(恢复期修复路径使用:
-   * 修复时拿不到权威 blocks,不能把 blocks 投影清空)。
+   * 只同步 canonical 消息,不动压缩块状态。改动已有消息的一方调用它并声明截断原因
+   * (turn 失败回滚、尾部回滚、撤回、恢复修复)。
    */
-  syncMessages(sessionId: string, messages: Message[]): void {
+  syncMessages(sessionId: string, messages: Message[], reason: MessagesTruncateReason): void {
     const state = this.loadState(sessionId)
     if (!state || state.corrupt) return
 
@@ -173,20 +205,12 @@ export class SessionEventStore {
       logsBasePath: this.basePath,
       sessionId,
     })
-    const pending = buildMessageSyncInputs(state.projection.messages, externalized)
-    if (pending.length === 0) return
-
-    this.appendEvents(sessionId, state, pending)
-    this.appendEvents(sessionId, state, [
-      {
-        type: 'checkpoint',
-        data: {
-          atSeq: state.lastSeq,
-          messageCount: externalized.length,
-          projectionHash: hashProjection(externalized, state.projection.blocks),
-        },
-      },
-    ])
+    this.appendEvents(
+      sessionId,
+      state,
+      buildMessageSyncInputs(state.projection.messages, externalized, reason),
+    )
+    this.appendCheckpointIfChanged(sessionId, state)
   }
 
   /** Full surface projection; null when no event file or the file is corrupt. */
@@ -202,6 +226,22 @@ export class SessionEventStore {
     }
   }
 
+  /**
+   * 恢复会话需要的全部状态(会话元数据除外):canonical 投影、最后一份系统提示词、最大的 turn 编号、
+   * 已注入记忆表。无文件或损坏时返回 null。
+   */
+  projectForRestore(sessionId: string): SessionRestoreProjection | null {
+    const projection = this.project(sessionId)
+    const state = this.states.get(sessionId)
+    if (!projection || !state) return null
+    return {
+      ...projection,
+      systemPrompt: state.projection.systemPrompt?.content,
+      lastTurnIndex: state.projection.lastTurnIndex,
+      injectedMemoryIds: new Map(state.projection.injectedMemoryIds),
+    }
+  }
+
   /** Projection frozen at a seq (request reconstruction anchor). */
   projectUpTo(sessionId: string, seq: number): SessionEventProjection | null {
     const state = this.loadState(sessionId)
@@ -210,6 +250,15 @@ export class SessionEventStore {
     const check = checkSessionEvents(events)
     if (!check.ok) return null
     return projectEvents(check.events.filter((event) => event.seq <= seq))
+  }
+
+  /** 一次请求(step/start 的 seq)的组装输入,见 buildRequestAssemblyInput;文件不存在或损坏时返回 null */
+  getRequestAssemblyInput(sessionId: string, stepSeq: number): RequestAssemblyInput | null {
+    const state = this.loadState(sessionId)
+    if (!state || state.corrupt) return null
+    const check = checkSessionEvents(this.readEvents(sessionId))
+    if (!check.ok) return null
+    return buildRequestAssemblyInput(check.events, stepSeq)
   }
 
   readEvents(sessionId: string): SessionEvent[] {
@@ -245,6 +294,21 @@ export class SessionEventStore {
   }
 
   // --- internals ---
+
+  /** 上一条 checkpoint 之后消息或压缩块有变化时写一条 checkpoint */
+  private appendCheckpointIfChanged(sessionId: string, state: SessionEventState): void {
+    if (!state.changedSinceCheckpoint) return
+    this.appendEvents(sessionId, state, [
+      {
+        type: 'checkpoint',
+        data: {
+          atSeq: state.lastSeq,
+          messageCount: state.projection.messages.length,
+          projectionHash: hashProjection(state.projection.messages, state.projection.blocks),
+        },
+      },
+    ])
+  }
 
   private maybeVerify(
     sessionId: string,
@@ -310,6 +374,7 @@ export class SessionEventStore {
     if (state) {
       applySurfaceEvents(state.projection, events)
       state.lastSeq = seq
+      state.changedSinceCheckpoint = changedSinceCheckpoint(events, state.changedSinceCheckpoint)
     } else {
       this.states.set(sessionId, createSessionEventState(relative, events))
     }
@@ -381,6 +446,8 @@ interface SessionEventState {
   lastSeq: number
   syncCount: number
   corrupt: boolean
+  /** 上一条 checkpoint 之后是否写过消息、截断或压缩块事件 */
+  changedSinceCheckpoint: boolean
   projection: ProjectionCore
 }
 
@@ -391,6 +458,7 @@ function createSessionEventState(relative: string, events: SessionEvent[]): Sess
     lastSeq: events.length > 0 ? events[events.length - 1].seq : -1,
     syncCount: 0,
     corrupt: false,
+    changedSinceCheckpoint: changedSinceCheckpoint(events, false),
     projection,
   }
 }
@@ -401,8 +469,30 @@ function createCorruptState(relative: string): SessionEventState {
     lastSeq: -1,
     syncCount: 0,
     corrupt: true,
-    projection: { header: null, messages: [], blocks: [], checkpoints: [] },
+    changedSinceCheckpoint: false,
+    projection: {
+      header: null,
+      messages: [],
+      blocks: [],
+      checkpoints: [],
+      injectedMemoryIds: new Map(),
+    },
   }
+}
+
+function changedSinceCheckpoint(events: SessionEvent[], initial: boolean): boolean {
+  let changed = initial
+  for (const event of events) {
+    if (event.type === 'checkpoint') changed = false
+    else if (
+      isMessageAppendEvent(event) ||
+      event.type === 'messages/truncate' ||
+      event.type === 'compaction/block'
+    ) {
+      changed = true
+    }
+  }
+  return changed
 }
 
 /** 文件级不变式:首条为 session 头(seq=0),seq 严格递增。 */
@@ -432,15 +522,101 @@ export function projectEvents(events: SessionEvent[]): SessionEventProjection {
   }
 }
 
+/**
+ * 一次请求的组装输入,只依赖事件(详见 docs/session-event-log.md「请求重建」):
+ * - 所属 loop:step/start 之前最近的 loop/start;history 与 checkpoint 是该 loop/start 处的投影;
+ * - system 与工具集:step/start 之前最后一条 system/prompt 与 tools/set;
+ * - entries:loop/start 与 step/start 之间按日志顺序的 canonical 消息事件(排队消息除外:紧跟在
+ *   agent/inbox/enqueued 之后、下标为其 messageIndex 的那条)、request/message、带 messageId 的
+ *   injection/context、compaction/checkpoint。
+ * seq 不是 step/start、它之前没有 loop/start(旧日志)、或 loop 内出现 messages/truncate(turn 中途撤回原地
+ * 改写了请求里的消息)时返回 null。
+ */
+export function buildRequestAssemblyInput(
+  events: SessionEvent[],
+  stepSeq: number,
+): RequestAssemblyInput | null {
+  const stepPosition = events.findIndex((event) => event.seq === stepSeq)
+  if (stepPosition < 0 || events[stepPosition].type !== 'step/start') return null
+  const before = events.slice(0, stepPosition)
+  const loopPosition = before.findLastIndex((event) => event.type === 'loop/start')
+  const loopStart = before[loopPosition]
+  if (loopStart?.type !== 'loop/start') return null
+
+  const base = projectEvents(before.slice(0, loopPosition + 1))
+  let systemPrompt = ''
+  let identityMemory: string | undefined
+  let toolNames: string[] = []
+  for (const event of before) {
+    if (event.type === 'system/prompt') {
+      systemPrompt = event.data.content
+      identityMemory = event.data.identity
+    } else if (event.type === 'tools/set') {
+      toolNames = event.data.toolNames
+    }
+  }
+
+  const entries: RequestEntry[] = []
+  let queuedMessageIndex: number | undefined
+  for (const event of before.slice(loopPosition + 1)) {
+    switch (event.type) {
+      case 'agent/inbox/enqueued':
+        queuedMessageIndex = event.data.messageIndex
+        break
+      case 'user/message':
+      case 'assistant/message':
+        // 排队消息进 canonical,但不在 loop 的请求里:它的原文由 queued_merge 拼进请求
+        if (event.data.messageIndex === queuedMessageIndex) queuedMessageIndex = undefined
+        else entries.push({ kind: 'message', message: event.data.message })
+        break
+      case 'request/message':
+        entries.push({ kind: 'message', message: event.data.message })
+        break
+      case 'injection/context': {
+        const { messageId } = event.data
+        if (messageId) entries.push({ kind: 'injection', injection: { ...event.data, messageId } })
+        break
+      }
+      case 'compaction/checkpoint':
+        entries.push({ kind: 'checkpoint', checkpoint: event.data.checkpoint })
+        break
+      case 'messages/truncate':
+        return null
+      default:
+        break
+    }
+  }
+
+  return {
+    systemPrompt,
+    ...(identityMemory === undefined ? {} : { identityMemory }),
+    toolNames,
+    history: base.messages,
+    ...(base.checkpoint ? { checkpoint: base.checkpoint } : {}),
+    requireThinkingForToolUse: loopStart.data.requireThinkingForToolUse,
+    entries,
+  }
+}
+
 type ProjectionCore = Pick<SessionEventProjection, 'header' | 'messages' | 'blocks'> & {
   /** 依次写入的检查点;null 表示回到没有检查点 */
   checkpoints: Array<ContextCheckpoint | null>
   systemPrompt?: { hash: string; content: string }
   toolSet?: { hash: string; toolNames: string[] }
+  /** turn/start 里最大的 turnIndex */
+  lastTurnIndex?: number
+  /** status 为 injected 的 memory/retrieval/end 选中的记忆 id → title */
+  injectedMemoryIds: Map<string, string>
 }
 
 function foldSurfaceEvents(events: SessionEvent[]): ProjectionCore {
-  const projection: ProjectionCore = { header: null, messages: [], blocks: [], checkpoints: [] }
+  const projection: ProjectionCore = {
+    header: null,
+    messages: [],
+    blocks: [],
+    checkpoints: [],
+    injectedMemoryIds: new Map(),
+  }
   applySurfaceEvents(projection, events)
   return projection
 }
@@ -495,34 +671,51 @@ function applySurfaceEvent(projection: ProjectionCore, event: SessionEvent): voi
     case 'tools/set':
       projection.toolSet = { hash: event.data.hash, toolNames: event.data.toolNames }
       break
+    case 'turn/start':
+      projection.lastTurnIndex = Math.max(projection.lastTurnIndex ?? 0, event.data.turnIndex)
+      break
+    case 'memory/retrieval/end':
+      if (event.data.status === 'injected') {
+        for (const memory of event.data.selected) {
+          projection.injectedMemoryIds.set(memory.id, memory.title)
+        }
+      }
+      break
     default:
       break
   }
 }
 
 /** Diff canonical 消息为追加/截断事件序列(不改写历史事件)。 */
-function buildMessageSyncInputs(projected: Message[], messages: Message[]): SessionEventInput[] {
+function buildMessageSyncInputs(
+  projected: Message[],
+  messages: Message[],
+  reason: MessagesTruncateReason,
+): SessionEventInput[] {
   const pending: SessionEventInput[] = []
   const prefix = commonPrefixLength(projected, messages)
   if (prefix < projected.length) {
     pending.push({
       type: 'messages/truncate',
-      data: { toMessageIndex: prefix, reason: 'turn_failed' },
+      data: { toMessageIndex: prefix, reason },
     })
   }
   for (let i = prefix; i < messages.length; i += 1) {
-    const message = messages[i]
-    pending.push({
-      type: message.role === 'assistant' ? 'assistant/message' : 'user/message',
-      data: {
-        messageIndex: i,
-        message,
-        source: message.source,
-        hash: hashValue(message),
-      },
-    })
+    pending.push(buildMessageEventInput(i, messages[i]))
   }
   return pending
+}
+
+function buildMessageEventInput(messageIndex: number, message: Message): SessionEventInput {
+  return {
+    type: message.role === 'assistant' ? 'assistant/message' : 'user/message',
+    data: {
+      messageIndex,
+      message,
+      source: message.source,
+      hash: hashValue(message),
+    },
+  }
 }
 
 function commonPrefixLength(

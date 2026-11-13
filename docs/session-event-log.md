@@ -12,15 +12,16 @@
 （带子文件的相对路径）。子代理的 `system/prompt`、`tools/set` 和 step、tool 等过程事件写进子文件，
 不混入父会话。子代理仍在进程内运行，trace 和 usage 账本继续沿用父会话的 sessionId。
 
-子文件目前不含 `user/message` / `assistant/message`，也没有 `turn/*`：消息事件现在由
-`Session` 在 turn 结束时写入，子代理不经过 `Session`。等 loop 直接写消息事件
-（[设计说明](agent-loop-session-log-design.md) 的步骤 3）之后，子文件会自动带上消息。
+子文件也带子代理自己的 `user/message` / `assistant/message`：消息由 agent hooks 经 `obs.sessionEvents`
+在产生时写入，spawn_agent 把这个句柄重定向到子文件，下标从 0 开始。子文件没有 `turn/*`，子代理不经过 `Session`。
+子代理消息里的图片写进父会话目录的 `images/`，与子文件放在一起。
 子代理的结束状态不另落事件：结果由父会话后续 `wait_agent` 的 `tool/result` 承载。
 
 ## 设计原则
 
-- **model-visible ⟺ logged**：凡是模型看到过的输入，都能从事件流投影重建；
-  API-only 注入（dynamicContext、memory 注入）以 `injection/context` 事件补记。
+- **model-visible ⟺ logged**：凡是模型看到过的输入，都能从事件流重建；
+  不进 canonical 的请求内容以 request-scoped 事件补记：注入（dynamicContext、图片委托、排队拼接）是
+  `injection/context`，记忆提醒阶段的消息是 `request/message`。
 - **事件分三类**：surface（投影源：`user/message`、`assistant/message`、
   `messages/truncate`、`compaction/checkpoint`，以及只读的旧数据 `compaction/block`）；
   request-scoped（重建某次请求输入）；diagnostics（纯排障，可裁剪）。
@@ -43,26 +44,28 @@
 ```jsonc
 {"seq":0,"ts":"...","type":"session","data":{"v":1,"sessionId":"...","schemaVersion":1,"source":"feishu","channelId":"oc_..."}}
 {"type":"turn/start","data":{"turnIndex":12,"trigger":"channel|control|queued_drain","model":"...","agentName":"..."}}
-{"type":"turn/end","data":{"turnIndex":12,"status":"completed|failed|aborted","durationMs":83400}}
-{"type":"step/start","data":{"stepIndex":3,"requestSpanId":"span_...","model":"...","messageCount":21}}
+{"type":"turn/end","data":{"turnIndex":12,"status":"completed|failed|aborted","durationMs":83400}}  // 恢复时补写的封口另带 "reason":"process_restart"
+{"type":"loop/start","data":{"requireThinkingForToolUse":false}}  // 每次 Agent.run 开始,早于 turn 开始的压缩
+{"type":"step/start","data":{"stepIndex":3,"requestSpanId":"span_...","model":"...","messageCount":21,"requestHash":"sha256:..."}}
 {"type":"step/end","data":{"stepIndex":3,"stopReason":"end_turn|tool_use|error|aborted","requestId":"resp_...","usage":{},"durationMs":12400}}
 {"type":"tool/call","data":{"toolUseId":"toolu_...","name":"bash","inputHash":"sha256:...","inputPreview":"...","spanId":"span_..."}}
 {"type":"tool/result","data":{"toolUseId":"toolu_...","name":"bash","status":"success","durationMs":9800,"chars":45210,"summary":"..."}}
 {"type":"user/message","data":{"messageIndex":86,"message":{...canonical Message...},"hash":"sha256:..."}}
 {"type":"assistant/message","data":{"messageIndex":87,"message":{...含 text/thinking/tool_use blocks...},"hash":"sha256:..."}}
-{"type":"messages/truncate","data":{"toMessageIndex":86,"reason":"turn_failed"}}
+{"type":"messages/truncate","data":{"toMessageIndex":86,"reason":"turn_failed|admin|recall|restore_repair|interrupt|unexpected"}}
 {"type":"compaction/start","data":{"compactionId":"...","trigger":"turn_start|in_turn","tokens":151000,"thresholdTokens":134400}}
 {"type":"compaction/checkpoint","data":{"checkpoint":{...ContextCheckpoint 全量,回滚到没有检查点时为 null...}}}
 {"type":"compaction/end","data":{"compactionId":"...","status":"pruned|summarized|failed","tokensBefore":151000,"tokensAfter":41000,"durationMs":18000,"usage":{},"error":"..."}}
 {"type":"compaction/block","data":{"blocks":[...TimelineCompactionBlock 全量...],"changed":{"blockId":"...","lifecycle":"created|reused|superseded"}}}  // 旧会话的只读数据,不再写入
-{"type":"injection/context","data":{"kind":"dynamic|memory|memory_hint|queued_merge|image_delegation","content":"...原文..."}}
+{"type":"injection/context","data":{"kind":"dynamic|memory|memory_hint|queued_merge|image_delegation","content":"...原文...","messageId":"...被改写的请求消息","blocks":[...仅 queued_merge:拼接的 blocks...]}}
+{"type":"request/message","data":{"message":{...只在请求里的 Message...},"reason":"memory_nudge"}}
 {"type":"model/selection","data":{"from":"...","to":{"label":"...","provider":"...","modelId":"..."},"trigger":"init|user_command|fallback|reload|route"}}
 {"type":"closure/start","data":{"turnIndex":12,"requestId":"resp_...","model":"..."}}
 {"type":"closure/end","data":{"turnIndex":12,"action":"finish|continue|block|discarded","reason":"...","model":"...","requestId":"resp_...","assistantMessageId":"...","durationMs":4200}}
 {"type":"memory/retrieval/start","data":{"layer":"layer1|layer2","turnIndex":12}}
 {"type":"memory/retrieval/end","data":{"layer":"layer1","status":"injected|skipped|failed","queries":["..."],"searchCount":3,"selected":[{"id":"mem_...","title":"...","score":0.8}],"durationMs":1500,"usage":{"input":0,"output":0}}}
 {"type":"memory/recorded","data":{"action":"create|update","memoryId":"mem_...","memoryType":"fact","title":"...","toolUseId":"toolu_..."}}
-{"type":"system/prompt","data":{"hash":"sha256:...","chars":10303,"content":"...完整系统提示词..."}}
+{"type":"system/prompt","data":{"hash":"sha256:...","chars":10303,"content":"...静态系统提示词...","identity":"...identityMemory..."}}  // hash/chars 描述实际发出的 system
 {"type":"tools/set","data":{"hash":"sha256:...","toolNames":["read","bash","..."],"count":79}}
 {"type":"params/reasoning","data":{"from":"medium","to":"high"}}
 {"type":"agent/inbox/enqueued","data":{"messageIndex":91,"reason":"turn_in_progress","interrupt":true}}
@@ -75,16 +78,17 @@
 {"type":"checkpoint","data":{"atSeq":94,"messageCount":148,"projectionHash":"sha256:..."}}
 ```
 
-全部 34 种事件的发射点、触发条件与消费方式见 [session-events-reference.md](./session-events-reference.md);
+全部 36 种事件的发射点、触发条件与消费方式见 [session-events-reference.md](./session-events-reference.md);
 类型定义在 `packages/shared/src/types/session-events.ts`。
 
-系统提示词与工具集都是 model-visible 请求输入:`system/prompt`（内容变化时发射，
-persistSessionState 做 hash 比对）与 `tools/set`（turn 开始时比对名字列表 hash）
-由此进入事件流;DB 的 sessions.system_prompt 列只存最新一份，迁移时已播种为首个
+系统提示词与工具集都是 model-visible 请求输入:`system/prompt`（请求的 system =
+`content` + `\n\n` + `identity`（有 identityMemory 时）;这段文本的 hash 变化时发射，turn 开始时与
+persistSessionState 都做比对）与 `tools/set`（turn 开始时比对名字列表 hash，空工具集也记）
+都写在 turn 的第一个 step/start 之前;DB 的 sessions.system_prompt 列只存最新一份静态提示词，迁移时已播种为首个
 事件（657 个有值会话）。`params/reasoning` 记录 /think 等入口的 effort 变更。
 
-排队消息链路:入队时 canonical 即追加 'queued' 消息（surface 事件）+
-`agent/inbox/enqueued`（带 canonical 下标）;被 loop 消费拼进首条 user 消息时发
+排队消息链路:入队时先写 `agent/inbox/enqueued`（带 canonical 下标），canonical 追加 'queued' 消息的同一刻
+写它的 `user/message`;被 loop 消费拼进首条 user 消息时发
 `agent/inbox/drained`+`agent/inbox/spliced`，拼接原文以 `injection/context`
 （kind=queued_merge）落盘。canonical 中 messageType='queued' 的消息即排队原文。
 
@@ -104,30 +108,77 @@ memory 工具的完整调用过程仍由 `tool/call`+`tool/result` 承载。任�
 成对事件 `closure/start|end`：本 turn 未评估时不产生任何 closure 事件；
 `discarded` 表示决策因排队消息被丢弃（原始决策在 detail.originalAction）。
 
-`step/start` 自身的 seq 是请求重建锚点：
-`projectUpTo(seq) + 该请求的 injection 事件` 即该次模型调用的精确输入。
+### 请求重建（step/start 的 seq = S）
+
+运行时与重放共用 `assembleRequest`（`packages/core/src/agent/request-assembly.ts`）；它的输入由
+`buildRequestAssemblyInput(events, S)`（`@zero-os/observe`，只需要事件，`SessionEventStore.getRequestAssemblyInput`
+是它的包装）从日志取得：
+
+1. **所属 loop**：S 之前最近的 `loop/start`（seq = L）。`Agent.run` 每次开始时写一条，早于 turn 开始的压缩。
+2. **history 与 checkpoint**：`projectUpTo(L)` 的消息与检查点，即 loop 开始时的 canonical 投影。
+3. **system 与工具名**：S 之前最后一条 `system/prompt`（system = `content`，有 `identity` 时接上 `\n\n` + identity）
+   与最后一条 `tools/set`。
+4. **entries**：L 与 S 之间、按日志顺序的
+   - `user/message` / `assistant/message`：loop 追加进请求的 canonical 消息。排队消息除外——紧跟在
+     `agent/inbox/enqueued` 之后、下标等于其 `messageIndex` 的那条：它进 canonical，但原文是经 `queued_merge` 拼进请求的；
+   - `request/message`：记忆提醒阶段只在请求里的消息；
+   - 带 `messageId` 的 `injection/context`（dynamic、image_delegation、queued_merge；迁移播种的旧事件没有 `messageId`，不参与）；
+   - `compaction/checkpoint`。
+   loop 内出现 `messages/truncate`（turn 进行中的撤回原地改写了请求里的消息）时还原不出，返回 null。
+5. **组装**：第一条消息之前，请求历史 = `prepareRequestMessages(history, 当时的检查点)`；message 追加到末尾；
+   dynamic / image_delegation 按顺序作为前缀改写 `messageId` 那条消息（有图片委托时去掉它的图片）；queued_merge 把
+   `blocks` 接到 `messageId` 那条消息末尾；已有消息之后的 checkpoint（turn 内压缩）从 history + 已追加的消息重新投影，
+   并补回注入与排队拼接（同一条消息拼接多次时只补回最后一次，与运行时一致）。
+6. **核对**：`hashRequest(assembleRequest(input)) == step/start.requestHash`。`requestHash` 覆盖 system、工具名和传给
+   adapter 的消息（键排序 JSON 的 sha256）；图片换成 `{type, mediaType, sha256}`，sha256 是解码后字节的 hash
+   （运行时取 `data`，日志与恢复后的消息取 `imageRef.sha256`，同一个 `decodeImageData`）。
+
+turn 内压缩后运行时也经 `assembleRequest` 重建请求消息（它记下同样的 entries）；其余步骤 loop 逐条追加，
+一致性由 `requestHash` 核对（`request-replay.test.ts` 对每个 step/start 做三方比对）。
+
+仍还原不出的情形见 [session-log-replay.md](session-log-replay.md)。
 
 ### 上下文锚点（baseSeq）
 
 `turn/start` 与 `closure/start` 都带 `baseSeq`（发射时刻事件流的最后一条 seq）：
 
-- `turn/start.baseSeq`：本 turn 消息事件尚未写入，全部落在 `seq > baseSeq`；
-  区间终点 = 下一个 `turn/start.baseSeq` 或其后 checkpoint 的 `atSeq`。
-- `closure/start.baseSeq` + `messageCount`：分类器评估时，本 turn 消息仍未持久化
-  （persistState 在 turn 结束才执行），其输入 = `project(到本 turn 区间终点)` →
-  经 compaction 投影（确定性重放）+ 本 turn 的 injection 事件；
+- `turn/start.baseSeq`：本 turn 的消息事件全部落在 `seq > baseSeq`；区间终点是本 turn 的 `turn/end`。
+- `closure/start.baseSeq` + `messageCount`：分类器评估时本 turn 已产生的消息都已写入，其输入 =
+  `projectUpTo(baseSeq)` → 经 compaction 投影（确定性重放）+ 本 turn 的 injection 事件；
   `messageCount` 可做快速对账。
 
 ## 写入与读取
 
-- 写入（`persistSessionState`）：**事件流先写，DB 后写**。崩溃窗口内事件流最多
-  比 DB 新，读端优先事件流不会读到旧数据。消息按前缀 diff 追加，回滚产生
-  truncate 事件，历史事件永不改写。
-- 读取（`SessionManagerStore.restoreSessionById` / `getMessagesFromDB`）：
-  优先 `SessionEventStore.project()`，无事件文件（迁移前的旧会话）时回退
-  sessions.db 快照行。
+- 消息写入：**在产生的那一刻写**，入口只有 `SessionEventStore.appendMessage`（外置图片、按投影长度分配
+  下标）。loop 产生的消息由 agent hooks 在转给调用方时写（`onNewMessage`；记忆提醒阶段的消息不转给调用方，
+  不进 canonical，写成 `request/message`）；turn 进行中排队的消息由 `queueMessage` 在追加进 canonical 时写。已写入的消息不再原地修改
+  （任务结束判定只记在 `closure/end`，不再写回 assistant 消息的 `taskClosure`）。
+- 改动已有消息的一方当场调用 `syncMessages(sessionId, messages, reason)`：前缀缩短时写
+  `messages/truncate`，再追加之后的消息。原因：turn 失败回滚 `turn_failed`、尾部回滚命令 `admin`、
+  外部消息撤回（原地改写一条旧消息）`recall`、恢复时封口没封口的 turn `restore_repair`。
+- turn 结束（`persistSessionState`）：**事件流先写，DB 后写**。`syncCanonical` 只做对账，正常找不到消息差异；
+  消息或压缩块自上一条 `checkpoint` 后有变化时补一条 `checkpoint`。对账发现差异说明有改动没经过 store：
+  截断记 `unexpected`，与补写的消息一起经 `onError` 上报。历史事件永不改写。
+- DB 的 `session_messages` 仍在 turn 结束时整体写入（file-only 模式不写），turn 内事件流领先于 DB，
+  恢复优先读事件流。
+- 读取：恢复（`SessionManagerStore.restoreSessionById`）读 `SessionEventStore.projectForRestore()`：投影加上最后一份
+  系统提示词、最大的 turn 编号、已注入记忆表，会话元数据之外的状态都由重放得到，不读 trace 的请求记录、不读 DB 大字段
+  （见 [session-log-replay.md](session-log-replay.md)「恢复读什么」）；`getMessagesFromDB` 等只读 `project()`。
+  无事件文件（迁移前的旧会话）时回退 sessions.db 快照行。
 - 双写等价性：store 在采样的 sync 上从磁盘重放并比对投影，不一致记
   `session_event_store_error`（events.jsonl）。
+
+### 恢复时的修复
+
+恢复不改写 canonical：面向 provider 的清理（排队消息并进 tool_result、DeepSeek 风格 adapter 的签名 thinking）
+只在请求组装时做。恢复写事件只有下面两种情形。
+
+- **没封口的 turn。** 进程在 turn 中途退出，日志里最后一个 `turn/start` 之后没有 `turn/end`。恢复
+  （`SessionManagerStore.restoreSession` → `sealInterruptedTurn`）按 turn 失败的规则（`applyFailedTurnRollback`）
+  处理 `turn/start` 之后写入的消息：没有已完成的 assistant 消息就回滚到 turn 开始时的消息数，排队消息保留；
+  否则保留。回滚记 `messages/truncate`（`restore_repair`），本 turn 写过检查点时补写 turn 开始时的检查点，
+  最后补 `turn/end`（`status: failed`，`reason: process_restart`）。封口过的 turn 不再处理。
+- **没有事件文件的旧会话。** 从 DB 快照恢复时先写 header 并把快照消息写进事件流，之后的消息才能按下标即时追加。
 
 ### file-only 模式（终态）
 
@@ -173,6 +224,5 @@ API-only 注入（`<system-reminder>`/`<memory_inject>`）转为 injection 事�
 - `llm/retry`（适配器层）事件的发射点。
 - 恢复会话时处理丢失的 job：有 `job/registered` 没有 `job/settled` 的 bash 执行在进程重启后不会再有完成事件。
 - bash 以外的工具转后台时不落 job 事件，输出超过 8000 字符的部分也没有 evidence。
-- 子代理事件文件里的消息事件（见上文，随 loop 直接写消息事件一起落地）。
 - web 日志查看器改为基于事件流的请求详情重建。
 - DB 派生索引的检索增强（如 FTS，对齐 dsh 的 session-query-sqlite 角色）。

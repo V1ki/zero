@@ -224,6 +224,7 @@ export class SpawnAgentTool extends BaseTool {
         sessionEvents && logFile
           ? {
               append: (_sessionId, events) => sessionEvents.append(agentId, events),
+              appendMessage: (_sessionId, message) => sessionEvents.appendMessage(agentId, message),
               getLastSeq: () => sessionEvents.getLastSeq(agentId),
             }
           : undefined,

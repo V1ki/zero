@@ -40,7 +40,13 @@ export type {
   UsageTotals,
 } from './metrics'
 export { SessionDB } from './session-db'
-export { SessionEventStore, checkSessionEvents, projectEvents } from './session-event-store'
+export {
+  SessionEventStore,
+  buildRequestAssemblyInput,
+  checkSessionEvents,
+  projectEvents,
+} from './session-event-store'
+export { decodeImageData } from './image-ref'
 export { ROUTER_JOB_BRIEF_LIMIT, RouterJobConflictError } from './router-job-store'
 export type {
   RouterJob,

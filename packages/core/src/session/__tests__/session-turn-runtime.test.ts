@@ -20,6 +20,7 @@ function queueMessage(runtime: SessionTurnRuntime, data: SessionData, messages: 
     content: 'queued input',
     messages,
     data,
+    appendMessageEvent: () => {},
     persistState: () => {},
     emitSessionUpdate: () => {},
   })

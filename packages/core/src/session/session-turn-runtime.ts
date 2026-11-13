@@ -86,6 +86,8 @@ export class SessionTurnRuntime {
     controlKind?: Message['controlKind']
     messages: Message[]
     data: SessionData
+    /** 排队消息进 canonical 的同一刻写消息事件 */
+    appendMessageEvent(message: Message): void
     persistState(): void
     emitSessionUpdate(event: {
       sessionId: string
@@ -103,17 +105,17 @@ export class SessionTurnRuntime {
       timestamp,
       onApplied: options.onApplied,
     })
-    options.messages.push(
-      createUserMessage({
-        sessionId: options.data.id,
-        text: options.content,
-        createdAt: timestamp,
-        images: options.images,
-        source: options.source,
-        messageType: options.messageType ?? 'queued',
-        controlKind: options.controlKind,
-      }),
-    )
+    const message = createUserMessage({
+      sessionId: options.data.id,
+      text: options.content,
+      createdAt: timestamp,
+      images: options.images,
+      source: options.source,
+      messageType: options.messageType ?? 'queued',
+      controlKind: options.controlKind,
+    })
+    options.appendMessageEvent(message)
+    options.messages.push(message)
     options.data.updatedAt = timestamp
     options.persistState()
     options.emitSessionUpdate?.({

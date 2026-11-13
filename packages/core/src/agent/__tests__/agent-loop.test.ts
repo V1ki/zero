@@ -3,7 +3,7 @@ import type { ProviderAdapter } from '@zero-os/model'
 import type {
   CompletionRequest,
   CompletionResponse,
-  ContentBlock,
+  Message,
   StreamEvent,
   ToolLogger,
 } from '@zero-os/shared'
@@ -281,9 +281,9 @@ describe('AgentLoop', () => {
         logger,
       },
       {
-        buildRequestUserContent: (content: ContentBlock[]) => [
+        buildRequestUserContent: (message: Message) => [
           { type: 'text', text: '<image_delegation>paths</image_delegation>' },
-          ...content.filter((block) => block.type !== 'image'),
+          ...message.content.filter((block) => block.type !== 'image'),
         ],
         onEndTurn: () => ({ action: 'break' }),
       },

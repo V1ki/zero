@@ -68,6 +68,24 @@ function externalizeImageRecord(
   }
 }
 
+/**
+ * 图片数据(base64 或 data URL)解码后的字节与内容 hash。imageRef.sha256 就是它,
+ * 请求 hash 归一图片时也用它(运行时图片带 data,日志里只有 imageRef)。
+ */
+export function decodeImageData(data: string): {
+  buffer: Buffer
+  sha256: string
+  mediaType?: string
+} {
+  const parsed = parseImageData(data)
+  const buffer = Buffer.from((parsed?.data ?? data).replace(/\s/g, ''), 'base64')
+  return {
+    buffer,
+    sha256: createHash('sha256').update(buffer).digest('hex'),
+    mediaType: parsed?.mediaType,
+  }
+}
+
 function externalizeDataUrl(
   value: string,
   options: ExternalizeImageDataOptions,
@@ -82,11 +100,8 @@ function writeImageRef(
   fallbackMediaType: string,
   options: ExternalizeImageDataOptions,
 ): ImageRef {
-  const parsed = parseImageData(data)
-  const mediaType = normalizeImageMediaType(parsed?.mediaType ?? fallbackMediaType)
-  const base64 = parsed?.data ?? data
-  const buffer = Buffer.from(base64.replace(/\s/g, ''), 'base64')
-  const sha256 = createHash('sha256').update(buffer).digest('hex')
+  const { buffer, sha256, mediaType: parsedMediaType } = decodeImageData(data)
+  const mediaType = normalizeImageMediaType(parsedMediaType ?? fallbackMediaType)
   const extension = imageExtension(mediaType)
   const sessionDir = join(
     options.logsBasePath as string,

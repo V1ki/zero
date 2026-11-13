@@ -4,14 +4,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ModelRouter, ProviderAdapter } from '@zero-os/model'
 import { MetricsDB, SessionEventStore } from '@zero-os/observe'
-import type {
-  AgentControlHandle,
-  CompletionRequest,
-  CompletionResponse,
-  ObservabilityHandle,
-  StreamEvent,
-  ToolContext,
-  ToolResult,
+import {
+  type AgentControlHandle,
+  type CompletionRequest,
+  type CompletionResponse,
+  type ObservabilityHandle,
+  type StreamEvent,
+  type ToolContext,
+  type ToolResult,
+  isMessageAppendEvent,
 } from '@zero-os/shared'
 import { AgentControl } from '../../agent/agent-control'
 import { BaseTool } from '../base'
@@ -399,6 +400,27 @@ describe('SpawnAgentTool', () => {
       expect(childTypes).toContain('tools/set')
       expect(childTypes).toContain('step/start')
       expect(childTypes).toContain('step/end')
+      // 子代理的消息写进它自己的文件,user 消息在 step/start 之前
+      const childMessages = childEvents.filter(isMessageAppendEvent)
+      expect(
+        childMessages.map((event) => [event.type, event.data.messageIndex, event.data.message]),
+      ).toEqual([
+        [
+          'user/message',
+          0,
+          expect.objectContaining({
+            content: [{ type: 'text', text: 'Summarize the repository.' }],
+          }),
+        ],
+        [
+          'assistant/message',
+          1,
+          expect.objectContaining({ content: [{ type: 'text', text: 'spawn complete' }] }),
+        ],
+      ])
+      const stepStart = childEvents.find((event) => event.type === 'step/start')
+      expect(childMessages[0].seq).toBeLessThan(stepStart?.seq ?? -1)
+      expect(parentEvents.some(isMessageAppendEvent)).toBe(false)
     } finally {
       rmSync(logsDir, { recursive: true, force: true })
     }

@@ -6,7 +6,6 @@ import {
   estimateConversationTokens,
   extractRetainedHandles,
   mergeInterleavedQueuedMessages,
-  repairInterleavedToolResultOrder,
   sanitizeConversationHistoryForSignedThinkingToolUse,
 } from '../context'
 
@@ -236,6 +235,141 @@ describe('prepareRequestMessages without a checkpoint', () => {
   })
 })
 
+/**
+ * 提供方要求:每条带 tool_use 的 assistant 消息后面紧跟带全部对应 tool_result 的 user 消息,
+ * 每个 tool_result 都指向上一条消息里的 tool_use;要求签名 thinking 时不能有无签名的 tool_use。
+ */
+function expectProviderValid(messages: Message[], requireThinkingForToolUse: boolean): void {
+  messages.forEach((message, index) => {
+    const uses = message.content.flatMap((block) => (block.type === 'tool_use' ? [block.id] : []))
+    const results = message.content.flatMap((block) =>
+      block.type === 'tool_result' ? [block.toolUseId] : [],
+    )
+    if (uses.length > 0) {
+      const next = messages[index + 1]
+      expect(next?.role).toBe('user')
+      const nextResults = new Set(
+        next?.content.flatMap((block) => (block.type === 'tool_result' ? [block.toolUseId] : [])),
+      )
+      for (const id of uses) expect(nextResults.has(id)).toBe(true)
+      if (requireThinkingForToolUse) {
+        expect(
+          message.content.some((block) => block.type === 'thinking' && Boolean(block.signature)),
+        ).toBe(true)
+      }
+    }
+    if (results.length > 0) {
+      const previousUses = new Set(
+        messages[index - 1]?.content.flatMap((block) =>
+          block.type === 'tool_use' ? [block.id] : [],
+        ),
+      )
+      for (const id of results) expect(previousUses.has(id)).toBe(true)
+    }
+  })
+}
+
+function makeSignedToolUse(...toolUseIds: string[]): Message {
+  return makeMessage('assistant', [
+    { type: 'thinking', thinking: 'Need tools.', signature: 'sig' },
+    ...toolUseIds.map((id) => ({ type: 'tool_use' as const, id, name: 'bash', input: {} })),
+  ])
+}
+
+function makeToolResults(...toolUseIds: string[]): Message {
+  return makeMessage(
+    'user',
+    toolUseIds.map((toolUseId) => ({ type: 'tool_result', toolUseId, content: 'ok' })),
+  )
+}
+
+// 恢复不再重排 canonical(docs/session-log-replay.md 步骤 4):原来恢复时修复的形状,请求组装都要给出合法的请求
+describe('prepareRequestMessages on tool calls interleaved with queued and control messages', () => {
+  const shapes: Array<[string, () => Message[]]> = [
+    [
+      'one queued message',
+      () => [
+        makeUserText('start'),
+        makeSignedToolUse('t1'),
+        makeQueuedUserText('queued while running'),
+        makeToolResults('t1'),
+        makeAssistantText('done'),
+      ],
+    ],
+    [
+      'one background completion control',
+      () => [
+        makeUserText('start'),
+        makeSignedToolUse('t1'),
+        makeBackgroundToolCompletedControl('<system_event type="background_tool.completed" />'),
+        makeToolResults('t1'),
+      ],
+    ],
+    [
+      'several interleaved messages, a recalled one among them',
+      () => [
+        makeUserText('start'),
+        makeSignedToolUse('t1'),
+        makeQueuedUserText('first queued'),
+        makeNotificationUserText('用户已撤回这条消息。'),
+        makeBackgroundToolCompletedControl('<system_event type="background_tool.completed" />'),
+        makeQueuedUserText('second queued'),
+        makeToolResults('t1'),
+        makeAssistantText('done'),
+      ],
+    ],
+    [
+      'parallel tool calls',
+      () => [
+        makeUserText('start'),
+        makeSignedToolUse('t1', 't2', 't3'),
+        makeQueuedUserText('queued while running'),
+        makeBackgroundToolCompletedControl('<system_event type="background_tool.completed" />'),
+        makeToolResults('t1', 't2', 't3'),
+        makeSignedToolUse('t4'),
+        makeQueuedUserText('queued again'),
+        makeToolResults('t4'),
+        makeAssistantText('done'),
+      ],
+    ],
+    [
+      'unsigned tool calls next to signed ones',
+      () => [
+        makeUserText('start'),
+        makeAssistantToolUse('bash', 'unsigned_1'),
+        makeQueuedUserText('queued during the unsigned call'),
+        makeToolResult('unsigned_1', 'ok'),
+        makeSignedToolUse('t1', 't2'),
+        makeQueuedUserText('queued during the signed calls'),
+        makeToolResults('t1', 't2'),
+        makeAssistantText('done'),
+      ],
+    ],
+  ]
+
+  for (const [name, build] of shapes) {
+    for (const requireThinkingForToolUse of [false, true]) {
+      test(`${name} (requireThinkingForToolUse: ${requireThinkingForToolUse})`, () => {
+        const messages = build()
+        const before = structuredClone(messages)
+
+        const result = prepareRequestMessages(messages, undefined, { requireThinkingForToolUse })
+
+        expectProviderValid(result, requireThinkingForToolUse)
+        // 排队与控制消息的原文都还在请求里,canonical 原样不动
+        const sent = JSON.stringify(result)
+        for (const message of messages) {
+          if (message.messageType !== 'queued' && message.messageType !== 'control') continue
+          for (const block of message.content) {
+            if (block.type === 'text') expect(sent).toContain(JSON.stringify(block.text))
+          }
+        }
+        expect(messages).toEqual(before)
+      })
+    }
+  }
+})
+
 describe('mergeInterleavedQueuedMessages', () => {
   test('returns same messages when no queued messages present', () => {
     const messages = [
@@ -382,44 +516,6 @@ describe('mergeInterleavedQueuedMessages', () => {
     const tr2 = result[4]
     expect(tr2.content.some((b) => b.type === 'text')).toBe(true)
     expect(tr2.content.some((b) => b.type === 'tool_result')).toBe(true)
-  })
-})
-
-describe('repairInterleavedToolResultOrder', () => {
-  test('moves background completion controls after the matching tool_result', () => {
-    const messages = [
-      makeUserText('start watchdog'),
-      makeAssistantToolUse('bash', 'toolu_background'),
-      makeBackgroundToolCompletedControl(
-        '<system_event type="background_tool.completed"><background_task status="success" /></system_event>',
-      ),
-      makeToolResult('toolu_background', 'Background task started'),
-      makeAssistantText('done'),
-    ]
-
-    const result = repairInterleavedToolResultOrder(messages)
-
-    expect(result).not.toBe(messages)
-    expect(result.map((message) => message.messageType)).toEqual([
-      'message',
-      'message',
-      'message',
-      'control',
-      'message',
-    ])
-    expect(result[2].content.some((block) => block.type === 'tool_result')).toBe(true)
-    expect(result[3].controlKind).toBe('background_tool_completed')
-  })
-
-  test('keeps unchanged histories by reference', () => {
-    const messages = [
-      makeUserText('start'),
-      makeAssistantToolUse('bash', 'toolu_ok'),
-      makeToolResult('toolu_ok', 'ok'),
-      makeAssistantText('done'),
-    ]
-
-    expect(repairInterleavedToolResultOrder(messages)).toBe(messages)
   })
 })
 

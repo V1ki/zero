@@ -102,6 +102,7 @@ export interface Message {
   source?: MessageChannelSource
   recalled?: MessageRecallInfo
   controlKind?: ControlKind
+  /** 只有旧消息带:任务结束判定现在记在 `closure/end` 事件里(带 assistantMessageId) */
   taskClosure?: {
     action: 'finish' | 'continue' | 'block'
     reason: string

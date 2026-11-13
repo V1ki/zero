@@ -9,6 +9,7 @@ import type {
   CompletionRequest,
   CompletionResponse,
   Message,
+  SessionEventInput,
   StreamEvent,
   ToolContext,
   ToolResult,
@@ -690,11 +691,22 @@ describe('Agent task closure gate', () => {
   test('does not auto-continue when classifier reports a real blocker', async () => {
     const registry = new ToolRegistry()
     const adapter = new TaskClosureAdapter('block')
+    const events: SessionEventInput[] = []
     const agent = new Agent(
       { name: 'test-agent', agentInstruction: 'Test prompt' },
       adapter,
       registry,
       createToolContext(),
+      {
+        sessionEvents: {
+          append: (_sessionId, inputs) => {
+            events.push(...inputs)
+            return null
+          },
+          appendMessage: () => {},
+          getLastSeq: () => null,
+        },
+      },
     )
 
     const messages = await agent.run(createContext(registry), '继续把线上证据查完')
@@ -702,10 +714,13 @@ describe('Agent task closure gate', () => {
 
     expect(assistantMessages).toHaveLength(1)
     expect(getTextFromMessage(assistantMessages[0])).toBe(BLOCK_REPLY)
-    expect(assistantMessages[0].taskClosure).toEqual({
+    // 判定记在 closure/end;已写入事件流的 assistant 消息不再被改写
+    expect(events.find((event) => event.type === 'closure/end')?.data).toMatchObject({
       action: 'block',
       reason: '缺少登录态',
+      assistantMessageId: assistantMessages[0].id,
     })
+    expect(assistantMessages[0].taskClosure).toBeUndefined()
     expect(adapter.normalCalls).toBe(1)
     expect(adapter.classifierCalls).toBe(1)
   })
@@ -1295,7 +1310,8 @@ describe('Agent task closure gate', () => {
       executionState: {},
       requestPurposeRef: { current: 'agent_loop' },
       traceRecorder,
-      compaction: { compact: async () => false, prepare: (messages) => messages },
+      compaction: { compact: async () => false },
+      requestBase: { requireThinkingForToolUse: false },
     })
 
     const assistantMessage: Message = {

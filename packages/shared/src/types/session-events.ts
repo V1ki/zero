@@ -1,5 +1,5 @@
 import type { ContextCheckpoint, TimelineCompactionBlock } from './context'
-import type { Message, TokenUsage, ToolEvidence } from './message'
+import type { ContentBlock, Message, TokenUsage, ToolEvidence } from './message'
 import type { SessionSource } from './session'
 
 /**
@@ -9,7 +9,8 @@ import type { SessionSource } from './session'
  * 事件分三类:
  * - surface(投影源): user/message | assistant/message | messages/truncate | compaction/checkpoint |
  *   compaction/block(只读的旧数据)
- * - request-scoped(重建某次请求输入): injection/context、step/start(锚点为其自身 seq)
+ * - request-scoped(重建某次请求输入): loop/start、injection/context、request/message、
+ *   system/prompt、tools/set、step/start(锚点为其自身 seq)
  * - diagnostics(纯排障,可裁剪): 其余全部
  */
 export const SESSION_EVENT_SCHEMA_VERSION = 1
@@ -58,6 +59,8 @@ export interface TurnEndEventData {
   durationMs?: number
   usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }
   messageSeqSpan?: [number, number]
+  /** 恢复时补写的封口事件才有:进程在 turn 中途退出 */
+  reason?: 'process_restart'
 }
 
 export interface CheckpointEventData {
@@ -88,7 +91,17 @@ export interface AssistantMessageEventData {
   hash: string
 }
 
-export type MessagesTruncateReason = 'turn_failed' | 'interrupt' | 'admin' | 'restore_repair'
+/**
+ * 截断原因由改动 canonical 的一方声明:turn 失败回滚、尾部回滚命令(admin)、外部消息撤回(recall)、
+ * 恢复修复;`unexpected` 表示对账时发现了没有声明原因的改动。
+ */
+export type MessagesTruncateReason =
+  | 'turn_failed'
+  | 'interrupt'
+  | 'admin'
+  | 'recall'
+  | 'restore_repair'
+  | 'unexpected'
 
 export interface MessagesTruncateEventData {
   /** 投影保留到该下标(不含) */
@@ -108,6 +121,25 @@ export interface InjectionContextEventData {
   requestId?: string
   content: string
   refs?: Record<string, unknown>
+  /**
+   * 被改写的请求消息 id:dynamic / image_delegation 是本 loop 的首条 user 消息,queued_merge 是排队原文
+   * 拼进的那条消息。迁移播种的旧事件没有,重放时不参与请求组装。
+   */
+  messageId?: string
+  /** queued_merge:拼到 messageId 末尾的 blocks(排队原文 + 排队图片,图片为 imageRef 文件引用) */
+  blocks?: ContentBlock[]
+}
+
+/** 一次 agent loop 开始:请求的历史 = 此刻的 canonical 投影(与它的检查点) */
+export interface LoopStartEventData {
+  /** 请求组装是否按 provider 要求清理没有签名 thinking 的工具调用(prepareRequestMessages) */
+  requireThinkingForToolUse: boolean
+}
+
+/** 只在请求里、不进 canonical 的消息:记忆提醒阶段 loop 追加进请求的消息 */
+export interface RequestMessageEventData {
+  message: Message
+  reason: 'memory_nudge'
 }
 
 export interface InboxEnqueuedEventData {
@@ -134,6 +166,8 @@ export interface StepStartEventData {
   requestSpanId?: string
   model?: string
   messageCount?: number
+  /** 实际发给 adapter 的 system、工具名与消息的 hash(hashRequest,图片按内容 hash 归一) */
+  requestHash?: string
 }
 
 export type StepStopReason = 'end_turn' | 'tool_use' | 'error' | 'aborted'
@@ -270,7 +304,7 @@ export interface ClosureStartEventData {
   turnIndex?: number
   requestId?: string
   model?: string
-  /** 评估开始时事件流最后一条 seq(本 turn 消息尚未持久化,其事件 seq 均大于 baseSeq) */
+  /** 评估开始时事件流最后一条 seq(本 turn 已产生的消息事件都在它之前) */
   baseSeq?: number
   /** 分类器输入的消息数(含注入前缀的 loop 消息) */
   messageCount?: number
@@ -301,12 +335,18 @@ export interface ParamsReasoningEventData {
   to?: string
 }
 
-/** 系统提示词快照:内容变更时发射(model-visible 输入的一部分) */
+/**
+ * 系统提示词快照:请求的 system 文本变化时发射(model-visible 输入的一部分)。
+ * 请求的 system = content,有 identity 时再接上 `\n\n` + identity;hash 与 chars 描述的是这段 system 文本。
+ */
 export interface SystemPromptEventData {
   hash: string
   chars: number
   promptMode?: string
+  /** 静态系统提示词(恢复与 DB 的 system_prompt 列用的就是它) */
   content: string
+  /** identityMemory:请求时接在 content 之后 */
+  identity?: string
 }
 
 export type MemoryRetrievalLayer = 'layer1' | 'layer2'
@@ -317,14 +357,17 @@ export interface MemoryRetrievalStartEventData {
   turnIndex?: number
 }
 
-/** memory 检索决策结束:queries/候选/选中与是否注入 */
+/**
+ * memory 检索决策结束:queries/候选/选中与是否注入。status 为 injected 时 selected 就是交给注入的记忆,
+ * 运行时把它们记进会话的已注入记忆表,恢复时按它重建。
+ */
 export interface MemoryRetrievalEndEventData {
   layer: MemoryRetrievalLayer
   turnIndex?: number
   status: 'injected' | 'skipped' | 'failed'
   queries: string[]
   searchCount?: number
-  selected: Array<{ id: string; title?: string; score?: number }>
+  selected: Array<{ id: string; title: string; score?: number }>
   durationMs?: number
   usage?: Record<string, number>
   error?: string
@@ -387,6 +430,16 @@ export interface MessagesTruncateEvent extends SessionEventBase {
 export interface InjectionContextEvent extends SessionEventBase {
   type: 'injection/context'
   data: InjectionContextEventData
+}
+
+export interface LoopStartEvent extends SessionEventBase {
+  type: 'loop/start'
+  data: LoopStartEventData
+}
+
+export interface RequestMessageEvent extends SessionEventBase {
+  type: 'request/message'
+  data: RequestMessageEventData
 }
 
 export interface InboxEnqueuedEvent extends SessionEventBase {
@@ -524,6 +577,8 @@ export type SessionEvent =
   | AssistantMessageEvent
   | MessagesTruncateEvent
   | InjectionContextEvent
+  | LoopStartEvent
+  | RequestMessageEvent
   | InboxEnqueuedEvent
   | InboxDrainedEvent
   | InboxSplicedEvent
@@ -580,6 +635,42 @@ export interface SessionEventProjection {
   /** 最后一条事件 seq;空文件为 -1 */
   lastSeq: number
   header: SessionEventData | null
+}
+
+/**
+ * 恢复会话需要的状态(会话元数据除外),全部由重放日志得到,见 docs/session-log-replay.md「恢复读什么」。
+ */
+export interface SessionRestoreProjection extends SessionEventProjection {
+  /** 最后一条 system/prompt 的 content(静态系统提示词);没有该事件时为 undefined */
+  systemPrompt?: string
+  /** turn/start 里最大的 turnIndex;没有 turn 事件时为 undefined */
+  lastTurnIndex?: number
+  /** 已注入的记忆 id → title:status 为 injected 的 memory/retrieval/end 的 selected */
+  injectedMemoryIds: Map<string, string>
+}
+
+/**
+ * 一次请求的组装条目,按日志顺序:loop 追加进请求的消息(canonical 消息事件或 request/message)、
+ * 改写请求消息的注入(带 messageId 的 injection/context)、检查点变化(compaction/checkpoint)。
+ */
+export type RequestEntry =
+  | { kind: 'message'; message: Message }
+  | { kind: 'injection'; injection: InjectionContextEventData & { messageId: string } }
+  | { kind: 'checkpoint'; checkpoint: ContextCheckpoint | null }
+
+/** assembleRequest 的输入:重放时由 step/start 之前的事件取得,运行时 turn 内重建用同一形状 */
+export interface RequestAssemblyInput {
+  /** system/prompt.content */
+  systemPrompt: string
+  /** system/prompt.identity */
+  identityMemory?: string
+  toolNames: string[]
+  /** loop 开始时的 canonical 消息 */
+  history: Message[]
+  /** loop 开始时的检查点 */
+  checkpoint?: ContextCheckpoint
+  requireThinkingForToolUse: boolean
+  entries: RequestEntry[]
 }
 
 /** 事件文件级不变式校验结果 */

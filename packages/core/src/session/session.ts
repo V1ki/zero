@@ -33,7 +33,7 @@ import {
 } from './session-conversation-state'
 import { isTopLevelUserTurn } from './session-messages'
 import { persistSessionMetadata, persistSessionState } from './session-persistence'
-import { createRestoredSessionRuntime } from './session-restore'
+import { type RestoredSessionContext, createRestoredSessionRuntime } from './session-restore'
 import { allocateUniqueSessionId, createSessionLogger } from './session-runtime'
 import { SessionSnapshotRecorder, buildSessionSnapshotContext } from './session-snapshots'
 import type { SessionSnapshotContext } from './session-snapshots'
@@ -331,6 +331,8 @@ export class Session {
   }): SessionMessageRecallResult {
     const result = this.conversation.markExternalMessageRecalled(options)
     if (result.changed) {
+      // 撤回原地改写了一条旧消息:事件流截断到它并重新追加之后的消息
+      this.deps.sessionEvents?.syncMessages(this.data.id, this.conversation.messages, 'recall')
       this.turnRuntime.removeQueuedMessagesBySource(options.source)
       this.data.updatedAt = now()
       this.deps.bus?.emit('session:update', {
@@ -376,6 +378,7 @@ export class Session {
       checkpoint: this.conversation.checkpoint,
       agentConfig: this.agentRuntime.getAgentConfig(),
       systemPrompt: this.controllers.staticContext.getLastSystemPrompt() || undefined,
+      identityMemory: this.deps.identityMemory,
     })
   }
 
@@ -388,9 +391,7 @@ export class Session {
     modelRouter: ModelRouter,
     toolRegistry: ToolRegistry,
     deps: SessionDeps = {},
-    systemPrompt?: string,
-    timelineCompactionBlocks: TimelineCompactionBlock[] = [],
-    checkpoint?: ContextCheckpoint,
+    restored: RestoredSessionContext = {},
   ): Session {
     const session = Object.create(Session.prototype) as Session
     Object.assign(
@@ -401,8 +402,7 @@ export class Session {
         modelRouter,
         toolRegistry,
         deps,
-        timelineCompactionBlocks,
-        checkpoint,
+        restored,
         getAgentName: () => session.getAgentName(),
         onBackgroundToolCompletion: (event) => session.handleBackgroundToolCompletion(event),
       }),
@@ -420,7 +420,7 @@ export class Session {
       reinitializeAgent: () => session.reinitializeAgent(),
       persistState: () => session.persistState(),
     })
-    session.controllers.staticContext.setLastSystemPrompt(systemPrompt ?? '')
+    session.controllers.staticContext.setLastSystemPrompt(restored.systemPrompt ?? '')
     session.snapshotRecorder.restoreFromLogger()
     return session
   }
@@ -431,6 +431,10 @@ export class Session {
 
   getSystemPrompt(): string {
     return this.controllers.clientState.getSystemPrompt()
+  }
+
+  getIdentityMemory(): string | undefined {
+    return this.deps.identityMemory
   }
 
   getMessages(): Message[] {
@@ -577,6 +581,8 @@ async function handleSessionMessageEntry(options: {
       controlKind: options.handleOptions?.controlKind,
       messages: options.messages,
       data: options.sessionData,
+      appendMessageEvent: (message) =>
+        options.deps.sessionEvents?.appendMessage(options.sessionData.id, message),
       persistState: options.persistState,
       emitSessionUpdate: (event) => options.deps.bus?.emit('session:update', event),
       onApplied: options.handleOptions?.onQueuedMessageApplied,

@@ -24,6 +24,7 @@ import {
   createUserMessage,
   saveImagesForDelegation,
 } from './session-messages'
+import { ensureSessionPromptEvent } from './session-persistence'
 import type { SessionSnapshotContext, SessionSnapshotRecorder } from './session-snapshots'
 import type { SessionStaticContextProvider } from './session-static-context'
 import type { SessionTurnRuntime } from './session-turn-runtime'
@@ -72,6 +73,8 @@ export async function processSessionMessageTurn({
 }: ProcessSessionMessageTurnOptions): Promise<Message[]> {
   const { currentModel, tools, toolNames, systemPrompt, projectRoot, workspacePath } =
     staticContext.ensure()
+  // 请求的 system 与工具集在本 turn 的第一个 step/start 之前落事件
+  ensureSessionPromptEvent(deps.sessionEvents, sessionData.id, systemPrompt, deps.identityMemory)
   ensureToolsSetEvent(deps, sessionData.id, toolNames)
   snapshotRecorder.ensureCurrentContextSnapshot(getCurrentSnapshotContext(toolNames))
   const userMessageEntry = createUserMessage({
@@ -219,6 +222,7 @@ export async function processSessionMessageTurn({
         })
       },
     })
+    deps.sessionEvents?.syncMessages(sessionData.id, messages, 'turn_failed')
 
     // 回滚掉的消息可能被本 turn 的检查点引用:恢复 turn 开始时的检查点并补写事件
     if (rolledBack && latestCheckpoint !== checkpoint) {
@@ -244,7 +248,7 @@ export async function processSessionMessageTurn({
 /** 工具集是 model-visible 请求输入:名字列表变化时落一条 tools/set 事件 */
 function ensureToolsSetEvent(deps: SessionDeps, sessionId: string, toolNames: string[]): void {
   const store = deps.sessionEvents
-  if (!store || toolNames.length === 0) return
+  if (!store) return
 
   const hash = `sha256:${createHash('sha256').update(JSON.stringify(toolNames)).digest('hex')}`
   if (store.getToolSet(sessionId)?.hash === hash) return
