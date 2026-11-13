@@ -14,6 +14,7 @@ import {
   prepareRequestMessages,
 } from './compaction'
 import type { QueuedMessage } from './queue'
+import { composeSystemPrompt } from './request-assembly'
 
 const BACKGROUND_BASH_TIMEOUT_MS = 60 * 60 * 1000
 
@@ -78,11 +79,13 @@ export class Agent {
     )
     const traceRecorder = this.createTraceRecorder()
 
-    const systemParts: string[] = [context.systemPrompt]
-    if (context.identityMemory) systemParts.push(context.identityMemory)
-    const system = systemParts.join('\n\n')
+    const system = composeSystemPrompt(context.systemPrompt, context.identityMemory)
 
     const requireThinkingForToolUse = this.adapter.apiType === 'anthropic-deepseek'
+    // 请求的历史 = 此刻的 canonical 投影:在 turn 开始的压缩(第一个 await)之前写
+    this.obs.sessionEvents?.append(this.toolContext.sessionId, [
+      { type: 'loop/start', data: { requireThinkingForToolUse } },
+    ])
     // 摘要请求失败后,本 turn 内不再重试:否则长 turn 的每一步都要再等一次超时。下个 turn 重新尝试。
     let summaryFailed = false
     const compaction: AgentRequestCompaction = {
@@ -98,8 +101,6 @@ export class Agent {
         summaryFailed = outcome.failed
         return outcome.changed
       },
-      prepare: (messages) =>
-        prepareRequestMessages(messages, context.checkpoint, { requireThinkingForToolUse }),
     }
 
     const executionState = {
@@ -112,7 +113,10 @@ export class Agent {
 
     try {
       await compaction.compact(context.conversationHistory, 'turn_start', rootSpan?.id)
-      const history = compaction.prepare(context.conversationHistory)
+      const requestBase = { checkpoint: context.checkpoint, requireThinkingForToolUse }
+      const history = prepareRequestMessages(context.conversationHistory, context.checkpoint, {
+        requireThinkingForToolUse,
+      })
 
       const loopHooks = createAgentLoopHooks({
         config: this.config,
@@ -135,6 +139,7 @@ export class Agent {
         requestPurposeRef,
         traceRecorder,
         compaction,
+        requestBase,
       })
       loopHooks.shouldAbort = shouldAbort
 

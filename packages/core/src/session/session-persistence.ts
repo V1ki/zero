@@ -8,6 +8,7 @@ import type {
 } from '@zero-os/shared'
 import { SESSION_EVENT_SCHEMA_VERSION } from '@zero-os/shared'
 import type { AgentConfig } from '../agent/agent'
+import { composeSystemPrompt } from '../agent/request-assembly'
 
 export interface PersistSessionMetadataOptions {
   sessionDb?: SessionDB
@@ -16,6 +17,8 @@ export interface PersistSessionMetadataOptions {
   data: SessionData
   agentConfig?: AgentConfig | null
   systemPrompt?: string
+  /** 请求时接在系统提示词之后;只进 system/prompt 事件,DB 列仍只存静态提示词 */
+  identityMemory?: string
 }
 
 export interface PersistSessionStateOptions extends PersistSessionMetadataOptions {
@@ -29,6 +32,7 @@ export interface PersistableSessionSnapshot {
   readonly data: SessionData
   getAgentConfig(): AgentConfig | null
   getSystemPrompt(): string
+  getIdentityMemory(): string | undefined
   getMessages(): Message[]
   getTimelineCompactionBlocks(): TimelineCompactionBlock[]
   getContextCheckpoint(): ContextCheckpoint | undefined
@@ -44,7 +48,9 @@ export function persistSessionState(options: PersistSessionStateOptions): void {
   const { sessionDb, sessionEvents, sessionEventsOnly, data, messages, timelineCompactionBlocks } =
     options
   ensureSessionEventHeader(sessionEvents, data)
-  ensureSessionPromptEvent(sessionEvents, data.id, options.systemPrompt)
+  if (options.systemPrompt) {
+    ensureSessionPromptEvent(sessionEvents, data.id, options.systemPrompt, options.identityMemory)
+  }
   // 事件流先写:崩溃窗口内事件流最多比 DB 新,恢复优先读事件流不会读到旧数据
   sessionEvents?.syncCanonical(data.id, { messages, blocks: timelineCompactionBlocks })
   // file-only 模式:DB 大字段是可重建的派生索引,不再写入
@@ -71,6 +77,7 @@ export function persistSessionSnapshot(
     data: session.data,
     agentConfig: session.getAgentConfig(),
     systemPrompt: session.getSystemPrompt() || undefined,
+    identityMemory: session.getIdentityMemory(),
     messages: session.getMessages(),
     timelineCompactionBlocks: session.getTimelineCompactionBlocks(),
     checkpoint: session.getContextCheckpoint(),
@@ -92,24 +99,30 @@ export function ensureSessionEventHeader(
 }
 
 /**
- * 系统提示词是 model-visible 输入的一部分:内容变化时落一条 system/prompt 事件,
- * 事件流由此拥有完整的 prompt 谱系(DB 的 system_prompt 列只存最新一份)。
+ * 请求的 system(系统提示词 + identityMemory)是 model-visible 输入:它变化时落一条 system/prompt 事件,
+ * 事件流由此拥有完整的 prompt 谱系(DB 的 system_prompt 列只存最新一份静态提示词)。
+ * turn 开始时与持久化时都调用,hash 覆盖实际发出的 system 文本。
  */
-function ensureSessionPromptEvent(
-  sessionEvents: SessionEventStore | undefined,
+export function ensureSessionPromptEvent(
+  sessionEvents: Pick<SessionEventStore, 'append' | 'getSystemPrompt'> | undefined,
   sessionId: string,
-  systemPrompt: string | undefined,
+  systemPrompt: string,
+  identityMemory: string | undefined,
 ): void {
-  const content = systemPrompt?.trim()
-  if (!sessionEvents || !content) return
-
-  const hash = `sha256:${createHash('sha256').update(content).digest('hex')}`
+  if (!sessionEvents) return
+  const system = composeSystemPrompt(systemPrompt, identityMemory)
+  const hash = `sha256:${createHash('sha256').update(system).digest('hex')}`
   if (sessionEvents.getSystemPrompt(sessionId)?.hash === hash) return
 
   sessionEvents.append(sessionId, [
     {
       type: 'system/prompt',
-      data: { hash, chars: content.length, content },
+      data: {
+        hash,
+        chars: system.length,
+        content: systemPrompt,
+        ...(identityMemory ? { identity: identityMemory } : {}),
+      },
     },
   ])
 }

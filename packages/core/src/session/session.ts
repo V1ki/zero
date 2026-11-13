@@ -378,6 +378,7 @@ export class Session {
       checkpoint: this.conversation.checkpoint,
       agentConfig: this.agentRuntime.getAgentConfig(),
       systemPrompt: this.controllers.staticContext.getLastSystemPrompt() || undefined,
+      identityMemory: this.deps.identityMemory,
     })
   }
 
@@ -433,6 +434,10 @@ export class Session {
 
   getSystemPrompt(): string {
     return this.controllers.clientState.getSystemPrompt()
+  }
+
+  getIdentityMemory(): string | undefined {
+    return this.deps.identityMemory
   }
 
   getMessages(): Message[] {

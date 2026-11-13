@@ -69,7 +69,8 @@ export interface AgentLoopHooks {
   /** Continue a provider-truncated response without executing partial tool calls. */
   onTruncatedResponse?(response: CompletionResponse, ctx: LoopIterationContext): Message[]
 
-  buildRequestUserContent?(content: ContentBlock[], ctx: LoopIterationContext): ContentBlock[]
+  /** loop 首条 user 消息发给模型的内容(只在请求里,canonical 消息不变) */
+  buildRequestUserContent?(message: Message, ctx: LoopIterationContext): ContentBlock[]
   onNewMessage?(msg: Message, ctx: LoopIterationContext): void
   filterAssistantContent?(content: ContentBlock[], ctx: LoopIterationContext): ContentBlock[]
   onInvalidAssistantResponse?(
@@ -470,8 +471,7 @@ export class AgentLoop {
     const userMsg = userMessageEntry ?? this.buildUserMessage(userMessage, userImages)
     this.notifyNewMessage(userMsg, ctx)
 
-    const requestUserContent =
-      this.hooks.buildRequestUserContent?.(userMsg.content, ctx) ?? userMsg.content
+    const requestUserContent = this.hooks.buildRequestUserContent?.(userMsg, ctx) ?? userMsg.content
     messages.push(
       requestUserContent === userMsg.content
         ? userMsg

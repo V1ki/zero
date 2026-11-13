@@ -5,6 +5,8 @@ import {
   type ContextCheckpoint,
   type Message,
   type MessagesTruncateReason,
+  type RequestAssemblyInput,
+  type RequestEntry,
   SESSION_EVENT_FILE,
   SESSION_EVENT_SCHEMA_VERSION,
   SUBAGENT_EVENT_FILE_PREFIX,
@@ -112,12 +114,22 @@ export class SessionEventStore {
     return created === null ? null : relative
   }
 
-  /** Append diagnostics events (seq/ts assigned here). Returns first assigned seq. */
+  /**
+   * Append non-message events (seq/ts assigned here). Returns first assigned seq.
+   * 事件里的图片(request/message、queued_merge 的 blocks)与消息一样外置为 imageRef。
+   */
   append(sessionId: string, events: SessionEventInput[]): number | null {
     if (events.length === 0) return null
     const state = this.loadState(sessionId)
     if (!state || state.corrupt) return null
-    return this.appendEvents(sessionId, state, events)
+    return this.appendEvents(
+      sessionId,
+      state,
+      externalizeImageData(events, {
+        logsBasePath: this.basePath,
+        sessionId: state.projection.header?.parentSessionId ?? sessionId,
+      }),
+    )
   }
 
   /**
@@ -220,6 +232,15 @@ export class SessionEventStore {
     const check = checkSessionEvents(events)
     if (!check.ok) return null
     return projectEvents(check.events.filter((event) => event.seq <= seq))
+  }
+
+  /** 一次请求(step/start 的 seq)的组装输入,见 buildRequestAssemblyInput;文件不存在或损坏时返回 null */
+  getRequestAssemblyInput(sessionId: string, stepSeq: number): RequestAssemblyInput | null {
+    const state = this.loadState(sessionId)
+    if (!state || state.corrupt) return null
+    const check = checkSessionEvents(this.readEvents(sessionId))
+    if (!check.ok) return null
+    return buildRequestAssemblyInput(check.events, stepSeq)
   }
 
   readEvents(sessionId: string): SessionEvent[] {
@@ -474,6 +495,82 @@ export function projectEvents(events: SessionEvent[]): SessionEventProjection {
     blocks: core.blocks,
     checkpoint: resolveCheckpoint(core),
     lastSeq: events.length > 0 ? events[events.length - 1].seq : -1,
+  }
+}
+
+/**
+ * 一次请求的组装输入,只依赖事件(详见 docs/session-event-log.md「请求重建」):
+ * - 所属 loop:step/start 之前最近的 loop/start;history 与 checkpoint 是该 loop/start 处的投影;
+ * - system 与工具集:step/start 之前最后一条 system/prompt 与 tools/set;
+ * - entries:loop/start 与 step/start 之间按日志顺序的 canonical 消息事件(排队消息除外:紧跟在
+ *   agent/inbox/enqueued 之后、下标为其 messageIndex 的那条)、request/message、带 messageId 的
+ *   injection/context、compaction/checkpoint。
+ * seq 不是 step/start、它之前没有 loop/start(旧日志)、或 loop 内出现 messages/truncate(turn 中途撤回原地
+ * 改写了请求里的消息)时返回 null。
+ */
+export function buildRequestAssemblyInput(
+  events: SessionEvent[],
+  stepSeq: number,
+): RequestAssemblyInput | null {
+  const stepPosition = events.findIndex((event) => event.seq === stepSeq)
+  if (stepPosition < 0 || events[stepPosition].type !== 'step/start') return null
+  const before = events.slice(0, stepPosition)
+  const loopPosition = before.findLastIndex((event) => event.type === 'loop/start')
+  const loopStart = before[loopPosition]
+  if (loopStart?.type !== 'loop/start') return null
+
+  const base = projectEvents(before.slice(0, loopPosition + 1))
+  let systemPrompt = ''
+  let identityMemory: string | undefined
+  let toolNames: string[] = []
+  for (const event of before) {
+    if (event.type === 'system/prompt') {
+      systemPrompt = event.data.content
+      identityMemory = event.data.identity
+    } else if (event.type === 'tools/set') {
+      toolNames = event.data.toolNames
+    }
+  }
+
+  const entries: RequestEntry[] = []
+  let queuedMessageIndex: number | undefined
+  for (const event of before.slice(loopPosition + 1)) {
+    switch (event.type) {
+      case 'agent/inbox/enqueued':
+        queuedMessageIndex = event.data.messageIndex
+        break
+      case 'user/message':
+      case 'assistant/message':
+        // 排队消息进 canonical,但不在 loop 的请求里:它的原文由 queued_merge 拼进请求
+        if (event.data.messageIndex === queuedMessageIndex) queuedMessageIndex = undefined
+        else entries.push({ kind: 'message', message: event.data.message })
+        break
+      case 'request/message':
+        entries.push({ kind: 'message', message: event.data.message })
+        break
+      case 'injection/context': {
+        const { messageId } = event.data
+        if (messageId) entries.push({ kind: 'injection', injection: { ...event.data, messageId } })
+        break
+      }
+      case 'compaction/checkpoint':
+        entries.push({ kind: 'checkpoint', checkpoint: event.data.checkpoint })
+        break
+      case 'messages/truncate':
+        return null
+      default:
+        break
+    }
+  }
+
+  return {
+    systemPrompt,
+    ...(identityMemory === undefined ? {} : { identityMemory }),
+    toolNames,
+    history: base.messages,
+    ...(base.checkpoint ? { checkpoint: base.checkpoint } : {}),
+    requireThinkingForToolUse: loopStart.data.requireThinkingForToolUse,
+    entries,
   }
 }
 

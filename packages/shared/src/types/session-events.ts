@@ -1,5 +1,5 @@
 import type { ContextCheckpoint, TimelineCompactionBlock } from './context'
-import type { Message, TokenUsage, ToolEvidence } from './message'
+import type { ContentBlock, Message, TokenUsage, ToolEvidence } from './message'
 import type { SessionSource } from './session'
 
 /**
@@ -9,7 +9,8 @@ import type { SessionSource } from './session'
  * 事件分三类:
  * - surface(投影源): user/message | assistant/message | messages/truncate | compaction/checkpoint |
  *   compaction/block(只读的旧数据)
- * - request-scoped(重建某次请求输入): injection/context、step/start(锚点为其自身 seq)
+ * - request-scoped(重建某次请求输入): loop/start、injection/context、request/message、
+ *   system/prompt、tools/set、step/start(锚点为其自身 seq)
  * - diagnostics(纯排障,可裁剪): 其余全部
  */
 export const SESSION_EVENT_SCHEMA_VERSION = 1
@@ -120,6 +121,25 @@ export interface InjectionContextEventData {
   requestId?: string
   content: string
   refs?: Record<string, unknown>
+  /**
+   * 被改写的请求消息 id:dynamic / image_delegation 是本 loop 的首条 user 消息,queued_merge 是排队原文
+   * 拼进的那条消息。迁移播种的旧事件没有,重放时不参与请求组装。
+   */
+  messageId?: string
+  /** queued_merge:拼到 messageId 末尾的 blocks(排队原文 + 排队图片,图片为 imageRef 文件引用) */
+  blocks?: ContentBlock[]
+}
+
+/** 一次 agent loop 开始:请求的历史 = 此刻的 canonical 投影(与它的检查点) */
+export interface LoopStartEventData {
+  /** 请求组装是否按 provider 要求清理没有签名 thinking 的工具调用(prepareRequestMessages) */
+  requireThinkingForToolUse: boolean
+}
+
+/** 只在请求里、不进 canonical 的消息:记忆提醒阶段 loop 追加进请求的消息 */
+export interface RequestMessageEventData {
+  message: Message
+  reason: 'memory_nudge'
 }
 
 export interface InboxEnqueuedEventData {
@@ -146,6 +166,8 @@ export interface StepStartEventData {
   requestSpanId?: string
   model?: string
   messageCount?: number
+  /** 实际发给 adapter 的 system、工具名与消息的 hash(hashRequest,图片按内容 hash 归一) */
+  requestHash?: string
 }
 
 export type StepStopReason = 'end_turn' | 'tool_use' | 'error' | 'aborted'
@@ -313,12 +335,18 @@ export interface ParamsReasoningEventData {
   to?: string
 }
 
-/** 系统提示词快照:内容变更时发射(model-visible 输入的一部分) */
+/**
+ * 系统提示词快照:请求的 system 文本变化时发射(model-visible 输入的一部分)。
+ * 请求的 system = content,有 identity 时再接上 `\n\n` + identity;hash 与 chars 描述的是这段 system 文本。
+ */
 export interface SystemPromptEventData {
   hash: string
   chars: number
   promptMode?: string
+  /** 静态系统提示词(恢复与 DB 的 system_prompt 列用的就是它) */
   content: string
+  /** identityMemory:请求时接在 content 之后 */
+  identity?: string
 }
 
 export type MemoryRetrievalLayer = 'layer1' | 'layer2'
@@ -399,6 +427,16 @@ export interface MessagesTruncateEvent extends SessionEventBase {
 export interface InjectionContextEvent extends SessionEventBase {
   type: 'injection/context'
   data: InjectionContextEventData
+}
+
+export interface LoopStartEvent extends SessionEventBase {
+  type: 'loop/start'
+  data: LoopStartEventData
+}
+
+export interface RequestMessageEvent extends SessionEventBase {
+  type: 'request/message'
+  data: RequestMessageEventData
 }
 
 export interface InboxEnqueuedEvent extends SessionEventBase {
@@ -536,6 +574,8 @@ export type SessionEvent =
   | AssistantMessageEvent
   | MessagesTruncateEvent
   | InjectionContextEvent
+  | LoopStartEvent
+  | RequestMessageEvent
   | InboxEnqueuedEvent
   | InboxDrainedEvent
   | InboxSplicedEvent
@@ -592,6 +632,30 @@ export interface SessionEventProjection {
   /** 最后一条事件 seq;空文件为 -1 */
   lastSeq: number
   header: SessionEventData | null
+}
+
+/**
+ * 一次请求的组装条目,按日志顺序:loop 追加进请求的消息(canonical 消息事件或 request/message)、
+ * 改写请求消息的注入(带 messageId 的 injection/context)、检查点变化(compaction/checkpoint)。
+ */
+export type RequestEntry =
+  | { kind: 'message'; message: Message }
+  | { kind: 'injection'; injection: InjectionContextEventData & { messageId: string } }
+  | { kind: 'checkpoint'; checkpoint: ContextCheckpoint | null }
+
+/** assembleRequest 的输入:重放时由 step/start 之前的事件取得,运行时 turn 内重建用同一形状 */
+export interface RequestAssemblyInput {
+  /** system/prompt.content */
+  systemPrompt: string
+  /** system/prompt.identity */
+  identityMemory?: string
+  toolNames: string[]
+  /** loop 开始时的 canonical 消息 */
+  history: Message[]
+  /** loop 开始时的检查点 */
+  checkpoint?: ContextCheckpoint
+  requireThinkingForToolUse: boolean
+  entries: RequestEntry[]
 }
 
 /** 事件文件级不变式校验结果 */

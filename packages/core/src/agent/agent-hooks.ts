@@ -15,9 +15,12 @@ import type {
   CompletionResponse,
   ContentBlock,
   ControlKind,
+  InjectionContextEventData,
   Message,
   ModelPricing,
   ReasoningEffort,
+  RequestAssemblyInput,
+  RequestEntry,
   SecretFilter,
   ToolContext,
   ToolLogger,
@@ -50,6 +53,7 @@ import {
   injectQueuedMessagesWithTrace,
   isTaskComplete,
 } from './queue'
+import { applyUserInjections, assembleRequest, hashRequest } from './request-assembly'
 import {
   TASK_CLOSURE_CLASSIFIER_SYSTEM_PROMPT,
   type TaskClosureDecision,
@@ -84,14 +88,14 @@ export interface CreateAgentLoopHooksOptions {
   requestPurposeRef: { current: UsagePurpose }
   traceRecorder: AgentTraceRecorder
   compaction: AgentRequestCompaction
+  /** 请求历史投影时用的检查点(turn 开始的压缩之后)与 provider 清理选项 */
+  requestBase: Pick<RequestAssemblyInput, 'checkpoint' | 'requireThinkingForToolUse'>
 }
 
-/** turn 开始和 turn 内共用的压缩与请求消息准备 */
+/** turn 开始和 turn 内共用的压缩 */
 export interface AgentRequestCompaction {
   /** 按压力压缩 canonical 消息;返回检查点是否变化 */
   compact(messages: Message[], trigger: CompactionTrigger, parentSpanId?: string): Promise<boolean>
-  /** canonical 消息 + 当前检查点 → 请求消息 */
-  prepare(messages: Message[]): Message[]
 }
 
 function isMissingDeepSeekSignedThinkingError(error: unknown): boolean {
@@ -409,11 +413,12 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): Agen
     requestPurposeRef,
     traceRecorder,
     compaction,
+    requestBase,
   } = options
 
   const baseUsagePurpose = obs.usagePurpose ?? 'agent_loop'
-  // 拼进请求消息的排队原文(只在请求里,不在 canonical):压缩重建请求消息后补回
-  const queuedInjectionBlocks = new Map<string, ContentBlock[]>()
+  // 本 loop 对请求消息的改动,与写进日志的顺序一致:turn 内压缩后经 assembleRequest 重建请求消息
+  const requestEntries: RequestEntry[] = []
   const memoryNudge = new AgentMemoryNudgeController({
     sessionId: toolContext.sessionId,
     agentName: config.name,
@@ -487,39 +492,43 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): Agen
   })
 
   return {
-    buildRequestUserContent: (content) => {
-      const requestContent = buildAgentRequestUserContent(content, context)
+    buildRequestUserContent: (message) => {
       // 注入内容只进 API 不落 canonical;在此补记为 request-scoped 事件
-      const injections: Array<{ kind: 'dynamic' | 'image_delegation'; text: string }> = []
+      const injections: Array<InjectionContextEventData & { messageId: string }> = []
       if (context.dynamicContext) {
-        injections.push({ kind: 'dynamic', text: context.dynamicContext })
+        injections.push({ kind: 'dynamic', content: context.dynamicContext, messageId: message.id })
       }
       if (context.imageDelegationFiles?.length) {
         injections.push({
           kind: 'image_delegation',
-          text: buildImageDelegationPrompt(context.imageDelegationFiles),
+          content: buildImageDelegationPrompt(context.imageDelegationFiles),
+          messageId: message.id,
         })
       }
-      if (injections.length > 0) {
-        obs.sessionEvents?.append(
-          toolContext.sessionId,
-          injections.map((injection) => ({
-            type: 'injection/context',
-            data: { kind: injection.kind, content: injection.text },
-          })),
-        )
-      }
-      return requestContent
+      if (injections.length === 0) return message.content
+      obs.sessionEvents?.append(
+        toolContext.sessionId,
+        injections.map((data) => ({ type: 'injection/context', data })),
+      )
+      for (const injection of injections) requestEntries.push({ kind: 'injection', injection })
+      return applyUserInjections(message.content, injections)
     },
     onNewMessage: (message) => {
+      requestEntries.push({ kind: 'message', message })
       if (!memoryNudge.isActive) {
         // 转给调用方的即 canonical 消息:在这一刻写消息事件(子代理经重定向写进自己的文件)
         obs.sessionEvents?.appendMessage(toolContext.sessionId, message)
         options.onNewMessage?.(message)
-      } else if (message.role === 'assistant') {
-        const text = extractTextFromMessage(message).trim()
-        if (text !== '') {
-          memoryNudge.recordResponseText(obs.secretFilter ? obs.secretFilter.filter(text) : text)
+      } else {
+        // 记忆提醒阶段的消息只进请求、不进 canonical:记为 request-scoped 事件,重放时还原这几次请求
+        obs.sessionEvents?.append(toolContext.sessionId, [
+          { type: 'request/message', data: { message, reason: 'memory_nudge' } },
+        ])
+        if (message.role === 'assistant') {
+          const text = extractTextFromMessage(message).trim()
+          if (text !== '') {
+            memoryNudge.recordResponseText(obs.secretFilter ? obs.secretFilter.filter(text) : text)
+          }
         }
       }
 
@@ -595,47 +604,42 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): Agen
       }
     },
     afterToolResults: async (ctx) => {
-      // turn 内的 canonical = turn 开始时的历史 + 本 turn 的新消息;检查点变化时从投影重建请求消息,
-      // 并补回只在请求里的内容(首条 user 消息的动态上下文/图片委托、拼进去的排队消息)
+      // turn 内的 canonical = turn 开始时的历史 + 本 turn 的新消息;检查点变化时按 assembleRequest
+      // 重建请求消息,补回只在请求里的内容(首条 user 消息的注入、拼进去的排队消息)
       const canonical = [...context.conversationHistory, ...ctx.newMessages]
       if (
         await compaction.compact(canonical, 'in_turn', llmRequestHooks.getCurrentRequestSpanId())
       ) {
-        const turnUserMessageId = ctx.newMessages[0]?.id
-        const rebuilt = compaction.prepare(canonical).map((message) => {
-          const request =
-            message.id === turnUserMessageId
-              ? { ...message, content: buildAgentRequestUserContent(message.content, context) }
-              : message
-          const queued = queuedInjectionBlocks.get(message.id)
-          return queued ? { ...request, content: [...request.content, ...queued] } : request
+        requestEntries.push({ kind: 'checkpoint', checkpoint: context.checkpoint ?? null })
+        const rebuilt = assembleRequest({
+          systemPrompt: context.systemPrompt,
+          identityMemory: context.identityMemory,
+          toolNames: context.tools.map((tool) => tool.name),
+          history: context.conversationHistory,
+          ...requestBase,
+          entries: requestEntries,
         })
-        ctx.messages.splice(0, ctx.messages.length, ...rebuilt)
+        ctx.messages.splice(0, ctx.messages.length, ...rebuilt.messages)
       }
 
       const lastBeforeInjection = ctx.messages.at(-1)
       queueGate.injectQueuedMessagesIntoLastUserMessage(ctx.messages)
 
-      // 排队消息拼进请求首条 user 消息(API-only):补一条 queued_merge 注入事件
+      // 排队消息拼进请求末尾的 user 消息(API-only):补一条带拼接 blocks 的 queued_merge 注入事件
       const queuedInjection = queueGate.pendingInjection
       const lastAfterInjection = ctx.messages.at(-1)
-      if (lastBeforeInjection && lastAfterInjection && lastAfterInjection !== lastBeforeInjection) {
-        queuedInjectionBlocks.set(
-          lastAfterInjection.id,
-          lastAfterInjection.content.slice(lastBeforeInjection.content.length),
-        )
-      }
-      if (queuedInjection) {
+      if (queuedInjection && lastBeforeInjection && lastAfterInjection) {
+        const injection = {
+          kind: 'queued_merge' as const,
+          content: queuedInjection.formattedText,
+          refs: { count: queuedInjection.count },
+          messageId: lastAfterInjection.id,
+          blocks: lastAfterInjection.content.slice(lastBeforeInjection.content.length),
+        }
         obs.sessionEvents?.append(toolContext.sessionId, [
-          {
-            type: 'injection/context',
-            data: {
-              kind: 'queued_merge',
-              content: queuedInjection.formattedText,
-              refs: { count: queuedInjection.count },
-            },
-          },
+          { type: 'injection/context', data: injection },
         ])
+        requestEntries.push({ kind: 'injection', injection })
       }
     },
     shouldInterrupt: () => queueGate.shouldKeepInterrupting(),
@@ -1639,6 +1643,11 @@ function createAgentLLMRequestHooks({
             requestSpanId: currentRequestSpanId,
             model: obs.modelLabel,
             messageCount: request.messages.length,
+            requestHash: hashRequest({
+              system: request.system ?? '',
+              toolNames: (request.tools ?? []).map((tool) => tool.name),
+              messages: request.messages,
+            }),
           },
         },
       ])
@@ -1872,27 +1881,6 @@ function createAgentToolCallHooks({
       toolSpanIds.delete(toolUseId)
     },
   }
-}
-
-function buildAgentRequestUserContent(
-  content: Message['content'],
-  context: Pick<AgentContext, 'dynamicContext' | 'imageDelegationFiles'>,
-): Message['content'] {
-  const prefix: Message['content'] = []
-  if (context.dynamicContext) {
-    prefix.push({ type: 'text', text: context.dynamicContext })
-  }
-  if (context.imageDelegationFiles?.length) {
-    prefix.push({
-      type: 'text',
-      text: buildImageDelegationPrompt(context.imageDelegationFiles),
-    })
-  }
-  if (prefix.length === 0) return content
-  const requestContent = context.imageDelegationFiles?.length
-    ? content.filter((block) => block.type !== 'image')
-    : content
-  return [...prefix, ...requestContent]
 }
 
 function buildImageDelegationPrompt(files: Array<{ path: string; mediaType: string }>): string {
