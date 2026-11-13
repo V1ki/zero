@@ -46,6 +46,21 @@ class EmitTool extends BaseTool {
   }
 }
 
+/** 执行到一半等放行的工具:在 tool_use 与 tool_result 之间排队消息 */
+class GateTool extends BaseTool {
+  name = 'gate'
+  description = 'Wait for the test'
+  parameters = { type: 'object', properties: {} }
+  readonly started = Promise.withResolvers<void>()
+  readonly release = Promise.withResolvers<void>()
+
+  protected async execute(): Promise<ToolResult> {
+    this.started.resolve()
+    await this.release.promise
+    return { success: true, output: 'gate opened', outputSummary: 'gate opened' }
+  }
+}
+
 const MAIN_PURPOSES = new Set(['agent_loop', 'memory_nudge', 'sub_agent'])
 
 type Step = CompletionResponse | Error | ((request: CompletionRequest) => CompletionResponse)
@@ -602,19 +617,45 @@ describe('every step/start replays to the request that was sent', () => {
   })
 
   test('a restored session', async () => {
-    const { adapter, errors, getStore, createSession, restore } = setup()
+    const { adapter, errors, getStore, createSession, restore, toolRegistry } = setup()
+    const gate = new GateTool()
+    toolRegistry.register(gate)
     const session = createSession('sess_replay_restore')
-    adapter.push(emit(), text('done'), emit(), text('after restore'))
+    const gateCall: CompletionResponse = {
+      id: 'resp_gate',
+      content: [{ type: 'tool_use', id: 'call_gate', name: 'gate', input: {} }],
+      stopReason: 'tool_use',
+      usage: { input: 1, output: 1 },
+      model: 'fake',
+    }
+    adapter.push(emit(), gateCall, text('done'), emit(), text('after restore'))
 
-    await session.handleMessage('before', { images: [{ mediaType: 'image/png', data: PNG }] })
+    // 工具执行中排队一条消息:canonical 里它夹在 tool_use 与 tool_result 之间,恢复不重排它
+    const turn = session.handleMessage('before', {
+      images: [{ mediaType: 'image/png', data: PNG }],
+    })
+    await gate.started.promise
+    await session.handleMessage('while the gate is closed')
+    gate.release.resolve()
+    await turn
+    const canonical = session.getMessages()
+    const queuedIndex = canonical.findIndex((message) => message.messageType === 'queued')
+    expect(canonical[queuedIndex - 1].content.some((block) => block.type === 'tool_use')).toBe(true)
+
     const restored = restore('sess_replay_restore')
+    expect(restored.getMessages().map((message) => message.id)).toEqual(
+      canonical.map((message) => message.id),
+    )
     await restored.handleMessage('after')
 
-    expectReplayEquality(getStore(), 'sess_replay_restore', adapter.received)
+    const events = expectReplayEquality(getStore(), 'sess_replay_restore', adapter.received)
+    expect(countEvents(events, (event) => event.type === 'messages/truncate')).toBe(0)
     // 恢复后的请求里图片只有 imageRef,按内容 hash 与日志一致
-    const restoredImage = adapter.received[2].messages[0].content.find(
-      (block): block is Extract<ContentBlock, { type: 'image' }> => block.type === 'image',
-    )
+    const restoredImage = adapter.received
+      .at(-2)
+      ?.messages[0].content.find(
+        (block): block is Extract<ContentBlock, { type: 'image' }> => block.type === 'image',
+      )
     expect(restoredImage?.imageRef?.sha256).toBeDefined()
     expect(errors).toEqual([])
   })

@@ -160,49 +160,6 @@ function toolResultIds(message: Message): Set<string> {
 }
 
 /**
- * Reorder persisted history so tool_result carrier messages sit immediately
- * after their assistant tool_use message. Unlike mergeInterleavedQueuedMessages,
- * this preserves queued/control messages as standalone timeline records.
- */
-export function repairInterleavedToolResultOrder(messages: Message[]): Message[] {
-  if (messages.length < 3) return messages
-
-  let repaired: Message[] | undefined
-  const current = () => repaired ?? messages
-
-  for (let i = 0; i < current().length - 1; i++) {
-    const assistant = current()[i]
-    const ids = toolUseIds(assistant)
-    if (ids.length === 0) continue
-
-    const nextIds = toolResultIds(current()[i + 1])
-    const missing = ids.filter((id) => !nextIds.has(id))
-    if (missing.length === 0) continue
-
-    let matchIndex: number | undefined
-    for (let j = i + 1; j < current().length; j++) {
-      const candidateIds = toolResultIds(current()[j])
-      if (missing.every((id) => candidateIds.has(id))) {
-        matchIndex = j
-        break
-      }
-      if (!isMergeableInterleavedToolMessage(current()[j])) {
-        break
-      }
-    }
-
-    if (matchIndex === undefined) continue
-
-    if (!repaired) repaired = [...messages]
-    const [toolResult] = repaired.splice(matchIndex, 1)
-    if (toolResult) repaired.splice(i + 1, 0, toolResult)
-    i++
-  }
-
-  return repaired ?? messages
-}
-
-/**
  * Merge queued/control messages that sit between an assistant tool_use message
  * and its corresponding user tool_result message. The Anthropic API requires
  * that every assistant message containing tool_use blocks is immediately

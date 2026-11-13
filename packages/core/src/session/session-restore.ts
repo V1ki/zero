@@ -9,10 +9,6 @@ import type {
   TurnStartEvent,
 } from '@zero-os/shared'
 import type { AgentConfig } from '../agent/agent'
-import {
-  repairInterleavedToolResultOrder,
-  sanitizeConversationHistoryForSignedThinkingToolUse,
-} from '../agent/context'
 import type { ToolRegistry } from '../tool/registry'
 import type { BackgroundToolCompletionEvent } from './background-tool-tasks'
 import { SessionAgentRuntimeController } from './session-agent-controller'
@@ -118,12 +114,15 @@ export function sealInterruptedTurn(sessionEvents: SessionEventStore, sessionId:
 
 export interface PreparedSessionRestoreState {
   data: SessionData
-  messages: Message[]
   activeModel: ResolvedModel | undefined
   logger: ToolLogger
   nextTurnIndex: number
 }
 
+/**
+ * 恢复只读:canonical 消息原样交给会话,面向 provider 的清理(排队消息合并、签名 thinking)
+ * 在请求组装时做(prepareRequestMessages)。
+ */
 export function prepareSessionRestoreState(options: {
   data: SessionData
   messages: Message[]
@@ -132,27 +131,14 @@ export function prepareSessionRestoreState(options: {
 }): PreparedSessionRestoreState {
   const { data, messages, modelRouter, deps } = options
   const normalizedData = normalizeSessionDataForRestore(data, modelRouter)
-  const activeModel = modelRouter.resolveModel(normalizedData.currentModel)
-  const repairedMessages = repairInterleavedToolResultOrder(messages)
-  const restoredMessages =
-    activeModel?.adapter.apiType === 'anthropic-deepseek'
-      ? sanitizeConversationHistoryForSignedThinkingToolUse(repairedMessages)
-      : repairedMessages
-  if (restoredMessages !== messages) {
-    deps.sessionEvents?.syncMessages(data.id, restoredMessages, 'restore_repair')
-    if (!deps.sessionEventsOnly) {
-      deps.sessionDb?.saveMessages(data.id, restoredMessages)
-    }
-  }
 
   return {
     data: normalizedData,
-    messages: restoredMessages,
-    activeModel,
+    activeModel: modelRouter.resolveModel(normalizedData.currentModel),
     logger: createRestoredSessionLogger(data.id),
     nextTurnIndex: deriveNextTurnIndex({
       sessionId: data.id,
-      messages: restoredMessages,
+      messages,
       observability: deps.observability,
     }),
   }
@@ -179,7 +165,7 @@ export function createRestoredSessionRuntime(options: {
   return {
     data: restored.data,
     conversation: new SessionConversationState({
-      messages: restored.messages,
+      messages: options.messages,
       timelineCompactionBlocks: options.timelineCompactionBlocks,
       checkpoint: options.checkpoint,
     }),
