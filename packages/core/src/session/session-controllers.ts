@@ -245,6 +245,11 @@ export class SessionTailRepairController {
       reason: options.reason,
       isTurnInProgress: () => this.options.isTurnInProgress(),
       onApplied: ({ removeCount, reason }) => {
+        this.options.deps.sessionEvents?.syncMessages(
+          this.options.data.id,
+          this.options.conversation.messages,
+          'admin',
+        )
         this.options.data.updatedAt = now()
         this.options.persistState()
         this.options.deps.bus?.emit('session:update', {

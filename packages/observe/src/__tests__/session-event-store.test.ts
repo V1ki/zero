@@ -2,7 +2,12 @@ import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ContextCheckpoint, Message, TimelineCompactionBlock } from '@zero-os/shared'
+import {
+  type ContextCheckpoint,
+  type Message,
+  type TimelineCompactionBlock,
+  isMessageAppendEvent,
+} from '@zero-os/shared'
 import { SessionEventStore, checkSessionEvents } from '../session-event-store'
 
 function createStore(basePath: string) {
@@ -83,49 +88,95 @@ describe('SessionEventStore', () => {
     }
   })
 
-  test('syncCanonical appends message events and projects equivalently', () => {
+  test('appendMessage assigns consecutive indexes and syncCanonical then finds nothing', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ses-test-'))
     try {
       const { store, errors } = createStore(dir)
       store.ensureSession({ v: 1, sessionId: 'sess_1', schemaVersion: 1, source: 'feishu' })
 
       const messages = [userMessage('hello'), assistantMessage('hi'), userMessage('again')]
-      store.syncCanonical('sess_1', { messages, blocks: [] })
+      for (const message of messages) store.appendMessage('sess_1', message)
 
-      const projection = store.project('sess_1')
-      expect(projection?.messages).toEqual(messages)
-      expect(projection?.header?.source).toBe('feishu')
+      expect(store.project('sess_1')?.messages).toEqual(messages)
+      expect(store.project('sess_1')?.header?.source).toBe('feishu')
+      const messageEvents = store.readEvents('sess_1').filter(isMessageAppendEvent)
+      expect(messageEvents.map((event) => [event.type, event.data.messageIndex])).toEqual([
+        ['user/message', 0],
+        ['assistant/message', 1],
+        ['user/message', 2],
+      ])
+
+      // 对账:没有消息事件、没有截断,只补一条 checkpoint
+      const lastSeq = store.getLastSeq('sess_1') as number
+      store.syncCanonical('sess_1', { messages, blocks: [] })
+      const after = store.readEvents('sess_1').filter((event) => event.seq > lastSeq)
+      expect(after.map((event) => event.type)).toEqual(['checkpoint'])
+      expect(after[0].data).toMatchObject({ messageCount: 3 })
+      // 没有新变化时不再写 checkpoint
+      store.syncCanonical('sess_1', { messages, blocks: [] })
+      expect(store.getLastSeq('sess_1')).toBe(lastSeq + 1)
       expect(errors).toEqual([])
 
-      // 增量追加
-      const grown = [...messages, assistantMessage('done')]
-      store.syncCanonical('sess_1', { messages: grown, blocks: [] })
-      expect(store.project('sess_1')?.messages).toEqual(grown)
-      // 只新增一条消息事件,不重写历史
-      const messageEvents = store
-        .readEvents('sess_1')
-        .filter((event) => event.type === 'user/message' || event.type === 'assistant/message')
-      expect(messageEvents.length).toBe(4)
+      // 新 store 实例从磁盘重放后继续按投影长度分配下标
+      const reopened = new SessionEventStore({ basePath: dir })
+      reopened.appendMessage('sess_1', assistantMessage('done'))
+      const last = reopened.readEvents('sess_1').filter(isMessageAppendEvent).at(-1)
+      expect(last?.data.messageIndex).toBe(3)
+      expect(reopened.project('sess_1')?.messages).toEqual([...messages, assistantMessage('done')])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
   })
 
-  test('rollback emits truncate event and projection matches', () => {
+  test('appendMessage externalizes images; sync with the raw message matches', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ses-test-'))
     try {
-      const { store } = createStore(dir)
+      const { store, errors } = createStore(dir)
       store.ensureSession({ v: 1, sessionId: 'sess_1', schemaVersion: 1, source: 'web' })
+      const data = Buffer.from('fake png bytes').toString('base64')
+      const withImage = {
+        ...userMessage('look'),
+        content: [
+          { type: 'text', text: 'look' },
+          { type: 'image', mediaType: 'image/png', data },
+        ],
+      } as Message
 
-      store.syncCanonical('sess_1', {
-        messages: [userMessage('a'), assistantMessage('b'), userMessage('c')],
-        blocks: [],
-      })
+      store.appendMessage('sess_1', withImage)
+
+      const event = store.readEvents('sess_1').find(isMessageAppendEvent)
+      const image = event?.data.message.content[1] as { data?: string; imageRef?: { path: string } }
+      expect(image.data).toBeUndefined()
+      expect(existsSync(image.imageRef?.path as string)).toBe(true)
+      // 调用方手里的消息不被改写
+      expect((withImage.content[1] as { data?: string }).data).toBe(data)
+
+      const lastSeq = store.getLastSeq('sess_1') as number
+      store.syncCanonical('sess_1', { messages: [withImage], blocks: [] })
+      expect(
+        store
+          .readEvents('sess_1')
+          .filter((e) => e.seq > lastSeq)
+          .map((e) => e.type),
+      ).toEqual(['checkpoint'])
+      expect(errors).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('syncMessages records the declared truncate reason', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ses-test-'))
+    try {
+      const { store, errors } = createStore(dir)
+      store.ensureSession({ v: 1, sessionId: 'sess_1', schemaVersion: 1, source: 'web' })
+      for (const message of [userMessage('a'), assistantMessage('b'), userMessage('c')]) {
+        store.appendMessage('sess_1', message)
+      }
+
       // 回滚到 2 条,再走新分支
-      store.syncCanonical('sess_1', {
-        messages: [userMessage('a'), assistantMessage('b'), userMessage('new-turn')],
-        blocks: [],
-      })
+      store.syncMessages('sess_1', [userMessage('a'), assistantMessage('b')], 'turn_failed')
+      store.appendMessage('sess_1', userMessage('new-turn'))
 
       const projection = store.project('sess_1')
       expect(projection?.messages.map((m) => (m.content[0] as { text: string }).text)).toEqual([
@@ -133,12 +184,41 @@ describe('SessionEventStore', () => {
         'b',
         'new-turn',
       ])
-
       const truncates = store
         .readEvents('sess_1')
         .filter((event) => event.type === 'messages/truncate')
-      expect(truncates.length).toBe(1)
-      expect((truncates[0].data as { toMessageIndex: number }).toMessageIndex).toBe(2)
+      expect(truncates.map((event) => event.data)).toEqual([
+        { toMessageIndex: 2, reason: 'turn_failed' },
+      ])
+      expect(errors).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('an undeclared mismatch at sync is recorded as unexpected and reported', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ses-test-'))
+    try {
+      const { store, errors } = createStore(dir)
+      store.ensureSession({ v: 1, sessionId: 'sess_1', schemaVersion: 1, source: 'web' })
+      for (const message of [userMessage('a'), assistantMessage('b'), userMessage('c')]) {
+        store.appendMessage('sess_1', message)
+      }
+
+      store.syncCanonical('sess_1', {
+        messages: [userMessage('a'), assistantMessage('b'), userMessage('changed')],
+        blocks: [],
+      })
+
+      expect(store.project('sess_1')?.messages.at(-1)).toEqual(userMessage('changed'))
+      const truncates = store
+        .readEvents('sess_1')
+        .filter((event) => event.type === 'messages/truncate')
+      expect(truncates.map((event) => event.data)).toEqual([
+        { toMessageIndex: 2, reason: 'unexpected' },
+      ])
+      expect(errors).toHaveLength(1)
+      expect(errors[0]).toContain('canonical changed outside the store')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

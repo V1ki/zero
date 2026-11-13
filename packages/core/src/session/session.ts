@@ -331,6 +331,8 @@ export class Session {
   }): SessionMessageRecallResult {
     const result = this.conversation.markExternalMessageRecalled(options)
     if (result.changed) {
+      // 撤回原地改写了一条旧消息:事件流截断到它并重新追加之后的消息
+      this.deps.sessionEvents?.syncMessages(this.data.id, this.conversation.messages, 'recall')
       this.turnRuntime.removeQueuedMessagesBySource(options.source)
       this.data.updatedAt = now()
       this.deps.bus?.emit('session:update', {
@@ -577,6 +579,8 @@ async function handleSessionMessageEntry(options: {
       controlKind: options.handleOptions?.controlKind,
       messages: options.messages,
       data: options.sessionData,
+      appendMessageEvent: (message) =>
+        options.deps.sessionEvents?.appendMessage(options.sessionData.id, message),
       persistState: options.persistState,
       emitSessionUpdate: (event) => options.deps.bus?.emit('session:update', event),
       onApplied: options.handleOptions?.onQueuedMessageApplied,

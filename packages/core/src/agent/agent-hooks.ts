@@ -513,6 +513,8 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): Agen
     },
     onNewMessage: (message) => {
       if (!memoryNudge.isActive) {
+        // 转给调用方的即 canonical 消息:在这一刻写消息事件(子代理经重定向写进自己的文件)
+        obs.sessionEvents?.appendMessage(toolContext.sessionId, message)
         options.onNewMessage?.(message)
       } else if (message.role === 'assistant') {
         const text = extractTextFromMessage(message).trim()
@@ -752,13 +754,7 @@ function createAgentEndTurnHandler({
       return gate2
     }
 
-    if (assistantMsg?.role === 'assistant' && taskClosureEvaluation.decision?.action === 'block') {
-      assistantMsg.taskClosure = {
-        action: 'block',
-        reason: taskClosureEvaluation.decision.reason,
-      }
-    }
-
+    // assistant 消息在产生时已写入事件流,不再回头改它;判定结果记在下面的 closure/end 里
     finalizeTaskClosureSpan({
       tracer: obs.tracer,
       evaluation: taskClosureEvaluation,

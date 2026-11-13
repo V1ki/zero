@@ -219,6 +219,7 @@ export async function processSessionMessageTurn({
         })
       },
     })
+    deps.sessionEvents?.syncMessages(sessionData.id, messages, 'turn_failed')
 
     // 回滚掉的消息可能被本 turn 的检查点引用:恢复 turn 开始时的检查点并补写事件
     if (rolledBack && latestCheckpoint !== checkpoint) {

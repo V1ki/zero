@@ -58,6 +58,8 @@ export interface TurnEndEventData {
   durationMs?: number
   usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }
   messageSeqSpan?: [number, number]
+  /** 恢复时补写的封口事件才有:进程在 turn 中途退出 */
+  reason?: 'process_restart'
 }
 
 export interface CheckpointEventData {
@@ -88,7 +90,17 @@ export interface AssistantMessageEventData {
   hash: string
 }
 
-export type MessagesTruncateReason = 'turn_failed' | 'interrupt' | 'admin' | 'restore_repair'
+/**
+ * 截断原因由改动 canonical 的一方声明:turn 失败回滚、尾部回滚命令(admin)、外部消息撤回(recall)、
+ * 恢复修复;`unexpected` 表示对账时发现了没有声明原因的改动。
+ */
+export type MessagesTruncateReason =
+  | 'turn_failed'
+  | 'interrupt'
+  | 'admin'
+  | 'recall'
+  | 'restore_repair'
+  | 'unexpected'
 
 export interface MessagesTruncateEventData {
   /** 投影保留到该下标(不含) */
@@ -270,7 +282,7 @@ export interface ClosureStartEventData {
   turnIndex?: number
   requestId?: string
   model?: string
-  /** 评估开始时事件流最后一条 seq(本 turn 消息尚未持久化,其事件 seq 均大于 baseSeq) */
+  /** 评估开始时事件流最后一条 seq(本 turn 已产生的消息事件都在它之前) */
   baseSeq?: number
   /** 分类器输入的消息数(含注入前缀的 loop 消息) */
   messageCount?: number

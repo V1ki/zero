@@ -69,7 +69,7 @@ export interface AgentObservability {
   contextCompactionModelLabel?: string
   usagePurpose?: UsagePurpose
   parentSessionId?: string
-  /** 权威事件流句柄;提供时 hook 层追加 step/tool/injection 诊断事件 */
-  sessionEvents?: Pick<SessionEventStore, 'append' | 'getLastSeq'>
+  /** 权威事件流句柄;提供时 hook 层在消息产生时写消息事件,并追加 step/tool/injection 等事件 */
+  sessionEvents?: Pick<SessionEventStore, 'append' | 'appendMessage' | 'getLastSeq'>
   getCurrentSnapshotId?: () => string | undefined
 }

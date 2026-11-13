@@ -77,7 +77,7 @@ export function persistSessionSnapshot(
   })
 }
 
-function ensureSessionEventHeader(
+export function ensureSessionEventHeader(
   sessionEvents: SessionEventStore | undefined,
   data: SessionData,
 ): void {

@@ -19,8 +19,13 @@ import type { AgentSnapshot } from '../agent/agent-control'
 import type { ToolRegistry } from '../tool/registry'
 import { Session, type SessionDeps } from './session'
 import type { SessionMessageRecallResult } from './session-conversation-state'
-import { persistSessionSnapshot } from './session-persistence'
-import { normalizeAgentConfig, normalizeSessionRow, sessionDataFromRow } from './session-restore'
+import { ensureSessionEventHeader, persistSessionSnapshot } from './session-persistence'
+import {
+  normalizeAgentConfig,
+  normalizeSessionRow,
+  sealInterruptedTurn,
+  sessionDataFromRow,
+} from './session-restore'
 import { allocateUniqueSessionId } from './session-runtime'
 
 export interface InterruptedSessionRef {
@@ -550,11 +555,19 @@ class SessionManagerStore {
 
     const normalizedRow = normalizeSessionRow(row, this.modelRouter)
     const data = sessionDataFromRow(normalizedRow)
+    const sessionEvents = this.deps.sessionEvents
+    if (sessionEvents) sealInterruptedTurn(sessionEvents, row.id)
     // 事件流优先(写入序为事件先于 DB,只会更新);无事件文件时回退 DB 快照
-    const projection = this.deps.sessionEvents?.project(row.id)
+    const projection = sessionEvents?.project(row.id)
     const messages = projection
       ? projection.messages
       : (this.sessionDb?.loadSessionMessages(row.id) ?? [])
+    // 没有事件文件的旧会话:先把 DB 快照写进事件流,之后的消息才能按下标即时追加
+    // (文件已存在但损坏时 store 拒绝写入,两步都不生效)
+    if (sessionEvents && !projection) {
+      ensureSessionEventHeader(sessionEvents, data)
+      sessionEvents.syncMessages(row.id, messages, 'restore_repair')
+    }
     const timelineCompactionBlocks = projection
       ? projection.blocks
       : (this.sessionDb?.loadSessionCompactionBlocks(row.id) ?? [])

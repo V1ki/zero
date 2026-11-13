@@ -1,11 +1,12 @@
 import type { ModelRouter, ResolvedModel } from '@zero-os/model'
-import type { SessionRow } from '@zero-os/observe'
+import { type SessionEventStore, type SessionRow, projectEvents } from '@zero-os/observe'
 import type {
   ContextCheckpoint,
   Message,
   Session as SessionData,
   TimelineCompactionBlock,
   ToolLogger,
+  TurnStartEvent,
 } from '@zero-os/shared'
 import type { AgentConfig } from '../agent/agent'
 import {
@@ -16,6 +17,7 @@ import type { ToolRegistry } from '../tool/registry'
 import type { BackgroundToolCompletionEvent } from './background-tool-tasks'
 import { SessionAgentRuntimeController } from './session-agent-controller'
 import { SessionConversationState } from './session-conversation-state'
+import { applyFailedTurnRollback } from './session-messages'
 import { deriveNextTurnIndex } from './session-runtime'
 import { SessionSnapshotRecorder } from './session-snapshots'
 import { SessionTurnRuntime } from './session-turn-runtime'
@@ -74,6 +76,46 @@ export function normalizeAgentConfig(raw: string): AgentConfig | null {
   }
 }
 
+/**
+ * 进程在 turn 中途退出,事件流里会留下只有 turn/start 没有 turn/end 的 turn
+ * (docs/session-log-replay.md「没封口的 turn」)。恢复时按 turn 失败的规则处理这个 turn 的消息,
+ * 截断记 restore_repair,再补写 turn/end 封口;封口过的 turn 不再处理。
+ */
+export function sealInterruptedTurn(sessionEvents: SessionEventStore, sessionId: string): void {
+  const current = sessionEvents.project(sessionId)
+  if (!current) return
+
+  const events = sessionEvents.readEvents(sessionId)
+  const turnStart = events.findLast((event): event is TurnStartEvent => event.type === 'turn/start')
+  if (!turnStart) return
+  if (events.some((event) => event.type === 'turn/end' && event.seq > turnStart.seq)) return
+
+  const atTurnStart = projectEvents(events.filter((event) => event.seq <= turnStart.seq))
+  const messages = current.messages
+  const rolledBack = applyFailedTurnRollback({
+    messages,
+    messageCountBefore: atTurnStart.messages.length,
+    onRollback: () => {},
+    onPartialFailure: () => {},
+  })
+  sessionEvents.syncMessages(sessionId, messages, 'restore_repair')
+  // 与 turn 失败一致:回滚时恢复 turn 开始时的检查点
+  if (
+    rolledBack &&
+    events.some((event) => event.type === 'compaction/checkpoint' && event.seq > turnStart.seq)
+  ) {
+    sessionEvents.append(sessionId, [
+      { type: 'compaction/checkpoint', data: { checkpoint: atTurnStart.checkpoint ?? null } },
+    ])
+  }
+  sessionEvents.append(sessionId, [
+    {
+      type: 'turn/end',
+      data: { turnIndex: turnStart.data.turnIndex, status: 'failed', reason: 'process_restart' },
+    },
+  ])
+}
+
 export interface PreparedSessionRestoreState {
   data: SessionData
   messages: Message[]
@@ -97,7 +139,7 @@ export function prepareSessionRestoreState(options: {
       ? sanitizeConversationHistoryForSignedThinkingToolUse(repairedMessages)
       : repairedMessages
   if (restoredMessages !== messages) {
-    deps.sessionEvents?.syncMessages(data.id, restoredMessages)
+    deps.sessionEvents?.syncMessages(data.id, restoredMessages, 'restore_repair')
     if (!deps.sessionEventsOnly) {
       deps.sessionDb?.saveMessages(data.id, restoredMessages)
     }

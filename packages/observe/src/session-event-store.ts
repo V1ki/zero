@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path'
 import {
   type ContextCheckpoint,
   type Message,
+  type MessagesTruncateReason,
   SESSION_EVENT_FILE,
   SESSION_EVENT_SCHEMA_VERSION,
   SUBAGENT_EVENT_FILE_PREFIX,
@@ -14,6 +15,7 @@ import {
   type SessionEventProjection,
   type TimelineCompactionBlock,
   getSessionLogRelativeDir,
+  isMessageAppendEvent,
 } from '@zero-os/shared'
 import { externalizeImageData } from './image-ref'
 
@@ -22,7 +24,9 @@ import { externalizeImageData } from './image-ref'
  *
  * 每个会话一个 `session.jsonl`(子代理为父目录下 `sub-<id>.jsonl`):
  * - 首条必为 `session` 头事件(seq=0),之后 seq 严格递增;
- * - canonical 消息/压缩块通过 syncCanonical 做 diff 追加(回滚产生 truncate 事件);
+ * - canonical 消息在产生的那一刻经 appendMessage 追加(唯一写入口,下标按投影长度分配);
+ * - 改动已有消息的一方(回滚、撤回、恢复修复)经 syncMessages 声明截断原因;
+ * - syncCanonical 在 turn 结束时对账:正常找不到差异,没有声明原因的差异记 unexpected 并上报;
  * - 上下文检查点由 agent 在压缩发生时直接 append(compaction/checkpoint);
  * - project() 重放 surface 事件得到 canonical 投影,是恢复路径的权威读取端。
  */
@@ -117,7 +121,26 @@ export class SessionEventStore {
   }
 
   /**
-   * Diff-sync canonical messages and compaction blocks, then append a checkpoint.
+   * 追加一条 canonical 消息:下标取当前投影长度,不与已有消息比对。
+   * 子代理的图片落在父会话目录下,与它的事件文件放在一起。
+   */
+  appendMessage(sessionId: string, message: Message): void {
+    const state = this.loadState(sessionId)
+    if (!state || state.corrupt) return
+
+    const [externalized] = externalizeImageData([message], {
+      logsBasePath: this.basePath,
+      sessionId: state.projection.header?.parentSessionId ?? sessionId,
+    })
+    this.appendEvents(sessionId, state, [
+      buildMessageEventInput(state.projection.messages.length, externalized),
+    ])
+  }
+
+  /**
+   * 对账 canonical 消息与压缩块,有变化时补一条 checkpoint。
+   * 消息已由 appendMessage 即时写入,这里正常找不到差异;出现差异说明有改动没经过 store,
+   * 截断记 `unexpected`,两种情况都经 onError 上报。
    * 双写期的等价性校验:按采样规则从磁盘重放并与输入比对,不一致时上报。
    */
   syncCanonical(
@@ -133,9 +156,16 @@ export class SessionEventStore {
     })
     const blocks = input.blocks
 
-    const pending: SessionEventInput[] = [
-      ...buildMessageSyncInputs(state.projection.messages, messages),
-    ]
+    const messageInputs = buildMessageSyncInputs(state.projection.messages, messages, 'unexpected')
+    if (messageInputs.length > 0) {
+      const truncated = messageInputs[0].type === 'messages/truncate'
+      this.options.onError?.(
+        `[SessionEventStore] session ${sessionId} canonical changed outside the store: ` +
+          `${truncated ? 'unexpected truncate, ' : ''}` +
+          `${messageInputs.length - (truncated ? 1 : 0)} message(s) appended at sync`,
+      )
+    }
+    const pending: SessionEventInput[] = [...messageInputs]
 
     if (!stableEqual(state.projection.blocks, blocks)) {
       pending.push({
@@ -144,28 +174,16 @@ export class SessionEventStore {
       })
     }
 
-    if (pending.length > 0) {
-      this.appendEvents(sessionId, state, pending)
-      this.appendEvents(sessionId, state, [
-        {
-          type: 'checkpoint',
-          data: {
-            atSeq: state.lastSeq,
-            messageCount: messages.length,
-            projectionHash: hashProjection(messages, blocks),
-          },
-        },
-      ])
-    }
-
+    this.appendEvents(sessionId, state, pending)
+    this.appendCheckpointIfChanged(sessionId, state)
     this.maybeVerify(sessionId, state, { messages, blocks })
   }
 
   /**
-   * 只同步 canonical 消息,不动压缩块状态(恢复期修复路径使用:
-   * 修复时拿不到权威 blocks,不能把 blocks 投影清空)。
+   * 只同步 canonical 消息,不动压缩块状态。改动已有消息的一方调用它并声明截断原因
+   * (turn 失败回滚、尾部回滚、撤回、恢复修复)。
    */
-  syncMessages(sessionId: string, messages: Message[]): void {
+  syncMessages(sessionId: string, messages: Message[], reason: MessagesTruncateReason): void {
     const state = this.loadState(sessionId)
     if (!state || state.corrupt) return
 
@@ -173,20 +191,12 @@ export class SessionEventStore {
       logsBasePath: this.basePath,
       sessionId,
     })
-    const pending = buildMessageSyncInputs(state.projection.messages, externalized)
-    if (pending.length === 0) return
-
-    this.appendEvents(sessionId, state, pending)
-    this.appendEvents(sessionId, state, [
-      {
-        type: 'checkpoint',
-        data: {
-          atSeq: state.lastSeq,
-          messageCount: externalized.length,
-          projectionHash: hashProjection(externalized, state.projection.blocks),
-        },
-      },
-    ])
+    this.appendEvents(
+      sessionId,
+      state,
+      buildMessageSyncInputs(state.projection.messages, externalized, reason),
+    )
+    this.appendCheckpointIfChanged(sessionId, state)
   }
 
   /** Full surface projection; null when no event file or the file is corrupt. */
@@ -245,6 +255,21 @@ export class SessionEventStore {
   }
 
   // --- internals ---
+
+  /** 上一条 checkpoint 之后消息或压缩块有变化时写一条 checkpoint */
+  private appendCheckpointIfChanged(sessionId: string, state: SessionEventState): void {
+    if (!state.changedSinceCheckpoint) return
+    this.appendEvents(sessionId, state, [
+      {
+        type: 'checkpoint',
+        data: {
+          atSeq: state.lastSeq,
+          messageCount: state.projection.messages.length,
+          projectionHash: hashProjection(state.projection.messages, state.projection.blocks),
+        },
+      },
+    ])
+  }
 
   private maybeVerify(
     sessionId: string,
@@ -310,6 +335,7 @@ export class SessionEventStore {
     if (state) {
       applySurfaceEvents(state.projection, events)
       state.lastSeq = seq
+      state.changedSinceCheckpoint = changedSinceCheckpoint(events, state.changedSinceCheckpoint)
     } else {
       this.states.set(sessionId, createSessionEventState(relative, events))
     }
@@ -381,6 +407,8 @@ interface SessionEventState {
   lastSeq: number
   syncCount: number
   corrupt: boolean
+  /** 上一条 checkpoint 之后是否写过消息、截断或压缩块事件 */
+  changedSinceCheckpoint: boolean
   projection: ProjectionCore
 }
 
@@ -391,6 +419,7 @@ function createSessionEventState(relative: string, events: SessionEvent[]): Sess
     lastSeq: events.length > 0 ? events[events.length - 1].seq : -1,
     syncCount: 0,
     corrupt: false,
+    changedSinceCheckpoint: changedSinceCheckpoint(events, false),
     projection,
   }
 }
@@ -401,8 +430,24 @@ function createCorruptState(relative: string): SessionEventState {
     lastSeq: -1,
     syncCount: 0,
     corrupt: true,
+    changedSinceCheckpoint: false,
     projection: { header: null, messages: [], blocks: [], checkpoints: [] },
   }
+}
+
+function changedSinceCheckpoint(events: SessionEvent[], initial: boolean): boolean {
+  let changed = initial
+  for (const event of events) {
+    if (event.type === 'checkpoint') changed = false
+    else if (
+      isMessageAppendEvent(event) ||
+      event.type === 'messages/truncate' ||
+      event.type === 'compaction/block'
+    ) {
+      changed = true
+    }
+  }
+  return changed
 }
 
 /** 文件级不变式:首条为 session 头(seq=0),seq 严格递增。 */
@@ -501,28 +546,35 @@ function applySurfaceEvent(projection: ProjectionCore, event: SessionEvent): voi
 }
 
 /** Diff canonical 消息为追加/截断事件序列(不改写历史事件)。 */
-function buildMessageSyncInputs(projected: Message[], messages: Message[]): SessionEventInput[] {
+function buildMessageSyncInputs(
+  projected: Message[],
+  messages: Message[],
+  reason: MessagesTruncateReason,
+): SessionEventInput[] {
   const pending: SessionEventInput[] = []
   const prefix = commonPrefixLength(projected, messages)
   if (prefix < projected.length) {
     pending.push({
       type: 'messages/truncate',
-      data: { toMessageIndex: prefix, reason: 'turn_failed' },
+      data: { toMessageIndex: prefix, reason },
     })
   }
   for (let i = prefix; i < messages.length; i += 1) {
-    const message = messages[i]
-    pending.push({
-      type: message.role === 'assistant' ? 'assistant/message' : 'user/message',
-      data: {
-        messageIndex: i,
-        message,
-        source: message.source,
-        hash: hashValue(message),
-      },
-    })
+    pending.push(buildMessageEventInput(i, messages[i]))
   }
   return pending
+}
+
+function buildMessageEventInput(messageIndex: number, message: Message): SessionEventInput {
+  return {
+    type: message.role === 'assistant' ? 'assistant/message' : 'user/message',
+    data: {
+      messageIndex,
+      message,
+      source: message.source,
+      hash: hashValue(message),
+    },
+  }
 }
 
 function commonPrefixLength(
