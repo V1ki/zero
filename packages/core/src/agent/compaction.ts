@@ -145,7 +145,7 @@ export async function compactContext(input: CompactContextInput): Promise<Compac
   const tokensBefore = pressure(previous)
   if (tokensBefore < budget.thresholdTokens) return { status: 'not_needed', tokens: tokensBefore }
 
-  // 保留尾部：从最新消息往回累计到保留预算；尾部不能以 tool_result 开头，否则会和它的 tool_use 分开。
+  // 保留尾部：从最新消息往回累计到保留预算。
   let cut = messages.length
   let tailTokens = 0
   while (cut > 0) {
@@ -154,8 +154,21 @@ export async function compactContext(input: CompactContextInput): Promise<Compac
     tailTokens += tokens
     cut--
   }
-  while (cut < messages.length && messages[cut].content.some((b) => b.type === 'tool_result')) {
-    cut++
+  // 尾部里的 tool_result 必须和它的 tool_use 同在尾部：分界点落在两者之间时（中间可能还夹着排队消息），
+  // 往后移到这条 tool_result 之后。
+  for (;;) {
+    const tailToolUseIds = new Set(
+      messages
+        .slice(cut)
+        .flatMap((m) => m.content.flatMap((b) => (b.type === 'tool_use' ? [b.id] : []))),
+    )
+    const orphan = messages.findIndex(
+      (m, index) =>
+        index >= cut &&
+        m.content.some((b) => b.type === 'tool_result' && !tailToolUseIds.has(b.toolUseId)),
+    )
+    if (orphan < 0) break
+    cut = orphan + 1
   }
   // 不论预算，尾部至少保留最后一个单元：最后一条消息，它带 tool_result 时连同发出对应 tool_use 的 assistant 消息。
   const last = messages.length - 1

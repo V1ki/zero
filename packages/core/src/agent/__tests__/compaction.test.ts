@@ -16,6 +16,7 @@ import {
   computeCompactionBudget,
   createCheckpointSummarizer,
   isCheckpointValid,
+  prepareRequestMessages,
   projectMessages,
 } from '../compaction'
 import { estimateConversationTokens } from '../context'
@@ -264,6 +265,38 @@ describe('compactContext', () => {
     )
     expect(resultIds).toEqual(useIds)
     expect(projectMessages(messages, result.checkpoint)[1].id).toBe('a6')
+  })
+
+  test('the cut does not land on a queued message between tool_use and tool_result', async () => {
+    const queued: Message = {
+      ...textMessage('q5', 'user', '顺便看一下警告'),
+      messageType: 'queued',
+    }
+    const messages = conversation(6)
+    // a5、q5、u5、a6、u6：tool 执行期间排进来的消息夹在 a5 和 u5 之间
+    messages.splice(
+      messages.findIndex((m) => m.id === 'u5'),
+      0,
+      queued,
+    )
+    // 预算恰好容纳 q5 之后的全部：往回走停在 q5，它后面的 u5 的 tool_use 已在分界之前
+    const retainTokens = estimateConversationTokens(messages.slice(-4))
+    const { summarize } = fakeSummarizer(['S'])
+    const result = await compactContext({
+      messages,
+      checkpoint: undefined,
+      sessionId: SESSION,
+      budget: { thresholdTokens: 3000, retainTokens },
+      fixedTokens: 0,
+      summarize,
+    })
+
+    if (result.status !== 'summarized') throw new Error(`unexpected ${result.status}`)
+    expect(result.checkpoint.summarizedThroughMessageId).toBe('u5')
+    const request = prepareRequestMessages(messages, result.checkpoint, {
+      requireThinkingForToolUse: false,
+    })
+    expect(request.map((m) => m.id)).toEqual([result.checkpoint.id, 'a6', 'u6'])
   })
 
   test('an oversized final tool result stays in the tail with its tool_use', async () => {
