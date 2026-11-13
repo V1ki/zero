@@ -112,6 +112,18 @@ export function sealInterruptedTurn(sessionEvents: SessionEventStore, sessionId:
   ])
 }
 
+/**
+ * 恢复出的会话状态(会话元数据之外)。有事件文件时全部取自 SessionEventStore.projectForRestore;
+ * 没有事件文件的旧会话取自 DB 行,nextTurnIndex 缺省时按 trace 的请求记录与消息推算。
+ */
+export interface RestoredSessionContext {
+  systemPrompt?: string
+  timelineCompactionBlocks?: TimelineCompactionBlock[]
+  checkpoint?: ContextCheckpoint
+  injectedMemoryIds?: Map<string, string>
+  nextTurnIndex?: number
+}
+
 export interface PreparedSessionRestoreState {
   data: SessionData
   activeModel: ResolvedModel | undefined
@@ -128,6 +140,7 @@ export function prepareSessionRestoreState(options: {
   messages: Message[]
   modelRouter: ModelRouter
   deps: SessionDeps
+  nextTurnIndex: number | undefined
 }): PreparedSessionRestoreState {
   const { data, messages, modelRouter, deps } = options
   const normalizedData = normalizeSessionDataForRestore(data, modelRouter)
@@ -136,11 +149,9 @@ export function prepareSessionRestoreState(options: {
     data: normalizedData,
     activeModel: modelRouter.resolveModel(normalizedData.currentModel),
     logger: createRestoredSessionLogger(data.id),
-    nextTurnIndex: deriveNextTurnIndex({
-      sessionId: data.id,
-      messages,
-      observability: deps.observability,
-    }),
+    nextTurnIndex:
+      options.nextTurnIndex ??
+      deriveNextTurnIndex({ sessionId: data.id, messages, observability: deps.observability }),
   }
 }
 
@@ -150,8 +161,7 @@ export function createRestoredSessionRuntime(options: {
   modelRouter: ModelRouter
   toolRegistry: ToolRegistry
   deps: SessionDeps
-  timelineCompactionBlocks: TimelineCompactionBlock[]
-  checkpoint: ContextCheckpoint | undefined
+  restored: RestoredSessionContext
   getAgentName: () => string
   onBackgroundToolCompletion(event: BackgroundToolCompletionEvent): Promise<void> | void
 }): Record<string, unknown> {
@@ -160,14 +170,16 @@ export function createRestoredSessionRuntime(options: {
     messages: options.messages,
     modelRouter: options.modelRouter,
     deps: options.deps,
+    nextTurnIndex: options.restored.nextTurnIndex,
   })
 
   return {
     data: restored.data,
     conversation: new SessionConversationState({
       messages: options.messages,
-      timelineCompactionBlocks: options.timelineCompactionBlocks,
-      checkpoint: options.checkpoint,
+      timelineCompactionBlocks: options.restored.timelineCompactionBlocks,
+      checkpoint: options.restored.checkpoint,
+      injectedMemoryIds: options.restored.injectedMemoryIds,
     }),
     modelRouter: options.modelRouter,
     toolRegistry: options.toolRegistry,

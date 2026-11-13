@@ -21,6 +21,7 @@ import { Session, type SessionDeps } from './session'
 import type { SessionMessageRecallResult } from './session-conversation-state'
 import { ensureSessionEventHeader, persistSessionSnapshot } from './session-persistence'
 import {
+  type RestoredSessionContext,
   normalizeAgentConfig,
   normalizeSessionRow,
   sealInterruptedTurn,
@@ -557,8 +558,9 @@ class SessionManagerStore {
     const data = sessionDataFromRow(normalizedRow)
     const sessionEvents = this.deps.sessionEvents
     if (sessionEvents) sealInterruptedTurn(sessionEvents, row.id)
-    // 事件流优先(写入序为事件先于 DB,只会更新);无事件文件时回退 DB 快照
-    const projection = sessionEvents?.project(row.id)
+    // 有事件文件时,会话元数据之外的状态全部由重放日志得到(docs/session-log-replay.md「恢复读什么」);
+    // 没有事件文件的旧会话回退 DB 行
+    const projection = sessionEvents?.projectForRestore(row.id)
     const messages = projection
       ? projection.messages
       : (this.sessionDb?.loadSessionMessages(row.id) ?? [])
@@ -568,12 +570,21 @@ class SessionManagerStore {
       ensureSessionEventHeader(sessionEvents, data)
       sessionEvents.syncMessages(row.id, messages, 'restore_repair')
     }
-    const timelineCompactionBlocks = projection
-      ? projection.blocks
-      : (this.sessionDb?.loadSessionCompactionBlocks(row.id) ?? [])
-    const checkpoint = projection
-      ? projection.checkpoint
-      : this.sessionDb?.loadContextCheckpoint(row.id)
+    const restored: RestoredSessionContext = projection
+      ? {
+          systemPrompt: projection.systemPrompt,
+          timelineCompactionBlocks: projection.blocks,
+          checkpoint: projection.checkpoint,
+          injectedMemoryIds: projection.injectedMemoryIds,
+          // 没有 turn 事件(DB 快照导入的旧会话)时按 trace 与消息推算
+          nextTurnIndex:
+            projection.lastTurnIndex === undefined ? undefined : projection.lastTurnIndex + 1,
+        }
+      : {
+          systemPrompt: normalizedRow.systemPrompt,
+          timelineCompactionBlocks: this.sessionDb?.loadSessionCompactionBlocks(row.id) ?? [],
+          checkpoint: this.sessionDb?.loadContextCheckpoint(row.id),
+        }
     const modelScope = getModelScope(
       data.source,
       data.channelId,
@@ -586,9 +597,7 @@ class SessionManagerStore {
       this.modelRouter,
       this.toolRegistry,
       this.createSessionDeps(data.source, modelScope),
-      normalizedRow.systemPrompt,
-      timelineCompactionBlocks,
-      checkpoint,
+      restored,
     )
 
     if (normalizedRow.agentConfigJson) {

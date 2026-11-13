@@ -69,6 +69,58 @@ function compactionBlock(id: string): TimelineCompactionBlock {
 }
 
 describe('SessionEventStore', () => {
+  test('projectForRestore folds the prompt, turn index and injected memories, also after reload', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ses-test-'))
+    try {
+      const { store } = createStore(dir)
+      store.ensureSession({ v: 1, sessionId: 'sess_r', schemaVersion: 1, source: 'web' })
+      const empty = store.projectForRestore('sess_r')
+      expect(empty?.systemPrompt).toBeUndefined()
+      expect(empty?.lastTurnIndex).toBeUndefined()
+      expect(empty?.injectedMemoryIds).toEqual(new Map())
+
+      const prompt = (content: string) =>
+        ({ type: 'system/prompt', data: { hash: `h_${content}`, chars: 1, content } }) as const
+      const retrieval = (
+        layer: 'layer1' | 'layer2',
+        status: 'injected' | 'skipped' | 'failed',
+        selected: Array<{ id: string; title: string }>,
+      ) =>
+        ({ type: 'memory/retrieval/end', data: { layer, status, queries: [], selected } }) as const
+      store.append('sess_r', [
+        prompt('first prompt'),
+        { type: 'turn/start', data: { turnIndex: 3, trigger: 'channel' } },
+        retrieval('layer1', 'injected', [{ id: 'mem_a', title: 'A' }]),
+        retrieval('layer2', 'skipped', [{ id: 'mem_skipped', title: 'S' }]),
+        { type: 'turn/end', data: { turnIndex: 3, status: 'failed' } },
+        prompt('second prompt'),
+        { type: 'turn/start', data: { turnIndex: 4, trigger: 'channel' } },
+        retrieval('layer2', 'injected', [
+          { id: 'mem_b', title: 'B' },
+          { id: 'mem_a', title: 'A renamed' },
+        ]),
+        { type: 'turn/end', data: { turnIndex: 4, status: 'completed' } },
+      ])
+
+      const expected = {
+        systemPrompt: 'second prompt',
+        lastTurnIndex: 4,
+        injectedMemoryIds: new Map([
+          ['mem_a', 'A renamed'],
+          ['mem_b', 'B'],
+        ]),
+      }
+      expect(store.projectForRestore('sess_r')).toMatchObject(expected)
+      expect(createStore(dir).store.projectForRestore('sess_r')).toMatchObject(expected)
+      // 返回的是副本
+      store.projectForRestore('sess_r')?.injectedMemoryIds.clear()
+      expect(store.projectForRestore('sess_r')?.injectedMemoryIds.size).toBe(2)
+      expect(store.projectForRestore('sess_missing')).toBeNull()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   test('ensureSession writes header at seq 0 and is idempotent', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ses-test-'))
     try {

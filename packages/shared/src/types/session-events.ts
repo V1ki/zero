@@ -357,14 +357,17 @@ export interface MemoryRetrievalStartEventData {
   turnIndex?: number
 }
 
-/** memory 检索决策结束:queries/候选/选中与是否注入 */
+/**
+ * memory 检索决策结束:queries/候选/选中与是否注入。status 为 injected 时 selected 就是交给注入的记忆,
+ * 运行时把它们记进会话的已注入记忆表,恢复时按它重建。
+ */
 export interface MemoryRetrievalEndEventData {
   layer: MemoryRetrievalLayer
   turnIndex?: number
   status: 'injected' | 'skipped' | 'failed'
   queries: string[]
   searchCount?: number
-  selected: Array<{ id: string; title?: string; score?: number }>
+  selected: Array<{ id: string; title: string; score?: number }>
   durationMs?: number
   usage?: Record<string, number>
   error?: string
@@ -632,6 +635,18 @@ export interface SessionEventProjection {
   /** 最后一条事件 seq;空文件为 -1 */
   lastSeq: number
   header: SessionEventData | null
+}
+
+/**
+ * 恢复会话需要的状态(会话元数据除外),全部由重放日志得到,见 docs/session-log-replay.md「恢复读什么」。
+ */
+export interface SessionRestoreProjection extends SessionEventProjection {
+  /** 最后一条 system/prompt 的 content(静态系统提示词);没有该事件时为 undefined */
+  systemPrompt?: string
+  /** turn/start 里最大的 turnIndex;没有 turn 事件时为 undefined */
+  lastTurnIndex?: number
+  /** 已注入的记忆 id → title:status 为 injected 的 memory/retrieval/end 的 selected */
+  injectedMemoryIds: Map<string, string>
 }
 
 /**

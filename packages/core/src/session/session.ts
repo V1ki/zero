@@ -33,7 +33,7 @@ import {
 } from './session-conversation-state'
 import { isTopLevelUserTurn } from './session-messages'
 import { persistSessionMetadata, persistSessionState } from './session-persistence'
-import { createRestoredSessionRuntime } from './session-restore'
+import { type RestoredSessionContext, createRestoredSessionRuntime } from './session-restore'
 import { allocateUniqueSessionId, createSessionLogger } from './session-runtime'
 import { SessionSnapshotRecorder, buildSessionSnapshotContext } from './session-snapshots'
 import type { SessionSnapshotContext } from './session-snapshots'
@@ -391,9 +391,7 @@ export class Session {
     modelRouter: ModelRouter,
     toolRegistry: ToolRegistry,
     deps: SessionDeps = {},
-    systemPrompt?: string,
-    timelineCompactionBlocks: TimelineCompactionBlock[] = [],
-    checkpoint?: ContextCheckpoint,
+    restored: RestoredSessionContext = {},
   ): Session {
     const session = Object.create(Session.prototype) as Session
     Object.assign(
@@ -404,8 +402,7 @@ export class Session {
         modelRouter,
         toolRegistry,
         deps,
-        timelineCompactionBlocks,
-        checkpoint,
+        restored,
         getAgentName: () => session.getAgentName(),
         onBackgroundToolCompletion: (event) => session.handleBackgroundToolCompletion(event),
       }),
@@ -423,7 +420,7 @@ export class Session {
       reinitializeAgent: () => session.reinitializeAgent(),
       persistState: () => session.persistState(),
     })
-    session.controllers.staticContext.setLastSystemPrompt(systemPrompt ?? '')
+    session.controllers.staticContext.setLastSystemPrompt(restored.systemPrompt ?? '')
     session.snapshotRecorder.restoreFromLogger()
     return session
   }

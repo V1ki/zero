@@ -15,6 +15,7 @@ import {
   type SessionEventFileCheck,
   type SessionEventInput,
   type SessionEventProjection,
+  type SessionRestoreProjection,
   type TimelineCompactionBlock,
   getSessionLogRelativeDir,
   isMessageAppendEvent,
@@ -30,7 +31,8 @@ import { externalizeImageData } from './image-ref'
  * - 改动已有消息的一方(回滚、撤回、恢复修复)经 syncMessages 声明截断原因;
  * - syncCanonical 在 turn 结束时对账:正常找不到差异,没有声明原因的差异记 unexpected 并上报;
  * - 上下文检查点由 agent 在压缩发生时直接 append(compaction/checkpoint);
- * - project() 重放 surface 事件得到 canonical 投影,是恢复路径的权威读取端。
+ * - project() 重放 surface 事件得到 canonical 投影;projectForRestore() 再加上恢复需要的其余状态,
+ *   是恢复路径的权威读取端。
  */
 export class SessionEventStore {
   private readonly states = new Map<string, SessionEventState>()
@@ -221,6 +223,22 @@ export class SessionEventStore {
       checkpoint: clone(resolveCheckpoint(state.projection)),
       lastSeq: state.lastSeq,
       header: state.projection.header ? { ...state.projection.header } : null,
+    }
+  }
+
+  /**
+   * 恢复会话需要的全部状态(会话元数据除外):canonical 投影、最后一份系统提示词、最大的 turn 编号、
+   * 已注入记忆表。无文件或损坏时返回 null。
+   */
+  projectForRestore(sessionId: string): SessionRestoreProjection | null {
+    const projection = this.project(sessionId)
+    const state = this.states.get(sessionId)
+    if (!projection || !state) return null
+    return {
+      ...projection,
+      systemPrompt: state.projection.systemPrompt?.content,
+      lastTurnIndex: state.projection.lastTurnIndex,
+      injectedMemoryIds: new Map(state.projection.injectedMemoryIds),
     }
   }
 
@@ -452,7 +470,13 @@ function createCorruptState(relative: string): SessionEventState {
     syncCount: 0,
     corrupt: true,
     changedSinceCheckpoint: false,
-    projection: { header: null, messages: [], blocks: [], checkpoints: [] },
+    projection: {
+      header: null,
+      messages: [],
+      blocks: [],
+      checkpoints: [],
+      injectedMemoryIds: new Map(),
+    },
   }
 }
 
@@ -579,10 +603,20 @@ type ProjectionCore = Pick<SessionEventProjection, 'header' | 'messages' | 'bloc
   checkpoints: Array<ContextCheckpoint | null>
   systemPrompt?: { hash: string; content: string }
   toolSet?: { hash: string; toolNames: string[] }
+  /** turn/start 里最大的 turnIndex */
+  lastTurnIndex?: number
+  /** status 为 injected 的 memory/retrieval/end 选中的记忆 id → title */
+  injectedMemoryIds: Map<string, string>
 }
 
 function foldSurfaceEvents(events: SessionEvent[]): ProjectionCore {
-  const projection: ProjectionCore = { header: null, messages: [], blocks: [], checkpoints: [] }
+  const projection: ProjectionCore = {
+    header: null,
+    messages: [],
+    blocks: [],
+    checkpoints: [],
+    injectedMemoryIds: new Map(),
+  }
   applySurfaceEvents(projection, events)
   return projection
 }
@@ -636,6 +670,16 @@ function applySurfaceEvent(projection: ProjectionCore, event: SessionEvent): voi
       break
     case 'tools/set':
       projection.toolSet = { hash: event.data.hash, toolNames: event.data.toolNames }
+      break
+    case 'turn/start':
+      projection.lastTurnIndex = Math.max(projection.lastTurnIndex ?? 0, event.data.turnIndex)
+      break
+    case 'memory/retrieval/end':
+      if (event.data.status === 'injected') {
+        for (const memory of event.data.selected) {
+          projection.injectedMemoryIds.set(memory.id, memory.title)
+        }
+      }
       break
     default:
       break
