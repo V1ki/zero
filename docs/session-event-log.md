@@ -30,7 +30,8 @@ Router 的每次模型调用（`runTriggerModel`）写一份子文件，按天�
 ```
 
 - header 与子代理相同（`origin:"subagent"`、`source:"spawn"`），`parentSessionId` 是当天的目录名 `router-<日期>`（没有对应的
-  `session.jsonl`），`name` 是调用的中文标签，`role` 是 usage 用途（如 `router_triage`）。文件由 `subagent-index.json` 索引。
+  `session.jsonl`），`name` 是调用的中文标签，`role` 是 usage 用途（如 `router_triage`）。文件由 `SessionEventStore.openRun` 建立，不进 `subagent-index.json`：
+  按文件名在当天目录里找，按路径读（`readEventsFile`）。
 - 内容由基座 `runAgentLoop` 写：`system/prompt`、`tools/set`，Router 对话传入的历史逐条写成 `user/message` /
   `assistant/message`，然后是 `loop/start` 和 loop 的全部事件。每个 `step/start` 都能按「请求重建」还原。
 - 业务表里的会话编号是文件名去掉 `.<uuidv7>` 的前缀，同一个编号可能对应多份文件（重试、同一任务的多次分诊与调查、同一对话的多轮）：
@@ -47,7 +48,7 @@ Router 的每次模型调用（`runTriggerModel`）写一份子文件，按天�
 - Codex 派工的每次执行也是这里的一份文件（`sub-router-job-<派工编号>.<uuidv7>.jsonl`，`role` 为 `codex_worker`），
   里面只有一对 `tool/call`、`tool/result`（`name: worker`），没有 `step/*` 和消息；Codex 的中间过程不落盘。
 - 保留期：设置了 Router 正文保留期时，`ListenerRuntime` 每次清理业务表后调用 `SessionEventStore.deleteFilesBefore`，删除
-  `router-*` 目录里最后写入早于截止时间的文件（含当天的 `run.log`）和对应的索引条目。没有设置保留期时一直保留。
+  `router-*` 目录里最后写入早于截止时间的文件（含当天的 `run.log`）。没有设置保留期时一直保留。
 
 ## 设计原则
 

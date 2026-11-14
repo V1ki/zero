@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ProviderAdapter } from '@zero-os/model'
-import { SessionEventStore } from '@zero-os/observe'
+import { SessionEventStore, buildRequestAssemblyInput, readEventsFile } from '@zero-os/observe'
 import type {
   CompletionRequest,
   CompletionResponse,
@@ -193,8 +193,9 @@ describe('retrieveMemoriesWithDecision', () => {
         `sessions/${sessionId}/sub-${spawn.data.childSessionId}.jsonl`,
       )
 
-      const childId = spawn.data.childSessionId
-      const child = store.readEvents(childId)
+      // 一次性运行的文件不进索引,按父会话记下的 logFile 读
+      expect(existsSync(join(logs, 'subagent-index.json'))).toBe(false)
+      const child = readEventsFile(join(logs, spawn.data.logFile))
       expect(child[0]).toMatchObject({
         type: 'session',
         data: { origin: 'subagent', parentSessionId: sessionId, name: 'memory_retrieval' },
@@ -217,7 +218,7 @@ describe('retrieveMemoriesWithDecision', () => {
       const steps = child.filter((event) => event.type === 'step/start')
       expect(steps.map((event) => event.data.model)).toEqual(['provider/model', 'provider/model'])
       const rebuilt = steps.map((event) => {
-        const input = store.getRequestAssemblyInput(childId, event.seq)
+        const input = buildRequestAssemblyInput(child, event.seq)
         if (!input) throw new Error(`step ${event.seq} cannot be rebuilt`)
         return hashRequest(assembleRequest(input))
       })

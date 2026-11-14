@@ -1,10 +1,15 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { assembleRequest, hashRequest } from '@zero-os/core'
 import type { ProviderAdapter } from '@zero-os/model'
-import { type RouterJob, SessionEventStore } from '@zero-os/observe'
+import {
+  type RouterJob,
+  SessionEventStore,
+  buildRequestAssemblyInput,
+  readEventsFile,
+} from '@zero-os/observe'
 import type {
   CompletionRequest,
   CompletionResponse,
@@ -62,17 +67,15 @@ function dependencies(...responses: CompletionResponse['content'][]) {
 
 /** The single call file of `sessionId` in today's Router directory, with its replayed requests. */
 function callLog(sessionId: string) {
-  const index = JSON.parse(readFileSync(join(logs, 'subagent-index.json'), 'utf-8')) as {
-    children: Record<string, string>
-  }
-  const calls = Object.entries(index.children).filter(([id]) => id.startsWith(`${sessionId}.`))
+  const day = join(logs, 'sessions', routerLogSessionId())
+  const calls = readdirSync(day).filter((file) => file.startsWith(`sub-${sessionId}.`))
   expect(calls).toHaveLength(1)
-  const [[callId, relative]] = calls
-  expect(relative).toBe(`sessions/${routerLogSessionId()}/sub-${callId}.jsonl`)
-  const events = store.readEvents(callId)
+  // Call files are found by their name; they are not in the sub-file index.
+  expect(existsSync(join(logs, 'subagent-index.json'))).toBe(false)
+  const events = readEventsFile(join(day, calls[0]))
   const steps = events.filter((event) => event.type === 'step/start')
   const rebuilt = steps.map((event) => {
-    const input = store.getRequestAssemblyInput(callId, event.seq)
+    const input = buildRequestAssemblyInput(events, event.seq)
     if (!input) throw new Error(`step ${event.seq} cannot be rebuilt`)
     return hashRequest(assembleRequest(input))
   })
@@ -207,7 +210,7 @@ test('a Router conversation logs the history it sends, so its requests can be re
   expect(rebuilt).toEqual(received)
 })
 
-test('a Codex job run gets its own file in the Router directory, opened before and released after the run', async () => {
+test('a Codex job run gets its own file in the Router directory', async () => {
   const { deps } = dependencies()
   const job: RouterJob = {
     id: 7,

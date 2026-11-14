@@ -182,7 +182,7 @@ export interface MemoryRetrievalSideLoopCapture {
  * `subagent/spawn` pointing to it.
  */
 export interface MemoryRetrievalJournal {
-  events: Pick<SessionEventStore, 'append' | 'appendMessage' | 'registerSubagent' | 'release'>
+  events: Pick<SessionEventStore, 'append' | 'openRun'>
   layer: MemoryRetrievalLayer
   modelLabel?: string
   secretFilter?: SecretFilter
@@ -198,63 +198,63 @@ export function createLoopRunner(
 ): LoopRunner {
   return async (config) => {
     if (capture && config.system !== undefined) capture.system = config.system
-    const childId = generatePrefixedId('memory')
-    const logFile = journal?.events.registerSubagent({
-      childSessionId: childId,
+    const childSessionId = generatePrefixedId('memory')
+    const run = journal?.events.openRun({
+      childSessionId,
       parentSessionId: sessionId,
       name: 'memory_retrieval',
       role: journal.layer,
     })
-    const events = logFile ? journal?.events : undefined
-    if (journal && logFile)
+    if (journal && run)
       journal.events.append(sessionId, [
         {
           type: 'subagent/spawn',
-          data: { childSessionId: childId, name: 'memory_retrieval', role: journal.layer, logFile },
+          data: {
+            childSessionId,
+            name: 'memory_retrieval',
+            role: journal.layer,
+            logFile: run.logFile,
+          },
         },
       ])
-    try {
-      // Messages keep the parent session id, as in a spawn_agent child; only the file differs.
-      const { finalText, toolCalls, usage, durationMs } = await runAgentLoop({
-        adapter,
-        sessionId,
-        journal: events && {
-          events: {
-            append: (_sessionId, input) => events.append(childId, input),
-            appendMessage: (_sessionId, message) => events.appendMessage(childId, message),
-          },
-          modelLabel: journal?.modelLabel,
-          secretFilter: journal?.secretFilter,
+    // Messages keep the parent session id, as in a spawn_agent child; only the file differs.
+    const { finalText, toolCalls, usage, durationMs } = await runAgentLoop({
+      adapter,
+      sessionId,
+      journal: run && {
+        events: {
+          append: (_sessionId, input) => run.append(input),
+          appendMessage: (_sessionId, message) => run.appendMessage(message),
         },
-        meta: { sessionId, purpose: 'memory_retrieval' },
-        system: config.system,
-        prompt: config.userMessage,
-        tools: config.tools.map((tool) => ({
-          name: tool.name,
-          description: tool.description,
-          parameters: tool.inputSchema,
-        })),
-        toolExecutor: {
-          has: (name) => config.tools.some((tool) => tool.name === name),
-          execute: async (name, _toolUseId, input) => {
-            const result = await config.toolHandler(name, input)
-            return {
-              output: result.output,
-              outputSummary: summarizeLoopToolOutput(result.output),
-              success: !result.isError,
-            }
-          },
+        modelLabel: journal?.modelLabel,
+        secretFilter: journal?.secretFilter,
+      },
+      meta: { sessionId, purpose: 'memory_retrieval' },
+      system: config.system,
+      prompt: config.userMessage,
+      tools: config.tools.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.inputSchema,
+      })),
+      toolExecutor: {
+        has: (name) => config.tools.some((tool) => tool.name === name),
+        execute: async (name, _toolUseId, input) => {
+          const result = await config.toolHandler(name, input)
+          return {
+            output: result.output,
+            outputSummary: summarizeLoopToolOutput(result.output),
+            success: !result.isError,
+          }
         },
-        maxOutputTokens: config.maxTokens ?? 512,
-        reasoningEffort,
-        maxIterations: config.maxIterations ?? 3,
-        stream: false,
-        logger,
-      })
-      return { finalText, toolCalls, usage, durationMs }
-    } finally {
-      events?.release(childId)
-    }
+      },
+      maxOutputTokens: config.maxTokens ?? 512,
+      reasoningEffort,
+      maxIterations: config.maxIterations ?? 3,
+      stream: false,
+      logger,
+    })
+    return { finalText, toolCalls, usage, durationMs }
   }
 }
 

@@ -70,9 +70,6 @@ export interface AgentObservability {
   usagePurpose?: UsagePurpose
   parentSessionId?: string
   /** 权威事件流句柄;提供时 hook 层在消息产生时写消息事件,并追加 step/tool/injection 等事件 */
-  sessionEvents?: Pick<
-    SessionEventStore,
-    'append' | 'appendMessage' | 'getLastSeq' | 'registerSubagent' | 'release'
-  >
+  sessionEvents?: Pick<SessionEventStore, 'append' | 'appendMessage' | 'getLastSeq' | 'openRun'>
   getCurrentSnapshotId?: () => string | undefined
 }

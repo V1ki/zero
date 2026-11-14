@@ -45,7 +45,9 @@ export {
   buildRequestAssemblyInput,
   checkSessionEvents,
   projectEvents,
+  readEventsFile,
 } from './session-event-store'
+export type { SessionRunLog } from './session-event-store'
 export { decodeImageData } from './image-ref'
 export { ROUTER_JOB_BRIEF_LIMIT, RouterJobConflictError } from './router-job-store'
 export type {

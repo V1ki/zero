@@ -705,8 +705,7 @@ describe('Agent task closure gate', () => {
           },
           appendMessage: () => {},
           getLastSeq: () => null,
-          registerSubagent: () => null,
-          release: () => {},
+          openRun: () => ({ logFile: '', append: () => null, appendMessage: () => {} }),
         },
       },
     )

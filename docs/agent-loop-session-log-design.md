@@ -211,18 +211,20 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
     的三方比对不变；`agent-run.test.ts` 对 `runAgentLoop` 做同样的三方比对。句柄目前可缺省，全部调用方接入后改为必填。
 - **4b 记忆检索接入（已完成）。** 它属于父会话的某个 turn，写父会话目录下的 `sub-<id>.jsonl`，与 `spawn_agent` 的子代理
   相同。它现在写进父会话的 `memory/retrieval/start|end` 保留。
-  - `createLoopRunner` 每次调用（即每次 `runAgentLoop`）经 `registerSubagent` 新建一份 `sub-memory_<uuid>.jsonl`（header 的
+  - `createLoopRunner` 每次调用（即每次 `runAgentLoop`）经 `SessionEventStore.openRun` 新建一份 `sub-memory_<uuid>.jsonl`（header 的
     `name` 为 `memory_retrieval`，`role` 为 layer），并在父会话的 `memory/retrieval/start` 与 `end` 之间记一条
     `subagent/spawn`（同样的 `name`、`role` 与 `logFile`），父会话由它找到子文件。
   - 消息里的 `sessionId`、usage 账本和 trace 仍用父会话编号，只有事件写进子文件，与 `spawn_agent` 的子代理一致。
     `spawn_agent` 子代理里的 layer2 检索，子文件同样放在主会话目录，`subagent/spawn` 写在子代理自己的文件里。
-  - 子文件写完后调用 `SessionEventStore.release` 丢掉内存里的状态缓存：这类文件只写一次，长期运行的进程不必持有它们的投影。
+  - `openRun` 返回一个写入句柄，文件的状态只在句柄里：不进 `subagent-index.json`，store 也不按编号缓存它。这类文件每个 turn、
+    每次 Router 调用都会新建一份，进索引会让索引一直变大（索引每次注册整体重写）。读它按 `subagent/spawn.logFile` 的路径读。
+    运行超时或取消后才到的响应和工具结果仍经句柄写入。
   - 验收：主会话在同一脚本下改动前后的事件流逐条相同；`memory-retrieval.test.ts` 对子文件的每个 `step/start` 做三方比对。
 - **4c Router 接入（已完成）。** 8 个调用点传入事件句柄，`logger: console` 换成与主会话相同的 logger。传入的历史在 loop
   开始时写成消息事件。每类调用带自己的 usage 用途（`USAGE_PURPOSES` 增项），不再都记成 `agent_loop`。业务表里的会话编号
   指向事件文件。实际落点：
-  - 8 个调用点都经 `runTriggerModel`，它是唯一传事件句柄的地方：每次调用经 `registerSubagent` 新建
-    `sessions/router-<本地日期>/sub-<业务会话编号>.<uuidv7>.jsonl`，写完后 `release`。目录与编号的对应见
+  - 8 个调用点都经 `runTriggerModel`，它是唯一传事件句柄的地方：每次调用经 `openRun` 新建
+    `sessions/router-<本地日期>/sub-<业务会话编号>.<uuidv7>.jsonl`，同样不进索引，按文件名找。目录与编号的对应见
     [session-event-log.md](session-event-log.md)「Router 的事件文件」。`AgentDependencies` 增加 `sessionEvents`（必填）
     和 `tracer`。
   - 基座的约束改为：事件句柄指向一份还没有消息的新文件，`runAgentLoop` 在 `tools/set` 之后、`loop/start` 之前把 `history`
@@ -235,8 +237,8 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
     `router_job_report`、`router_write_check`、`router_task_followup`。Web 的「Cost by Purpose」与会话详情的分项直接显示
     `purpose` 字符串，不需要改；旧数据里 Router 的花费仍记在 `agent_loop`。
   - 保留期：`TriggerRetentionStore.sweep` 返回这次使用的截止时间，`ListenerRuntime` 随后调用
-    `SessionEventStore.deleteFilesBefore('router-', 截止时间)`，删除 Router 目录里最后写入早于截止时间的文件（含 `run.log`）
-    并清理 `subagent-index.json`。按文件的最后写入时间判断，不看业务记录：仍在保留的任务、对话，其较早调用的文件也会删掉，
+    `SessionEventStore.deleteFilesBefore('router-', 截止时间)`，删除 Router 目录里最后写入早于截止时间的文件（含 `run.log`）。
+    按文件的最后写入时间判断，不看业务记录：仍在保留的任务、对话，其较早调用的文件也会删掉，
     文件不会比它记录的那次调用活得更久。
   - 不写 `step/start.model`：Router 的 `AgentDependencies.modelRouter` 只给 adapter，模型名在 usage 账本里。
 - **4d Codex Worker 接入（已完成）。** 计划：`runRouterJob` 不再自造 `ToolContext`，在派工的事件文件里记一次工具调用；

@@ -155,8 +155,6 @@ export function createRouterJobExecutor(options: ExecutorOptions) {
         throw new RouterJobExecutionUncertainError(
           '未能确认 Codex 工程任务的执行结果，请先核对工作区。',
         )
-      } finally {
-        call.close()
       }
     }
 

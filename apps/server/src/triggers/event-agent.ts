@@ -40,10 +40,7 @@ export interface AgentDependencies {
   }
   secretFilter: Pick<SecretFilter, 'filter'>
   /** Every model call writes its own event file, see `runTriggerModel`. */
-  sessionEvents: Pick<
-    SessionEventStore,
-    'append' | 'appendMessage' | 'registerSubagent' | 'release'
-  >
+  sessionEvents: Pick<SessionEventStore, 'openRun'>
   /** Receives the structured log of each call, as a session's logger does. */
   tracer?: Pick<Tracer, 'logSession'>
 }
@@ -100,15 +97,15 @@ export function routerLogSessionId(at = new Date()): string {
 /**
  * Opens the event file of one Router call: a new `sub-<sessionId>.<uuidv7>.jsonl` in the day's
  * Router directory, so the business id `sessionId` prefixes it. The logger is the session logger,
- * writing to that day's `run.log` with the call id on every line. `close` drops the store's cache.
+ * writing to that day's `run.log` with the call id on every line.
  */
 export function openRouterCall(
   { secretFilter, sessionEvents, tracer }: AgentDependencies,
   call: { sessionId: string; purpose: UsagePurpose; label: string },
-): { journal: AgentLoopJournal; logger: ToolLogger; close(): void } {
+): { journal: AgentLoopJournal; logger: ToolLogger } {
   const day = routerLogSessionId()
   const callId = `${call.sessionId}.${generateId()}`
-  sessionEvents.registerSubagent({
+  const run = sessionEvents.openRun({
     childSessionId: callId,
     parentSessionId: day,
     name: call.label,
@@ -118,8 +115,8 @@ export function openRouterCall(
   return {
     journal: {
       events: {
-        append: (_sessionId, events) => sessionEvents.append(callId, events),
-        appendMessage: (_sessionId, message) => sessionEvents.appendMessage(callId, message),
+        append: (_sessionId, events) => run.append(events),
+        appendMessage: (_sessionId, message) => run.appendMessage(message),
       },
     },
     logger: {
@@ -127,7 +124,6 @@ export function openRouterCall(
       warn: (event, data) => log.warn(event, { callId, ...data }),
       error: (event, data) => log.error(event, { callId, ...data }),
     },
-    close: () => sessionEvents.release(callId),
   }
 }
 
@@ -166,7 +162,7 @@ export async function runTriggerModel(
   const seen = new Set<string>()
   const dispatchErrors = new Set<string>()
 
-  const { journal, logger, close } = openRouterCall(deps, { sessionId, purpose, label })
+  const { journal, logger } = openRouterCall(deps, { sessionId, purpose, label })
 
   const { messages, finalText } = await runAgentLoop({
     adapter: model.adapter,
@@ -247,16 +243,14 @@ export async function runTriggerModel(
           : providerError(error)
       },
     },
+  }).catch((error: unknown) => {
+    if (!(error instanceof AgentLoopStoppedError)) throw error
+    if (error.reason === 'tool_budget')
+      throw new TriggerAgentError(`${label}达到工具调用上限，请缩小问题范围后重试。`)
+    throw new TriggerAgentError(
+      error.reason === 'timeout' ? `${label}超过 90 秒，请稍后重试。` : `${label}已取消。`,
+    )
   })
-    .catch((error: unknown) => {
-      if (!(error instanceof AgentLoopStoppedError)) throw error
-      if (error.reason === 'tool_budget')
-        throw new TriggerAgentError(`${label}达到工具调用上限，请缩小问题范围后重试。`)
-      throw new TriggerAgentError(
-        error.reason === 'timeout' ? `${label}超过 90 秒，请稍后重试。` : `${label}已取消。`,
-      )
-    })
-    .finally(close)
   const output = messages.at(-1)?.role === 'assistant' && finalText.trim()
   if (!output) throw new TriggerAgentError('模型没有返回可展示的文字，请重试。')
   return output

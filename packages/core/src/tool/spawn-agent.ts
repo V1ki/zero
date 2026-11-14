@@ -227,8 +227,7 @@ export class SpawnAgentTool extends BaseTool {
               appendMessage: (_sessionId, message) => sessionEvents.appendMessage(agentId, message),
               getLastSeq: () => sessionEvents.getLastSeq(agentId),
               // A sub-loop of the child (memory retrieval) keeps its file next to the child's.
-              registerSubagent: (registration) => sessionEvents.registerSubagent(registration),
-              release: (sessionId) => sessionEvents.release(sessionId),
+              openRun: (registration) => sessionEvents.openRun(registration),
             }
           : undefined,
     }
