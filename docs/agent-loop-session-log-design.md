@@ -160,7 +160,7 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
 | 3 | 主会话的 loop 直接写消息事件，取代 turn 结束时的 diff；`syncCanonical` 只留给非 loop 修改 | 已完成：即 [session-log-replay.md](session-log-replay.md) 的步骤 1，子代理一并写消息；非 loop 修改经 `syncMessages` 声明原因，`syncCanonical` 只对账 |
 | 4 | 基座写事件流；记忆检索、Router、Codex Worker 依次接入 | 已完成，见下 |
 | 5 | 删除旧式 `compressConversation` 和切换模型时对 canonical 的覆盖；预算改为按压缩后的投影判断 | 已完成：[检查点压缩](context-compaction.md)是唯一的压缩机制，旧代码已删除 |
-| 6 | 主会话 `Agent` 改为「基座 + 模块」，从 `agent-hooks.ts` 一次搬出一项功能 | 进行中：6.1 已完成，见下 |
+| 6 | 主会话 `Agent` 改为「基座 + 模块」，从 `agent-hooks.ts` 一次搬出一项功能 | 6.1 已完成；6.2～6.5 未做，卡点见下 |
 | 7 | Web 读事件流；切 `file-only`；`run.log` 与 trace 里与事件流重复的部分退役 | 后续 |
 
 ### 步骤 1：组装改为纯函数投影
@@ -273,6 +273,20 @@ hooks 读取请求历史的唯一来源。
   基座按数组顺序拼接，一次写成 `injection/context`（带 `messageId`），记进 `requestEntries`，再用 `applyUserInjections`
   改写请求里的那条消息。原来的 `AgentLoopHooks.buildRequestUserContent` 删除。模块是 `modules/request-context.ts` 的
   `requestContextModule(context)`。消息条目改由 loop 在写消息事件的同一处记进 `requestEntries`，`agent-hooks.ts` 不再自己维护这份列表。
+- **6.2 排队（未做）。** 按现在的合并规则（每个模块在一个扩展点只有一个函数，做决定的取第一个非默认答案）表达不出
+  `onEndTurn` 现有的先后，原样搬会改变主会话的事件和 trace。卡在三处：
+  - 排队检查夹在任务闭合的两半之间：先查排队（gate1）→ 闭合分类器 → 再查排队，有则把闭合判定记成 `discarded`（gate2）→
+    记 `closure/end` → 「有排队消息时补一条继续提示」→ 闭合要求继续时再查排队（gate3）→ 记忆提醒前再查排队（gate4）。
+    闭合需要两个位置（评估并记录、决定是否重试），排队的「继续提示」在两者之间。
+  - 排队打断记忆提醒必须早于续写消息落盘：续写消息写成 `user/message` 还是 `request/message` 取决于那一刻提醒是否还在进行。
+    记忆模块如果在消息事件之后才「观察到」排队，这条消息会写错类型。
+  - 闭合分类器的输入带「本 turn 已拼进来的排队消息原文」（`appliedQueuedIntentText`），排队的 trace 带「是否打断了提醒」
+    （`wasDuringNudge`），两者都是读对方的状态。
+  建议的做法：`onEndTurn` 拆成两个扩展点——先按数组顺序调用全部模块的评估（闭合在这里跑分类器并记 `closure/start|end`），
+  再按数组顺序取第一个非默认的决定；基座在评估之后和每个决定之前调用排队检查。排队检查清空队列时，基座在返回续写消息
+  之前同步发出「排队消息已取走」的事实，并把取走的消息交给观察者（记忆据此结束提醒，闭合据此拼 `appliedQueuedIntentText`）；
+  「是否在只进请求的阶段」从 `AgentLoopJournal.requestOnly` 挪成模块的扩展点，基座和排队的 trace 都从这里读。
+  6.3～6.5 依赖这一步，同样未做；`agent-hooks.ts` 仍同时含排队、闭合、记忆、压缩和 trace。
 
 ## 已定事项
 
