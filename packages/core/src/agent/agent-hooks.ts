@@ -2,10 +2,8 @@ import { createHash } from 'node:crypto'
 import { MEMORY_NUDGE_PROMPT } from '@zero-os/memory'
 import type { ProviderAdapter } from '@zero-os/model'
 import type {
-  ClosureLogEntryInput,
   RequestMemoryInjectionEntry,
   RequestToolResultEntry,
-  TaskClosureClassifierResponse,
   Tracer,
   UsagePurpose,
 } from '@zero-os/observe'
@@ -15,10 +13,8 @@ import type {
   ContentBlock,
   Message,
   ModelPricing,
-  ReasoningEffort,
   SecretFilter,
   ToolContext,
-  ToolLogger,
   ToolResult,
 } from '@zero-os/shared'
 import { generateId, now, toErrorMessage } from '@zero-os/shared'
@@ -44,23 +40,12 @@ import { retrieveMemoriesWithDecision } from './memory-retrieval'
 import { CONTEXT_PARAMS } from './params'
 import { wrapMemoryInjection } from './prompt'
 import { type QueuedInjectionTrace, buildLoopUserMessage, formatAppliedQueuedIntent } from './queue'
-import {
-  TASK_CLOSURE_CLASSIFIER_SYSTEM_PROMPT,
-  type TaskClosureDecision,
-  buildTaskClosureDecisionPrompt,
-  buildTaskClosurePrompt,
-  buildTaskClosurePromptContext,
-  extractAssistantText,
-  hasAssistantText,
-  parseTaskClosureDecision,
-} from './task-closure'
 import { attachLargeToolUseEvidence } from './tool-evidence'
 import { artifactizeToolOutput } from './truncate'
 
 export interface CreateAgentLoopHooksOptions {
   config: AgentConfig
   adapter: ProviderAdapter
-  closureAdapter: ProviderAdapter
   toolContext: ToolContext
   obs: AgentObservability
   context: AgentContext
@@ -219,13 +204,12 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
   journal: AgentLoopJournal | undefined
   /** 当前模型请求的 trace span,压缩记在它下面 */
   requestSpanId(): string | undefined
-  /** 还没搬出的会话功能(闭合、记忆、trace)在模块扩展点上的部分,按这个顺序放进模块数组 */
+  /** 还没搬出的会话功能(记忆、trace)在模块扩展点上的部分,按这个顺序放进模块数组 */
   modules: AgentLoopModule[]
 } {
   const {
     config,
     adapter,
-    closureAdapter,
     toolContext,
     obs,
     context,
@@ -250,7 +234,7 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
     memoryNudge.completeError(error)
   }
 
-  // 排队消息进入请求的事实:trace 记下它和拼进来的原文,闭合分类器读取已拼进来的排队原文
+  // 排队消息进入请求的事实:trace 记下它和拼进来的原文的长度
   let pendingQueuedInjection: QueuedInjectionTrace | undefined
   let appliedQueuedIntentText: string | undefined
 
@@ -366,16 +350,10 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
     },
   }
 
-  const endTurn = createAgentEndTurnHandlers({
+  const endTurn = createMemoryNudgeDecision({
     config,
-    closureAdapter,
     toolContext,
-    obs,
-    context,
-    userMessage,
-    turnIndex,
     memoryNudge,
-    getAppliedQueuedIntentText: () => appliedQueuedIntentText,
     getCurrentRequestSpanId: () => llmRequestHooks.getCurrentRequestSpanId(),
   })
   const module: AgentLoopModule = {
@@ -419,12 +397,10 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
           phase,
         })
     },
-    name: 'task_closure_retry',
-    ...endTurn.closure,
   }
   const memoryNudgeModule: AgentLoopModule = {
     name: 'memory_nudge',
-    ...endTurn.memoryNudge,
+    ...endTurn,
     onEmptyResponse: memoryNudgeResponseHooks.onEmptyResponse,
   }
 
@@ -442,174 +418,18 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
   }
 }
 
-interface CreateAgentEndTurnHandlerOptions {
-  config: AgentConfig
-  closureAdapter: ProviderAdapter
-  toolContext: ToolContext
-  obs: AgentObservability
-  context: AgentContext
-  userMessage: string
-  turnIndex: number
-  memoryNudge: AgentMemoryNudgeController
-  getAppliedQueuedIntentText(): string | undefined
-  getCurrentRequestSpanId(): string | undefined
-}
-
-/** 任务闭合与记忆提醒在一轮结束时的三步:评估(跑分类器)、定论(记 closure/end)、决定是否继续 */
-function createAgentEndTurnHandlers({
+/** 一轮结束时是否开始记忆提醒 */
+function createMemoryNudgeDecision({
   config,
-  closureAdapter,
   toolContext,
-  obs,
-  context,
-  userMessage,
-  turnIndex,
   memoryNudge,
-  getAppliedQueuedIntentText,
   getCurrentRequestSpanId,
-}: CreateAgentEndTurnHandlerOptions): {
-  closure: Required<Pick<AgentLoopModule, 'evaluateEndTurn' | 'settleEndTurn' | 'decideEndTurn'>>
-  memoryNudge: Required<Pick<AgentLoopModule, 'decideEndTurn'>>
-} {
-  let taskClosureRetryCount = 0
-  // 本次评估的结果,定论和决定时读取
-  let taskClosureEvaluation: TaskClosureEvaluation = { decision: null, eventPayload: null }
-  let shouldEvaluateTaskClosure = false
-  let closureStartedAt: number | undefined
-
-  const closure: Required<
-    Pick<AgentLoopModule, 'evaluateEndTurn' | 'settleEndTurn' | 'decideEndTurn'>
-  > = {
-    evaluateEndTurn: async (response, ctx) => {
-      taskClosureEvaluation = { decision: null, eventPayload: null }
-      closureStartedAt = undefined
-      shouldEvaluateTaskClosure =
-        !toolContext.spawnedByRequestId &&
-        !memoryNudge.isActive &&
-        hasAssistantText(response.content)
-      if (!shouldEvaluateTaskClosure) return
-
-      closureStartedAt = Date.now()
-      obs.sessionEvents?.append(toolContext.sessionId, [
-        {
-          type: 'closure/start',
-          data: {
-            turnIndex,
-            requestId: response.id,
-            model: obs.closureModelLabel,
-            baseSeq: obs.sessionEvents?.getLastSeq(toolContext.sessionId) ?? undefined,
-            messageCount: ctx.messages.length,
-          },
-        },
-      ])
-      taskClosureEvaluation = await decideTaskClosure({
-        adapter: closureAdapter,
-        sessionId: toolContext.sessionId,
-        agentName: config.name,
-        logger: toolContext.logger,
-        tracer: obs.tracer,
-        parentSessionId: obs.parentSessionId,
-        userMessage,
-        appliedQueuedIntentText: getAppliedQueuedIntentText(),
-        messages: ctx.messages,
-        response,
-        reasoningEffort: context.reasoningEffort,
-        parentSpanId: getCurrentRequestSpanId(),
-      })
-    },
-    settleEndTurn: (response, ctx, queueTaken) => {
-      const assistantMsg = ctx.messages[ctx.messages.length - 1]
-      const durationMs = closureStartedAt !== undefined ? Date.now() - closureStartedAt : undefined
-      if (queueTaken) {
-        finalizeTaskClosureSpan({
-          tracer: obs.tracer,
-          evaluation: taskClosureEvaluation,
-          assistantMsg,
-          extraMetadata: {
-            discardedDuePendingQueue: true,
-            originalAction: taskClosureEvaluation.decision?.action ?? null,
-            originalReason: taskClosureEvaluation.decision?.reason ?? null,
-          },
-          extraClosureData: {
-            discardedDuePendingQueue: true,
-            originalAction: taskClosureEvaluation.decision?.action ?? null,
-            originalReason: taskClosureEvaluation.decision?.reason ?? null,
-          },
-        })
-        obs.sessionEvents?.append(toolContext.sessionId, [
-          {
-            type: 'closure/end',
-            data: {
-              turnIndex,
-              action: 'discarded',
-              reason: taskClosureEvaluation.decision?.reason,
-              model: obs.closureModelLabel,
-              requestId: response.id,
-              durationMs,
-              detail: {
-                discardedDuePendingQueue: true,
-                originalAction: taskClosureEvaluation.decision?.action ?? null,
-              },
-            },
-          },
-        ])
-        return
-      }
-
-      // assistant 消息在产生时已写入事件流,不再回头改它;判定结果记在下面的 closure/end 里
-      finalizeTaskClosureSpan({
-        tracer: obs.tracer,
-        evaluation: taskClosureEvaluation,
-        assistantMsg,
-      })
-
-      if (shouldEvaluateTaskClosure) {
-        obs.sessionEvents?.append(toolContext.sessionId, [
-          {
-            type: 'closure/end',
-            data: {
-              turnIndex,
-              action: taskClosureEvaluation.decision?.action ?? 'finish',
-              reason: taskClosureEvaluation.decision?.reason,
-              model: obs.closureModelLabel,
-              requestId: response.id,
-              assistantMessageId: assistantMsg?.id,
-              durationMs,
-            },
-          },
-        ])
-      }
-
-      if (assistantMsg?.role === 'assistant' && taskClosureEvaluation.eventPayload) {
-        const sessionEvent: ClosureLogEntryInput & { spanId?: string } = {
-          ...taskClosureEvaluation.eventPayload,
-          spanId: taskClosureEvaluation.traceSpanId,
-          assistantMessageId: assistantMsg.id,
-          assistantMessageCreatedAt: assistantMsg.createdAt,
-        }
-
-        obs.bus?.emit('session:update', sessionEvent)
-      }
-    },
-    decideEndTurn: () => {
-      if (
-        taskClosureEvaluation.decision?.action !== 'continue' ||
-        taskClosureRetryCount >= CONTEXT_PARAMS.completion.maxTaskClosureRetries
-      )
-        return undefined
-      return {
-        action: 'continue',
-        continuationMessage: buildLoopUserMessage({
-          sessionId: toolContext.sessionId,
-          text: buildTaskClosurePrompt(taskClosureEvaluation.decision.reason),
-          controlKind: 'task_closure',
-        }),
-        commit: () => {
-          taskClosureRetryCount++
-        },
-      }
-    },
-  }
+}: {
+  config: AgentConfig
+  toolContext: ToolContext
+  memoryNudge: AgentMemoryNudgeController
+  getCurrentRequestSpanId(): string | undefined
+}): Required<Pick<AgentLoopModule, 'decideEndTurn'>> {
   const nudge: Required<Pick<AgentLoopModule, 'decideEndTurn'>> = {
     decideEndTurn: (_response, ctx) => {
       const promptMode = config.promptMode ?? 'full'
@@ -637,7 +457,7 @@ function createAgentEndTurnHandlers({
       return undefined
     },
   }
-  return { closure, memoryNudge: nudge }
+  return nudge
 }
 
 /** 排队检查点在 trace 里的名字,沿用搬出前的叫法:决定之前的检查按让位的模块命名 */
@@ -647,387 +467,6 @@ function queueTracePhase(taken: QueueTaken): string {
   if (taken.point === 'request_only_empty') return 'memory_nudge_empty'
   if (taken.point === 'before_decision') return `pre_${taken.decider}`
   return taken.point
-}
-
-interface TaskClosureClassifierRequest {
-  system: string
-  prompt: string
-  maxTokens: number
-}
-
-interface TaskClosureClassifierResult {
-  classifierRequest: TaskClosureClassifierRequest
-  response: CompletionResponse
-  responseText: string
-  decision: TaskClosureDecision | null
-}
-
-interface PreparedTaskClosureClassifierRequest {
-  classifierRequest: TaskClosureClassifierRequest
-  classifierMessage: Message
-}
-
-type TaskClosureFailedReason = 'invalid_classifier_output' | 'classifier_failed'
-type TaskClosureFailureStage = 'parse_classifier_response' | 'request_classifier'
-
-type SessionTaskClosureEvent =
-  | {
-      sessionId: string
-      spanId?: string
-      event: 'task_closure_decision'
-      action: 'finish' | 'continue' | 'block'
-      reason: string
-      classifierRequest: TaskClosureClassifierRequest
-      classifierResponse?: TaskClosureClassifierResponse
-    }
-  | {
-      sessionId: string
-      spanId?: string
-      event: 'task_closure_failed'
-      reason: TaskClosureFailedReason
-      failureStage: TaskClosureFailureStage
-      classifierRequest: TaskClosureClassifierRequest
-      classifierResponse?: TaskClosureClassifierResponse
-      classifierResponseRaw?: string
-      error?: string
-    }
-
-interface TaskClosureEvaluation {
-  decision: TaskClosureDecision | null
-  eventPayload: SessionTaskClosureEvent | null
-  traceSpanId?: string
-  traceSpanStatus?: 'success' | 'error'
-}
-
-async function decideTaskClosure(options: {
-  adapter: ProviderAdapter
-  sessionId: string
-  agentName: string
-  logger: ToolLogger
-  tracer?: Pick<Tracer, 'startSpan' | 'updateSpan' | 'endSpan'>
-  parentSessionId?: string
-  userMessage: string
-  appliedQueuedIntentText: string | undefined
-  messages: Message[]
-  response: CompletionResponse
-  reasoningEffort: ReasoningEffort | undefined
-  parentSpanId?: string
-}): Promise<TaskClosureEvaluation> {
-  const taskClosureSpan = options.tracer?.startSpan(
-    options.sessionId,
-    'task_closure_decision',
-    options.parentSpanId,
-    {
-      kind: 'closure_decision',
-      agentName: options.agentName,
-    },
-  )
-
-  const endSkipped = (skipReason: string): TaskClosureEvaluation => {
-    if (taskClosureSpan) {
-      options.tracer?.endSpan(taskClosureSpan.id, 'success', {
-        called: false,
-        skipReason,
-        stopReason: options.response.stopReason,
-      })
-    }
-    return {
-      decision: null,
-      eventPayload: null,
-      traceSpanId: taskClosureSpan?.id,
-      traceSpanStatus: undefined,
-    }
-  }
-
-  if (options.response.stopReason === 'tool_use') return endSkipped('tool_use')
-  if (!hasAssistantText(options.response.content)) return endSkipped('no_assistant_text')
-
-  const assistantText = extractAssistantText(options.response.content)
-  if (!assistantText) return endSkipped('empty_assistant_text')
-
-  const preparedClassifier = prepareTaskClosureClassifierRequest({
-    sessionId: options.sessionId,
-    userMessage: options.userMessage,
-    appliedQueuedIntentText: options.appliedQueuedIntentText,
-    messages: options.messages,
-    assistantText,
-  })
-  const classifierRequest = preparedClassifier.classifierRequest
-
-  try {
-    const classifier = await requestTaskClosureDecision({
-      adapter: options.adapter,
-      sessionId: options.sessionId,
-      parentSessionId: options.parentSessionId,
-      prepared: preparedClassifier,
-      reasoningEffort: options.reasoningEffort,
-    })
-    const validDecision = classifier.decision
-
-    if (validDecision) {
-      return recordTaskClosureDecision({
-        tracer: options.tracer,
-        traceSpanId: taskClosureSpan?.id,
-        sessionId: options.sessionId,
-        classifier,
-        decision: validDecision,
-      })
-    }
-
-    return recordInvalidTaskClosureClassifierOutput({
-      tracer: options.tracer,
-      traceSpanId: taskClosureSpan?.id,
-      sessionId: options.sessionId,
-      classifier,
-    })
-  } catch (error) {
-    options.logger.warn('task_closure_classifier_failed', {
-      sessionId: options.sessionId,
-      error: toErrorMessage(error),
-    })
-    const errorMessage = toErrorMessage(error)
-    return recordTaskClosureClassifierFailure({
-      tracer: options.tracer,
-      traceSpanId: taskClosureSpan?.id,
-      sessionId: options.sessionId,
-      classifierRequest,
-      error: errorMessage,
-    })
-  }
-}
-
-function finalizeTaskClosureSpan(options: {
-  tracer?: Pick<Tracer, 'updateSpan' | 'endSpan'>
-  evaluation: TaskClosureEvaluation
-  assistantMsg: Message | undefined
-  extraMetadata?: Record<string, unknown>
-  extraClosureData?: Record<string, unknown>
-}): void {
-  const { tracer, evaluation, assistantMsg, extraMetadata, extraClosureData } = options
-  if (assistantMsg?.role !== 'assistant' || !evaluation.traceSpanId) return
-
-  tracer?.updateSpan(evaluation.traceSpanId, {
-    data: {
-      closure: {
-        assistantMessageId: assistantMsg.id,
-        assistantMessageCreatedAt: assistantMsg.createdAt,
-        ...(extraClosureData ?? {}),
-      },
-    },
-    metadata: {
-      assistantMessageId: assistantMsg.id,
-      assistantMessageCreatedAt: assistantMsg.createdAt,
-      ...(extraMetadata ?? {}),
-    },
-  })
-
-  if (evaluation.traceSpanStatus) {
-    tracer?.endSpan(evaluation.traceSpanId, evaluation.traceSpanStatus)
-  }
-}
-
-function prepareTaskClosureClassifierRequest(options: {
-  sessionId: string
-  userMessage: string
-  appliedQueuedIntentText: string | undefined
-  messages: Message[]
-  assistantText: string
-}): PreparedTaskClosureClassifierRequest {
-  const promptContext = buildTaskClosurePromptContext(options.messages)
-  const prompt = buildTaskClosureDecisionPrompt(
-    options.userMessage,
-    options.assistantText,
-    promptContext,
-    options.appliedQueuedIntentText,
-  )
-  const classifierRequest: TaskClosureClassifierRequest = {
-    system: TASK_CLOSURE_CLASSIFIER_SYSTEM_PROMPT,
-    prompt,
-    maxTokens: 800,
-  }
-
-  const classifierMessage: Message = {
-    id: generateId(),
-    sessionId: options.sessionId,
-    role: 'user',
-    messageType: 'message',
-    content: [{ type: 'text', text: prompt }],
-    createdAt: now(),
-  }
-
-  return {
-    classifierRequest,
-    classifierMessage,
-  }
-}
-
-async function requestTaskClosureDecision(options: {
-  adapter: ProviderAdapter
-  sessionId: string
-  parentSessionId?: string
-  prepared: PreparedTaskClosureClassifierRequest
-  reasoningEffort: ReasoningEffort | undefined
-}): Promise<TaskClosureClassifierResult> {
-  const { classifierMessage, classifierRequest } = options.prepared
-  const response = await options.adapter.complete({
-    messages: [classifierMessage],
-    system: classifierRequest.system,
-    stream: false,
-    maxTokens: classifierRequest.maxTokens,
-    reasoningEffort: options.reasoningEffort,
-    meta: {
-      sessionId: options.sessionId,
-      purpose: 'task_closure',
-      ...(options.parentSessionId ? { parentSessionId: options.parentSessionId } : {}),
-    },
-  })
-
-  const responseText = extractAssistantText(response.content)
-  return {
-    classifierRequest,
-    response,
-    responseText,
-    decision: parseTaskClosureDecision(responseText),
-  }
-}
-
-function recordTaskClosureDecision(options: {
-  tracer?: Pick<Tracer, 'updateSpan'>
-  traceSpanId?: string
-  sessionId: string
-  classifier: TaskClosureClassifierResult
-  decision: TaskClosureDecision
-}): TaskClosureEvaluation {
-  const { classifier, decision } = options
-
-  if (options.traceSpanId) {
-    options.tracer?.updateSpan(options.traceSpanId, {
-      data: {
-        closure: {
-          event: 'task_closure_decision',
-          action: decision.action,
-          reason: decision.reason,
-          classifierRequest: classifier.classifierRequest,
-          classifierResponse: classifier.response,
-        },
-      },
-      metadata: {
-        called: true,
-        classifierModel: classifier.response.model,
-        action: decision.action,
-        reason: decision.reason,
-        classifierRequest: classifier.classifierRequest,
-      },
-    })
-  }
-
-  return {
-    decision,
-    eventPayload: {
-      event: 'task_closure_decision',
-      sessionId: options.sessionId,
-      action: decision.action,
-      reason: decision.reason,
-      classifierRequest: classifier.classifierRequest,
-      classifierResponse: classifier.response,
-    },
-    traceSpanId: options.traceSpanId,
-    traceSpanStatus: 'success',
-  }
-}
-
-function recordInvalidTaskClosureClassifierOutput(options: {
-  tracer?: Pick<Tracer, 'updateSpan'>
-  traceSpanId?: string
-  sessionId: string
-  classifier: TaskClosureClassifierResult
-}): TaskClosureEvaluation {
-  const { classifier } = options
-
-  if (options.traceSpanId) {
-    options.tracer?.updateSpan(options.traceSpanId, {
-      kind: 'closure_failed',
-      name: 'task_closure_failed',
-      data: {
-        closure: {
-          event: 'task_closure_failed',
-          reason: 'invalid_classifier_output',
-          failureStage: 'parse_classifier_response',
-          classifierRequest: classifier.classifierRequest,
-          classifierResponse: classifier.response,
-          classifierResponseRaw: classifier.responseText,
-        },
-      },
-      metadata: {
-        called: true,
-        classifierModel: classifier.response.model,
-        reason: 'invalid_classifier_output',
-        failureStage: 'parse_classifier_response',
-        classifierRequest: classifier.classifierRequest,
-        classifierResponseRaw: classifier.responseText,
-      },
-    })
-  }
-
-  return {
-    decision: null,
-    eventPayload: {
-      event: 'task_closure_failed',
-      sessionId: options.sessionId,
-      reason: 'invalid_classifier_output',
-      failureStage: 'parse_classifier_response',
-      classifierRequest: classifier.classifierRequest,
-      classifierResponse: classifier.response,
-      classifierResponseRaw: classifier.responseText,
-    },
-    traceSpanId: options.traceSpanId,
-    traceSpanStatus: 'error',
-  }
-}
-
-function recordTaskClosureClassifierFailure(options: {
-  tracer?: Pick<Tracer, 'updateSpan'>
-  traceSpanId?: string
-  sessionId: string
-  classifierRequest: TaskClosureClassifierRequest
-  error: string
-}): TaskClosureEvaluation {
-  if (options.traceSpanId) {
-    options.tracer?.updateSpan(options.traceSpanId, {
-      kind: 'closure_failed',
-      name: 'task_closure_failed',
-      data: {
-        closure: {
-          event: 'task_closure_failed',
-          reason: 'classifier_failed',
-          failureStage: 'request_classifier',
-          classifierRequest: options.classifierRequest,
-          error: options.error,
-        },
-      },
-      metadata: {
-        called: true,
-        reason: 'classifier_failed',
-        failureStage: 'request_classifier',
-        classifierRequest: options.classifierRequest,
-        error: options.error,
-      },
-    })
-  }
-
-  return {
-    decision: null,
-    eventPayload: {
-      event: 'task_closure_failed',
-      sessionId: options.sessionId,
-      reason: 'classifier_failed',
-      failureStage: 'request_classifier',
-      classifierRequest: options.classifierRequest,
-      error: options.error,
-    },
-    traceSpanId: options.traceSpanId,
-    traceSpanStatus: 'error',
-  }
 }
 
 interface AgentMemoryNudgeResponseHandlerOptions {

@@ -64,6 +64,8 @@ export interface LoopIterationContext {
    * it appended and the request-only injections. The same entries rebuild a request from the log.
    */
   requestEntries: RequestEntry[]
+  /** The base's fact: a reason while the request-only phase is on (see `AgentLoopModule.requestOnly`). */
+  requestOnly(): RequestMessageEventData['reason'] | undefined
 }
 
 /**
@@ -611,6 +613,7 @@ export class AgentLoop {
       userMessage,
       state: {},
       requestEntries: [],
+      requestOnly: () => requestOnlyReason(this.modules),
     }
 
     const userMsg = userMessageEntry ?? this.buildUserMessage(userMessage, userImages)

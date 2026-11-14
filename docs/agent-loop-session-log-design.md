@@ -160,7 +160,7 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
 | 3 | 主会话的 loop 直接写消息事件，取代 turn 结束时的 diff；`syncCanonical` 只留给非 loop 修改 | 已完成：即 [session-log-replay.md](session-log-replay.md) 的步骤 1，子代理一并写消息；非 loop 修改经 `syncMessages` 声明原因，`syncCanonical` 只对账 |
 | 4 | 基座写事件流；记忆检索、Router、Codex Worker 依次接入 | 已完成，见下 |
 | 5 | 删除旧式 `compressConversation` 和切换模型时对 canonical 的覆盖；预算改为按压缩后的投影判断 | 已完成：[检查点压缩](context-compaction.md)是唯一的压缩机制，旧代码已删除 |
-| 6 | 主会话 `Agent` 改为「基座 + 模块」，从 `agent-hooks.ts` 一次搬出一项功能 | 6.1～6.3 已完成；6.4、6.5 见下 |
+| 6 | 主会话 `Agent` 改为「基座 + 模块」，从 `agent-hooks.ts` 一次搬出一项功能 | 6.1～6.4 已完成；6.5 见下 |
 | 7 | Web 读事件流；切 `file-only`；`run.log` 与 trace 里与事件流重复的部分退役 | 后续 |
 
 ### 步骤 1：组装改为纯函数投影
@@ -312,6 +312,18 @@ hooks 读取请求历史的唯一来源。
     （两份检查点水位之间，均已作为消息事件落盘）和代码里的提示词决定，可以从日志推出，但没有 hash 核对。
   - `Agent.compactContextForRequest` 和 `createAgentLoopHooks` 的 `compaction`、`requestBase` 选项、`afterToolResults` hook 删除。
   - 验收：`dump-events.ts` 的 7 个场景（含 turn 开始压缩与 turn 内压缩）改动前后的事件、trace、bus 逐行相同。
+- **6.4 任务闭合（已完成）。** 模块是 `modules/closure.ts` 的 `closureModule(...)`（分类器请求、trace 与 `closure/*` 事件的代码一并搬过去）。
+  - 用 `evaluateEndTurn`（跑分类器，记 `closure/start`）、`settleEndTurn`（记 `closure/end`，评估之后取走了排队消息时记 `discarded`；
+    沿用原来的行为：即使本轮没有评估也记这条 `discarded`）、`decideEndTurn`（要求继续时给出重试提示，`commit` 时计数），`name` 为
+    `task_closure_retry`。
+  - 不再读记忆和排队的状态：「提醒进行中不评估」改读基座的事实 `LoopIterationContext.requestOnly()`（新增，由 `requestOnly`
+    扩展点算出）；分类器输入里的已拼进来的排队原文由模块自己观察 `onQueueTaken` 拼出。trace 里 `queue_gate_drain` 的
+    `appliedQueuedIntentLength` 由 trace 一侧另拼一份，两边用同一个 `formatAppliedQueuedIntent`。
+  - 任务闭合分类器的请求输入不另落事件：`closure/start` 已带 `baseSeq` 与 `messageCount`，分类器看到的消息都在 `baseSeq` 之前
+    （见 session-event-log.md「上下文锚点」），提示词由代码给出；排队原文来自同一段日志里的排队事件。能推出，但没有 hash 核对。
+  - `Agent` 的模块数组：`[requestContextModule, compactionModule, queueModule, closureModule, ...记忆与 trace]`；决定的顺序因此是
+    排队续写提示 → 闭合重试 → 记忆提醒，与原来相同。
+  - 验收：`dump-events.ts` 7 个场景改动前后的事件、trace、bus 逐行相同。
 
 ## 已定事项
 

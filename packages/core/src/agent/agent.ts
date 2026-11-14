@@ -8,6 +8,7 @@ import type { ToolExecutor } from './agent-loop'
 import { runAgentLoop } from './agent-run'
 import { AgentTraceRecorder } from './agent-trace'
 import type { AgentConfig, AgentContext, AgentObservability } from './agent-types'
+import { closureModule } from './modules/closure'
 import { compactionModule } from './modules/compaction'
 import { queueModule } from './modules/queue'
 import { requestContextModule } from './modules/request-context'
@@ -98,7 +99,6 @@ export class Agent {
       } = createAgentLoopHooks({
         config: this.config,
         adapter: this.adapter,
-        closureAdapter: this.closureAdapter,
         toolContext: this.toolContext,
         obs: this.obs,
         context,
@@ -158,6 +158,16 @@ export class Agent {
             events: this.obs.sessionEvents,
             shouldInterrupt,
             getQueuedMessages,
+          }),
+          closureModule({
+            config: this.config,
+            closureAdapter: this.closureAdapter,
+            toolContext: this.toolContext,
+            obs: this.obs,
+            context,
+            userMessage,
+            turnIndex,
+            requestSpanId,
           }),
           ...sessionModules,
         ],

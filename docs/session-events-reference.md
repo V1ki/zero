@@ -37,7 +37,7 @@ turn 结束的对账走 `syncCanonical`，其余事件走 `append`。seq 写入�
 | `system/prompt` ✅ | persistence `ensureSessionPromptEvent`（hash 比对）：session-turn 每 turn 开始、persistSessionState;子代理由 spawn-agent 写 | 请求的 system 文本变化（prompt 重建、identityMemory 变化） | hash 与 chars（描述发出的 system = content + `\n\n` + identity）、content（静态系统提示词）、identity | getSystemPrompt;DB 列只存最新一份静态提示词，事件流保留谱系 |
 | `tools/set` ✅ | session-turn `ensureToolsSetEvent`（turn 开始比对名字列表 hash，空列表也记） | 工具集变化 | hash、toolNames、count | getToolSet;完整定义由代码版本推导 |
 | `step/start` ✅ | `AgentLoop`，`onCompletionStart` hook 之后 | 每次模型请求开始 | stepIndex、requestSpanId、model、messageCount、requestHash（`hashRequest`：system、工具名、传给 adapter 的消息，图片按内容 hash 归一） | **事件自身 seq 即请求重建锚点**，规则见 session-event-log.md「请求重建」;`hashRequest(assembleRequest(...))` 应等于 requestHash |
-| `closure/start` ✅ | agent-hooks `onEndTurn` | closure 评估开始 | turnIndex、requestId、model、baseSeq、messageCount | 分类器看到的消息都在 baseSeq 之前;messageCount 对账;未评估不产生任何 closure 事件 |
+| `closure/start` ✅ | 闭合模块 `closureModule` 的 `evaluateEndTurn` | closure 评估开始 | turnIndex、requestId、model、baseSeq、messageCount | 分类器看到的消息都在 baseSeq 之前;messageCount 对账;未评估不产生任何 closure 事件 |
 
 ## ③ diagnostics（时间线/排障）
 
@@ -51,7 +51,7 @@ turn 结束的对账走 `syncCanonical`，其余事件走 `append`。seq 写入�
 | `compaction/prune` ✅ | agent-hooks `processAgentToolResults`（artifactize） | tool_result 内容真的被 artifact 引用替换时（只写了 evidence、原文仍在 canonical 的中等输出不发） | toolUseId、from(chars+hash)、to(artifact_ref)、evidence 指针 |
 | `compaction/start` ✅ | 压缩模块 `compactionModule`，由基座在 loop 开始和工具结果之后调用 | 请求前压力达到阈值且保留尾部之外有内容 | compactionId、trigger(turn_start/in_turn)、tokens、thresholdTokens |
 | `compaction/end` ✅ | 同上 | 裁剪或摘要结束（紧跟在 `compaction/checkpoint` 之后） | compactionId、status(pruned/summarized/failed)、tokensBefore、tokensAfter、durationMs、usage、error |
-| `closure/end` ✅ | agent-hooks `onEndTurn` 三条路径 | 决策产出 | action(finish/continue/block/discarded)、reason、model、requestId、assistantMessageId、durationMs;discarded 原决策在 detail;判定只记在这里，不写回 assistant 消息 |
+| `closure/end` ✅ | 闭合模块 `closureModule` 的 `settleEndTurn`（评估之后取走了排队消息时为 discarded） | 决策产出 | action(finish/continue/block/discarded)、reason、model、requestId、assistantMessageId、durationMs;discarded 原决策在 detail;判定只记在这里，不写回 assistant 消息 |
 | `memory/retrieval/start` ✅ | memory-retrieval `retrieveMemoriesWithDecision` | 检索 agent 侧循环开始（layer1 开场/layer2 工具失败后） | layer、turnIndex |
 | `memory/retrieval/end` ✅ | 同上（成功/失败两路径） | 检索结束 | layer、status(injected/skipped/failed)、queries、searchCount、selected（id、title 必填、score）、durationMs、usage、error;status=injected 时 selected 就是记进会话已注入记忆表的记忆，恢复按它重建 |
 | `memory/recorded` ✅ | agent-hooks `onToolCallEnd` memory 分支 | memory 工具 create/update 成功 | action、memoryId、memoryType、title、toolUseId |

@@ -20,6 +20,7 @@ import { Agent, type AgentContext } from '../agent'
 import { createAgentLoopHooks } from '../agent-hooks'
 import { endTurn } from '../agent-loop'
 import { AgentTraceRecorder } from '../agent-trace'
+import { closureModule } from '../modules/closure'
 import { queueModule } from '../modules/queue'
 import type { QueuedMessage } from '../queue'
 import { buildTaskClosurePrompt } from '../task-closure'
@@ -1293,10 +1294,9 @@ describe('Agent task closure gate', () => {
 
     let interruptChecks = 0
     let drained = false
-    const { modules } = createAgentLoopHooks({
+    const { modules, requestSpanId } = createAgentLoopHooks({
       config,
       adapter,
-      closureAdapter: adapter,
       toolContext,
       obs,
       context: createContext(registry),
@@ -1328,8 +1328,18 @@ describe('Agent task closure gate', () => {
         return [{ content: '顺便核验更早一小时的窗口', timestamp: '2026-03-30T06:02:00.000Z' }]
       },
     })
+    const closure = closureModule({
+      config,
+      closureAdapter: adapter,
+      toolContext,
+      obs,
+      context: {},
+      userMessage: '完成一个需要先查再总结的任务',
+      turnIndex: 1,
+      requestSpanId,
+    })
     const decision = await endTurn(
-      [queue, ...modules],
+      [queue, closure, ...modules],
       {},
       createTextResponse('这轮工作已经完成'),
       {
@@ -1339,6 +1349,7 @@ describe('Agent task closure gate', () => {
         userMessage: '完成一个需要先查再总结的任务',
         state: {},
         requestEntries: [],
+        requestOnly: () => undefined,
       },
     )
 
