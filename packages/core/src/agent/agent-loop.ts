@@ -26,6 +26,7 @@ import {
 } from '@zero-os/shared'
 import { filterToolInput } from './agent-trace'
 import { CONTEXT_PARAMS } from './params'
+import type { QueuedInjectionTrace, QueuedMessage } from './queue'
 import { applyUserInjections, hashRequest } from './request-assembly'
 
 const MAX_TRANSIENT_STREAM_RETRIES = 3
@@ -70,11 +71,95 @@ export interface LoopIterationContext {
  * chained in array order, and decisions take the first non-default answer in array order.
  */
 export interface AgentLoopModule {
+  /** Names the module in the trace, e.g. the queue check before its end-of-turn decision. */
+  name?: string
   /**
    * Text placed in front of the loop's first user message, in the request only. The base writes
    * each piece as `injection/context` and applies them in array order.
    */
   requestInjections?(message: Message): Array<Pick<InjectionContextEventData, 'kind' | 'content'>>
+  /**
+   * A reason while new messages belong to the request only and stay out of the canonical history;
+   * the base writes them as `request/message`. Decision: the first module with a reason wins.
+   */
+  requestOnly?(): RequestMessageEventData['reason'] | undefined
+  /**
+   * Takes the session's queued messages at a point the base chooses (see `QueuePoint`) and hands
+   * back the continuation message that carries them. Decision: the first module that takes wins.
+   */
+  takeQueued?(point: QueuePoint, ctx: LoopIterationContext): QueueTake | undefined
+  /**
+   * After tool results: takes the queued messages and hands back the blocks to append to the
+   * request's last user message. Decision: the first module that takes wins. The base appends them
+   * and writes `injection/context` (`queued_merge`).
+   */
+  mergeQueued?(last: Message, ctx: LoopIterationContext): QueueMerge | undefined
+  /** Observer: queued messages were taken into the request. Emitted before the request changes. */
+  onQueueTaken?(taken: QueueTaken, ctx: LoopIterationContext): void
+  /** Observer: a completion returned and the caller's hooks accepted it. */
+  onCompletionEnd?(response: CompletionResponse, ctx: LoopIterationContext): void
+  /** Observer, awaited in array order: a response ended the turn. */
+  evaluateEndTurn?(response: CompletionResponse, ctx: LoopIterationContext): Promise<void>
+  /**
+   * Observer: after the evaluation, whether queued messages were taken at that point (then the turn
+   * continues with them and no decision is asked).
+   */
+  settleEndTurn?(response: CompletionResponse, ctx: LoopIterationContext, queueTaken: boolean): void
+  /**
+   * Decision: the first module that continues the turn wins; `undefined` passes. Before the
+   * continuation takes effect the base checks the queue once more; `commit` runs only when the
+   * module's continuation is the one the turn takes.
+   */
+  decideEndTurn?(
+    response: CompletionResponse,
+    ctx: LoopIterationContext,
+  ): EndTurnContinuation | undefined
+  /** Decision on an empty response: the first answer that is not `undefined` wins. */
+  onEmptyResponse?(
+    retryCount: number,
+    ctx: LoopIterationContext,
+  ): boolean | 'break' | { action: 'continue'; continuationMessage: Message } | undefined
+  /** Decision: whether to stop after the next answer; any module saying yes wins. */
+  shouldInterrupt?(ctx: LoopIterationContext): boolean
+}
+
+/**
+ * Where the base looks for queued messages: when a response ends the turn, after the modules
+ * evaluated it, before each module's decision, and on an empty response in the request-only phase.
+ */
+export type QueuePoint = 'end_turn' | 'after_evaluation' | 'before_decision' | 'request_only_empty'
+
+export interface EndTurnContinuation {
+  action: 'continue'
+  continuationMessage: Message
+  commit?(): void
+}
+
+export interface QueueTake {
+  queued: QueuedMessage[]
+  continuationMessage: Message
+  /** What the request will carry, for the trace. */
+  injection?: QueuedInjectionTrace
+}
+
+export interface QueueMerge {
+  queued: QueuedMessage[]
+  /** Blocks appended to the last user message; none when there is nothing to append. */
+  blocks: ContentBlock[]
+  injection?: QueuedInjectionTrace
+}
+
+/** The fact the base emits when queued messages go into the request. */
+export interface QueueTaken {
+  point: QueuePoint | 'after_tool_results'
+  /** At `before_decision`: the name of the module whose continuation gave way. */
+  decider?: string
+  queued: QueuedMessage[]
+  injection?: QueuedInjectionTrace
+  /** True for a continuation message; false when appended to the last user message. */
+  continuation: boolean
+  /** Whether the request-only phase was on when the messages were taken. */
+  wasRequestOnly: boolean
 }
 
 /**
@@ -91,8 +176,6 @@ export interface AgentLoopJournal {
   requestSpanId?(): string | undefined
   /** Trace span of the tool call that just started. Read after `onToolCallStart`. */
   toolSpanId?(toolUseId: string): string | undefined
-  /** A reason while new messages belong to the request only and stay out of the canonical history. */
-  requestOnly?(): RequestMessageEventData['reason'] | undefined
 }
 
 export interface AgentLoopConfig {
@@ -558,7 +641,7 @@ export class AgentLoop {
         }
 
         const decision =
-          this.hooks.onEmptyResponse?.(emptyResponseRetryCount, ctx) ??
+          this.emptyResponseDecision(emptyResponseRetryCount, ctx) ??
           (emptyResponseRetryCount < CONTEXT_PARAMS.completion.maxEmptyResponseRetries
             ? true
             : 'break')
@@ -616,7 +699,7 @@ export class AgentLoop {
       }
 
       if (response.stopReason !== 'tool_use') {
-        const endTurnDecision = await this.hooks.onEndTurn?.(response, ctx)
+        const endTurnDecision = await endTurn(this.modules, this.hooks, response, ctx)
         if (!endTurnDecision || endTurnDecision.action === 'break') {
           break
         }
@@ -648,12 +731,16 @@ export class AgentLoop {
       }
 
       await this.hooks.afterToolResults?.(ctx)
+      this.mergeQueuedIntoRequest(ctx)
 
       if (this.hooks.shouldAbort?.(ctx)) {
         break
       }
 
-      if (this.hooks.shouldInterrupt?.(ctx)) {
+      if (
+        this.modules.some((module) => module.shouldInterrupt?.(ctx)) ||
+        this.hooks.shouldInterrupt?.(ctx)
+      ) {
         const finalRequest = this.buildRequest(messages, ctx)
         const finalResponse = await this.complete(finalRequest, ctx)
         const finalMsg = this.buildAssistantMessage(finalResponse, ctx)
@@ -748,6 +835,65 @@ export class AgentLoop {
     }
   }
 
+  private get modules(): AgentLoopModule[] {
+    return this.config.modules ?? []
+  }
+
+  private requestOnly(): RequestMessageEventData['reason'] | undefined {
+    return requestOnlyReason(this.modules)
+  }
+
+  /** After tool results: queued messages appended to the request's last user message, logged. */
+  private mergeQueuedIntoRequest(ctx: LoopIterationContext): void {
+    const lastIndex = ctx.messages.length - 1
+    const last = ctx.messages[lastIndex]
+    if (!last) return
+    const wasRequestOnly = this.requestOnly() !== undefined
+    for (const module of this.modules) {
+      const merge = module.mergeQueued?.(last, ctx)
+      if (!merge) continue
+      if (merge.blocks.length > 0)
+        ctx.messages[lastIndex] = { ...last, content: [...last.content, ...merge.blocks] }
+      const taken: QueueTaken = {
+        point: 'after_tool_results',
+        queued: merge.queued,
+        injection: merge.injection,
+        continuation: false,
+        wasRequestOnly,
+      }
+      for (const observer of this.modules) observer.onQueueTaken?.(taken, ctx)
+      if (merge.injection) {
+        const injection = {
+          kind: 'queued_merge' as const,
+          content: merge.injection.formattedText,
+          refs: { count: merge.injection.count },
+          messageId: last.id,
+          blocks: merge.blocks,
+        }
+        this.config.journal?.events.append(this.config.sessionId, [
+          { type: 'injection/context', data: injection },
+        ])
+        ctx.requestEntries.push({ kind: 'injection', injection })
+      }
+      return
+    }
+  }
+
+  private emptyResponseDecision(
+    retryCount: number,
+    ctx: LoopIterationContext,
+  ): ReturnType<NonNullable<AgentLoopHooks['onEmptyResponse']>> | undefined {
+    if (requestOnlyReason(this.modules)) {
+      const queued = takeQueued(this.modules, 'request_only_empty', ctx)
+      if (queued) return { action: 'continue', continuationMessage: queued }
+    }
+    for (const module of this.modules) {
+      const decision = module.onEmptyResponse?.(retryCount, ctx)
+      if (decision !== undefined) return decision
+    }
+    return this.hooks.onEmptyResponse?.(retryCount, ctx)
+  }
+
   /** The first user message as the request carries it: the modules' injections in front, logged. */
   private injectIntoFirstUserMessage(message: Message, ctx: LoopIterationContext): ContentBlock[] {
     const injections = (this.config.modules ?? []).flatMap((module) =>
@@ -770,7 +916,7 @@ export class AgentLoop {
     ctx.requestEntries.push({ kind: 'message', message })
     const { journal, sessionId } = this.config
     if (journal) {
-      const reason = journal.requestOnly?.()
+      const reason = this.requestOnly()
       if (reason)
         journal.events.append(sessionId, [{ type: 'request/message', data: { message, reason } }])
       else journal.events.appendMessage(sessionId, message)
@@ -848,6 +994,7 @@ async function completeAgentLoopRequest({
       },
     ])
     hooks.onCompletionEnd?.(request, response, durationMs, ctx)
+    for (const module of config.modules ?? []) module.onCompletionEnd?.(response, ctx)
     return response
   } catch (error) {
     hooks.onCompletionError?.(request, error, Date.now() - startedAt, ctx)
@@ -1096,4 +1243,75 @@ function mapStopReason(stopReason: string | undefined): StepStopReason {
   if (stopReason === 'aborted' || stopReason === 'interrupted') return 'aborted'
   if (stopReason === 'error' || stopReason === 'max_tokens') return 'error'
   return 'end_turn'
+}
+
+function requestOnlyReason(
+  modules: AgentLoopModule[],
+): RequestMessageEventData['reason'] | undefined {
+  for (const module of modules) {
+    const reason = module.requestOnly?.()
+    if (reason) return reason
+  }
+  return undefined
+}
+
+/** Asks the modules for queued messages; when one takes them, emits the fact before returning. */
+function takeQueued(
+  modules: AgentLoopModule[],
+  point: QueuePoint,
+  ctx: LoopIterationContext,
+  decider?: string,
+): Message | undefined {
+  const wasRequestOnly = requestOnlyReason(modules) !== undefined
+  for (const module of modules) {
+    const take = module.takeQueued?.(point, ctx)
+    if (!take) continue
+    const taken: QueueTaken = {
+      point,
+      decider,
+      queued: take.queued,
+      injection: take.injection,
+      continuation: true,
+      wasRequestOnly,
+    }
+    for (const observer of modules) observer.onQueueTaken?.(taken, ctx)
+    return take.continuationMessage
+  }
+  return undefined
+}
+
+/**
+ * A response ended the turn. Queued messages are checked first; then every module evaluates (in
+ * array order, awaited), queued messages are checked again, and every module settles knowing
+ * whether they were taken. Otherwise the first module that continues decides: its continuation
+ * takes effect unless queued messages arrived meanwhile (checked again, except for a module that
+ * takes queued messages itself). The caller's `onEndTurn` hook is asked last.
+ */
+export async function endTurn(
+  modules: AgentLoopModule[],
+  hooks: Pick<AgentLoopHooks, 'onEndTurn'>,
+  response: CompletionResponse,
+  ctx: LoopIterationContext,
+): Promise<{ action: 'break' } | { action: 'continue'; continuationMessage: Message } | undefined> {
+  const continueWith = (continuationMessage: Message) => ({
+    action: 'continue' as const,
+    continuationMessage,
+  })
+  const first = takeQueued(modules, 'end_turn', ctx)
+  if (first) return continueWith(first)
+  for (const module of modules) await module.evaluateEndTurn?.(response, ctx)
+  const afterEvaluation = takeQueued(modules, 'after_evaluation', ctx)
+  for (const module of modules) module.settleEndTurn?.(response, ctx, afterEvaluation !== undefined)
+  if (afterEvaluation) return continueWith(afterEvaluation)
+  for (const module of modules) {
+    const decision = module.decideEndTurn?.(response, ctx)
+    if (!decision) continue
+    const queued = module.takeQueued
+      ? undefined
+      : takeQueued(modules, 'before_decision', ctx, module.name)
+    if (queued) return continueWith(queued)
+    decision.commit?.()
+    return continueWith(decision.continuationMessage)
+  }
+  return hooks.onEndTurn?.(response, ctx)
 }

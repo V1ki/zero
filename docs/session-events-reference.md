@@ -32,7 +32,7 @@ turn 结束的对账走 `syncCanonical`，其余事件走 `append`。seq 写入�
 | type | 发射点 | 触发 | data 要点 | 重建规则 |
 |---|---|---|---|---|
 | `loop/start` ✅ | agent `Agent.run` 开头（早于 turn 开始的压缩;子代理写进自己的文件）；`runAgentLoop` 带事件句柄时在 `system/prompt`、`tools/set` 之后写 | 每次 agent loop 开始（会话每 turn 一次;交互式子代理每次输入一次） | requireThinkingForToolUse | 请求历史 = 此处的 canonical 投影与检查点;其后到 step/start 之间的事件是该 loop 的 entries |
-| `injection/context` ✅ | ① `AgentLoop` loop 首条 user 消息进请求时，内容来自模块的 `requestInjections`（主会话为 `requestContextModule`）;② afterToolResults 队列拼接后;③ 迁移播种 🌱 | kind=dynamic（system-reminder 含记忆检索）、image_delegation、queued_merge;memory/memory_hint 仅迁移期从 run.log 抽取 | kind、content 原文、refs、messageId（被改写的请求消息）、blocks（queued_merge 拼接的 blocks，含排队图片，图片外置为 imageRef） | 带 messageId 的参与请求组装;投影 canonical 时忽略 |
+| `injection/context` ✅ | ① `AgentLoop` loop 首条 user 消息进请求时，内容来自模块的 `requestInjections`（主会话为 `requestContextModule`）;② `AgentLoop` 工具结果之后，排队模块的 `mergeQueued` 交出拼接内容时;③ 迁移播种 🌱 | kind=dynamic（system-reminder 含记忆检索）、image_delegation、queued_merge;memory/memory_hint 仅迁移期从 run.log 抽取 | kind、content 原文、refs、messageId（被改写的请求消息）、blocks（queued_merge 拼接的 blocks，含排队图片，图片外置为 imageRef） | 带 messageId 的参与请求组装;投影 canonical 时忽略 |
 | `request/message` ✅ | `AgentLoop`（调用方声明消息只进请求时，现为记忆提醒进行中;store `append` 把图片外置） | 记忆提醒阶段 loop 追加进请求的消息：提醒 prompt、提醒回复、提醒阶段的工具结果 | message 全量、reason=memory_nudge | 只追加进本 loop 之后的请求,不进 canonical,后续 turn 看不到 |
 | `system/prompt` ✅ | persistence `ensureSessionPromptEvent`（hash 比对）：session-turn 每 turn 开始、persistSessionState;子代理由 spawn-agent 写 | 请求的 system 文本变化（prompt 重建、identityMemory 变化） | hash 与 chars（描述发出的 system = content + `\n\n` + identity）、content（静态系统提示词）、identity | getSystemPrompt;DB 列只存最新一份静态提示词，事件流保留谱系 |
 | `tools/set` ✅ | session-turn `ensureToolsSetEvent`（turn 开始比对名字列表 hash，空列表也记） | 工具集变化 | hash、toolNames、count | getToolSet;完整定义由代码版本推导 |
@@ -58,7 +58,7 @@ turn 结束的对账走 `syncCanonical`，其余事件走 `append`。seq 写入�
 | `model/selection` ✅（仅 1/4 触发点） | session `switchSessionModel` | /model 命令 | from、to(label/provider/modelId)、trigger=user_command、detail |
 | `params/reasoning` ✅ | session-controllers `updateSessionReasoningEffort` | /think 变更 effort | from、to |
 | `agent/inbox/enqueued` ✅ | session `handleSessionMessageEntry` 排队分支 | turn 进行中消息入队 | messageIndex（canonical 下标）、reason、interrupt |
-| `agent/inbox/drained` ✅ | queueGate `injectQueuedMessagesIntoLastUserMessage` | loop 取走排队消息 | count |
+| `agent/inbox/drained` ✅ | 排队模块 `queueModule` 的 `mergeQueued`（工具结果之后） | loop 取走排队消息 | count |
 | `agent/inbox/spliced` ✅ | 同上 | 拼进首条 user 消息 | strategy=inject_into_last_user、count |
 | `job/registered` ✅ | `BackgroundToolTaskManager.run`（经 agent 的工具执行器） | 每次 bash 执行开始，紧跟该调用的 `tool/call` | jobId、toolUseId、toolName |
 | `job/settled` ✅ | 同上;前台结束在 `run`，转后台后结束在 `completeTask` | bash 执行真正结束 | jobId、status(success/error)、durationMs、backgrounded、evidence（转后台且输出超过 8000 字符时，完整输出的落盘指针） |

@@ -18,7 +18,9 @@ import { BaseTool } from '../../tool/base'
 import { ToolRegistry } from '../../tool/registry'
 import { Agent, type AgentContext } from '../agent'
 import { createAgentLoopHooks } from '../agent-hooks'
+import { endTurn } from '../agent-loop'
 import { AgentTraceRecorder } from '../agent-trace'
+import { queueModule } from '../modules/queue'
 import type { QueuedMessage } from '../queue'
 import { buildTaskClosurePrompt } from '../task-closure'
 
@@ -1291,7 +1293,7 @@ describe('Agent task closure gate', () => {
 
     let interruptChecks = 0
     let drained = false
-    const { hooks } = createAgentLoopHooks({
+    const { modules } = createAgentLoopHooks({
       config,
       adapter,
       closureAdapter: adapter,
@@ -1299,14 +1301,6 @@ describe('Agent task closure gate', () => {
       obs,
       context: createContext(registry),
       userMessage: '完成一个需要先查再总结的任务',
-      shouldInterrupt: () => {
-        interruptChecks += 1
-        return interruptChecks === 3 && !drained
-      },
-      getQueuedMessages: () => {
-        drained = true
-        return [{ content: '顺便核验更早一小时的窗口', timestamp: '2026-03-30T06:02:00.000Z' }]
-      },
       turnIndex: 1,
       executionState: {},
       requestPurposeRef: { current: 'agent_loop' },
@@ -1324,14 +1318,31 @@ describe('Agent task closure gate', () => {
       createdAt: '2026-03-30T06:03:00.000Z',
     }
 
-    const decision = await hooks.onEndTurn?.(createTextResponse('这轮工作已经完成'), {
-      messages: [assistantMessage],
-      newMessages: [],
-      iteration: 2,
-      userMessage: '完成一个需要先查再总结的任务',
-      state: {},
-      requestEntries: [],
+    const queue = queueModule({
+      sessionId: toolContext.sessionId,
+      logger: toolContext.logger,
+      shouldInterrupt: () => {
+        interruptChecks += 1
+        return interruptChecks === 3 && !drained
+      },
+      getQueuedMessages: () => {
+        drained = true
+        return [{ content: '顺便核验更早一小时的窗口', timestamp: '2026-03-30T06:02:00.000Z' }]
+      },
     })
+    const decision = await endTurn(
+      [queue, ...modules],
+      {},
+      createTextResponse('这轮工作已经完成'),
+      {
+        messages: [assistantMessage],
+        newMessages: [],
+        iteration: 2,
+        userMessage: '完成一个需要先查再总结的任务',
+        state: {},
+        requestEntries: [],
+      },
+    )
 
     const drainSpan = tracer
       .exportSession('test-session')

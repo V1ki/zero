@@ -14,7 +14,6 @@ import type {
   CompletionRequest,
   CompletionResponse,
   ContentBlock,
-  ControlKind,
   Message,
   ModelPricing,
   ReasoningEffort,
@@ -25,7 +24,13 @@ import type {
   ToolResult,
 } from '@zero-os/shared'
 import { generateId, now, toErrorMessage } from '@zero-os/shared'
-import type { AgentLoopHooks, AgentLoopJournal, FailedToolAttempt } from './agent-loop'
+import type {
+  AgentLoopHooks,
+  AgentLoopJournal,
+  AgentLoopModule,
+  FailedToolAttempt,
+  QueueTaken,
+} from './agent-loop'
 import type { AgentTraceRecorder } from './agent-trace'
 import {
   cloneMemoryInjections,
@@ -40,17 +45,7 @@ import type { AgentConfig, AgentContext, AgentObservability } from './agent-type
 import { retrieveMemoriesWithDecision } from './memory-retrieval'
 import { CONTEXT_PARAMS } from './params'
 import { wrapMemoryInjection } from './prompt'
-import {
-  CONTINUATION_PROMPT,
-  type QueuedInjectionTrace,
-  type QueuedMessage,
-  buildLoopUserMessage,
-  buildQueuedInjectionText,
-  buildQueuedInjectionTrace,
-  formatAppliedQueuedIntent,
-  injectQueuedMessagesWithTrace,
-  isTaskComplete,
-} from './queue'
+import { type QueuedInjectionTrace, buildLoopUserMessage, formatAppliedQueuedIntent } from './queue'
 import { assembleRequest } from './request-assembly'
 import {
   TASK_CLOSURE_CLASSIFIER_SYSTEM_PROMPT,
@@ -75,8 +70,6 @@ export interface CreateAgentLoopHooksOptions {
   userMessage: string
   onNewMessage?: (msg: Message) => void
   onTextDelta?: (delta: string, meta: { role: 'assistant'; turnId: string }) => void
-  shouldInterrupt?: () => boolean
-  getQueuedMessages?: () => QueuedMessage[]
   turnIndex: number
   rootSpanId?: string
   executionState: {
@@ -232,174 +225,12 @@ class AgentMemoryNudgeController {
   }
 }
 
-class AgentQueueGate {
-  private hadQueuedMessages = false
-  private pendingQueuedInjection: QueuedInjectionTrace | undefined
-  private pendingQueuedAppliedCallbacks: Array<() => void> = []
-  private appliedQueuedIntentText: string | undefined
-
-  constructor(
-    private readonly deps: {
-      sessionId: string
-      agentName: string
-      logger: ToolLogger
-      tracer?: Pick<Tracer, 'startSpan' | 'endSpan'>
-      bus?: {
-        emit(topic: string, data: Record<string, unknown>): void
-      }
-      sessionEvents?: AgentObservability['sessionEvents']
-      shouldInterrupt?: () => boolean
-      getQueuedMessages?: () => QueuedMessage[]
-      createControlMessage: (text: string, controlKind: ControlKind) => Message
-      interruptMemoryNudge: () => boolean
-    },
-  ) {}
-
-  get hasQueuedMessages(): boolean {
-    return this.hadQueuedMessages
-  }
-
-  get pendingInjection(): QueuedInjectionTrace | undefined {
-    return this.pendingQueuedInjection
-  }
-
-  get appliedIntentText(): string | undefined {
-    return this.appliedQueuedIntentText
-  }
-
-  resetHadQueuedMessages(): void {
-    this.hadQueuedMessages = false
-  }
-
-  clearPendingInjection(): void {
-    this.pendingQueuedInjection = undefined
-  }
-
-  shouldKeepInterrupting(): boolean {
-    return !!this.deps.shouldInterrupt?.() && !this.hadQueuedMessages
-  }
-
-  notifyAppliedCallbacks(): void {
-    if (this.pendingQueuedAppliedCallbacks.length === 0) return
-
-    const callbacks = this.pendingQueuedAppliedCallbacks
-    this.pendingQueuedAppliedCallbacks = []
-    for (const callback of callbacks) {
-      try {
-        callback()
-      } catch (error) {
-        this.deps.logger.warn('queued_message_applied_callback_failed', {
-          sessionId: this.deps.sessionId,
-          error: toErrorMessage(error),
-        })
-      }
-    }
-  }
-
-  drainPendingQueue(
-    phase: string,
-    currentRequestSpanId?: string,
-  ): { action: 'continue'; continuationMessage: Message } | null {
-    if (!this.deps.shouldInterrupt?.()) return null
-
-    const queued = this.deps.getQueuedMessages?.() ?? []
-    if (queued.length === 0) return null
-
-    const wasDuringNudge = this.deps.interruptMemoryNudge()
-
-    this.hadQueuedMessages = true
-    this.appendAppliedQueuedIntent(queued)
-    this.pendingQueuedInjection = buildQueuedInjectionTrace(queued)
-    this.trackQueuedAppliedCallbacks(queued)
-
-    const drainSpan = this.deps.tracer?.startSpan(
-      this.deps.sessionId,
-      'queue_gate_drain',
-      currentRequestSpanId,
-      {
-        kind: 'closure_decision',
-        agentName: this.deps.agentName,
-        metadata: {
-          phase,
-          queueCount: queued.length,
-          wasDuringNudge,
-          appliedQueuedIntentLength: this.appliedQueuedIntentText?.length ?? 0,
-        },
-      },
-    )
-    if (drainSpan) {
-      this.deps.tracer?.endSpan(drainSpan.id, 'success')
-    }
-
-    this.deps.bus?.emit('session:update', {
-      sessionId: this.deps.sessionId,
-      event: 'queue_drain_on_interrupt',
-      queueCount: queued.length,
-      wasDuringNudge,
-      phase,
-    })
-
-    return {
-      action: 'continue' as const,
-      continuationMessage: this.deps.createControlMessage(
-        buildQueuedInjectionText(queued),
-        'queued_injection',
-      ),
-    }
-  }
-
-  injectQueuedMessagesIntoLastUserMessage(messages: Message[]): void {
-    const queued = this.deps.getQueuedMessages?.() ?? []
-    this.hadQueuedMessages = false
-    this.pendingQueuedInjection = undefined
-
-    if (queued.length === 0 || messages.length === 0) return
-
-    this.deps.sessionEvents?.append(this.deps.sessionId, [
-      { type: 'agent/inbox/drained', data: { count: queued.length } },
-    ])
-
-    const lastIdx = messages.length - 1
-    if (messages[lastIdx].role !== 'user') return
-
-    const injected = injectQueuedMessagesWithTrace(messages[lastIdx], queued)
-    messages[lastIdx] = injected.message
-    this.pendingQueuedInjection = injected.trace
-    this.deps.sessionEvents?.append(this.deps.sessionId, [
-      {
-        type: 'agent/inbox/spliced',
-        data: { strategy: 'inject_into_last_user', count: queued.length },
-      },
-    ])
-    this.hadQueuedMessages = injected.trace !== undefined
-    this.appendAppliedQueuedIntent(queued)
-    this.trackQueuedAppliedCallbacks(queued)
-    if (this.hadQueuedMessages) {
-      this.deps.interruptMemoryNudge()
-    }
-  }
-
-  private appendAppliedQueuedIntent(queued: QueuedMessage[]): void {
-    const intentText = formatAppliedQueuedIntent(queued)
-    if (!intentText) return
-    this.appliedQueuedIntentText = this.appliedQueuedIntentText
-      ? `${this.appliedQueuedIntentText}\n${intentText}`
-      : intentText
-  }
-
-  private trackQueuedAppliedCallbacks(queued: QueuedMessage[]): void {
-    for (const message of queued) {
-      if (message.onApplied) {
-        this.pendingQueuedAppliedCallbacks.push(message.onApplied)
-      }
-    }
-  }
-}
-
 export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
   hooks: AgentLoopHooks
   /** loop 写 step、tool、消息事件的入口;没有事件流句柄时为 undefined */
   journal: AgentLoopJournal | undefined
+  /** 还没搬出的会话功能(闭合、记忆、trace)在模块扩展点上的部分,按这个顺序放进模块数组 */
+  modules: AgentLoopModule[]
 } {
   const {
     config,
@@ -427,31 +258,13 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
     requestPurposeRef,
   })
 
-  const interruptMemoryNudge = () => {
-    return memoryNudge.interrupt()
-  }
-
   const handleCompletionErrorLogged = (error: unknown) => {
     memoryNudge.completeError(error)
   }
 
-  const queueGate = new AgentQueueGate({
-    sessionEvents: obs.sessionEvents,
-    sessionId: toolContext.sessionId,
-    agentName: config.name,
-    logger: toolContext.logger,
-    tracer: obs.tracer,
-    bus: obs.bus,
-    shouldInterrupt: options.shouldInterrupt,
-    getQueuedMessages: options.getQueuedMessages,
-    createControlMessage: (text, controlKind) =>
-      buildLoopUserMessage({
-        sessionId: toolContext.sessionId,
-        text,
-        controlKind,
-      }),
-    interruptMemoryNudge,
-  })
+  // 排队消息进入请求的事实:trace 记下它和拼进来的原文,闭合分类器读取已拼进来的排队原文
+  let pendingQueuedInjection: QueuedInjectionTrace | undefined
+  let appliedQueuedIntentText: string | undefined
 
   const llmRequestHooks = createAgentLLMRequestHooks({
     config,
@@ -465,9 +278,10 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
     initialMemoryInjections: context.requestMemoryInjections,
     onCompletionErrorLogged: handleCompletionErrorLogged,
     queueTrace: {
-      getPendingInjection: () => queueGate.pendingInjection,
-      notifyAppliedCallbacks: () => queueGate.notifyAppliedCallbacks(),
-      clearPendingInjection: () => queueGate.clearPendingInjection(),
+      getPendingInjection: () => pendingQueuedInjection,
+      clearPendingInjection: () => {
+        pendingQueuedInjection = undefined
+      },
     },
   })
 
@@ -486,7 +300,6 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
     memoryNudge,
     obs,
     onTextDelta: options.onTextDelta,
-    queueGate,
     toolContext,
     turnIndex,
   })
@@ -528,19 +341,6 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
     onCompletionError: llmRequestHooks.onCompletionError,
     onInvalidAssistantResponse: memoryNudgeResponseHooks.onInvalidAssistantResponse,
     onTextDelta: memoryNudgeResponseHooks.onTextDelta,
-    onEmptyResponse: memoryNudgeResponseHooks.onEmptyResponse,
-    onEndTurn: createAgentEndTurnHandler({
-      config,
-      closureAdapter,
-      toolContext,
-      obs,
-      context,
-      userMessage,
-      turnIndex,
-      queueGate,
-      memoryNudge,
-      getCurrentRequestSpanId: () => llmRequestHooks.getCurrentRequestSpanId(),
-    }),
     onToolCallStart: toolCallHooks.onToolCallStart,
     onToolCallEnd: toolCallHooks.onToolCallEnd,
     processToolResults: async (toolResults, failedAttempts) => {
@@ -594,40 +394,80 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
         })
         ctx.messages.splice(0, ctx.messages.length, ...rebuilt.messages)
       }
-
-      const lastBeforeInjection = ctx.messages.at(-1)
-      queueGate.injectQueuedMessagesIntoLastUserMessage(ctx.messages)
-
-      // 排队消息拼进请求末尾的 user 消息(API-only):补一条带拼接 blocks 的 queued_merge 注入事件
-      const queuedInjection = queueGate.pendingInjection
-      const lastAfterInjection = ctx.messages.at(-1)
-      if (queuedInjection && lastBeforeInjection && lastAfterInjection) {
-        const injection = {
-          kind: 'queued_merge' as const,
-          content: queuedInjection.formattedText,
-          refs: { count: queuedInjection.count },
-          messageId: lastAfterInjection.id,
-          blocks: lastAfterInjection.content.slice(lastBeforeInjection.content.length),
-        }
-        obs.sessionEvents?.append(toolContext.sessionId, [
-          { type: 'injection/context', data: injection },
-        ])
-        ctx.requestEntries.push({ kind: 'injection', injection })
-      }
     },
-    shouldInterrupt: () => queueGate.shouldKeepInterrupting(),
+  }
+
+  const endTurn = createAgentEndTurnHandlers({
+    config,
+    closureAdapter,
+    toolContext,
+    obs,
+    context,
+    userMessage,
+    turnIndex,
+    memoryNudge,
+    getAppliedQueuedIntentText: () => appliedQueuedIntentText,
+    getCurrentRequestSpanId: () => llmRequestHooks.getCurrentRequestSpanId(),
+  })
+  const module: AgentLoopModule = {
+    requestOnly: () => (memoryNudge.isActive ? 'memory_nudge' : undefined),
+    onQueueTaken: (taken) => {
+      if (taken.continuation || taken.injection) memoryNudge.interrupt()
+      const intentText = formatAppliedQueuedIntent(taken.queued)
+      if (intentText)
+        appliedQueuedIntentText = appliedQueuedIntentText
+          ? `${appliedQueuedIntentText}\n${intentText}`
+          : intentText
+      pendingQueuedInjection = taken.injection
+      if (!taken.continuation) return
+      const phase = queueTracePhase(taken)
+      const drainSpan = obs.tracer?.startSpan(
+        toolContext.sessionId,
+        'queue_gate_drain',
+        llmRequestHooks.getCurrentRequestSpanId(),
+        {
+          kind: 'closure_decision',
+          agentName: config.name,
+          metadata: {
+            phase,
+            queueCount: taken.queued.length,
+            wasDuringNudge: taken.wasRequestOnly,
+            appliedQueuedIntentLength: appliedQueuedIntentText?.length ?? 0,
+          },
+        },
+      )
+      if (drainSpan) obs.tracer?.endSpan(drainSpan.id, 'success')
+      obs.bus?.emit('session:update', {
+        sessionId: toolContext.sessionId,
+        event: 'queue_drain_on_interrupt',
+        queueCount: taken.queued.length,
+        wasDuringNudge: taken.wasRequestOnly,
+        phase,
+      })
+      if (taken.point === 'request_only_empty')
+        toolContext.logger.info?.('memory_nudge_interrupted_by_queue', {
+          sessionId: toolContext.sessionId,
+          phase,
+        })
+    },
+    name: 'task_closure_retry',
+    ...endTurn.closure,
+  }
+  const memoryNudgeModule: AgentLoopModule = {
+    name: 'memory_nudge',
+    ...endTurn.memoryNudge,
+    onEmptyResponse: memoryNudgeResponseHooks.onEmptyResponse,
   }
 
   return {
     hooks,
+    modules: [module, memoryNudgeModule],
     journal: obs.sessionEvents && {
       events: obs.sessionEvents,
       modelLabel: obs.modelLabel,
       secretFilter: obs.secretFilter,
       requestSpanId: () => llmRequestHooks.getCurrentRequestSpanId(),
       toolSpanId: (toolUseId) => toolCallHooks.getToolSpanId(toolUseId),
-      // 记忆提醒阶段的消息只进请求、不进 canonical:重放时由 request/message 还原这几次请求
-      requestOnly: () => (memoryNudge.isActive ? 'memory_nudge' : undefined),
     },
   }
 }
@@ -640,12 +480,13 @@ interface CreateAgentEndTurnHandlerOptions {
   context: AgentContext
   userMessage: string
   turnIndex: number
-  queueGate: AgentQueueGate
   memoryNudge: AgentMemoryNudgeController
+  getAppliedQueuedIntentText(): string | undefined
   getCurrentRequestSpanId(): string | undefined
 }
 
-function createAgentEndTurnHandler({
+/** 任务闭合与记忆提醒在一轮结束时的三步:评估(跑分类器)、定论(记 closure/end)、决定是否继续 */
+function createAgentEndTurnHandlers({
   config,
   closureAdapter,
   toolContext,
@@ -653,30 +494,31 @@ function createAgentEndTurnHandler({
   context,
   userMessage,
   turnIndex,
-  queueGate,
   memoryNudge,
+  getAppliedQueuedIntentText,
   getCurrentRequestSpanId,
-}: CreateAgentEndTurnHandlerOptions): NonNullable<AgentLoopHooks['onEndTurn']> {
-  let continuationCount = 0
+}: CreateAgentEndTurnHandlerOptions): {
+  closure: Required<Pick<AgentLoopModule, 'evaluateEndTurn' | 'settleEndTurn' | 'decideEndTurn'>>
+  memoryNudge: Required<Pick<AgentLoopModule, 'decideEndTurn'>>
+} {
   let taskClosureRetryCount = 0
+  // 本次评估的结果,定论和决定时读取
+  let taskClosureEvaluation: TaskClosureEvaluation = { decision: null, eventPayload: null }
+  let shouldEvaluateTaskClosure = false
+  let closureStartedAt: number | undefined
 
-  return async (response, ctx) => {
-    const currentRequestSpanId = getCurrentRequestSpanId()
-    const gate1 = queueGate.drainPendingQueue('pre_closure', currentRequestSpanId)
-    if (gate1) {
-      return gate1
-    }
+  const closure: Required<
+    Pick<AgentLoopModule, 'evaluateEndTurn' | 'settleEndTurn' | 'decideEndTurn'>
+  > = {
+    evaluateEndTurn: async (response, ctx) => {
+      taskClosureEvaluation = { decision: null, eventPayload: null }
+      closureStartedAt = undefined
+      shouldEvaluateTaskClosure =
+        !toolContext.spawnedByRequestId &&
+        !memoryNudge.isActive &&
+        hasAssistantText(response.content)
+      if (!shouldEvaluateTaskClosure) return
 
-    let taskClosureEvaluation: TaskClosureEvaluation = {
-      decision: null,
-      eventPayload: null,
-    }
-
-    const shouldEvaluateTaskClosure =
-      !toolContext.spawnedByRequestId && !memoryNudge.isActive && hasAssistantText(response.content)
-
-    let closureStartedAt: number | undefined
-    if (shouldEvaluateTaskClosure) {
       closureStartedAt = Date.now()
       obs.sessionEvents?.append(toolContext.sessionId, [
         {
@@ -698,155 +540,143 @@ function createAgentEndTurnHandler({
         tracer: obs.tracer,
         parentSessionId: obs.parentSessionId,
         userMessage,
-        appliedQueuedIntentText: queueGate.appliedIntentText,
+        appliedQueuedIntentText: getAppliedQueuedIntentText(),
         messages: ctx.messages,
         response,
         reasoningEffort: context.reasoningEffort,
-        parentSpanId: currentRequestSpanId,
+        parentSpanId: getCurrentRequestSpanId(),
       })
-    }
+    },
+    settleEndTurn: (response, ctx, queueTaken) => {
+      const assistantMsg = ctx.messages[ctx.messages.length - 1]
+      const durationMs = closureStartedAt !== undefined ? Date.now() - closureStartedAt : undefined
+      if (queueTaken) {
+        finalizeTaskClosureSpan({
+          tracer: obs.tracer,
+          evaluation: taskClosureEvaluation,
+          assistantMsg,
+          extraMetadata: {
+            discardedDuePendingQueue: true,
+            originalAction: taskClosureEvaluation.decision?.action ?? null,
+            originalReason: taskClosureEvaluation.decision?.reason ?? null,
+          },
+          extraClosureData: {
+            discardedDuePendingQueue: true,
+            originalAction: taskClosureEvaluation.decision?.action ?? null,
+            originalReason: taskClosureEvaluation.decision?.reason ?? null,
+          },
+        })
+        obs.sessionEvents?.append(toolContext.sessionId, [
+          {
+            type: 'closure/end',
+            data: {
+              turnIndex,
+              action: 'discarded',
+              reason: taskClosureEvaluation.decision?.reason,
+              model: obs.closureModelLabel,
+              requestId: response.id,
+              durationMs,
+              detail: {
+                discardedDuePendingQueue: true,
+                originalAction: taskClosureEvaluation.decision?.action ?? null,
+              },
+            },
+          },
+        ])
+        return
+      }
 
-    const assistantMsg = ctx.messages[ctx.messages.length - 1]
-    const gate2 = queueGate.drainPendingQueue('post_classifier', currentRequestSpanId)
-    if (gate2) {
+      // assistant 消息在产生时已写入事件流,不再回头改它;判定结果记在下面的 closure/end 里
       finalizeTaskClosureSpan({
         tracer: obs.tracer,
         evaluation: taskClosureEvaluation,
         assistantMsg,
-        extraMetadata: {
-          discardedDuePendingQueue: true,
-          originalAction: taskClosureEvaluation.decision?.action ?? null,
-          originalReason: taskClosureEvaluation.decision?.reason ?? null,
-        },
-        extraClosureData: {
-          discardedDuePendingQueue: true,
-          originalAction: taskClosureEvaluation.decision?.action ?? null,
-          originalReason: taskClosureEvaluation.decision?.reason ?? null,
-        },
       })
-      obs.sessionEvents?.append(toolContext.sessionId, [
-        {
-          type: 'closure/end',
-          data: {
-            turnIndex,
-            action: 'discarded',
-            reason: taskClosureEvaluation.decision?.reason,
-            model: obs.closureModelLabel,
-            requestId: response.id,
-            durationMs: closureStartedAt !== undefined ? Date.now() - closureStartedAt : undefined,
-            detail: {
-              discardedDuePendingQueue: true,
-              originalAction: taskClosureEvaluation.decision?.action ?? null,
+
+      if (shouldEvaluateTaskClosure) {
+        obs.sessionEvents?.append(toolContext.sessionId, [
+          {
+            type: 'closure/end',
+            data: {
+              turnIndex,
+              action: taskClosureEvaluation.decision?.action ?? 'finish',
+              reason: taskClosureEvaluation.decision?.reason,
+              model: obs.closureModelLabel,
+              requestId: response.id,
+              assistantMessageId: assistantMsg?.id,
+              durationMs,
             },
           },
-        },
-      ])
-      return gate2
-    }
-
-    // assistant 消息在产生时已写入事件流,不再回头改它;判定结果记在下面的 closure/end 里
-    finalizeTaskClosureSpan({
-      tracer: obs.tracer,
-      evaluation: taskClosureEvaluation,
-      assistantMsg,
-    })
-
-    if (shouldEvaluateTaskClosure) {
-      obs.sessionEvents?.append(toolContext.sessionId, [
-        {
-          type: 'closure/end',
-          data: {
-            turnIndex,
-            action: taskClosureEvaluation.decision?.action ?? 'finish',
-            reason: taskClosureEvaluation.decision?.reason,
-            model: obs.closureModelLabel,
-            requestId: response.id,
-            assistantMessageId: assistantMsg?.id,
-            durationMs: closureStartedAt !== undefined ? Date.now() - closureStartedAt : undefined,
-          },
-        },
-      ])
-    }
-
-    if (assistantMsg?.role === 'assistant' && taskClosureEvaluation.eventPayload) {
-      const sessionEvent: ClosureLogEntryInput & { spanId?: string } = {
-        ...taskClosureEvaluation.eventPayload,
-        spanId: taskClosureEvaluation.traceSpanId,
-        assistantMessageId: assistantMsg.id,
-        assistantMessageCreatedAt: assistantMsg.createdAt,
+        ])
       }
 
-      obs.bus?.emit('session:update', sessionEvent)
-    }
+      if (assistantMsg?.role === 'assistant' && taskClosureEvaluation.eventPayload) {
+        const sessionEvent: ClosureLogEntryInput & { spanId?: string } = {
+          ...taskClosureEvaluation.eventPayload,
+          spanId: taskClosureEvaluation.traceSpanId,
+          assistantMessageId: assistantMsg.id,
+          assistantMessageCreatedAt: assistantMsg.createdAt,
+        }
 
-    if (
-      queueGate.hasQueuedMessages &&
-      !isTaskComplete(response.content) &&
-      continuationCount < CONTEXT_PARAMS.queue.maxContinuationRetries
-    ) {
-      continuationCount++
-      queueGate.resetHadQueuedMessages()
+        obs.bus?.emit('session:update', sessionEvent)
+      }
+    },
+    decideEndTurn: () => {
+      if (
+        taskClosureEvaluation.decision?.action !== 'continue' ||
+        taskClosureRetryCount >= CONTEXT_PARAMS.completion.maxTaskClosureRetries
+      )
+        return undefined
       return {
-        action: 'continue' as const,
-        continuationMessage: buildLoopUserMessage({
-          sessionId: toolContext.sessionId,
-          text: CONTINUATION_PROMPT,
-          controlKind: 'continuation',
-        }),
-      }
-    }
-
-    if (
-      taskClosureEvaluation.decision?.action === 'continue' &&
-      taskClosureRetryCount < CONTEXT_PARAMS.completion.maxTaskClosureRetries
-    ) {
-      const gate3 = queueGate.drainPendingQueue('pre_task_closure_retry', currentRequestSpanId)
-      if (gate3) {
-        return gate3
-      }
-
-      taskClosureRetryCount++
-      return {
-        action: 'continue' as const,
+        action: 'continue',
         continuationMessage: buildLoopUserMessage({
           sessionId: toolContext.sessionId,
           text: buildTaskClosurePrompt(taskClosureEvaluation.decision.reason),
           controlKind: 'task_closure',
         }),
+        commit: () => {
+          taskClosureRetryCount++
+        },
       }
-    }
-
-    const promptMode = config.promptMode ?? 'full'
-    if (
-      !memoryNudge.memoryWritten &&
-      !toolContext.spawnedByRequestId &&
-      promptMode === 'full' &&
-      ctx.iteration >= CONTEXT_PARAMS.memoryNudge.minIterations &&
-      memoryNudge.nudgeCount < CONTEXT_PARAMS.memoryNudge.maxNudgesPerTurn
-    ) {
-      const gate4 = queueGate.drainPendingQueue('pre_memory_nudge', currentRequestSpanId)
-      if (gate4) {
-        return gate4
-      }
-
-      memoryNudge.begin(ctx.iteration, currentRequestSpanId)
-
-      return {
-        action: 'continue' as const,
-        continuationMessage: buildLoopUserMessage({
-          sessionId: toolContext.sessionId,
-          text: MEMORY_NUDGE_PROMPT,
-          controlKind: 'memory_nudge',
-        }),
-      }
-    }
-
-    if (memoryNudge.isActive) {
-      memoryNudge.completeSuccess()
-    }
-
-    return { action: 'break' as const }
+    },
   }
+  const nudge: Required<Pick<AgentLoopModule, 'decideEndTurn'>> = {
+    decideEndTurn: (_response, ctx) => {
+      const promptMode = config.promptMode ?? 'full'
+      if (
+        !memoryNudge.memoryWritten &&
+        !toolContext.spawnedByRequestId &&
+        promptMode === 'full' &&
+        ctx.iteration >= CONTEXT_PARAMS.memoryNudge.minIterations &&
+        memoryNudge.nudgeCount < CONTEXT_PARAMS.memoryNudge.maxNudgesPerTurn
+      ) {
+        return {
+          action: 'continue',
+          continuationMessage: buildLoopUserMessage({
+            sessionId: toolContext.sessionId,
+            text: MEMORY_NUDGE_PROMPT,
+            controlKind: 'memory_nudge',
+          }),
+          commit: () => memoryNudge.begin(ctx.iteration, getCurrentRequestSpanId()),
+        }
+      }
+
+      if (memoryNudge.isActive) {
+        memoryNudge.completeSuccess()
+      }
+      return undefined
+    },
+  }
+  return { closure, memoryNudge: nudge }
+}
+
+/** 排队检查点在 trace 里的名字,沿用搬出前的叫法:决定之前的检查按让位的模块命名 */
+function queueTracePhase(taken: QueueTaken): string {
+  if (taken.point === 'end_turn') return 'pre_closure'
+  if (taken.point === 'after_evaluation') return 'post_classifier'
+  if (taken.point === 'request_only_empty') return 'memory_nudge_empty'
+  if (taken.point === 'before_decision') return `pre_${taken.decider}`
+  return taken.point
 }
 
 interface TaskClosureClassifierRequest {
@@ -1235,14 +1065,14 @@ interface AgentMemoryNudgeResponseHandlerOptions {
   memoryNudge: AgentMemoryNudgeController
   obs: Pick<AgentObservability, 'secretFilter' | 'tracer'>
   onTextDelta?: (delta: string, meta: { role: 'assistant'; turnId: string }) => void
-  queueGate: Pick<AgentQueueGate, 'drainPendingQueue'>
   toolContext: Pick<ToolContext, 'logger' | 'sessionId'>
   turnIndex: number
 }
 
 function createAgentMemoryNudgeResponseHandlers(
   options: AgentMemoryNudgeResponseHandlerOptions,
-): Pick<AgentLoopHooks, 'onEmptyResponse' | 'onInvalidAssistantResponse' | 'onTextDelta'> {
+): Pick<AgentLoopHooks, 'onInvalidAssistantResponse' | 'onTextDelta'> &
+  Pick<AgentLoopModule, 'onEmptyResponse'> {
   return {
     onInvalidAssistantResponse: (request, response, error) =>
       handleInvalidAssistantResponse(request, response, error, options),
@@ -1250,7 +1080,7 @@ function createAgentMemoryNudgeResponseHandlers(
       if (options.memoryNudge.isActive) return
       options.onTextDelta?.(delta, meta)
     },
-    onEmptyResponse: (retryCount) => handleEmptyResponse(retryCount, options),
+    onEmptyResponse: () => handleEmptyResponse(options),
   }
 }
 
@@ -1293,31 +1123,14 @@ function handleInvalidAssistantResponse(
 }
 
 function handleEmptyResponse(
-  retryCount: number,
   options: AgentMemoryNudgeResponseHandlerOptions,
-): ReturnType<NonNullable<AgentLoopHooks['onEmptyResponse']>> {
-  if (options.memoryNudge.isActive) {
-    const drain = options.queueGate.drainPendingQueue(
-      'memory_nudge_empty',
-      options.getCurrentRequestSpanId(),
-    )
-    if (drain) {
-      options.toolContext.logger.info?.('memory_nudge_interrupted_by_queue', {
-        sessionId: options.toolContext.sessionId,
-        phase: 'memory_nudge_empty',
-      })
-      return drain
-    }
-
-    options.memoryNudge.completeSuccess()
-
-    options.toolContext.logger.info?.('memory_nudge_empty_response', {
-      sessionId: options.toolContext.sessionId,
-    })
-    return 'break'
-  }
-
-  return retryCount < CONTEXT_PARAMS.completion.maxEmptyResponseRetries ? true : 'break'
+): ReturnType<NonNullable<AgentLoopModule['onEmptyResponse']>> {
+  if (!options.memoryNudge.isActive) return undefined
+  options.memoryNudge.completeSuccess()
+  options.toolContext.logger.info?.('memory_nudge_empty_response', {
+    sessionId: options.toolContext.sessionId,
+  })
+  return 'break'
 }
 
 interface ProcessAgentToolResultsOptions {
@@ -1568,7 +1381,6 @@ interface CreateAgentLLMRequestHooksOptions {
   onCompletionErrorLogged?: (error: unknown) => void
   queueTrace: {
     getPendingInjection(): QueuedInjectionTrace | undefined
-    notifyAppliedCallbacks(): void
     clearPendingInjection(): void
   }
 }
@@ -1640,7 +1452,6 @@ function createAgentLLMRequestHooks({
       })
 
       currentRequestToolResults = []
-      queueTrace.notifyAppliedCallbacks()
       queueTrace.clearPendingInjection()
       pendingMemoryInjections = undefined
       pendingParentRequestId = response.stopReason === 'tool_use' ? response.id : undefined

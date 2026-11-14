@@ -13,6 +13,7 @@ import {
   createCheckpointSummarizer,
   prepareRequestMessages,
 } from './compaction'
+import { queueModule } from './modules/queue'
 import { requestContextModule } from './modules/request-context'
 import type { QueuedMessage } from './queue'
 import { composeSystemPrompt } from './request-assembly'
@@ -119,7 +120,11 @@ export class Agent {
         requireThinkingForToolUse,
       })
 
-      const { hooks: loopHooks, journal } = createAgentLoopHooks({
+      const {
+        hooks: loopHooks,
+        journal,
+        modules: sessionModules,
+      } = createAgentLoopHooks({
         config: this.config,
         adapter: this.adapter,
         closureAdapter: this.closureAdapter,
@@ -132,8 +137,6 @@ export class Agent {
           onNewMessage?.(message)
         },
         onTextDelta,
-        shouldInterrupt,
-        getQueuedMessages,
         turnIndex,
         rootSpanId: rootSpan?.id,
         executionState,
@@ -149,7 +152,17 @@ export class Agent {
           adapter: this.adapter,
           sessionId: this.toolContext.sessionId,
           journal,
-          modules: [requestContextModule(context)],
+          modules: [
+            requestContextModule(context),
+            queueModule({
+              sessionId: this.toolContext.sessionId,
+              logger: this.toolContext.logger,
+              events: this.obs.sessionEvents,
+              shouldInterrupt,
+              getQueuedMessages,
+            }),
+            ...sessionModules,
+          ],
           toolExecutor: createAgentToolExecutor({
             toolRegistry: this.toolRegistry,
             toolContext: this.toolContext,
