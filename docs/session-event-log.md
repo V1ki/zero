@@ -21,6 +21,32 @@
 `memory_retrieval`），父会话在 `memory/retrieval/start` 与 `end` 之间记一条 `subagent/spawn` 指向它。子文件里有
 `system/prompt`、`tools/set`、`loop/start` 和 loop 的全部过程与消息事件，请求能按「请求重建」还原。
 
+## Router 的事件文件
+
+Router 的每次模型调用（`runTriggerModel`）写一份子文件，按天放在同一个目录：
+
+```text
+.zero/logs/sessions/router-<本地日期>/sub-<业务会话编号>.<uuidv7>.jsonl
+```
+
+- header 与子代理相同（`origin:"subagent"`、`source:"spawn"`），`parentSessionId` 是当天的目录名 `router-<日期>`（没有对应的
+  `session.jsonl`），`name` 是调用的中文标签，`role` 是 usage 用途（如 `router_triage`）。文件由 `subagent-index.json` 索引。
+- 内容由基座 `runAgentLoop` 写：`system/prompt`、`tools/set`，Router 对话传入的历史逐条写成 `user/message` /
+  `assistant/message`，然后是 `loop/start` 和 loop 的全部事件。每个 `step/start` 都能按「请求重建」还原。
+- 业务表里的会话编号是文件名去掉 `.<uuidv7>` 的前缀，同一个编号可能对应多份文件（重试、同一任务的多次分诊与调查、同一对话的多轮）：
+
+  | 调用 | 业务会话编号 | 存在哪里 |
+  | --- | --- | --- |
+  | 分诊（个人线） | `trigger-<uuid>` | `trigger_routes.session_id` |
+  | 分诊与 GitHub 调查（委托线） | 任务第一次分析时的 `mandate-<uuid>` | `mandate_tasks.session_id` |
+  | ZeRo 派工执行、派工汇报 | `router-job-<派工编号>`、`router-job-<派工编号>-report` | 由派工编号推出 |
+  | Router 对话 | `router-general`、`router-task-<任务编号>`、`router-event-<事件编号>`、IM 为 `router-im-…` | 由对话范围推出 |
+  | 渠道任务追问 | `router-im-<受众摘要>` | 由受众推出 |
+  | 写入确认、委托草案 | `router-write-check`、`commission-<uuid>` | 不存 |
+
+- 保留期：设置了 Router 正文保留期时，`ListenerRuntime` 每次清理业务表后调用 `SessionEventStore.deleteFilesBefore`，删除
+  `router-*` 目录里最后写入早于截止时间的文件（含当天的 `run.log`）和对应的索引条目。没有设置保留期时一直保留。
+
 ## 设计原则
 
 - **model-visible ⟺ logged**：凡是模型看到过的输入，都能从事件流重建；

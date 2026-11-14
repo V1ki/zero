@@ -48,6 +48,16 @@ Router 存在是为了省用户的注意力。衡量任何改动只看一件事�
 - **提示词描述读者和目的。** 写清楚谁在读、要拿结果做什么、为什么，再给少量约束。分诊、汇报、调查三段提示词是这个写法的例子。
 - **每一步做完系统都能用。** 一次改动只做一件事，可以单独合并、单独回退。
 
+## 模型调用的记录
+
+Router 的 8 个模型调用点（分诊、Router 对话、委托草案、GitHub 调查、ZeRo 派工执行、派工汇报、写入确认、渠道任务追问）都经
+`runTriggerModel`（`event-agent.ts`）进同一个 loop 基座，每次调用写一份自己的事件文件，格式与主会话相同，见
+[session-event-log.md](session-event-log.md)「Router 的事件文件」。业务表仍只存结论和会话编号；文件里是模型实际看到的全文
+（进入提示词之前已经过 `secretFilter`），包括 Router 对话从业务表拼出的历史，所以业务表正文清除后请求仍能还原。
+事件文件遵守与业务表相同的正文保留期，见 [proactive-triggers.md](proactive-triggers.md)「数据、恢复与代码落点」。
+每类调用记自己的 usage 用途（`router_triage`、`router_chat`、`router_commission`、`router_investigation`、`router_job`、
+`router_job_report`、`router_write_check`、`router_task_followup`），日志经与主会话相同的结构化 logger 写进当天目录的 `run.log`。
+
 ## 已知的不足
 
 按影响排序，也是后续工作的顺序。

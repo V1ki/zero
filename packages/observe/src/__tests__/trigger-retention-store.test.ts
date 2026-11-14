@@ -93,7 +93,13 @@ test('retention opt-in grants existing history a full term, removes closed bodie
   const { retentionDays: _, ...oldClient } = current.settings
   store.routing.saveSettings({ ...oldClient, presence: 'away' }, current.revision)
   expect(store.routing.getSettings().settings.retentionDays).toBe(7)
-  expect(store.retention.sweep(future())).toEqual({ events: 1, turns: 2, more: false })
+  const at = future()
+  expect(store.retention.sweep(at)).toEqual({
+    events: 1,
+    turns: 2,
+    more: false,
+    cutoff: new Date(at.getTime() - 7 * 86_400_000),
+  })
   expect(store.listInbox().map((i) => i.id)).toEqual([unprocessed])
   expect(store.listWorkspaceEvents().some((e) => e.id === old)).toBe(false)
   expect(store.getInboxItem(old)).toBeNull()
@@ -276,7 +282,13 @@ test('a retired task expires independently of its active sibling and their share
     )
   }
   store.mandates.saveSettings({ projects: [], mandates: [sibling] }, 1)
-  expect(store.retention.sweep(future())).toEqual({ events: 0, turns: 1, more: false })
+  const at = future()
+  expect(store.retention.sweep(at)).toEqual({
+    events: 0,
+    turns: 1,
+    more: false,
+    cutoff: new Date(at.getTime() - 7 * 86_400_000),
+  })
   expect(store.conversations.get(oldScope, 'same')).toBeNull()
   expect(store.conversations.get(liveScope, 'same')?.answer?.text).toBe('private reply')
   expect(store.conversations.get(inbox, 'same')?.answer?.text).toBe('private reply')

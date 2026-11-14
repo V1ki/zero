@@ -1,5 +1,15 @@
 import { createHash } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  rmdirSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import {
   type ContextCheckpoint,
@@ -299,6 +309,38 @@ export class SessionEventStore {
    */
   release(sessionId: string): void {
     this.states.delete(sessionId)
+  }
+
+  /**
+   * 删除 `sessions/` 下名字以 `prefix` 开头的目录里、最后写入不晚于 `cutoff` 的文件,目录删空后一并删除,
+   * 子文件索引里指向已删文件的条目随之去掉。Router 按天的事件目录到了正文保留期由它清理。返回删除的文件数。
+   */
+  deleteFilesBefore(prefix: string, cutoff: Date): number {
+    const root = join(this.basePath, 'sessions')
+    if (!existsSync(root)) return 0
+    let deleted = 0
+    for (const dir of readdirSync(root, { withFileTypes: true })) {
+      if (!dir.isDirectory() || !dir.name.startsWith(prefix)) continue
+      const path = join(root, dir.name)
+      for (const file of readdirSync(path, { withFileTypes: true })) {
+        const filePath = join(path, file.name)
+        if (!file.isFile() || statSync(filePath).mtime > cutoff) continue
+        rmSync(filePath)
+        deleted += 1
+      }
+      if (readdirSync(path).length === 0) rmdirSync(path)
+    }
+    if (deleted === 0) return 0
+    const children = this.readSubagentIndex()
+    const kept = Object.fromEntries(
+      Object.entries(children).filter(([, relative]) => existsSync(join(this.basePath, relative))),
+    )
+    writeFileSync(
+      join(this.basePath, SUBAGENT_INDEX_FILE),
+      JSON.stringify({ version: 1, children: kept }, undefined, 2),
+      'utf-8',
+    )
+    return deleted
   }
 
   // --- internals ---

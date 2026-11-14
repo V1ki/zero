@@ -5,6 +5,7 @@ import type { CommissionOperator, CompletionRequest, MandatePolicy } from '@zero
 import { type CommissionCatalog, type CommissionIntent, commissionIntent } from '../commission-plan'
 import { mandateSnapshot } from '../mandate-input'
 import { RouterCommissionService } from '../router-commission'
+import { discardedEvents } from './router-log-fixture'
 
 function draftCode(value: { commission?: { code: string } } | null) {
   if (!value?.commission) throw Error('Expected commission preview')
@@ -274,6 +275,7 @@ test('the configured model receives only its permitted labels through a tool-fre
   const real = new RouterCommissionService(f.store, f.registry, {
     modelRouter: { getDefaultModel: () => ({ adapter }), getCurrentModel: () => undefined },
     secretFilter: { filter: (t) => t.replaceAll('private-token', '[redacted]') },
+    sessionEvents: discardedEvents,
   })
   const preview = await real.prepare(
     actor,

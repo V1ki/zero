@@ -38,8 +38,11 @@ export class TriggerRetentionStore {
     `)
   }
 
-  /** One bounded write transaction. De-duplication and monotonically allocated ids outlive the body. */
-  sweep(now = new Date()): { events: number; turns: number; more: boolean } {
+  /**
+   * One bounded write transaction. De-duplication and monotonically allocated ids outlive the body.
+   * `cutoff` is set when the retention period applied: content last written at or before it expires.
+   */
+  sweep(now = new Date()): { events: number; turns: number; more: boolean; cutoff?: Date } {
     return this.db
       .transaction(() => {
         const policy = this.db
@@ -137,6 +140,7 @@ export class TriggerRetentionStore {
         ).changes
         return {
           ...counts,
+          cutoff: new Date(cutoff),
           more:
             jobSteps >= batchSize ||
             expiredTasks >= batchSize ||

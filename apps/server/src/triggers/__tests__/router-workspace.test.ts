@@ -11,6 +11,7 @@ import type {
 import { type RouterAgentInput, createRouterAgent } from '../router-agent'
 import { RouterWorkspaceService } from '../router-workspace'
 import { TriggerRoutingRuntime } from '../routing-runtime'
+import { discardedEvents } from './router-log-fixture'
 
 const closeAfterTest: Array<() => Promise<void>> = []
 afterEach(async () => {
@@ -397,6 +398,7 @@ test('the normal workspace entry point runs successive model tool calls and pers
   const ask = createRouterAgent({
     modelRouter: { getDefaultModel: () => ({ adapter }), getCurrentModel: () => undefined },
     secretFilter: { filter: (v) => v },
+    sessionEvents: discardedEvents,
   })
   const { service, catalog } = setup(ask)
   catalog.mockReturnValue([
@@ -528,6 +530,7 @@ test('an IM Router turn offers only read-only routing tools and replies with pla
   const { service } = setup(
     createRouterAgent({
       secretFilter: { filter: (v) => v },
+      sessionEvents: discardedEvents,
       modelRouter: { getDefaultModel: () => ({ adapter }), getCurrentModel: () => undefined },
     }),
   )

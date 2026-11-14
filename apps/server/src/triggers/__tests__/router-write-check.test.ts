@@ -8,6 +8,7 @@ import { RouterJobs } from '../router-jobs'
 import { RouterWorkspaceService } from '../router-workspace'
 import { createRouterWriteCheck, parseRouterWriteCheck } from '../router-write-check'
 import { TriggerRoutingRuntime } from '../routing-runtime'
+import { discardedEvents } from './router-log-fixture'
 import { addTasks } from './router-task-fixture'
 
 const cleanup: Array<() => Promise<void>> = []
@@ -44,6 +45,7 @@ function model(reply: (request: CompletionRequest) => Reply) {
     deps: {
       modelRouter: { getDefaultModel: () => ({ adapter }), getCurrentModel: () => undefined },
       secretFilter: { filter: (text: string) => text.replaceAll('secret-code', '[redacted]') },
+      sessionEvents: discardedEvents,
     },
   }
 }

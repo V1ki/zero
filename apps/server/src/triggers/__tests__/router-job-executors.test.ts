@@ -5,6 +5,7 @@ import type { CompletionResponse } from '@zero-os/shared'
 import { readRouterLatestFailure } from '../github'
 import { createRouterJobExecutor } from '../router-job-executors'
 import { RouterJobExecutionUncertainError } from '../router-jobs'
+import { discardedEvents } from './router-log-fixture'
 
 const signal = new AbortController().signal
 const job: RouterJob = {
@@ -73,6 +74,7 @@ test('task AgentLoop uses only the selected repo and same-task history, retains 
       return answer([{ type: 'text', text: 'publish 步骤失败 private-token' }])
     }),
     secretFilter: filter,
+    sessionEvents: discardedEvents,
     codex: { runRouterJob: unreachable },
     workspaceForRepository: unreachable,
     latestFailure: async (j, repo, s, file) => {
@@ -109,6 +111,7 @@ test('a failed authorized read cannot be reported as a successful investigation'
         : answer([{ type: 'text', text: 'pretends success' }]),
     ),
     secretFilter: filter,
+    sessionEvents: discardedEvents,
     workspaceForRepository: unreachable,
     codex: { runRouterJob: unreachable },
     latestFailure: async () => {
@@ -124,6 +127,7 @@ test('Codex receives only configured working directory, task prompt and its own 
   const execute = createRouterJobExecutor({
     modelRouter: model(unreachable),
     secretFilter: filter,
+    sessionEvents: discardedEvents,
     latestFailure: unreachable,
     workspaceForRepository: async (j, repo) => {
       expect(repo).toBe('owner/second')
@@ -159,6 +163,7 @@ test('unmapped checkout denies execution; unexpected post-start error is outcome
   const dependencies = {
     modelRouter: model(unreachable),
     secretFilter: filter,
+    sessionEvents: discardedEvents,
     latestFailure: unreachable,
     codex: { runRouterJob: unreachable },
   }

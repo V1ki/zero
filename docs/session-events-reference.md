@@ -21,7 +21,7 @@ turn 结束的对账走 `syncCanonical`，其余事件走 `append`。seq 写入�
 
 | type | 发射点 | 触发 | data 要点 | 说明 |
 |---|---|---|---|---|
-| `user/message` ✅ | store `appendMessage`：`AgentLoop`（loop 产生消息的那一刻，早于转给调用方；子代理写进自己的文件）、session `queueMessage`（排队消息进 canonical 的那一刻）;`syncMessages` 截断后重新追加 | canonical 新增 user 消息（turn 输入、tool_result 消息、queued、control、layer2 提示、background 回注）;记忆提醒阶段的消息不进 canonical，写成 `request/message` | messageIndex（按投影长度分配）、message 全量、source、hash | 唯一权威的消息正文;图片为 imageRef 文件引用 |
+| `user/message` ✅ | store `appendMessage`：`AgentLoop`（loop 产生消息的那一刻，早于转给调用方；子代理写进自己的文件）、`runAgentLoop`（调用方传入的历史，在 `loop/start` 之前，现为 Router 对话）、session `queueMessage`（排队消息进 canonical 的那一刻）;`syncMessages` 截断后重新追加 | canonical 新增 user 消息（turn 输入、tool_result 消息、queued、control、layer2 提示、background 回注）;记忆提醒阶段的消息不进 canonical，写成 `request/message` | messageIndex（按投影长度分配）、message 全量、source、hash | 唯一权威的消息正文;图片为 imageRef 文件引用 |
 | `assistant/message` ✅ | 同上（`AgentLoop`） | canonical 新增 assistant 消息（含 text/thinking/tool_use blocks） | 同上 | 模型输出唯一权威全文;写入后不再原地修改 |
 | `messages/truncate` ✅ | store `syncMessages`（改动方声明原因）;`syncCanonical` 对账发现未声明的差异 | reason：`turn_failed`（turn 失败回滚 `applyFailedTurnRollback`）、`admin`（尾部回滚命令）、`recall`（外部消息撤回，原地改写旧消息后截断到它并重新追加）、`restore_repair`（恢复时封口没封口的 turn;恢复不再重排或清理 canonical）、`unexpected`（对账时发现没经过 store 的改动，同时经 `onError` 上报）;`interrupt` 保留未用 | toMessageIndex、reason | 折叠指令，历史事件永不删除;正常运行的会话里没有 |
 | `compaction/checkpoint` ✅ | agent `compactContextForRequest`（压缩产生新检查点的那一刻，经 `obs.sessionEvents`，子代理写进自己的文件）;session-turn 失败回滚时补写 | 裁剪水位推进或新摘要;turn 回滚恢复 turn 开始时的检查点 | checkpoint（完整检查点，回滚到没有检查点时为 null） | 投影取最后一份指向的消息都在投影里的检查点，无效则往前回退，遇到 null 或到头则没有;DB 镜像为 `session_context_checkpoints` 行 |
@@ -70,6 +70,10 @@ job 只针对 bash。bash 执行超过 5 秒转后台（其他工具仍是 60 �
 `tool/call` → `job/registered` → `job/settled` → `tool/result`。事件流里有 `job/registered` 而没有对应
 `job/settled` 的 job，就是仍在运行或因进程重启而丢失的 job。子代理与父会话共用同一个后台任务管理器，
 它的 bash job 事件写在父会话文件里，对应的 `tool/call` 在子代理自己的文件里，用 toolUseId 关联。
+
+Router 每次模型调用的子文件（`sessions/router-<日期>/`，见 [session-event-log.md](./session-event-log.md)「Router 的事件文件」）
+也由 `runAgentLoop` 写，带历史的调用（Router 对话）在 `tools/set` 与 `loop/start` 之间把历史逐条写成消息事件；父目录没有
+`session.jsonl`，不写 `subagent/spawn`。
 
 记忆检索的子文件由 `runAgentLoop` 写：`session` 头之后是 `system/prompt`、`tools/set`、`loop/start`，然后是 loop 的
 step、tool 与消息事件，每个 `step/start` 都能按「请求重建」还原。

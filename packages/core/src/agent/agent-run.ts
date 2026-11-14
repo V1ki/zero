@@ -50,11 +50,14 @@ export interface AgentLoopRunOptions {
   signal?: AbortSignal
   logger: AgentLoopConfig['logger']
   /**
-   * Session events of this run. The base writes `system/prompt`, `tools/set` and `loop/start`
-   * before the loop writes its steps, tool calls and messages, so every request can be rebuilt
-   * from the file. The file must already hold exactly `history` as its canonical messages; a run
-   * without history takes a new file. A response or tool result that lands after the run stopped
-   * is still written: it happened, even though the caller no longer receives it.
+   * Session events of this run, in a file of its own that holds no messages yet. The base writes
+   * `system/prompt`, `tools/set`, then `history` as message events, then `loop/start`, before the
+   * loop writes its steps, tool calls and messages, so every request can be rebuilt from the file
+   * even when the caller built `history` from records that expire. Replay passes that history
+   * through `prepareRequestMessages`, so it must be history that leaves unchanged: no notification
+   * messages and nothing between a tool call and its result. A response or tool result that
+   * lands after the run stopped is still written: it happened, even though the caller no longer
+   * receives it.
    */
   journal?: AgentLoopJournal
   /**
@@ -115,7 +118,11 @@ export async function runAgentLoop(options: AgentLoopRunOptions): Promise<AgentL
         type: 'tools/set',
         data: { hash: sha256(JSON.stringify(toolNames)), toolNames, count: toolNames.length },
       },
-      // History goes to the adapter as given, without the signed-thinking cleanup.
+    ])
+    for (const message of options.history ?? [])
+      options.journal.events.appendMessage(options.sessionId, message)
+    // History goes to the adapter as given, without the signed-thinking cleanup.
+    options.journal.events.append(options.sessionId, [
       { type: 'loop/start', data: { requireThinkingForToolUse: false } },
     ])
   }

@@ -9,6 +9,7 @@ import type {
 } from '@zero-os/shared'
 import { TriggerAgentError } from '../event-agent'
 import { type RouterAgentInput, createRouterAgent } from '../router-agent'
+import { discardedEvents } from './router-log-fixture'
 
 const privateTarget = { channelId: 'private-account', peerId: 'private-peer' }
 const at = '2026-11-03T08:02:00Z'
@@ -144,6 +145,7 @@ function setup(...steps: ResponseStep[]) {
     ask: createRouterAgent({
       modelRouter: { getDefaultModel: () => ({ adapter }), getCurrentModel: () => undefined },
       secretFilter: { filter: (text) => text.replaceAll('secret-code', '[redacted]') },
+      sessionEvents: discardedEvents,
     }),
   }
 }

@@ -25,7 +25,7 @@ dsh 把功能拆成插件，ZeRo 用调用处传入的模块，见「目标形�
 | 日志是事实来源 | loop 每产生一条消息就 `session.append()`；`deriveMessages()` 返回冻结的投影 | loop 每产生一条消息就 `appendMessage`（步骤 3）；内存里的 `Message[]` 仍由 `Session` 持有，turn 结束时 `syncCanonical` 只对账 | 恢复从 `projectForRestore` 重建内存状态，不改写 canonical（[session-log-replay.md](session-log-replay.md) 步骤 4、5）；改动已有消息要当场声明原因 |
 | 投影不可变 | 冻结对象，改写历史在类型上不可表达；压缩用 `surfaceOp: replace` 落事件 | 请求消息由 `prepareRequestMessages(canonical, 检查点)` 投影得到，不修改 canonical（步骤 1、5） | 已对齐；修复前的问题见下方「已复现的问题」 |
 | 两条写路径 | 只有 `append` | 过程事件和消息事件都由 loop 在发生时写入（步骤 3、4a） | 已对齐 |
-| 每个 loop 都落日志 | 子代理有自己的 Session | `spawn_agent` 的子代理和记忆检索（步骤 4b）有自己的事件文件（过程事件和消息）；压缩模型、任务闭合、Router 的 8 个调用点都不写事件流；Router 用 `logger: console` | 这些模型调用只能从 usage 账本看到花费，看不到输入输出 |
+| 每个 loop 都落日志 | 子代理有自己的 Session | `spawn_agent` 的子代理、记忆检索（步骤 4b）和 Router 的 8 个调用点（步骤 4c）有自己的事件文件（过程事件和消息）；压缩模型、任务闭合不写事件流 | 压缩模型和任务闭合只能从 usage 账本看到花费，看不到输入输出 |
 | loop 只有一份 | `agent`（接口）与 `agent-loop`（驱动）分离，扩展点是事件 | `AgentLoop` 本身是通用的，但「能用的 agent」那一层写了三遍 | 见下方「loop 重复在哪里」 |
 | 旁路日志 | 无；查询走派生索引 | `run.log`、`trace.jsonl`、`events.jsonl`、`sessions.db` 大字段与事件流并存；Web 还没读事件流 | 双写观察期未结束 |
 
@@ -63,12 +63,12 @@ dsh 把功能拆成插件，ZeRo 用调用处传入的模块，见「目标形�
 | 层 | 代码 | 谁在用 | 写事件流 |
 | --- | --- | --- | --- |
 | loop | `AgentLoop`（`agent-loop.ts`） | 所有调用方 | 步骤 4a 起：给了事件句柄就写 step、tool、消息事件 |
-| 基座 | `runAgentLoop`（`agent-run.ts`） | 记忆检索、Router | 步骤 4a 起：给了事件句柄就写 `system/prompt`、`tools/set`、`loop/start` |
+| 基座 | `runAgentLoop`（`agent-run.ts`） | 记忆检索、Router | 步骤 4a 起：给了事件句柄就写 `system/prompt`、`tools/set`、`loop/start`；4c 起在 `loop/start` 之前写传入的历史 |
 | 会话 Agent | `Agent` + `agent-hooks.ts` | 主会话、`spawn_agent` 子代理 | 注入、压缩、闭合、记忆等会话特有的事件 |
 
 步骤 4a 之前，`step/start`、`requestHash`、`tool/call`、消息事件的写入都在第三层，和排队、任务闭合、记忆提醒、压缩
-写在同一批 hooks 里。「日志可重放」因此只对用 `Agent` 的调用成立，接在基座上的调用方什么都没继承到。记忆检索从步骤 4b
-起传事件句柄；Router 现在还没有传（步骤 4c），所以仍然没有日志。
+写在同一批 hooks 里。「日志可重放」因此只对用 `Agent` 的调用成立，接在基座上的调用方什么都没继承到。记忆检索（步骤 4b）
+和 Router（步骤 4c）现在都传事件句柄。
 
 `AgentLoopHooks` 的每个扩展点只能放一个函数。主会话的几项功能要共用同一批扩展点，只能在 `createAgentLoopHooks`
 里手工拼在一起，功能之间还直接引用对方（排队会打断记忆提醒，工具 hook 要通知记忆「写入成功」）。缺的不是扩展点，
@@ -158,7 +158,7 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
 | 1 | 组装改为纯函数投影：准备 prompt 不再修改 canonical 消息；evidence 和压缩模型读原文 | 已完成 |
 | 2 | loop 基座 `runAgentLoop`；记忆检索和 Router 改为基座的配置 | 已完成 |
 | 3 | 主会话的 loop 直接写消息事件，取代 turn 结束时的 diff；`syncCanonical` 只留给非 loop 修改 | 已完成：即 [session-log-replay.md](session-log-replay.md) 的步骤 1，子代理一并写消息；非 loop 修改经 `syncMessages` 声明原因，`syncCanonical` 只对账 |
-| 4 | 基座写事件流；记忆检索、Router、Codex Worker 依次接入 | 4a、4b 已完成；4c、4d 后续，见下 |
+| 4 | 基座写事件流；记忆检索、Router、Codex Worker 依次接入 | 4a～4c 已完成；4d 后续，见下 |
 | 5 | 删除旧式 `compressConversation` 和切换模型时对 canonical 的覆盖；预算改为按压缩后的投影判断 | 已完成：[检查点压缩](context-compaction.md)是唯一的压缩机制，旧代码已删除 |
 | 6 | 主会话 `Agent` 改为「基座 + 模块」，从 `agent-hooks.ts` 一次搬出一项功能 | 后续，见下 |
 | 7 | Web 读事件流；切 `file-only`；`run.log` 与 trace 里与事件流重复的部分退役 | 后续 |
@@ -191,11 +191,11 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
 - 主会话 `Agent` 这一步不动，步骤 6 再迁。
 
 事件流与 trace 不在这一步进基座：主会话的事件载荷依赖 tracer 的 span 编号，直接搬动会改变现有事件；
-旁路 loop 落事件流又涉及下面的待定事项。基座先把接口留好，步骤 3、4 接上。
+旁路 loop 落事件流又涉及当时的待定事项（现见「已定事项」）。基座先把接口留好，步骤 3、4 接上。
 
 ### 步骤 4：基座写事件流
 
-分四步，每一步单独合并。4a、4b 不依赖待定事项。
+分四步，每一步单独合并。4a、4b 不依赖「已定事项」里的三项。
 
 - **4a 基座接事件流（已完成）。** 写事件落在两层，入口是同一个 `AgentLoopJournal`：
   - `AgentLoop` 写 `step/start`（含 `requestHash`）、`step/end`、`tool/call`、`tool/result` 和消息事件。主会话和
@@ -206,8 +206,7 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
     的调用方不带）、「此刻的消息只进请求」（记忆提醒阶段，写成 `request/message`）。
   - `step/end` 写在 `onCompletionEnd` hook 之前：调用方的策略拒绝这次响应（Router 的输出上限、无效工具调用）时，
     这次请求仍有记录。
-  - 事件句柄指向的文件，canonical 消息必须正好等于传入的 `history`；没有历史的一次运行用新文件。带历史的调用方
-    怎么满足这一条在 4c 定。
+  - 事件句柄指向的文件，canonical 消息必须正好等于传入的 `history`；没有历史的一次运行用新文件。4c 改为由基座写历史，见下。
   - 验收：主会话在同一脚本下改动前后的事件流逐条相同（类型、顺序、载荷，除随机编号和时间）；`request-replay.test.ts`
     的三方比对不变；`agent-run.test.ts` 对 `runAgentLoop` 做同样的三方比对。句柄目前可缺省，全部调用方接入后改为必填。
 - **4b 记忆检索接入（已完成）。** 它属于父会话的某个 turn，写父会话目录下的 `sub-<id>.jsonl`，与 `spawn_agent` 的子代理
@@ -219,9 +218,27 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
     `spawn_agent` 子代理里的 layer2 检索，子文件同样放在主会话目录，`subagent/spawn` 写在子代理自己的文件里。
   - 子文件写完后调用 `SessionEventStore.release` 丢掉内存里的状态缓存：这类文件只写一次，长期运行的进程不必持有它们的投影。
   - 验收：主会话在同一脚本下改动前后的事件流逐条相同；`memory-retrieval.test.ts` 对子文件的每个 `step/start` 做三方比对。
-- **4c Router 接入。** 8 个调用点传入事件句柄，`logger: console` 换成与主会话相同的 logger。传入的历史在 loop
-  开始时写成消息事件。每类调用带自己的 usage 用途（`USAGE_PURPOSES` 增项，Web 的分项展示跟着改），不再都记成
-  `agent_loop`。业务表里的会话编号指向事件文件。
+- **4c Router 接入（已完成）。** 8 个调用点传入事件句柄，`logger: console` 换成与主会话相同的 logger。传入的历史在 loop
+  开始时写成消息事件。每类调用带自己的 usage 用途（`USAGE_PURPOSES` 增项），不再都记成 `agent_loop`。业务表里的会话编号
+  指向事件文件。实际落点：
+  - 8 个调用点都经 `runTriggerModel`，它是唯一传事件句柄的地方：每次调用经 `registerSubagent` 新建
+    `sessions/router-<本地日期>/sub-<业务会话编号>.<uuidv7>.jsonl`，写完后 `release`。目录与编号的对应见
+    [session-event-log.md](session-event-log.md)「Router 的事件文件」。`AgentDependencies` 增加 `sessionEvents`（必填）
+    和 `tracer`。
+  - 基座的约束改为：事件句柄指向一份还没有消息的新文件，`runAgentLoop` 在 `tools/set` 之后、`loop/start` 之前把 `history`
+    逐条写成消息事件。重放对这段历史调用 `prepareRequestMessages`，所以历史里不能有 notification 消息、也不能有夹在工具调用与
+    结果之间的消息；Router 对话拼出的历史只有纯文本的 user / assistant 消息，`prepareRequestMessages` 对它是恒等的，
+    `router-model-log.test.ts` 用真实的 `createRouterAgent` 和带历史的对话做三方比对。
+  - logger 是 `createSessionLogger`（主会话用的同一个，现从 `@zero-os/core` 导出），会话编号取当天目录名，所以 `run.log`
+    落在 `sessions/router-<日期>/`；每行数据带 `callId`（文件的子编号）。
+  - usage 用途：`router_triage`、`router_chat`、`router_commission`、`router_investigation`、`router_job`、
+    `router_job_report`、`router_write_check`、`router_task_followup`。Web 的「Cost by Purpose」与会话详情的分项直接显示
+    `purpose` 字符串，不需要改；旧数据里 Router 的花费仍记在 `agent_loop`。
+  - 保留期：`TriggerRetentionStore.sweep` 返回这次使用的截止时间，`ListenerRuntime` 随后调用
+    `SessionEventStore.deleteFilesBefore('router-', 截止时间)`，删除 Router 目录里最后写入早于截止时间的文件（含 `run.log`）
+    并清理 `subagent-index.json`。按文件的最后写入时间判断，不看业务记录：仍在保留的任务、对话，其较早调用的文件也会删掉，
+    文件不会比它记录的那次调用活得更久。
+  - 不写 `step/start.model`：Router 的 `AgentDependencies.modelRouter` 只给 adapter，模型名在 usage 账本里。
 - **4d Codex Worker 接入。** `runRouterJob` 不再自造 `ToolContext`，在派工的事件文件里记一次工具调用；
   logger 不再丢弃 `warn` 和 `error`。
 
@@ -236,18 +253,19 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
 4. **任务闭合。**
 5. **记忆。** 牵扯最多（检索注入、提醒阶段、写入确认），放最后。
 
-## 待定事项
+## 已定事项
 
-4c、4d 之前要先定：
+原来的三个待定事项在 4c、4d 之前按下面的方案定下：
 
-- **Router 的事件放在哪里。** 记忆检索、压缩、闭合属于某个会话的某个 turn，适合写进父会话目录下的
-  `sub-<id>.jsonl`（`spawn_agent` 的子代理已经这样做）。Router 的调用没有父会话：分诊每个事件一次调用，
-  派工、对话各有自己的编号。每次调用一个文件会产生大量小文件，需要决定按什么归并（按任务、按天、按派工）以及保留多久。
-  倾向按天归并，未定。
-- **Router 事件流里放什么。** 事件正文、仓库内容都是外部资料，落盘前要过 `secretFilter`；是否保存全文还是只存
-  hash 与预览，取决于排障时到底要看什么。只存 hash 与预览时，请求能核对、不能还原。倾向存过滤后的预览加 hash，未定。
-- **Codex 的中间过程是否落盘。** `onPublicEvent` 能拿到每个步骤；Codex 自己也有线程记录。只记开始、结束和最终结果，
-  还是把中间步骤也写进派工的事件文件。
+- **Router 的事件放在哪里：按天归并。** 每天一个 Router 目录（`sessions/router-<本地日期>/`，形状同父会话目录），每次模型调用
+  一个 `sub-<业务会话编号>.<uuidv7>.jsonl`，即 `registerSubagent` 的形状。理由：Router 的调用没有父会话，按任务或按派工归并
+  需要先有统一的「事项」（[router-design.md](router-design.md)「已知的不足」第 1 条）；一次调用一个文件又正好满足基座
+  「一次运行一份新文件」的约束。按天的目录让保留期清理可以只看目录，不必逐个解析业务编号。
+- **Router 事件流里放什么：存模型实际看到的全文。** Router 发给模型的内容在进入提示词之前已经过 `secretFilter`，落盘的就是
+  过滤后的文本；只存 hash 与预览时请求只能核对、不能还原，这次要的是还原。代价是保留期：事件文件遵守 Router 业务表的
+  正文保留期（7/30/90/365 天，默认一直保留），到期一并删除，不让日志成为绕过保留期的副本。
+- **Codex 的中间过程不落盘。** 只记一次工具调用的开始、结束和最终结果（步骤 4d）。Codex 自己有线程记录；把中间步骤写进
+  派工文件会让日志大小取决于 Codex 的输出量，排障时需要的是派工收到了什么、交回了什么。
 
 压缩模型和任务闭合分类是单步的 `adapter.complete()` 调用，不经过 loop。它们的请求输入怎么落，随步骤 6 搬对应模块时定。
 

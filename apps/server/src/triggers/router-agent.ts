@@ -218,15 +218,17 @@ function parseReply(raw: string, filter: Filter, hasEvent: boolean): TriggerConv
   return answer
 }
 
-export function createRouterAgent({ modelRouter, secretFilter }: AgentDependencies) {
+export function createRouterAgent(deps: AgentDependencies) {
+  const { secretFilter } = deps
   return async (
     input: RouterAgentInput,
     signal?: AbortSignal,
   ): Promise<TriggerConversationAnswer> => {
     const tools = createRouterToolset(input, secretFilter, () => modelContext(input, secretFilter))
-    const run = runTriggerModel(modelRouter, {
+    const run = runTriggerModel(deps, {
       label: 'Router 对话',
       sessionId: input.sessionId,
+      purpose: 'router_chat',
       system: input.imPlatform
         ? `${instructions}\n你正在机器人私聊中接待用户，请用适合聊天的文字回复。本轮只使用实际可用的工具。若任务需要读取账户或运行项目而缺少对应工具，说明能力范围，不要猜测数据或声称已转交其他 Agent。全局通知设置请引导用户到网页「配置 → 监听与收件箱」操作。`
         : instructions,

@@ -3,6 +3,7 @@ import type { ProviderAdapter } from '@zero-os/model'
 import { MetricsDB, TriggerStore } from '@zero-os/observe'
 import type { MandatePlatform } from '@zero-os/shared'
 import { createRuntimeChannelMessageHandler } from '../runtime/channel-runtime/runtime-common'
+import { discardedEvents } from '../triggers/__tests__/router-log-fixture'
 import { createRouterAgent } from '../triggers/router-agent'
 import { RouterWorkspaceService } from '../triggers/router-workspace'
 import { TriggerRoutingRuntime } from '../triggers/routing-runtime'
@@ -62,6 +63,7 @@ test('selected bots route ordinary DMs to their own Router loop while other bots
     createRouterAgent({
       modelRouter: { getDefaultModel: () => ({ adapter }), getCurrentModel: () => undefined },
       secretFilter: { filter: (text) => text },
+      sessionEvents: discardedEvents,
     }),
   )
   const bridge = createTaskBridge({

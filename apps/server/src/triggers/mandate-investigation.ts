@@ -71,9 +71,10 @@ export type MandateInvestigationResult = { status: 'read'; summary: string } | {
  * The tools take no arguments: repository, run, credential and URL all come from the event.
  */
 export function createMandateInvestigation(
-  { modelRouter, secretFilter }: AgentDependencies,
+  deps: AgentDependencies,
   investigator: GithubInvestigator,
 ) {
+  const { secretFilter } = deps
   const filtered = (value: string, limit: number) =>
     secretFilter.filter(value.replace(/\s+/g, ' ')).slice(0, limit)
   return async (
@@ -92,8 +93,9 @@ export function createMandateInvestigation(
       description: descriptions[action],
       parameters: { type: 'object', properties: {}, additionalProperties: false },
     }))
-    const raw = await runTriggerModel(modelRouter, {
+    const raw = await runTriggerModel(deps, {
       sessionId,
+      purpose: 'router_investigation',
       label: 'GitHub 调查',
       system: instructions,
       prompt: JSON.stringify({

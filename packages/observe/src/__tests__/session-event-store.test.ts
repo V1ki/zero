@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -354,6 +354,40 @@ describe('SessionEventStore', () => {
       const index = JSON.parse(relative) as { children: Record<string, string> }
       expect(index.children.sess_child).toBe(logFile as string)
       expect(existsSync(join(dir, index.children.sess_child))).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('deleteFilesBefore removes old files of matching directories and their index entries', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ses-test-'))
+    try {
+      const { store } = createStore(dir)
+      const register = (child: string, parent: string) =>
+        store.registerSubagent({ childSessionId: child, parentSessionId: parent }) as string
+      const old = register('call-old', 'router-2026-11-01')
+      const fresh = register('call-fresh', 'router-2026-11-01')
+      const other = register('agent-x', 'sess_main')
+      const runLog = join(dir, 'sessions', 'router-2026-11-01', 'run.log')
+      writeFileSync(runLog, '{}\n')
+      const cutoff = new Date('2026-11-05T00:00:00.000Z')
+      const before = new Date('2026-11-02T00:00:00.000Z')
+      for (const file of [join(dir, old), runLog, join(dir, other)])
+        utimesSync(file, before, before)
+
+      expect(store.deleteFilesBefore('router-', cutoff)).toBe(2)
+      expect(existsSync(join(dir, old))).toBe(false)
+      expect(existsSync(runLog)).toBe(false)
+      expect(existsSync(join(dir, fresh))).toBe(true)
+      expect(existsSync(join(dir, other))).toBe(true)
+      const index = JSON.parse(readFileSync(join(dir, 'subagent-index.json'), 'utf-8')) as {
+        children: Record<string, string>
+      }
+      expect(Object.keys(index.children).sort()).toEqual(['agent-x', 'call-fresh'])
+
+      utimesSync(join(dir, fresh), before, before)
+      expect(store.deleteFilesBefore('router-', cutoff)).toBe(1)
+      expect(existsSync(join(dir, 'sessions', 'router-2026-11-01'))).toBe(false)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

@@ -151,8 +151,9 @@ export function createRouterJobExecutor(options: ExecutorOptions) {
     // repository, account, token, URL or checkout.
     const toolName = 'inspect_latest_github_failure'
     let readError: TriggerAgentError | undefined
-    const result = await runTriggerModel(options.modelRouter, {
+    const result = await runTriggerModel(options, {
       sessionId,
+      purpose: 'router_job',
       label: 'ZeRo 执行任务',
       system: workerInstructions,
       prompt: JSON.stringify({

@@ -116,6 +116,15 @@ export const USAGE_PURPOSES = [
   'session_judge',
   'embedding',
   'memory_nudge',
+  // Router's model calls (apps/server/src/triggers)
+  'router_triage',
+  'router_chat',
+  'router_commission',
+  'router_investigation',
+  'router_job',
+  'router_job_report',
+  'router_write_check',
+  'router_task_followup',
 ] as const
 
 export type UsagePurpose = (typeof USAGE_PURPOSES)[number]
