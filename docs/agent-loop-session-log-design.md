@@ -63,8 +63,9 @@ dsh 把功能拆成插件，ZeRo 用调用处传入的模块，见「目标形�
 | 层 | 代码 | 谁在用 | 写事件流 |
 | --- | --- | --- | --- |
 | loop | `AgentLoop`（`agent-loop.ts`） | 所有调用方 | 步骤 4a 起：给了事件句柄就写 step、tool、消息事件 |
-| 基座 | `runAgentLoop`（`agent-run.ts`） | 记忆检索、Router | 步骤 4a 起：给了事件句柄就写 `system/prompt`、`tools/set`、`loop/start`；4c 起在 `loop/start` 之前写传入的历史 |
-| 会话 Agent | `Agent` + `agent-hooks.ts` | 主会话、`spawn_agent` 子代理 | 注入、压缩、闭合、记忆等会话特有的事件 |
+| 基座 | `runAgentLoop`（`agent-run.ts`） | 全部调用方（主会话与子代理自 6.3 起） | 步骤 4a 起：给了事件句柄就写 `system/prompt`、`tools/set`、`loop/start`；4c 起在 `loop/start` 之前写传入的历史；会话自己的文件只写 `loop/start` |
+| 模块 | `packages/core/src/agent/modules/` | 主会话、`spawn_agent` 子代理 | 各自的诊断事件：`compaction/*`、`closure/*`、`agent/inbox/*`、`memory/recorded`、`memory/retrieval/*`；模型可见的内容经基座写 |
+| 会话 Agent | `Agent` + `agent-hooks.ts` | 主会话、`spawn_agent` 子代理 | 组装模块数组；`agent-hooks.ts` 只剩 trace（请求与工具 span、evidence、排队取走的 span 与 bus）和超大工具输出的 artifact 替换（`compaction/prune`） |
 
 步骤 4a 之前，`step/start`、`requestHash`、`tool/call`、消息事件的写入都在第三层，和排队、任务闭合、记忆提醒、压缩
 写在同一批 hooks 里。「日志可重放」因此只对用 `Agent` 的调用成立，接在基座上的调用方什么都没继承到。记忆检索（步骤 4b）
@@ -119,8 +120,8 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
 
 | 组装 | 模块 |
 | --- | --- |
-| 主会话 | 系统提示词、记忆、压缩、排队、任务闭合、trace |
-| `spawn_agent` 子代理 | 系统提示词、压缩、trace |
+| 主会话 | 请求上下文、压缩、排队、任务闭合、记忆、trace（步骤 6 实现；系统提示词仍由 `Session` 拼接并在变化时记 `system/prompt`，没有做成模块） |
+| `spawn_agent` 子代理 | 与主会话同一个模块数组；闭合与记忆提醒在模块内按 `spawnedByRequestId` 跳过 |
 | 记忆检索 | 无，只有工具 |
 | Router 各调用点 | Router 的校验与错误措辞，按需加 Router 工具 |
 
@@ -132,7 +133,13 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
   「模型看到的都落了日志」由结构保证，不靠每个模块自觉。
 - **同一扩展点的合并规则固定。** 只观察的，全部调用；改写内容的，按数组顺序串联；做决定的（一轮结束后是否继续、
   空响应怎么办），按数组顺序取第一个非默认答案。闭合、记忆提醒、排队在 `onEndTurn` 里的先后现在隐含在代码里，
-  之后就是数组顺序。
+  之后就是数组顺序。步骤 6 里细化为（见 `AgentLoopModule` 的注释）：
+  - 一轮结束拆成三个扩展点，各自套用上面的规则：`evaluateEndTurn`（观察，按数组顺序逐个 await）、`settleEndTurn`（观察）、
+    `decideEndTurn`（决定）。决定带 `commit`，只在这个继续真的生效时调用。
+  - 排队检查是基座在固定位置做的事（一轮结束时、评估之后、某个继续决定生效之前、只进请求阶段的空响应），取走排队消息时
+    基座同步发出 `onQueueTaken`，之后才改请求。
+  - 观察型扩展点里，模块先于调用方的 hooks 调用（`onToolCallEnd` 还早于 `tool/result` 的写入；`onCompletionError` 早于 hooks）。
+  - 「是否只进请求」是决定型扩展点 `requestOnly`，基座把结果作为事实放在 `LoopIterationContext.requestOnly()` 里给模块和 hooks 读。
 
 模块之间不互相持有。一个模块需要知道别的模块做了什么时，观察基座发出的事实（某个工具调用结束了、有消息排队了），
 不引用对方。做不到这一条，拆出来的只是几个互相 import 的小文件。
@@ -160,7 +167,7 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
 | 3 | 主会话的 loop 直接写消息事件，取代 turn 结束时的 diff；`syncCanonical` 只留给非 loop 修改 | 已完成：即 [session-log-replay.md](session-log-replay.md) 的步骤 1，子代理一并写消息；非 loop 修改经 `syncMessages` 声明原因，`syncCanonical` 只对账 |
 | 4 | 基座写事件流；记忆检索、Router、Codex Worker 依次接入 | 已完成，见下 |
 | 5 | 删除旧式 `compressConversation` 和切换模型时对 canonical 的覆盖；预算改为按压缩后的投影判断 | 已完成：[检查点压缩](context-compaction.md)是唯一的压缩机制，旧代码已删除 |
-| 6 | 主会话 `Agent` 改为「基座 + 模块」，从 `agent-hooks.ts` 一次搬出一项功能 | 6.1～6.4 已完成；6.5 见下 |
+| 6 | 主会话 `Agent` 改为「基座 + 模块」，从 `agent-hooks.ts` 一次搬出一项功能 | 已完成，见下 |
 | 7 | Web 读事件流；切 `file-only`；`run.log` 与 trace 里与事件流重复的部分退役 | 后续 |
 
 ### 步骤 1：组装改为纯函数投影
@@ -324,6 +331,22 @@ hooks 读取请求历史的唯一来源。
   - `Agent` 的模块数组：`[requestContextModule, compactionModule, queueModule, closureModule, ...记忆与 trace]`；决定的顺序因此是
     排队续写提示 → 闭合重试 → 记忆提醒，与原来相同。
   - 验收：`dump-events.ts` 7 个场景改动前后的事件、trace、bus 逐行相同。
+- **6.5 记忆（已完成）。** 模块是 `modules/memory.ts` 的 `memoryModule(...)`，提醒的控制器、提醒的决定与空响应处理、
+  DeepSeek 无签名 thinking 的提醒回复丢弃、`memory/recorded`、layer2 记忆提示都搬过去。落点：
+  - 新扩展点：`onNewMessage`（观察，记下提醒回复给 trace）、`onCompletionError`（观察，结束提醒的 span）、`onToolCallEnd`
+    （观察，在 `tool/result` 写入之前记 `memory/recorded`）、`additionalMessages(failedAttempts)`（工具结果处理之后、工具结果消息
+    追加之前收集，模块按数组顺序追加；记忆在这里做 layer2 检索并给出 `<memory_hint>` notification）、`onInvalidAssistantResponse`（决定）。
+  - 不再有 `requestPurposeRef`：`Agent` 的 `getMeta(ctx)` 在只进请求的阶段用 `ctx.requestOnly()` 的原因（`memory_nudge`）作 usage
+    用途，其余时候用 `obs.usagePurpose`。
+  - 提醒进行中不把消息和文字增量转给调用方：`agent-hooks.ts` 改读 `ctx.requestOnly()`。trace 记 layer2 注入时观察追加的
+    notification 消息（目前只有记忆提示是这种消息），不再从工具结果处理里拿。
+  - `Agent` 的模块数组：`[requestContextModule, compactionModule, queueModule, closureModule, memoryModule, traceModule]`。
+    `traceModule` 是 `createAgentLoopHooks` 返回的唯一模块（排队取走时的 trace span 与 bus），放在最后，所以记忆先结束提醒、
+    trace 再记 `queue_gate_drain`，与原来的 span 顺序相同。
+  - 验收：`dump-events.ts` 加了 layer2 记忆提示场景，并把每次模型请求的 `meta`（含 usage 用途）记进输出；8 个场景改动前后
+    逐行相同。请求失败时 `run.log` 的 `llm_request.error` 与记忆提醒 span 结束的先后对调（前者现在晚于后者，两者写在不同的文件里，
+    span 之间的顺序不变）；提醒期间请求失败和 DeepSeek 无签名回复两条路径没有进比对脚本，由 `completion-gate.test.ts` 覆盖。
+  - 终态：`agent-hooks.ts` 从 1896 行降到约 540 行，只剩 trace 与 artifact 替换；`modules/` 下五个文件互不 import。
 
 ## 已定事项
 

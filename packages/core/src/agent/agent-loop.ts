@@ -111,6 +111,33 @@ export interface AgentLoopModule {
   ): Promise<ContextCheckpoint | undefined>
   /** Observer: queued messages were taken into the request. Emitted before the request changes. */
   onQueueTaken?(taken: QueueTaken, ctx: LoopIterationContext): void
+  /** Observer: a message was appended and logged (canonical, or request-only in that phase). */
+  onNewMessage?(message: Message, ctx: LoopIterationContext): void
+  /** Observer, before the caller's hooks: a completion request failed. */
+  onCompletionError?(error: unknown, ctx: LoopIterationContext): void
+  /** Observer, before the caller's hooks and before `tool/result` is written: a tool call ended. */
+  onToolCallEnd?(
+    toolName: string,
+    toolUseId: string,
+    input: Record<string, unknown>,
+    result: ToolExecutionResult,
+    ctx: LoopIterationContext,
+  ): void
+  /**
+   * After the tool results were processed, before the tool results message is appended: messages
+   * each module adds after it, in array order after the caller's `processToolResults` additions.
+   */
+  additionalMessages?(
+    failedAttempts: FailedToolAttempt[],
+    ctx: LoopIterationContext,
+  ): Promise<Message[]>
+  /** Decision on a response that cannot become a message: the first answer that is not `undefined` wins. */
+  onInvalidAssistantResponse?(
+    request: CompletionRequest,
+    response: CompletionResponse,
+    error: unknown,
+    ctx: LoopIterationContext,
+  ): { action: 'break' } | undefined
   /** Observer: a completion returned and the caller's hooks accepted it. */
   onCompletionEnd?(response: CompletionResponse, ctx: LoopIterationContext): void
   /** Observer, awaited in array order: a response ended the turn. */
@@ -691,12 +718,11 @@ export class AgentLoop {
       try {
         assistantMsg = this.buildAssistantMessage(response, ctx)
       } catch (error) {
-        const decision = await this.hooks.onInvalidAssistantResponse?.(
-          request,
-          response,
-          error,
-          ctx,
-        )
+        const decision =
+          this.modules
+            .map((module) => module.onInvalidAssistantResponse?.(request, response, error, ctx))
+            .find((answer) => answer !== undefined) ??
+          (await this.hooks.onInvalidAssistantResponse?.(request, response, error, ctx))
         if (decision?.action === 'break') {
           break
         }
@@ -735,13 +761,19 @@ export class AgentLoop {
         ? await this.hooks.processToolResults(toolResultBlocks, failedToolAttempts, ctx)
         : { toolResultBlocks }
 
+      const additionalMessages = [...(processed.additionalMessages ?? [])]
+      for (const module of this.modules)
+        additionalMessages.push(
+          ...((await module.additionalMessages?.(failedToolAttempts, ctx)) ?? []),
+        )
+
       if (processed.toolResultBlocks.length > 0) {
         const toolResultMsg = this.buildToolResultMessage(processed.toolResultBlocks)
         messages.push(toolResultMsg)
         this.notifyNewMessage(toolResultMsg, ctx)
       }
 
-      for (const additionalMessage of processed.additionalMessages ?? []) {
+      for (const additionalMessage of additionalMessages) {
         messages.push(additionalMessage)
         this.notifyNewMessage(additionalMessage, ctx)
       }
@@ -937,6 +969,7 @@ export class AgentLoop {
         journal.events.append(sessionId, [{ type: 'request/message', data: { message, reason } }])
       else journal.events.appendMessage(sessionId, message)
     }
+    for (const module of this.modules) module.onNewMessage?.(message, ctx)
     this.hooks.onNewMessage?.(message, ctx)
   }
 
@@ -1013,6 +1046,7 @@ async function completeAgentLoopRequest({
     for (const module of config.modules ?? []) module.onCompletionEnd?.(response, ctx)
     return response
   } catch (error) {
+    for (const module of config.modules ?? []) module.onCompletionError?.(error, ctx)
     hooks.onCompletionError?.(request, error, Date.now() - startedAt, ctx)
     throw error
   }
@@ -1177,6 +1211,8 @@ async function executeAgentLoopToolCalls(options: {
     const end = (result: ToolExecutionResult) => {
       toolResultBlocks.push(buildToolResultBlock(block.id, result))
       const durationMs = Date.now() - startedAt
+      for (const module of options.config.modules ?? [])
+        module.onToolCallEnd?.(block.name, block.id, block.input, result, options.ctx)
       options.hooks.onToolCallEnd?.(
         block.name,
         block.id,

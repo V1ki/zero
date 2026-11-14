@@ -21,6 +21,7 @@ import { createAgentLoopHooks } from '../agent-hooks'
 import { endTurn } from '../agent-loop'
 import { AgentTraceRecorder } from '../agent-trace'
 import { closureModule } from '../modules/closure'
+import { memoryModule } from '../modules/memory'
 import { queueModule } from '../modules/queue'
 import type { QueuedMessage } from '../queue'
 import { buildTaskClosurePrompt } from '../task-closure'
@@ -1294,16 +1295,14 @@ describe('Agent task closure gate', () => {
 
     let interruptChecks = 0
     let drained = false
-    const { modules, requestSpanId } = createAgentLoopHooks({
+    const { traceModule, requestSpanId } = createAgentLoopHooks({
       config,
-      adapter,
       toolContext,
       obs,
       context: createContext(registry),
       userMessage: '完成一个需要先查再总结的任务',
       turnIndex: 1,
       executionState: {},
-      requestPurposeRef: { current: 'agent_loop' },
       traceRecorder,
     })
 
@@ -1339,7 +1338,21 @@ describe('Agent task closure gate', () => {
       requestSpanId,
     })
     const decision = await endTurn(
-      [queue, closure, ...modules],
+      [
+        queue,
+        closure,
+        memoryModule({
+          config,
+          adapter,
+          toolContext,
+          obs,
+          context: {},
+          userMessage: '完成一个需要先查再总结的任务',
+          turnIndex: 1,
+          requestSpanId,
+        }),
+        traceModule,
+      ],
       {},
       createTextResponse('这轮工作已经完成'),
       {

@@ -33,7 +33,7 @@ turn 结束的对账走 `syncCanonical`，其余事件走 `append`。seq 写入�
 |---|---|---|---|---|
 | `loop/start` ✅ | 基座 `runAgentLoop` 开头，早于 turn 开始的压缩;主会话与子代理（`historyLogged`，只写这一条，子代理写进自己的文件）、其余调用方在 `system/prompt`、`tools/set` 和历史之后写 | 每次 agent loop 开始（会话每 turn 一次;交互式子代理每次输入一次） | requireThinkingForToolUse | 请求历史 = 此处的 canonical 投影与检查点;其后到 step/start 之间的事件是该 loop 的 entries |
 | `injection/context` ✅ | ① `AgentLoop` loop 首条 user 消息进请求时，内容来自模块的 `requestInjections`（主会话为 `requestContextModule`）;② `AgentLoop` 工具结果之后，排队模块的 `mergeQueued` 交出拼接内容时;③ 迁移播种 🌱 | kind=dynamic（system-reminder 含记忆检索）、image_delegation、queued_merge;memory/memory_hint 仅迁移期从 run.log 抽取 | kind、content 原文、refs、messageId（被改写的请求消息）、blocks（queued_merge 拼接的 blocks，含排队图片，图片外置为 imageRef） | 带 messageId 的参与请求组装;投影 canonical 时忽略 |
-| `request/message` ✅ | `AgentLoop`（调用方声明消息只进请求时，现为记忆提醒进行中;store `append` 把图片外置） | 记忆提醒阶段 loop 追加进请求的消息：提醒 prompt、提醒回复、提醒阶段的工具结果 | message 全量、reason=memory_nudge | 只追加进本 loop 之后的请求,不进 canonical,后续 turn 看不到 |
+| `request/message` ✅ | `AgentLoop`（模块的 `requestOnly` 给出原因时，现为记忆模块的提醒进行中;store `append` 把图片外置） | 记忆提醒阶段 loop 追加进请求的消息：提醒 prompt、提醒回复、提醒阶段的工具结果 | message 全量、reason=memory_nudge | 只追加进本 loop 之后的请求,不进 canonical,后续 turn 看不到 |
 | `system/prompt` ✅ | persistence `ensureSessionPromptEvent`（hash 比对）：session-turn 每 turn 开始、persistSessionState;子代理由 spawn-agent 写 | 请求的 system 文本变化（prompt 重建、identityMemory 变化） | hash 与 chars（描述发出的 system = content + `\n\n` + identity）、content（静态系统提示词）、identity | getSystemPrompt;DB 列只存最新一份静态提示词，事件流保留谱系 |
 | `tools/set` ✅ | session-turn `ensureToolsSetEvent`（turn 开始比对名字列表 hash，空列表也记） | 工具集变化 | hash、toolNames、count | getToolSet;完整定义由代码版本推导 |
 | `step/start` ✅ | `AgentLoop`，`onCompletionStart` hook 之后 | 每次模型请求开始 | stepIndex、requestSpanId、model、messageCount、requestHash（`hashRequest`：system、工具名、传给 adapter 的消息，图片按内容 hash 归一） | **事件自身 seq 即请求重建锚点**，规则见 session-event-log.md「请求重建」;`hashRequest(assembleRequest(...))` 应等于 requestHash |
@@ -54,7 +54,7 @@ turn 结束的对账走 `syncCanonical`，其余事件走 `append`。seq 写入�
 | `closure/end` ✅ | 闭合模块 `closureModule` 的 `settleEndTurn`（评估之后取走了排队消息时为 discarded） | 决策产出 | action(finish/continue/block/discarded)、reason、model、requestId、assistantMessageId、durationMs;discarded 原决策在 detail;判定只记在这里，不写回 assistant 消息 |
 | `memory/retrieval/start` ✅ | memory-retrieval `retrieveMemoriesWithDecision` | 检索 agent 侧循环开始（layer1 开场/layer2 工具失败后） | layer、turnIndex |
 | `memory/retrieval/end` ✅ | 同上（成功/失败两路径） | 检索结束 | layer、status(injected/skipped/failed)、queries、searchCount、selected（id、title 必填、score）、durationMs、usage、error;status=injected 时 selected 就是记进会话已注入记忆表的记忆，恢复按它重建 |
-| `memory/recorded` ✅ | agent-hooks `onToolCallEnd` memory 分支 | memory 工具 create/update 成功 | action、memoryId、memoryType、title、toolUseId |
+| `memory/recorded` ✅ | 记忆模块 `memoryModule` 的 `onToolCallEnd`（早于该调用的 `tool/result`） | memory 工具 create/update 成功 | action、memoryId、memoryType、title、toolUseId |
 | `model/selection` ✅（仅 1/4 触发点） | session `switchSessionModel` | /model 命令 | from、to(label/provider/modelId)、trigger=user_command、detail |
 | `params/reasoning` ✅ | session-controllers `updateSessionReasoningEffort` | /think 变更 effort | from、to |
 | `agent/inbox/enqueued` ✅ | session `handleSessionMessageEntry` 排队分支 | turn 进行中消息入队 | messageIndex（canonical 下标）、reason、interrupt |

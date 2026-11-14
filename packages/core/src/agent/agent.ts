@@ -10,6 +10,7 @@ import { AgentTraceRecorder } from './agent-trace'
 import type { AgentConfig, AgentContext, AgentObservability } from './agent-types'
 import { closureModule } from './modules/closure'
 import { compactionModule } from './modules/compaction'
+import { memoryModule } from './modules/memory'
 import { queueModule } from './modules/queue'
 import { requestContextModule } from './modules/request-context'
 import type { QueuedMessage } from './queue'
@@ -86,19 +87,16 @@ export class Agent {
       currentRequestId: undefined as string | undefined,
       currentTraceSpanId: undefined as string | undefined,
     }
-    const requestPurposeRef: { current: UsagePurpose } = {
-      current: this.obs.usagePurpose ?? 'agent_loop',
-    }
+    const baseUsagePurpose: UsagePurpose = this.obs.usagePurpose ?? 'agent_loop'
 
     try {
       const {
         hooks: loopHooks,
         journal,
         requestSpanId,
-        modules: sessionModules,
+        traceModule,
       } = createAgentLoopHooks({
         config: this.config,
-        adapter: this.adapter,
         toolContext: this.toolContext,
         obs: this.obs,
         context,
@@ -111,7 +109,6 @@ export class Agent {
         turnIndex,
         rootSpanId: rootSpan?.id,
         executionState,
-        requestPurposeRef,
         traceRecorder,
       })
       loopHooks.shouldAbort = shouldAbort
@@ -169,7 +166,17 @@ export class Agent {
             turnIndex,
             requestSpanId,
           }),
-          ...sessionModules,
+          memoryModule({
+            config: this.config,
+            adapter: this.adapter,
+            toolContext: this.toolContext,
+            obs: this.obs,
+            context,
+            userMessage,
+            turnIndex,
+            requestSpanId,
+          }),
+          traceModule,
         ],
         toolExecutor: {
           has: (name) => toolExecutor.has(name),
@@ -185,9 +192,10 @@ export class Agent {
         stream: true,
         logger: this.toolContext.logger,
         transientRetryDelayMs: this.transientRetryDelayMs.bind(this),
-        getMeta: () => ({
+        getMeta: (ctx) => ({
           sessionId: this.toolContext.sessionId,
-          purpose: requestPurposeRef.current,
+          // 只进请求的阶段(记忆提醒)按它的原因记 usage 用途
+          purpose: ctx.requestOnly() ?? baseUsagePurpose,
           ...(this.obs.parentSessionId ? { parentSessionId: this.obs.parentSessionId } : {}),
         }),
         hooks: loopHooks,
