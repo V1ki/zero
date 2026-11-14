@@ -13,6 +13,7 @@ import {
   createCheckpointSummarizer,
   prepareRequestMessages,
 } from './compaction'
+import { requestContextModule } from './modules/request-context'
 import type { QueuedMessage } from './queue'
 import { composeSystemPrompt } from './request-assembly'
 
@@ -148,6 +149,7 @@ export class Agent {
           adapter: this.adapter,
           sessionId: this.toolContext.sessionId,
           journal,
+          modules: [requestContextModule(context)],
           toolExecutor: createAgentToolExecutor({
             toolRegistry: this.toolRegistry,
             toolContext: this.toolContext,

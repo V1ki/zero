@@ -1331,6 +1331,7 @@ describe('Agent task closure gate', () => {
       iteration: 2,
       userMessage: '完成一个需要先查再总结的任务',
       state: {},
+      requestEntries: [],
     })
 
     const drainSpan = tracer

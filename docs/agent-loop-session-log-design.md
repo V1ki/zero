@@ -160,7 +160,7 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
 | 3 | 主会话的 loop 直接写消息事件，取代 turn 结束时的 diff；`syncCanonical` 只留给非 loop 修改 | 已完成：即 [session-log-replay.md](session-log-replay.md) 的步骤 1，子代理一并写消息；非 loop 修改经 `syncMessages` 声明原因，`syncCanonical` 只对账 |
 | 4 | 基座写事件流；记忆检索、Router、Codex Worker 依次接入 | 已完成，见下 |
 | 5 | 删除旧式 `compressConversation` 和切换模型时对 canonical 的覆盖；预算改为按压缩后的投影判断 | 已完成：[检查点压缩](context-compaction.md)是唯一的压缩机制，旧代码已删除 |
-| 6 | 主会话 `Agent` 改为「基座 + 模块」，从 `agent-hooks.ts` 一次搬出一项功能 | 后续，见下 |
+| 6 | 主会话 `Agent` 改为「基座 + 模块」，从 `agent-hooks.ts` 一次搬出一项功能 | 进行中：6.1 已完成，见下 |
 | 7 | Web 读事件流；切 `file-only`；`run.log` 与 trace 里与事件流重复的部分退役 | 后续 |
 
 ### 步骤 1：组装改为纯函数投影
@@ -263,6 +263,16 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
 3. **压缩。**
 4. **任务闭合。**
 5. **记忆。** 牵扯最多（检索注入、提醒阶段、写入确认），放最后。
+
+模块的形状（`AgentLoopModule`，`agent-loop.ts`）随搬出的功能增长，没有预先设计的项。模块放在 `packages/core/src/agent/modules/`，
+每个文件导出一个返回模块的函数，文件之间不互相 import；`Agent` 在构造 loop 的地方按数组传入。基座记下的
+「请求改动」（`LoopIterationContext.requestEntries`：追加的消息、只在请求里的注入、检查点，顺序与日志一致）是模块和剩下的
+hooks 读取请求历史的唯一来源。
+
+- **6.1 动态上下文与图片委托（已完成）。** 扩展点 `requestInjections(message)`：模块交出放在 loop 首条 user 消息前面的文本，
+  基座按数组顺序拼接，一次写成 `injection/context`（带 `messageId`），记进 `requestEntries`，再用 `applyUserInjections`
+  改写请求里的那条消息。原来的 `AgentLoopHooks.buildRequestUserContent` 删除。模块是 `modules/request-context.ts` 的
+  `requestContextModule(context)`。消息条目改由 loop 在写消息事件的同一处记进 `requestEntries`，`agent-hooks.ts` 不再自己维护这份列表。
 
 ## 已定事项
 

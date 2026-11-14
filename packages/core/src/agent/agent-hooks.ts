@@ -15,12 +15,10 @@ import type {
   CompletionResponse,
   ContentBlock,
   ControlKind,
-  InjectionContextEventData,
   Message,
   ModelPricing,
   ReasoningEffort,
   RequestAssemblyInput,
-  RequestEntry,
   SecretFilter,
   ToolContext,
   ToolLogger,
@@ -53,7 +51,7 @@ import {
   injectQueuedMessagesWithTrace,
   isTaskComplete,
 } from './queue'
-import { applyUserInjections, assembleRequest } from './request-assembly'
+import { assembleRequest } from './request-assembly'
 import {
   TASK_CLOSURE_CLASSIFIER_SYSTEM_PROMPT,
   type TaskClosureDecision,
@@ -421,8 +419,6 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
   } = options
 
   const baseUsagePurpose = obs.usagePurpose ?? 'agent_loop'
-  // 本 loop 对请求消息的改动,与写进日志的顺序一致:turn 内压缩后经 assembleRequest 重建请求消息
-  const requestEntries: RequestEntry[] = []
   const memoryNudge = new AgentMemoryNudgeController({
     sessionId: toolContext.sessionId,
     agentName: config.name,
@@ -496,29 +492,7 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
   })
 
   const hooks: AgentLoopHooks = {
-    buildRequestUserContent: (message) => {
-      // 注入内容只进 API 不落 canonical;在此补记为 request-scoped 事件
-      const injections: Array<InjectionContextEventData & { messageId: string }> = []
-      if (context.dynamicContext) {
-        injections.push({ kind: 'dynamic', content: context.dynamicContext, messageId: message.id })
-      }
-      if (context.imageDelegationFiles?.length) {
-        injections.push({
-          kind: 'image_delegation',
-          content: buildImageDelegationPrompt(context.imageDelegationFiles),
-          messageId: message.id,
-        })
-      }
-      if (injections.length === 0) return message.content
-      obs.sessionEvents?.append(
-        toolContext.sessionId,
-        injections.map((data) => ({ type: 'injection/context', data })),
-      )
-      for (const injection of injections) requestEntries.push({ kind: 'injection', injection })
-      return applyUserInjections(message.content, injections)
-    },
     onNewMessage: (message) => {
-      requestEntries.push({ kind: 'message', message })
       // 消息事件由 loop 在这之前写入:转给调用方的是 canonical 消息,记忆提醒阶段的是 request/message
       if (!memoryNudge.isActive) {
         options.onNewMessage?.(message)
@@ -609,14 +583,14 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
       if (
         await compaction.compact(canonical, 'in_turn', llmRequestHooks.getCurrentRequestSpanId())
       ) {
-        requestEntries.push({ kind: 'checkpoint', checkpoint: context.checkpoint ?? null })
+        ctx.requestEntries.push({ kind: 'checkpoint', checkpoint: context.checkpoint ?? null })
         const rebuilt = assembleRequest({
           systemPrompt: context.systemPrompt,
           identityMemory: context.identityMemory,
           toolNames: context.tools.map((tool) => tool.name),
           history: context.conversationHistory,
           ...requestBase,
-          entries: requestEntries,
+          entries: ctx.requestEntries,
         })
         ctx.messages.splice(0, ctx.messages.length, ...rebuilt.messages)
       }
@@ -638,7 +612,7 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
         obs.sessionEvents?.append(toolContext.sessionId, [
           { type: 'injection/context', data: injection },
         ])
-        requestEntries.push({ kind: 'injection', injection })
+        ctx.requestEntries.push({ kind: 'injection', injection })
       }
     },
     shouldInterrupt: () => queueGate.shouldKeepInterrupting(),
@@ -1833,20 +1807,6 @@ function createAgentToolCallHooks({
       toolSpanIds.delete(toolUseId)
     },
   }
-}
-
-function buildImageDelegationPrompt(files: Array<{ path: string; mediaType: string }>): string {
-  const fileLines = files.map(
-    (file, index) => `- image ${index + 1}: ${file.path} (${file.mediaType})`,
-  )
-  return [
-    '<image_delegation>',
-    '当前模型不能直接看图。以下用户图片已保存为本地文件，可委托支持 vision 的子 agent 分析：',
-    ...fileLines,
-    '',
-    '需要图片理解时，调用 spawn_agent，指定支持 vision 的模型，并设置 tools=["read_image"]。instruction 必须包含：这些图片的绝对路径、用户原始问题、判断标准、相关上下文，以及“只返回文字分析报告”。随后调用 wait_agent，基于子 agent 的文字报告回复用户。不要声称当前模型直接看到了图片。',
-    '</image_delegation>',
-  ].join('\n')
 }
 
 interface FilterAssistantContentOptions {

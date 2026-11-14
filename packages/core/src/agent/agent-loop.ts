@@ -6,8 +6,10 @@ import type {
   CompletionRequestMeta,
   CompletionResponse,
   ContentBlock,
+  InjectionContextEventData,
   Message,
   ReasoningEffort,
+  RequestEntry,
   RequestMessageEventData,
   SecretFilter,
   StepStopReason,
@@ -24,7 +26,7 @@ import {
 } from '@zero-os/shared'
 import { filterToolInput } from './agent-trace'
 import { CONTEXT_PARAMS } from './params'
-import { hashRequest } from './request-assembly'
+import { applyUserInjections, hashRequest } from './request-assembly'
 
 const MAX_TRANSIENT_STREAM_RETRIES = 3
 const MAX_TRANSPORT_STREAM_RETRIES = 1
@@ -54,6 +56,25 @@ export interface LoopIterationContext {
   iteration: number
   userMessage: string
   state: Record<string, unknown>
+  /**
+   * Every change the loop made to the request messages, in the order it was logged: the messages
+   * it appended and the request-only injections. The same entries rebuild a request from the log.
+   */
+  requestEntries: RequestEntry[]
+}
+
+/**
+ * A function of an assembly, passed by the caller in `AgentLoopConfig.modules`. Writing the log stays
+ * in the base: a module hands the base what belongs in the request, and the base logs and applies it.
+ * Modules never hold each other. At one extension point, observers are all called, rewrites are
+ * chained in array order, and decisions take the first non-default answer in array order.
+ */
+export interface AgentLoopModule {
+  /**
+   * Text placed in front of the loop's first user message, in the request only. The base writes
+   * each piece as `injection/context` and applies them in array order.
+   */
+  requestInjections?(message: Message): Array<Pick<InjectionContextEventData, 'kind' | 'content'>>
 }
 
 /**
@@ -78,6 +99,7 @@ export interface AgentLoopConfig {
   adapter: ProviderAdapter
   sessionId: string
   journal?: AgentLoopJournal
+  modules?: AgentLoopModule[]
   toolExecutor: ToolExecutor
   system: string
   tools: ToolDefinition[]
@@ -95,8 +117,6 @@ export interface AgentLoopHooks {
   /** Continue a provider-truncated response without executing partial tool calls. */
   onTruncatedResponse?(response: CompletionResponse, ctx: LoopIterationContext): Message[]
 
-  /** loop 首条 user 消息发给模型的内容(只在请求里,canonical 消息不变) */
-  buildRequestUserContent?(message: Message, ctx: LoopIterationContext): ContentBlock[]
   onNewMessage?(msg: Message, ctx: LoopIterationContext): void
   filterAssistantContent?(content: ContentBlock[], ctx: LoopIterationContext): ContentBlock[]
   onInvalidAssistantResponse?(
@@ -494,12 +514,13 @@ export class AgentLoop {
       iteration: 0,
       userMessage,
       state: {},
+      requestEntries: [],
     }
 
     const userMsg = userMessageEntry ?? this.buildUserMessage(userMessage, userImages)
     this.notifyNewMessage(userMsg, ctx)
 
-    const requestUserContent = this.hooks.buildRequestUserContent?.(userMsg, ctx) ?? userMsg.content
+    const requestUserContent = this.injectIntoFirstUserMessage(userMsg, ctx)
     messages.push(
       requestUserContent === userMsg.content
         ? userMsg
@@ -727,8 +748,26 @@ export class AgentLoop {
     }
   }
 
+  /** The first user message as the request carries it: the modules' injections in front, logged. */
+  private injectIntoFirstUserMessage(message: Message, ctx: LoopIterationContext): ContentBlock[] {
+    const injections = (this.config.modules ?? []).flatMap((module) =>
+      (module.requestInjections?.(message) ?? []).map((injection) => ({
+        ...injection,
+        messageId: message.id,
+      })),
+    )
+    if (injections.length === 0) return message.content
+    this.config.journal?.events.append(
+      this.config.sessionId,
+      injections.map((data) => ({ type: 'injection/context', data })),
+    )
+    for (const injection of injections) ctx.requestEntries.push({ kind: 'injection', injection })
+    return applyUserInjections(message.content, injections)
+  }
+
   private notifyNewMessage(message: Message, ctx: LoopIterationContext): void {
     ctx.newMessages.push(message)
+    ctx.requestEntries.push({ kind: 'message', message })
     const { journal, sessionId } = this.config
     if (journal) {
       const reason = journal.requestOnly?.()
