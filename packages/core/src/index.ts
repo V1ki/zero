@@ -32,6 +32,7 @@ export type { AgentConfig, AgentContext } from './agent/agent'
 export type {
   AgentLoopConfig,
   AgentLoopHooks,
+  AgentLoopJournal,
   FailedToolAttempt,
   LoopIterationContext,
   ToolExecutionResult,

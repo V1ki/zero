@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { assembleRequest, hashRequest } from '@zero-os/core'
 import type { ProviderAdapter } from '@zero-os/model'
-import { SessionEventStore } from '@zero-os/observe'
+import { type RouterJob, SessionEventStore } from '@zero-os/observe'
 import type {
   CompletionRequest,
   CompletionResponse,
@@ -12,6 +12,7 @@ import type {
 } from '@zero-os/shared'
 import { type AgentDependencies, routerLogSessionId, runTriggerModel } from '../event-agent'
 import { type RouterAgentInput, createRouterAgent } from '../router-agent'
+import { createRouterJobExecutor } from '../router-job-executors'
 
 let logs: string
 let store: SessionEventStore
@@ -204,4 +205,47 @@ test('a Router conversation logs the history it sends, so its requests can be re
   expect(logged).toHaveLength(2)
   expect(logged).toEqual(received)
   expect(rebuilt).toEqual(received)
+})
+
+test('a Codex job run gets its own file in the Router directory, opened before and released after the run', async () => {
+  const { deps } = dependencies()
+  const job: RouterJob = {
+    id: 7,
+    scope: 'general',
+    requestId: 'request-7',
+    executor: 'codex',
+    instruction: '修复 CI',
+    repository: 'owner/repo',
+    audience: null,
+    status: 'running',
+    attempt: 1,
+    result: null,
+    threadId: null,
+    createdAt: '',
+    updatedAt: '',
+  }
+  const execute = createRouterJobExecutor({
+    ...deps,
+    workspaceForRepository: async () => '/checkout',
+    latestFailure: () => {
+      throw Error('unexpected read')
+    },
+    codex: {
+      async runRouterJob(input) {
+        input.journal.events.append(input.sessionId, [
+          {
+            type: 'tool/call',
+            data: { toolUseId: 'run-1', name: 'worker', inputHash: 'sha256:x', inputPreview: '{}' },
+          },
+        ])
+        return { result: 'done', threadId: 'thread-1' }
+      },
+    },
+  })
+
+  await execute(job, [], new AbortController().signal)
+
+  const { events } = callLog('router-job-7')
+  expect(events[0].data).toMatchObject({ name: 'Codex 工程任务', role: 'codex_worker' })
+  expect(events.map((event) => event.type)).toEqual(['session', 'tool/call'])
 })

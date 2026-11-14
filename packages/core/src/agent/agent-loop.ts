@@ -903,6 +903,53 @@ function resolveTransientRetryDelay(config: AgentLoopConfig, attempt: number): n
   return config.transientRetryDelayMs?.(attempt) ?? Math.min(5_000 * 2 ** (attempt - 1), 60_000)
 }
 
+/**
+ * Writes `tool/call` for a tool call that starts now. The loop writes it for every tool_use; a caller
+ * that runs one tool outside a loop (the Router's Codex job) writes it with the same function.
+ */
+export function journalToolCall(
+  journal: AgentLoopJournal,
+  sessionId: string,
+  call: { id: string; name: string; input: Record<string, unknown> },
+): void {
+  const input = JSON.stringify(filterToolInput(call.input, journal.secretFilter))
+  journal.events.append(sessionId, [
+    {
+      type: 'tool/call',
+      data: {
+        toolUseId: call.id,
+        name: call.name,
+        inputHash: `sha256:${createHash('sha256').update(input).digest('hex')}`,
+        inputPreview: input.length > 512 ? `${input.slice(0, 512)}…` : input,
+        spanId: journal.toolSpanId?.(call.id),
+      },
+    },
+  ])
+}
+
+/** Writes `tool/result` for a tool call that `journalToolCall` recorded. */
+export function journalToolResult(
+  journal: AgentLoopJournal,
+  sessionId: string,
+  call: { id: string; name: string },
+  result: ToolExecutionResult,
+  durationMs: number,
+): void {
+  journal.events.append(sessionId, [
+    {
+      type: 'tool/result',
+      data: {
+        toolUseId: call.id,
+        name: call.name,
+        status: result.success ? 'success' : 'error',
+        durationMs,
+        chars: result.output.length,
+        summary: result.outputSummary,
+      },
+    },
+  ])
+}
+
 interface AgentLoopToolExecutionResult {
   toolResultBlocks: ContentBlock[]
   failedToolAttempts: FailedToolAttempt[]
@@ -923,21 +970,7 @@ async function executeAgentLoopToolCalls(options: {
     if (block.type !== 'tool_use') continue
 
     options.hooks.onToolCallStart?.(block.name, block.id, block.input, options.ctx)
-    if (journal) {
-      const input = JSON.stringify(filterToolInput(block.input, journal.secretFilter))
-      journal.events.append(sessionId, [
-        {
-          type: 'tool/call',
-          data: {
-            toolUseId: block.id,
-            name: block.name,
-            inputHash: `sha256:${createHash('sha256').update(input).digest('hex')}`,
-            inputPreview: input.length > 512 ? `${input.slice(0, 512)}…` : input,
-            spanId: journal.toolSpanId?.(block.id),
-          },
-        },
-      ])
-    }
+    if (journal) journalToolCall(journal, sessionId, block)
     const startedAt = Date.now()
     const end = (result: ToolExecutionResult) => {
       toolResultBlocks.push(buildToolResultBlock(block.id, result))
@@ -950,19 +983,7 @@ async function executeAgentLoopToolCalls(options: {
         durationMs,
         options.ctx,
       )
-      journal?.events.append(sessionId, [
-        {
-          type: 'tool/result',
-          data: {
-            toolUseId: block.id,
-            name: block.name,
-            status: result.success ? 'success' : 'error',
-            durationMs,
-            chars: result.output.length,
-            summary: result.outputSummary,
-          },
-        },
-      ])
+      if (journal) journalToolResult(journal, sessionId, block, result, durationMs)
     }
 
     const malformedInputError =

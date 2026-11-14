@@ -158,7 +158,7 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
 | 1 | 组装改为纯函数投影：准备 prompt 不再修改 canonical 消息；evidence 和压缩模型读原文 | 已完成 |
 | 2 | loop 基座 `runAgentLoop`；记忆检索和 Router 改为基座的配置 | 已完成 |
 | 3 | 主会话的 loop 直接写消息事件，取代 turn 结束时的 diff；`syncCanonical` 只留给非 loop 修改 | 已完成：即 [session-log-replay.md](session-log-replay.md) 的步骤 1，子代理一并写消息；非 loop 修改经 `syncMessages` 声明原因，`syncCanonical` 只对账 |
-| 4 | 基座写事件流；记忆检索、Router、Codex Worker 依次接入 | 4a～4c 已完成；4d 后续，见下 |
+| 4 | 基座写事件流；记忆检索、Router、Codex Worker 依次接入 | 已完成，见下 |
 | 5 | 删除旧式 `compressConversation` 和切换模型时对 canonical 的覆盖；预算改为按压缩后的投影判断 | 已完成：[检查点压缩](context-compaction.md)是唯一的压缩机制，旧代码已删除 |
 | 6 | 主会话 `Agent` 改为「基座 + 模块」，从 `agent-hooks.ts` 一次搬出一项功能 | 后续，见下 |
 | 7 | Web 读事件流；切 `file-only`；`run.log` 与 trace 里与事件流重复的部分退役 | 后续 |
@@ -239,8 +239,19 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
     并清理 `subagent-index.json`。按文件的最后写入时间判断，不看业务记录：仍在保留的任务、对话，其较早调用的文件也会删掉，
     文件不会比它记录的那次调用活得更久。
   - 不写 `step/start.model`：Router 的 `AgentDependencies.modelRouter` 只给 adapter，模型名在 usage 账本里。
-- **4d Codex Worker 接入。** `runRouterJob` 不再自造 `ToolContext`，在派工的事件文件里记一次工具调用；
-  logger 不再丢弃 `warn` 和 `error`。
+- **4d Codex Worker 接入（已完成）。** 计划：`runRouterJob` 不再自造 `ToolContext`，在派工的事件文件里记一次工具调用；
+  logger 不再丢弃 `warn` 和 `error`。实际落点（`ToolContext` 一条与计划不同，见最后一项）：
+  - loop 写 `tool/call`、`tool/result` 的代码从 `executeAgentLoopToolCalls` 提成 `journalToolCall`、`journalToolResult`
+    （`agent-loop.ts`），loop 和 `runRouterJob` 都调它们，主会话的事件不变。
+  - Codex 派工每次执行（每个 attempt）经 `openRouterCall`（与 `runTriggerModel` 同一个函数）新建
+    `sessions/router-<日期>/sub-router-job-<派工编号>.<uuidv7>.jsonl`，header 的 `name` 为 `Codex 工程任务`，`role` 为
+    `codex_worker`。文件里只有 `tool/call`（`name: worker`，输入为 `type`、`instruction`、`workingDirectory`，续做时带
+    `resumeThreadId`）和 `tool/result`（成功或失败、耗时、结果字数与摘要）；抛错时同样写 `tool/result`（`status: error`）。
+    Codex 的中间过程不写（见「已定事项」）。完整结果仍在 `router_job_steps.result`。
+  - `runRouterJob` 新增必填的 `journal` 和 `logger`，由调用方（`router-job-executors.ts`）给出：logger 是 Router 当天的
+    会话 logger，`warn`、`error` 照常写进 `run.log`。`toolUseId` 每次新生成（`router_job_<uuid>`），不再固定为 `router-job`。
+  - `ToolContext` 仍在 `runRouterJob` 里组装，因为 `runCodexWorker` 需要它；其中的 logger、会话编号来自调用方，
+    运行登记表仍是这次执行独有的一份。没有改成经 `BaseTool.run`：那条路径要求会话的工具 hooks，而派工不在会话里。
 
 ### 步骤 6：主会话改为「基座 + 模块」
 

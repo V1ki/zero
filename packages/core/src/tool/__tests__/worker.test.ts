@@ -12,6 +12,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { SessionEventStore } from '@zero-os/observe'
 import type { BackgroundToolProgressInput, ToolContext } from '@zero-os/shared'
 import { SessionRunningToolRegistry } from '../../session/running-tool-registry'
 import { type CodexWorkerUsageRecord, WorkerTool } from '../worker'
@@ -702,11 +703,18 @@ describe('WorkerTool', () => {
   })
 })
 
+/** Journal and logger of a Router job run; these tests do not look at either. */
+const routerRun = {
+  journal: { events: { append: () => null, appendMessage: () => {} } },
+  logger: { info() {}, warn() {}, error() {} },
+}
+
 describe('Router engineering jobs', () => {
   test('inherits the configured Codex policy before start and resume without disabling host capabilities', async () => {
     const { projectRoot, tool, trace } = setup()
     const request = {
       sessionId: 'router-job-7',
+      ...routerRun,
       instruction: 'early',
       workingDirectory: projectRoot,
       signal: new AbortController().signal,
@@ -734,6 +742,7 @@ describe('Router engineering jobs', () => {
     const { projectRoot, tool, trace, workspace } = setup()
     const request = {
       sessionId: 'router-job-8',
+      ...routerRun,
       instruction: 'early',
       workingDirectory: projectRoot,
       signal: new AbortController().signal,
@@ -750,11 +759,68 @@ describe('Router engineering jobs', () => {
     })
   })
 
+  test('records each job run as one tool call in the job file, with the logger kept', async () => {
+    const { projectRoot, tool, trace } = setup()
+    const logs = mkdtempSync(join(tmpdir(), 'zero-router-job-journal-'))
+    try {
+      const store = new SessionEventStore({ basePath: logs })
+      store.ensureSession({ v: 1, sessionId: 'router-job-10', schemaVersion: 1, source: 'web' })
+      const logged: string[] = []
+      const request = {
+        sessionId: 'router-job-10',
+        instruction: 'early',
+        workingDirectory: projectRoot,
+        signal: new AbortController().signal,
+        journal: { events: store },
+        logger: {
+          info: (event: string) => logged.push(`info:${event}`),
+          warn: (event: string) => logged.push(`warn:${event}`),
+          error: (event: string) => logged.push(`error:${event}`),
+        },
+      }
+      await tool.runRouterJob(request)
+      await expect(tool.runRouterJob({ ...request, instruction: 'reject' })).rejects.toThrow()
+
+      const events = store.readEvents('router-job-10').slice(1)
+      expect(events.map((event) => event.type)).toEqual([
+        'tool/call',
+        'tool/result',
+        'tool/call',
+        'tool/result',
+      ])
+      const [call, result, rejectedCall, rejected] = events.map(
+        (event) => event.data as unknown as Record<string, unknown>,
+      )
+      expect(call.toolUseId).not.toBe(rejectedCall.toolUseId)
+      expect([result.toolUseId, rejected.toolUseId]).toEqual([
+        call.toolUseId,
+        rejectedCall.toolUseId,
+      ])
+      expect(result).toMatchObject({ name: 'worker', status: 'success' })
+      expect(rejected).toMatchObject({ name: 'worker', status: 'error' })
+      // The logged input is the instruction Codex received.
+      const started = trace().filter((item) => item.method === 'turn/start')
+      expect(
+        [call, rejectedCall].map((data) => JSON.parse(String(data.inputPreview)).instruction),
+      ).toEqual(started.map((item) => item.mode))
+      expect(JSON.parse(String(call.inputPreview))).toEqual({
+        type: 'codex',
+        instruction: 'early',
+        workingDirectory: projectRoot,
+      })
+      // The caller's logger goes to Codex as given, warn and error included.
+      expect(logged).toContain('info:worker_turn_started')
+    } finally {
+      rmSync(logs, { recursive: true, force: true })
+    }
+  })
+
   test('interrupts an active job and never submits an already aborted job', async () => {
     const { projectRoot, tool, trace, waitForRequest } = setup()
     const abort = new AbortController()
     const request = {
       sessionId: 'router-job-9',
+      ...routerRun,
       instruction: 'wait',
       workingDirectory: projectRoot,
       signal: abort.signal,
@@ -773,6 +839,7 @@ test('Router Codex result preserves text beyond the previous 8000 character cap'
   const { tool, projectRoot } = setup()
   const result = await tool.runRouterJob({
     sessionId: 'router-long',
+    ...routerRun,
     workingDirectory: projectRoot,
     instruction: 'long-result',
     signal: new AbortController().signal,
@@ -785,6 +852,7 @@ describe('Codex quota fallback', () => {
     const { tool, projectRoot, trace } = setup(true)
     const result = await tool.runRouterJob({
       sessionId: 'router-quota',
+      ...routerRun,
       workingDirectory: projectRoot,
       instruction: 'quota',
       signal: new AbortController().signal,
@@ -817,6 +885,7 @@ describe('Codex quota fallback', () => {
       await expect(
         tool.runRouterJob({
           sessionId: 'router-no-fallback',
+          ...routerRun,
           workingDirectory: projectRoot,
           instruction,
           signal: new AbortController().signal,
@@ -831,6 +900,7 @@ describe('Codex quota fallback', () => {
     await expect(
       tool.runRouterJob({
         sessionId: 'router-both',
+        ...routerRun,
         workingDirectory: projectRoot,
         instruction: 'quota-both',
         signal: new AbortController().signal,
@@ -849,6 +919,7 @@ test('Router persists thread before rejected or disconnected turns and can resum
   let saved: string | undefined
   const request = {
     sessionId: 'router-thread-persistence',
+    ...routerRun,
     workingDirectory: projectRoot,
     instruction: 'reject',
     signal: new AbortController().signal,

@@ -1,10 +1,16 @@
-import { AgentLoopStoppedError, createSessionLogger, runAgentLoop } from '@zero-os/core'
+import {
+  type AgentLoopJournal,
+  AgentLoopStoppedError,
+  createSessionLogger,
+  runAgentLoop,
+} from '@zero-os/core'
 import type { ProviderAdapter } from '@zero-os/model'
 import type { SessionEventStore, Tracer, UsagePurpose } from '@zero-os/observe'
 import {
   type Message,
   type SecretFilter,
   type ToolDefinition,
+  type ToolLogger,
   type TriggerAgentResult,
   type TriggerInboxItem,
   type TriggerPriorEvent,
@@ -91,6 +97,40 @@ export function routerLogSessionId(at = new Date()): string {
   return `${routerLogPrefix}${formatLocalSessionDateParts(at).dateDirectory}`
 }
 
+/**
+ * Opens the event file of one Router call: a new `sub-<sessionId>.<uuidv7>.jsonl` in the day's
+ * Router directory, so the business id `sessionId` prefixes it. The logger is the session logger,
+ * writing to that day's `run.log` with the call id on every line. `close` drops the store's cache.
+ */
+export function openRouterCall(
+  { secretFilter, sessionEvents, tracer }: AgentDependencies,
+  call: { sessionId: string; purpose: UsagePurpose; label: string },
+): { journal: AgentLoopJournal; logger: ToolLogger; close(): void } {
+  const day = routerLogSessionId()
+  const callId = `${call.sessionId}.${generateId()}`
+  sessionEvents.registerSubagent({
+    childSessionId: callId,
+    parentSessionId: day,
+    name: call.label,
+    role: call.purpose,
+  })
+  const log = createSessionLogger({ sessionId: day, tracer, secretFilter })
+  return {
+    journal: {
+      events: {
+        append: (_sessionId, events) => sessionEvents.append(callId, events),
+        appendMessage: (_sessionId, message) => sessionEvents.appendMessage(callId, message),
+      },
+    },
+    logger: {
+      info: (event, data) => log.info(event, { callId, ...data }),
+      warn: (event, data) => log.warn(event, { callId, ...data }),
+      error: (event, data) => log.error(event, { callId, ...data }),
+    },
+    close: () => sessionEvents.release(callId),
+  }
+}
+
 interface TriggerModelRequest {
   /** The id the business records keep. The call's event file is `sub-<sessionId>.<uuid>.jsonl`. */
   sessionId: string
@@ -117,35 +157,22 @@ const maxToolCalls = 8
  * after `sessionId`, with the prompt, history and every request exactly as the model received them.
  */
 export async function runTriggerModel(
-  { modelRouter, secretFilter, sessionEvents, tracer }: AgentDependencies,
+  deps: AgentDependencies,
   { sessionId, purpose, label, system, prompt, history = [], signal, toolset }: TriggerModelRequest,
 ): Promise<string> {
-  const model = modelRouter.getDefaultModel() ?? modelRouter.getCurrentModel()
+  const model = deps.modelRouter.getDefaultModel() ?? deps.modelRouter.getCurrentModel()
   if (!model) throw new TriggerAgentError('没有可用的模型，请先配置 ZeRo 模型。')
   const names = new Set(toolset?.definitions.map((definition) => definition.name))
   const seen = new Set<string>()
   const dispatchErrors = new Set<string>()
 
-  const day = routerLogSessionId()
-  const callId = `${sessionId}.${generateId()}`
-  sessionEvents.registerSubagent({
-    childSessionId: callId,
-    parentSessionId: day,
-    name: label,
-    role: purpose,
-  })
-  const log = createSessionLogger({ sessionId: day, tracer, secretFilter })
+  const { journal, logger, close } = openRouterCall(deps, { sessionId, purpose, label })
 
   const { messages, finalText } = await runAgentLoop({
     adapter: model.adapter,
     sessionId,
     meta: { sessionId, purpose },
-    journal: {
-      events: {
-        append: (_sessionId, events) => sessionEvents.append(callId, events),
-        appendMessage: (_sessionId, message) => sessionEvents.appendMessage(callId, message),
-      },
-    },
+    journal,
     system,
     prompt,
     history,
@@ -170,11 +197,7 @@ export async function runTriggerModel(
     stream: false,
     timeoutMs: 90_000,
     signal,
-    logger: {
-      info: (event, data) => log.info(event, { callId, ...data }),
-      warn: (event, data) => log.warn(event, { callId, ...data }),
-      error: (event, data) => log.error(event, { callId, ...data }),
-    },
+    logger,
     hooks: {
       onEmptyResponse: () => 'break',
       onCompletionEnd(_request, response) {
@@ -233,7 +256,7 @@ export async function runTriggerModel(
         error.reason === 'timeout' ? `${label}超过 90 秒，请稍后重试。` : `${label}已取消。`,
       )
     })
-    .finally(() => sessionEvents.release(callId))
+    .finally(close)
   const output = messages.at(-1)?.role === 'assistant' && finalText.trim()
   if (!output) throw new TriggerAgentError('模型没有返回可展示的文字，请重试。')
   return output

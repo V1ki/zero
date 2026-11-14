@@ -44,6 +44,8 @@ Router 的每次模型调用（`runTriggerModel`）写一份子文件，按天�
   | 渠道任务追问 | `router-im-<受众摘要>` | 由受众推出 |
   | 写入确认、委托草案 | `router-write-check`、`commission-<uuid>` | 不存 |
 
+- Codex 派工的每次执行也是这里的一份文件（`sub-router-job-<派工编号>.<uuidv7>.jsonl`，`role` 为 `codex_worker`），
+  里面只有一对 `tool/call`、`tool/result`（`name: worker`），没有 `step/*` 和消息；Codex 的中间过程不落盘。
 - 保留期：设置了 Router 正文保留期时，`ListenerRuntime` 每次清理业务表后调用 `SessionEventStore.deleteFilesBefore`，删除
   `router-*` 目录里最后写入早于截止时间的文件（含当天的 `run.log`）和对应的索引条目。没有设置保留期时一直保留。
 

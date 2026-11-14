@@ -137,7 +137,15 @@ test('Codex receives only configured working directory, task prompt and its own 
     codex: {
       async runRouterJob(input) {
         expect(Object.keys(input).sort()).toEqual(
-          ['instruction', 'resumeThreadId', 'sessionId', 'signal', 'workingDirectory'].sort(),
+          [
+            'instruction',
+            'journal',
+            'logger',
+            'resumeThreadId',
+            'sessionId',
+            'signal',
+            'workingDirectory',
+          ].sort(),
         )
         expect(input.workingDirectory).toBe(cwd)
         expect(input.resumeThreadId).toBe(calls++ ? 'actual-thread-id' : undefined)

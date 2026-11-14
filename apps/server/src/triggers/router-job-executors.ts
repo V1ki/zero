@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto'
 import { RouterCodexError, type WorkerTool } from '@zero-os/core'
 import type { RouterJob, RouterJobStep } from '@zero-os/observe'
-import { type AgentDependencies, TriggerAgentError, runTriggerModel } from './event-agent'
+import {
+  type AgentDependencies,
+  TriggerAgentError,
+  openRouterCall,
+  runTriggerModel,
+} from './event-agent'
 import { isWorkflowFile } from './github'
 import { RouterJobExecutionUncertainError } from './router-jobs'
 
@@ -125,6 +130,11 @@ export function createRouterJobExecutor(options: ExecutorOptions) {
         .digest('base64url')}.`
       if (job.threadId && !job.threadId.startsWith(key))
         throw new TriggerAgentError('工程任务的工作区授权已更换，请为新的工作区创建独立任务。')
+      const call = openRouterCall(options, {
+        sessionId,
+        purpose: 'codex_worker',
+        label: 'Codex 工程任务',
+      })
       try {
         const out = await options.codex.runRouterJob({
           sessionId,
@@ -132,6 +142,8 @@ export function createRouterJobExecutor(options: ExecutorOptions) {
           instruction: codexInstruction(job, secretFilter, task),
           resumeThreadId: job.threadId?.slice(key.length),
           signal,
+          journal: call.journal,
+          logger: call.logger,
         })
         return {
           result: secretFilter.filter(out.result).slice(0, 8000),
@@ -143,6 +155,8 @@ export function createRouterJobExecutor(options: ExecutorOptions) {
         throw new RouterJobExecutionUncertainError(
           '未能确认 Codex 工程任务的执行结果，请先核对工作区。',
         )
+      } finally {
+        call.close()
       }
     }
 

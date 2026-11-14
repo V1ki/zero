@@ -46,8 +46,8 @@ turn 结束的对账走 `syncCanonical`，其余事件走 `append`。seq 写入�
 | `turn/start` ✅ | session-turn | 每 turn 开始 | turnIndex、trigger、model、agentName、baseSeq（本 turn 消息 seq 均大于它）;恢复时下一个 turn 编号 = 最大 turnIndex + 1 |
 | `turn/end` ✅ | session-turn 成功/异常两条路径;恢复时 `sealInterruptedTurn` 补写 | turn 结束;进程在 turn 中途退出后恢复（最后一个 `turn/start` 之后没有 `turn/end`） | turnIndex、status(completed/failed/aborted)、durationMs;补写的封口为 status=failed、reason=process_restart |
 | `step/end` ✅ | `AgentLoop`，`onCompletionEnd` hook 之前（调用方拒绝这次响应时也已写入） | 每次模型请求返回 | stepIndex、stopReason、requestId、usage、durationMs |
-| `tool/call` ✅ | `AgentLoop`，`onToolCallStart` hook 之后 | 工具开始 | toolUseId、name、inputHash、inputPreview、spanId |
-| `tool/result` ✅ | `AgentLoop`，`onToolCallEnd` hook 之后 | 工具返回 | toolUseId、name、status、durationMs、chars、summary |
+| `tool/call` ✅ | `AgentLoop`，`onToolCallStart` hook 之后;`WorkerTool.runRouterJob`（Router 的 Codex 派工，开始执行前）。两处都经 `journalToolCall` | 工具开始 | toolUseId、name、inputHash、inputPreview、spanId |
+| `tool/result` ✅ | `AgentLoop`，`onToolCallEnd` hook 之后;`WorkerTool.runRouterJob`（结束或抛错时）。两处都经 `journalToolResult` | 工具返回 | toolUseId、name、status、durationMs、chars、summary |
 | `compaction/prune` ✅ | agent-hooks `processAgentToolResults`（artifactize） | tool_result 内容真的被 artifact 引用替换时（只写了 evidence、原文仍在 canonical 的中等输出不发） | toolUseId、from(chars+hash)、to(artifact_ref)、evidence 指针 |
 | `compaction/start` ✅ | agent `compactContextForRequest` | 请求前压力达到阈值且保留尾部之外有内容 | compactionId、trigger(turn_start/in_turn)、tokens、thresholdTokens |
 | `compaction/end` ✅ | 同上 | 裁剪或摘要结束（紧跟在 `compaction/checkpoint` 之后） | compactionId、status(pruned/summarized/failed)、tokensBefore、tokensAfter、durationMs、usage、error |
