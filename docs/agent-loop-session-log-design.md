@@ -160,7 +160,7 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
 | 3 | 主会话的 loop 直接写消息事件，取代 turn 结束时的 diff；`syncCanonical` 只留给非 loop 修改 | 已完成：即 [session-log-replay.md](session-log-replay.md) 的步骤 1，子代理一并写消息；非 loop 修改经 `syncMessages` 声明原因，`syncCanonical` 只对账 |
 | 4 | 基座写事件流；记忆检索、Router、Codex Worker 依次接入 | 已完成，见下 |
 | 5 | 删除旧式 `compressConversation` 和切换模型时对 canonical 的覆盖；预算改为按压缩后的投影判断 | 已完成：[检查点压缩](context-compaction.md)是唯一的压缩机制，旧代码已删除 |
-| 6 | 主会话 `Agent` 改为「基座 + 模块」，从 `agent-hooks.ts` 一次搬出一项功能 | 6.1、6.2 已完成；6.3～6.5 见下 |
+| 6 | 主会话 `Agent` 改为「基座 + 模块」，从 `agent-hooks.ts` 一次搬出一项功能 | 6.1～6.3 已完成；6.4、6.5 见下 |
 | 7 | Web 读事件流；切 `file-only`；`run.log` 与 trace 里与事件流重复的部分退役 | 后续 |
 
 ### 步骤 1：组装改为纯函数投影
@@ -200,8 +200,7 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
 - **4a 基座接事件流（已完成）。** 写事件落在两层，入口是同一个 `AgentLoopJournal`：
   - `AgentLoop` 写 `step/start`（含 `requestHash`）、`step/end`、`tool/call`、`tool/result` 和消息事件。主会话和
     `runAgentLoop` 都经过它，所以这几类事件只有一份实现，`agent-hooks.ts` 里的对应代码已删除。
-  - `runAgentLoop` 在 loop 之前写 `system/prompt`、`tools/set`、`loop/start`。主会话的这三类事件仍由 `Session` 和
-    `Agent.run` 写：`loop/start` 必须早于 turn 开始的压缩，要等压缩成为模块（步骤 6）才能并过来。
+  - `runAgentLoop` 在 loop 之前写 `system/prompt`、`tools/set`、`loop/start`。主会话的系统提示词和工具集仍由 `Session` 在变化时写；`loop/start` 在 6.3 起也由基座写（`historyLogged`）。
   - 主会话特有的三样东西经 `AgentLoopJournal` 的回调交给 loop：请求和工具的 span 编号（trace 一侧提供，没有 tracer
     的调用方不带）、「此刻的消息只进请求」（记忆提醒阶段，写成 `request/message`）。
   - `step/end` 写在 `onCompletionEnd` hook 之前：调用方的策略拒绝这次响应（Router 的输出上限、无效工具调用）时，
@@ -299,6 +298,20 @@ hooks 读取请求历史的唯一来源。
   - 验收：扩充后的 `dump-events.ts`（7 个场景：原场景、工具执行中排队拼进工具结果、分类器运行时排队使闭合记成 `discarded`、
     排队打断记忆提醒、闭合要求继续与记忆写入、turn 内压缩、turn 开始压缩）在改动前后输出逐行相同，包括事件、trace 的 span
     调用（名称、父子、顺序、kind、data 与 metadata 的键和 metadata 的值）和 bus 事件。
+- **6.3 压缩（已完成）。** 模块是 `modules/compaction.ts` 的 `compactionModule(...)`，主会话 `Agent` 从这一步起经基座
+  `runAgentLoop` 运行，`loop/start` 由基座写。落点：
+  - 扩展点 `compact(canonical, trigger, checkpoint)`（改写，按数组顺序串联）：模块在压力达到阈值时压缩 canonical 消息，返回新检查点。
+    基座在写完 `loop/start` 之后调用一次（`turn_start`），用返回的检查点投影请求历史（`prepareRequestMessages`）；工具结果之后、
+    排队拼接之前再调用一次（`in_turn`，canonical = 本次运行的历史 + 新消息），有新检查点时把它记进 `requestEntries`，用
+    `assembleRequest` 重建请求消息。`compaction/start|checkpoint|end` 仍由模块在压缩发生的那一刻写。
+  - `runAgentLoop` 新增 `history` 的检查点 `checkpoint`、`requireThinkingForToolUse`（写进 `loop/start`）、`modules`、`getMeta`、
+    `userImages`、`userMessageEntry`、`transientRetryDelayMs`，以及 `historyLogged`：会话自己的事件文件已经在变化时写了系统提示词、
+    工具集，在消息产生时写了历史，基座只写 `loop/start`。没有它时（记忆检索、Router）基座照旧写系统提示词、工具集和历史。
+    基座现在对所有调用方都用 `prepareRequestMessages` 投影传入的历史：Router 的历史与记忆检索（无历史）不受影响，见 4c。
+  - 压缩模型的请求输入不另落事件：它是一次 `adapter.complete()`，输入由上一份检查点的摘要、新进入摘要范围的 canonical 消息
+    （两份检查点水位之间，均已作为消息事件落盘）和代码里的提示词决定，可以从日志推出，但没有 hash 核对。
+  - `Agent.compactContextForRequest` 和 `createAgentLoopHooks` 的 `compaction`、`requestBase` 选项、`afterToolResults` hook 删除。
+  - 验收：`dump-events.ts` 的 7 个场景（含 turn 开始压缩与 turn 内压缩）改动前后的事件、trace、bus 逐行相同。
 
 ## 已定事项
 

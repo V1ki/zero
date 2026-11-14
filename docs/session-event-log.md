@@ -78,7 +78,7 @@ Router 的每次模型调用（`runTriggerModel`）写一份子文件，按天�
 {"seq":0,"ts":"...","type":"session","data":{"v":1,"sessionId":"...","schemaVersion":1,"source":"feishu","channelId":"oc_..."}}
 {"type":"turn/start","data":{"turnIndex":12,"trigger":"channel|control|queued_drain","model":"...","agentName":"..."}}
 {"type":"turn/end","data":{"turnIndex":12,"status":"completed|failed|aborted","durationMs":83400}}  // 恢复时补写的封口另带 "reason":"process_restart"
-{"type":"loop/start","data":{"requireThinkingForToolUse":false}}  // 每次 Agent.run 开始,早于 turn 开始的压缩
+{"type":"loop/start","data":{"requireThinkingForToolUse":false}}  // 基座 runAgentLoop 每次开始时写(主会话、子代理、记忆检索、Router),早于 turn 开始的压缩
 {"type":"step/start","data":{"stepIndex":3,"requestSpanId":"span_...","model":"...","messageCount":21,"requestHash":"sha256:..."}}
 {"type":"step/end","data":{"stepIndex":3,"stopReason":"end_turn|tool_use|error|aborted","requestId":"resp_...","usage":{},"durationMs":12400}}
 {"type":"tool/call","data":{"toolUseId":"toolu_...","name":"bash","inputHash":"sha256:...","inputPreview":"...","spanId":"span_..."}}
@@ -147,7 +147,7 @@ memory 工具的完整调用过程仍由 `tool/call`+`tool/result` 承载。任�
 `buildRequestAssemblyInput(events, S)`（`@zero-os/observe`，只需要事件，`SessionEventStore.getRequestAssemblyInput`
 是它的包装）从日志取得：
 
-1. **所属 loop**：S 之前最近的 `loop/start`（seq = L）。`Agent.run` 每次开始时写一条，早于 turn 开始的压缩。
+1. **所属 loop**：S 之前最近的 `loop/start`（seq = L）。基座 `runAgentLoop` 每次开始时写一条（主会话经 `Agent.run` 进入），早于 turn 开始的压缩。
 2. **history 与 checkpoint**：`projectUpTo(L)` 的消息与检查点，即 loop 开始时的 canonical 投影。
 3. **system 与工具名**：S 之前最后一条 `system/prompt`（system = `content`，有 `identity` 时接上 `\n\n` + identity）
    与最后一条 `tools/set`。

@@ -10,14 +10,12 @@ import type {
   UsagePurpose,
 } from '@zero-os/observe'
 import type {
-  CompactionTrigger,
   CompletionRequest,
   CompletionResponse,
   ContentBlock,
   Message,
   ModelPricing,
   ReasoningEffort,
-  RequestAssemblyInput,
   SecretFilter,
   ToolContext,
   ToolLogger,
@@ -46,7 +44,6 @@ import { retrieveMemoriesWithDecision } from './memory-retrieval'
 import { CONTEXT_PARAMS } from './params'
 import { wrapMemoryInjection } from './prompt'
 import { type QueuedInjectionTrace, buildLoopUserMessage, formatAppliedQueuedIntent } from './queue'
-import { assembleRequest } from './request-assembly'
 import {
   TASK_CLOSURE_CLASSIFIER_SYSTEM_PROMPT,
   type TaskClosureDecision,
@@ -78,15 +75,6 @@ export interface CreateAgentLoopHooksOptions {
   }
   requestPurposeRef: { current: UsagePurpose }
   traceRecorder: AgentTraceRecorder
-  compaction: AgentRequestCompaction
-  /** 请求历史投影时用的检查点(turn 开始的压缩之后)与 provider 清理选项 */
-  requestBase: Pick<RequestAssemblyInput, 'checkpoint' | 'requireThinkingForToolUse'>
-}
-
-/** turn 开始和 turn 内共用的压缩 */
-export interface AgentRequestCompaction {
-  /** 按压力压缩 canonical 消息;返回检查点是否变化 */
-  compact(messages: Message[], trigger: CompactionTrigger, parentSpanId?: string): Promise<boolean>
 }
 
 function isMissingDeepSeekSignedThinkingError(error: unknown): boolean {
@@ -229,6 +217,8 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
   hooks: AgentLoopHooks
   /** loop 写 step、tool、消息事件的入口;没有事件流句柄时为 undefined */
   journal: AgentLoopJournal | undefined
+  /** 当前模型请求的 trace span,压缩记在它下面 */
+  requestSpanId(): string | undefined
   /** 还没搬出的会话功能(闭合、记忆、trace)在模块扩展点上的部分,按这个顺序放进模块数组 */
   modules: AgentLoopModule[]
 } {
@@ -245,8 +235,6 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
     executionState,
     requestPurposeRef,
     traceRecorder,
-    compaction,
-    requestBase,
   } = options
 
   const baseUsagePurpose = obs.usagePurpose ?? 'agent_loop'
@@ -376,25 +364,6 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
         additionalMessages: processed.additionalMessages,
       }
     },
-    afterToolResults: async (ctx) => {
-      // turn 内的 canonical = turn 开始时的历史 + 本 turn 的新消息;检查点变化时按 assembleRequest
-      // 重建请求消息,补回只在请求里的内容(首条 user 消息的注入、拼进去的排队消息)
-      const canonical = [...context.conversationHistory, ...ctx.newMessages]
-      if (
-        await compaction.compact(canonical, 'in_turn', llmRequestHooks.getCurrentRequestSpanId())
-      ) {
-        ctx.requestEntries.push({ kind: 'checkpoint', checkpoint: context.checkpoint ?? null })
-        const rebuilt = assembleRequest({
-          systemPrompt: context.systemPrompt,
-          identityMemory: context.identityMemory,
-          toolNames: context.tools.map((tool) => tool.name),
-          history: context.conversationHistory,
-          ...requestBase,
-          entries: ctx.requestEntries,
-        })
-        ctx.messages.splice(0, ctx.messages.length, ...rebuilt.messages)
-      }
-    },
   }
 
   const endTurn = createAgentEndTurnHandlers({
@@ -461,6 +430,7 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
 
   return {
     hooks,
+    requestSpanId: () => llmRequestHooks.getCurrentRequestSpanId(),
     modules: [module, memoryNudgeModule],
     journal: obs.sessionEvents && {
       events: obs.sessionEvents,

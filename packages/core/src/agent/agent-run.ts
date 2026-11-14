@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto'
 import type { ProviderAdapter } from '@zero-os/model'
 import type {
+  CompactionTrigger,
   CompletionRequest,
+  ContextCheckpoint,
   LoopRunnerUsage,
   LoopToolCallRecord,
   Message,
@@ -13,8 +15,11 @@ import {
   type AgentLoopConfig,
   type AgentLoopHooks,
   type AgentLoopJournal,
+  type AgentLoopModule,
   type ToolExecutionResult,
 } from './agent-loop'
+import { prepareRequestMessages } from './compaction'
+import { assembleRequest } from './request-assembly'
 
 /** Like `ToolExecutor`, but each call also receives the run's stop signal (timeout or caller abort). */
 export interface AgentLoopRunToolExecutor {
@@ -30,10 +35,24 @@ export interface AgentLoopRunToolExecutor {
 export interface AgentLoopRunOptions {
   adapter: ProviderAdapter
   sessionId: string
-  meta: CompletionRequest['meta']
+  meta?: CompletionRequest['meta']
+  /** Request meta that changes during the run; takes precedence over `meta`. */
+  getMeta?: AgentLoopConfig['getMeta']
   system: string
   prompt: string
+  /** Images of the prompt. */
+  userImages?: Array<{ mediaType: string; data: string }>
+  /** The prompt as an already built message (its id and time), instead of `prompt`. */
+  userMessageEntry?: Message
+  /** Canonical history. The request carries `prepareRequestMessages(history, checkpoint)`. */
   history?: Message[]
+  /** Checkpoint of `history` when the run starts. */
+  checkpoint?: ContextCheckpoint
+  /** Provider cleanup of the history (signed thinking before tool use), recorded in `loop/start`. */
+  requireThinkingForToolUse?: boolean
+  /** The caller's modules, in the order the merge rules apply them. */
+  modules?: AgentLoopModule[]
+  transientRetryDelayMs?: AgentLoopConfig['transientRetryDelayMs']
   tools?: ToolDefinition[]
   toolExecutor?: AgentLoopRunToolExecutor
   maxIterations?: number
@@ -60,6 +79,12 @@ export interface AgentLoopRunOptions {
    * receives it.
    */
   journal?: AgentLoopJournal
+  /**
+   * The journal's file is the session's own and already holds the system prompt, the tool set and
+   * `history` (written when they changed and when the messages were made): the base writes only
+   * `loop/start`.
+   */
+  historyLogged?: boolean
   /**
    * Caller policy. `onCompletionEnd`, `onToolCallStart`, `onToolCallEnd` and `shouldAbort` are
    * composed with the base's bookkeeping; every other hook is passed to `AgentLoop` unchanged.
@@ -102,7 +127,8 @@ export async function runAgentLoop(options: AgentLoopRunOptions): Promise<AgentL
   const toolCalls: LoopToolCallRecord[] = []
   let acceptedToolCalls = 0
 
-  if (options.journal) {
+  const requireThinkingForToolUse = options.requireThinkingForToolUse ?? false
+  if (options.journal && !options.historyLogged) {
     const sha256 = (value: string) => `sha256:${createHash('sha256').update(value).digest('hex')}`
     const toolNames = (options.tools ?? []).map((tool) => tool.name)
     options.journal.events.append(options.sessionId, [
@@ -121,18 +147,38 @@ export async function runAgentLoop(options: AgentLoopRunOptions): Promise<AgentL
     ])
     for (const message of options.history ?? [])
       options.journal.events.appendMessage(options.sessionId, message)
-    // History goes to the adapter as given, without the signed-thinking cleanup.
-    options.journal.events.append(options.sessionId, [
-      { type: 'loop/start', data: { requireThinkingForToolUse: false } },
-    ])
   }
+  // The request history is the canonical projection at this point, before the loop's compaction.
+  options.journal?.events.append(options.sessionId, [
+    { type: 'loop/start', data: { requireThinkingForToolUse } },
+  ])
+
+  const modules = options.modules ?? []
+  const history = options.history ?? []
+  let checkpoint = options.checkpoint
+  const compact = async (canonical: Message[], trigger: CompactionTrigger) => {
+    let changed = false
+    for (const module of modules) {
+      const next = await module.compact?.(canonical, trigger, checkpoint)
+      if (!next) continue
+      checkpoint = next
+      changed = true
+    }
+    return changed
+  }
+  await compact(history, 'turn_start')
+  const requestBase = { checkpoint, requireThinkingForToolUse }
+  const toolNames = (options.tools ?? []).map((tool) => tool.name)
 
   const loop = new AgentLoop(
     {
       adapter: options.adapter,
       sessionId: options.sessionId,
       journal: options.journal,
+      modules,
       meta: options.meta,
+      getMeta: options.getMeta,
+      transientRetryDelayMs: options.transientRetryDelayMs,
       system: options.system,
       tools: options.tools ?? [],
       toolExecutor: toolExecutor
@@ -155,6 +201,21 @@ export async function runAgentLoop(options: AgentLoopRunOptions): Promise<AgentL
     {
       ...hooks,
       shouldAbort: (ctx) => stop.aborted || (hooks.shouldAbort?.(ctx) ?? false),
+      async afterToolResults(ctx) {
+        await hooks.afterToolResults?.(ctx)
+        // In-turn compaction: canonical = the run's history and its new messages. A new checkpoint
+        // rebuilds the request with assembleRequest, which puts back what is only in the request.
+        if (!(await compact([...history, ...ctx.newMessages], 'in_turn'))) return
+        ctx.requestEntries.push({ kind: 'checkpoint', checkpoint: checkpoint ?? null })
+        const rebuilt = assembleRequest({
+          systemPrompt: options.system,
+          toolNames,
+          history,
+          ...requestBase,
+          entries: ctx.requestEntries,
+        })
+        ctx.messages.splice(0, ctx.messages.length, ...rebuilt.messages)
+      },
       onCompletionEnd(request, response, durationMs, ctx) {
         if (stop.aborted) throw stopped()
         usage.input += response.usage.input
@@ -189,7 +250,12 @@ export async function runAgentLoop(options: AgentLoopRunOptions): Promise<AgentL
   try {
     // Adapters own their transport. A completion that lands after the stop must never be returned.
     const messages = await Promise.race([
-      loop.run(options.prompt, options.history ?? []),
+      loop.run(
+        options.prompt,
+        prepareRequestMessages(history, checkpoint, { requireThinkingForToolUse }),
+        options.userImages,
+        options.userMessageEntry,
+      ),
       cancelled.promise,
     ])
     const finalText =

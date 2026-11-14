@@ -2,10 +2,12 @@ import { createHash } from 'node:crypto'
 import type { ProviderAdapter } from '@zero-os/model'
 import type { SessionEventStore } from '@zero-os/observe'
 import type {
+  CompactionTrigger,
   CompletionRequest,
   CompletionRequestMeta,
   CompletionResponse,
   ContentBlock,
+  ContextCheckpoint,
   InjectionContextEventData,
   Message,
   ReasoningEffort,
@@ -94,6 +96,17 @@ export interface AgentLoopModule {
    * and writes `injection/context` (`queued_merge`).
    */
   mergeQueued?(last: Message, ctx: LoopIterationContext): QueueMerge | undefined
+  /**
+   * Rewrite, chained in array order: compacts the canonical messages under pressure at the start of
+   * a loop (`turn_start`) and after tool results (`in_turn`), and returns the new checkpoint when it
+   * made one. The module writes the compaction events; the base records the checkpoint in
+   * `requestEntries` and projects the request from it.
+   */
+  compact?(
+    canonical: Message[],
+    trigger: CompactionTrigger,
+    checkpoint: ContextCheckpoint | undefined,
+  ): Promise<ContextCheckpoint | undefined>
   /** Observer: queued messages were taken into the request. Emitted before the request changes. */
   onQueueTaken?(taken: QueueTaken, ctx: LoopIterationContext): void
   /** Observer: a completion returned and the caller's hooks accepted it. */
