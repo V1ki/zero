@@ -13,6 +13,7 @@ import type {
   SecretFilter,
   ToolLogger,
 } from '@zero-os/shared'
+import { generatePrefixedId } from '@zero-os/shared'
 import { runAgentLoop } from './agent-run'
 import { CONTEXT_PARAMS } from './params'
 
@@ -36,8 +37,11 @@ interface RetrieveMemoriesWithDecisionOptions {
   logger: ToolLogger
   failureEvent: string
   trace?: MemoryRetrievalTraceOptions
-  /** 事件流:提供时发射 memory/retrieval/start|end 成对事件 */
-  sessionEvents?: Pick<SessionEventStore, 'append'>
+  /**
+   * 事件流:提供时发射 memory/retrieval/start|end 成对事件;检索 loop 自己的请求、工具调用和消息写进
+   * 父会话目录下的 `sub-<id>.jsonl`,父会话记一条 `subagent/spawn` 指向它
+   */
+  sessionEvents?: MemoryRetrievalJournal['events']
   layer?: MemoryRetrievalLayer
   turnIndex?: number
 }
@@ -78,7 +82,19 @@ export async function retrieveMemoriesWithDecision({
 
   try {
     const result = await runMemoryRetrievalAgentDetailed({
-      runLoop: createLoopRunner(adapter, sessionId, logger, reasoningEffort, sideLoop),
+      runLoop: createLoopRunner(
+        adapter,
+        sessionId,
+        logger,
+        reasoningEffort,
+        sideLoop,
+        sessionEvents && {
+          events: sessionEvents,
+          layer,
+          modelLabel: trace?.modelLabel,
+          secretFilter: trace?.secretFilter,
+        },
+      ),
       memoryRetriever: {
         retrieve: (query, options) =>
           memoryRetriever.retrieve(query, {
@@ -160,44 +176,85 @@ export interface MemoryRetrievalSideLoopCapture {
   system?: string
 }
 
+/**
+ * Where a retrieval loop writes its events. Each run takes a new `sub-<id>.jsonl` in the parent
+ * session directory, the same layout as a `spawn_agent` child, and the parent records a
+ * `subagent/spawn` pointing to it.
+ */
+export interface MemoryRetrievalJournal {
+  events: Pick<SessionEventStore, 'append' | 'appendMessage' | 'registerSubagent' | 'release'>
+  layer: MemoryRetrievalLayer
+  modelLabel?: string
+  secretFilter?: SecretFilter
+}
+
 export function createLoopRunner(
   adapter: ProviderAdapter,
   sessionId: string,
   logger: ToolLogger,
   reasoningEffort?: ReasoningEffort,
   capture?: MemoryRetrievalSideLoopCapture,
+  journal?: MemoryRetrievalJournal,
 ): LoopRunner {
   return async (config) => {
     if (capture && config.system !== undefined) capture.system = config.system
-    const { finalText, toolCalls, usage, durationMs } = await runAgentLoop({
-      adapter,
-      sessionId,
-      meta: { sessionId, purpose: 'memory_retrieval' },
-      system: config.system,
-      prompt: config.userMessage,
-      tools: config.tools.map((tool) => ({
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.inputSchema,
-      })),
-      toolExecutor: {
-        has: (name) => config.tools.some((tool) => tool.name === name),
-        execute: async (name, _toolUseId, input) => {
-          const result = await config.toolHandler(name, input)
-          return {
-            output: result.output,
-            outputSummary: summarizeLoopToolOutput(result.output),
-            success: !result.isError,
-          }
-        },
-      },
-      maxOutputTokens: config.maxTokens ?? 512,
-      reasoningEffort,
-      maxIterations: config.maxIterations ?? 3,
-      stream: false,
-      logger,
+    const childId = generatePrefixedId('memory')
+    const logFile = journal?.events.registerSubagent({
+      childSessionId: childId,
+      parentSessionId: sessionId,
+      name: 'memory_retrieval',
+      role: journal.layer,
     })
-    return { finalText, toolCalls, usage, durationMs }
+    const events = logFile ? journal?.events : undefined
+    if (journal && logFile)
+      journal.events.append(sessionId, [
+        {
+          type: 'subagent/spawn',
+          data: { childSessionId: childId, name: 'memory_retrieval', role: journal.layer, logFile },
+        },
+      ])
+    try {
+      // Messages keep the parent session id, as in a spawn_agent child; only the file differs.
+      const { finalText, toolCalls, usage, durationMs } = await runAgentLoop({
+        adapter,
+        sessionId,
+        journal: events && {
+          events: {
+            append: (_sessionId, input) => events.append(childId, input),
+            appendMessage: (_sessionId, message) => events.appendMessage(childId, message),
+          },
+          modelLabel: journal?.modelLabel,
+          secretFilter: journal?.secretFilter,
+        },
+        meta: { sessionId, purpose: 'memory_retrieval' },
+        system: config.system,
+        prompt: config.userMessage,
+        tools: config.tools.map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.inputSchema,
+        })),
+        toolExecutor: {
+          has: (name) => config.tools.some((tool) => tool.name === name),
+          execute: async (name, _toolUseId, input) => {
+            const result = await config.toolHandler(name, input)
+            return {
+              output: result.output,
+              outputSummary: summarizeLoopToolOutput(result.output),
+              success: !result.isError,
+            }
+          },
+        },
+        maxOutputTokens: config.maxTokens ?? 512,
+        reasoningEffort,
+        maxIterations: config.maxIterations ?? 3,
+        stream: false,
+        logger,
+      })
+      return { finalText, toolCalls, usage, durationMs }
+    } finally {
+      events?.release(childId)
+    }
   }
 }
 

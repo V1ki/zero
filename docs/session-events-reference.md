@@ -62,7 +62,7 @@ turn 结束的对账走 `syncCanonical`，其余事件走 `append`。seq 写入�
 | `agent/inbox/spliced` ✅ | 同上 | 拼进首条 user 消息 | strategy=inject_into_last_user、count |
 | `job/registered` ✅ | `BackgroundToolTaskManager.run`（经 agent 的工具执行器） | 每次 bash 执行开始，紧跟该调用的 `tool/call` | jobId、toolUseId、toolName |
 | `job/settled` ✅ | 同上;前台结束在 `run`，转后台后结束在 `completeTask` | bash 执行真正结束 | jobId、status(success/error)、durationMs、backgrounded、evidence（转后台且输出超过 8000 字符时，完整输出的落盘指针） |
-| `subagent/spawn` ✅ | spawn-agent 工具，`agentControl.spawn` 成功之后 | 派生子代理;写在父会话事件流，位于 spawn_agent 的 `tool/call` 与 `tool/result` 之间 | childSessionId（即 agent_id）、name、role、spawnedByRequestId、logFile（子事件文件相对 logs 根的路径） |
+| `subagent/spawn` ✅ | spawn-agent 工具，`agentControl.spawn` 成功之后;memory-retrieval `createLoopRunner`，检索 loop 开始之前 | 派生子代理，写在父会话事件流，位于 spawn_agent 的 `tool/call` 与 `tool/result` 之间;每次记忆检索 loop，位于 `memory/retrieval/start` 与 `end` 之间（name=`memory_retrieval`，role=layer） | childSessionId（即 agent_id;记忆检索为 `memory_<uuid>`）、name、role、spawnedByRequestId、logFile（子事件文件相对 logs 根的路径） |
 
 job 只针对 bash。bash 执行超过 5 秒转后台（其他工具仍是 60 秒，且不落 job 事件）：转后台时
 `tool/result` 立刻返回 `background_tool.started`，此时 jobId 就是 background task id；真正结束时先落
@@ -70,6 +70,9 @@ job 只针对 bash。bash 执行超过 5 秒转后台（其他工具仍是 60 �
 `tool/call` → `job/registered` → `job/settled` → `tool/result`。事件流里有 `job/registered` 而没有对应
 `job/settled` 的 job，就是仍在运行或因进程重启而丢失的 job。子代理与父会话共用同一个后台任务管理器，
 它的 bash job 事件写在父会话文件里，对应的 `tool/call` 在子代理自己的文件里，用 toolUseId 关联。
+
+记忆检索的子文件由 `runAgentLoop` 写：`session` 头之后是 `system/prompt`、`tools/set`、`loop/start`，然后是 loop 的
+step、tool 与消息事件，每个 `step/start` 都能按「请求重建」还原。
 
 子代理自己的事件写在 `logFile` 指向的文件里：`session` 头、`system/prompt`、`tools/set`，以及由同一套 agent hooks
 发出的 `user/message` / `assistant/message` 和 step、tool 等过程事件。没有 `turn/*`，见

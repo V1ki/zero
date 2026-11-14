@@ -17,6 +17,10 @@
 子代理消息里的图片写进父会话目录的 `images/`，与子文件放在一起。
 子代理的结束状态不另落事件：结果由父会话后续 `wait_agent` 的 `tool/result` 承载。
 
+记忆检索的 side loop 也用同样的子文件：每次检索 loop 一份 `sub-memory_<uuid>.jsonl`（header 的 `name` 为
+`memory_retrieval`），父会话在 `memory/retrieval/start` 与 `end` 之间记一条 `subagent/spawn` 指向它。子文件里有
+`system/prompt`、`tools/set`、`loop/start` 和 loop 的全部过程与消息事件，请求能按「请求重建」还原。
+
 ## 设计原则
 
 - **model-visible ⟺ logged**：凡是模型看到过的输入，都能从事件流重建；
@@ -102,7 +106,7 @@ persistSessionState 都做比对）与 `tools/set`（turn 开始时比对名字�
 检查点也镜像到 sessions.db 的 `session_context_checkpoints`（file-only 模式不写），无事件文件时从那里恢复。
 
 memory 相关覆盖说明：检索决策是成对事件 `memory/retrieval/start|end`（end 带
-queries、搜索数、选中记忆与是否注入，失败也落 end）；注入原文落在
+queries、搜索数、选中记忆与是否注入，失败也落 end），检索 loop 本身的请求与工具调用在 `subagent/spawn` 指向的子文件里；注入原文落在
 `injection/context`（kind=memory/memory_hint）；写入落在 `memory/recorded`；
 memory 工具的完整调用过程仍由 `tool/call`+`tool/result` 承载。任务结束判断是
 成对事件 `closure/start|end`：本 turn 未评估时不产生任何 closure 事件；

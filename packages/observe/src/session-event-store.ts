@@ -293,6 +293,14 @@ export class SessionEventStore {
     return state !== undefined && !state.corrupt
   }
 
+  /**
+   * 丢掉一个会话在内存里的状态缓存,文件不动。一次性的子文件(记忆检索、Router 的每次模型调用)写完就调用,
+   * 否则长期运行的进程会一直持有它们的投影;之后再读会从磁盘重新加载。
+   */
+  release(sessionId: string): void {
+    this.states.delete(sessionId)
+  }
+
   // --- internals ---
 
   /** 上一条 checkpoint 之后消息或压缩块有变化时写一条 checkpoint */

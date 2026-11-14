@@ -25,7 +25,7 @@ dsh 把功能拆成插件，ZeRo 用调用处传入的模块，见「目标形�
 | 日志是事实来源 | loop 每产生一条消息就 `session.append()`；`deriveMessages()` 返回冻结的投影 | loop 每产生一条消息就 `appendMessage`（步骤 3）；内存里的 `Message[]` 仍由 `Session` 持有，turn 结束时 `syncCanonical` 只对账 | 恢复从 `projectForRestore` 重建内存状态，不改写 canonical（[session-log-replay.md](session-log-replay.md) 步骤 4、5）；改动已有消息要当场声明原因 |
 | 投影不可变 | 冻结对象，改写历史在类型上不可表达；压缩用 `surfaceOp: replace` 落事件 | 请求消息由 `prepareRequestMessages(canonical, 检查点)` 投影得到，不修改 canonical（步骤 1、5） | 已对齐；修复前的问题见下方「已复现的问题」 |
 | 两条写路径 | 只有 `append` | 过程事件和消息事件都由 loop 在发生时写入（步骤 3、4a） | 已对齐 |
-| 每个 loop 都落日志 | 子代理有自己的 Session | `spawn_agent` 的子代理有自己的事件文件（过程事件和消息）；记忆检索、压缩模型、任务闭合、Router 的 8 个调用点都不写事件流；Router 用 `logger: console` | 这些模型调用只能从 usage 账本看到花费，看不到输入输出 |
+| 每个 loop 都落日志 | 子代理有自己的 Session | `spawn_agent` 的子代理和记忆检索（步骤 4b）有自己的事件文件（过程事件和消息）；压缩模型、任务闭合、Router 的 8 个调用点都不写事件流；Router 用 `logger: console` | 这些模型调用只能从 usage 账本看到花费，看不到输入输出 |
 | loop 只有一份 | `agent`（接口）与 `agent-loop`（驱动）分离，扩展点是事件 | `AgentLoop` 本身是通用的，但「能用的 agent」那一层写了三遍 | 见下方「loop 重复在哪里」 |
 | 旁路日志 | 无；查询走派生索引 | `run.log`、`trace.jsonl`、`events.jsonl`、`sessions.db` 大字段与事件流并存；Web 还没读事件流 | 双写观察期未结束 |
 
@@ -67,8 +67,8 @@ dsh 把功能拆成插件，ZeRo 用调用处传入的模块，见「目标形�
 | 会话 Agent | `Agent` + `agent-hooks.ts` | 主会话、`spawn_agent` 子代理 | 注入、压缩、闭合、记忆等会话特有的事件 |
 
 步骤 4a 之前，`step/start`、`requestHash`、`tool/call`、消息事件的写入都在第三层，和排队、任务闭合、记忆提醒、压缩
-写在同一批 hooks 里。「日志可重放」因此只对用 `Agent` 的调用成立，接在基座上的调用方什么都没继承到。记忆检索和
-Router 现在还没有传事件句柄（步骤 4b、4c），所以仍然没有日志。
+写在同一批 hooks 里。「日志可重放」因此只对用 `Agent` 的调用成立，接在基座上的调用方什么都没继承到。记忆检索从步骤 4b
+起传事件句柄；Router 现在还没有传（步骤 4c），所以仍然没有日志。
 
 `AgentLoopHooks` 的每个扩展点只能放一个函数。主会话的几项功能要共用同一批扩展点，只能在 `createAgentLoopHooks`
 里手工拼在一起，功能之间还直接引用对方（排队会打断记忆提醒，工具 hook 要通知记忆「写入成功」）。缺的不是扩展点，
@@ -158,7 +158,7 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
 | 1 | 组装改为纯函数投影：准备 prompt 不再修改 canonical 消息；evidence 和压缩模型读原文 | 已完成 |
 | 2 | loop 基座 `runAgentLoop`；记忆检索和 Router 改为基座的配置 | 已完成 |
 | 3 | 主会话的 loop 直接写消息事件，取代 turn 结束时的 diff；`syncCanonical` 只留给非 loop 修改 | 已完成：即 [session-log-replay.md](session-log-replay.md) 的步骤 1，子代理一并写消息；非 loop 修改经 `syncMessages` 声明原因，`syncCanonical` 只对账 |
-| 4 | 基座写事件流；记忆检索、Router、Codex Worker 依次接入 | 4a 已完成；4b～4d 后续，见下 |
+| 4 | 基座写事件流；记忆检索、Router、Codex Worker 依次接入 | 4a、4b 已完成；4c、4d 后续，见下 |
 | 5 | 删除旧式 `compressConversation` 和切换模型时对 canonical 的覆盖；预算改为按压缩后的投影判断 | 已完成：[检查点压缩](context-compaction.md)是唯一的压缩机制，旧代码已删除 |
 | 6 | 主会话 `Agent` 改为「基座 + 模块」，从 `agent-hooks.ts` 一次搬出一项功能 | 后续，见下 |
 | 7 | Web 读事件流；切 `file-only`；`run.log` 与 trace 里与事件流重复的部分退役 | 后续 |
@@ -210,8 +210,15 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
     怎么满足这一条在 4c 定。
   - 验收：主会话在同一脚本下改动前后的事件流逐条相同（类型、顺序、载荷，除随机编号和时间）；`request-replay.test.ts`
     的三方比对不变；`agent-run.test.ts` 对 `runAgentLoop` 做同样的三方比对。句柄目前可缺省，全部调用方接入后改为必填。
-- **4b 记忆检索接入。** 它属于父会话的某个 turn，写父会话目录下的 `sub-<id>.jsonl`，与 `spawn_agent` 的子代理
+- **4b 记忆检索接入（已完成）。** 它属于父会话的某个 turn，写父会话目录下的 `sub-<id>.jsonl`，与 `spawn_agent` 的子代理
   相同。它现在写进父会话的 `memory/retrieval/start|end` 保留。
+  - `createLoopRunner` 每次调用（即每次 `runAgentLoop`）经 `registerSubagent` 新建一份 `sub-memory_<uuid>.jsonl`（header 的
+    `name` 为 `memory_retrieval`，`role` 为 layer），并在父会话的 `memory/retrieval/start` 与 `end` 之间记一条
+    `subagent/spawn`（同样的 `name`、`role` 与 `logFile`），父会话由它找到子文件。
+  - 消息里的 `sessionId`、usage 账本和 trace 仍用父会话编号，只有事件写进子文件，与 `spawn_agent` 的子代理一致。
+    `spawn_agent` 子代理里的 layer2 检索，子文件同样放在主会话目录，`subagent/spawn` 写在子代理自己的文件里。
+  - 子文件写完后调用 `SessionEventStore.release` 丢掉内存里的状态缓存：这类文件只写一次，长期运行的进程不必持有它们的投影。
+  - 验收：主会话在同一脚本下改动前后的事件流逐条相同；`memory-retrieval.test.ts` 对子文件的每个 `step/start` 做三方比对。
 - **4c Router 接入。** 8 个调用点传入事件句柄，`logger: console` 换成与主会话相同的 logger。传入的历史在 loop
   开始时写成消息事件。每类调用带自己的 usage 用途（`USAGE_PURPOSES` 增项，Web 的分项展示跟着改），不再都记成
   `agent_loop`。业务表里的会话编号指向事件文件。

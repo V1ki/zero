@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { ProviderAdapter } from '@zero-os/model'
+import { SessionEventStore } from '@zero-os/observe'
 import type {
   CompletionRequest,
   CompletionResponse,
@@ -7,14 +11,24 @@ import type {
   ToolLogger,
 } from '@zero-os/shared'
 import { createLoopRunner, retrieveMemoriesWithDecision } from '../memory-retrieval'
+import { assembleRequest, hashRequest } from '../request-assembly'
 
 class LoopRunnerAdapter implements ProviderAdapter {
   readonly apiType = 'fake-loop-runner'
   private completeCalls = 0
   seenToolResultSummary: string | undefined
 
+  readonly received: string[] = []
+
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
     this.completeCalls++
+    this.received.push(
+      hashRequest({
+        system: request.system ?? '',
+        toolNames: (request.tools ?? []).map((tool) => tool.name),
+        messages: request.messages,
+      }),
+    )
 
     if (this.completeCalls === 1) {
       return {
@@ -125,7 +139,95 @@ describe('createLoopRunner', () => {
   })
 })
 
+const scoredMemory = {
+  memory: {
+    id: 'mem_x',
+    type: 'note' as const,
+    title: 'Twitter requires browser',
+    content: 'x'.repeat(400),
+    createdAt: '2026-09-02T00:00:00.000Z',
+    updatedAt: '2026-09-02T00:00:00.000Z',
+    status: 'verified' as const,
+    confidence: 0.8,
+    tags: [],
+    related: [],
+  },
+  score: 0.9,
+  scoreBreakdown: { keyword: 0, recency: 0, vector: 0.9 },
+}
+
 describe('retrieveMemoriesWithDecision', () => {
+  test('writes the retrieval loop to its own file, and every request can be rebuilt from it', async () => {
+    const logs = mkdtempSync(join(tmpdir(), 'zero-memory-retrieval-journal-'))
+    try {
+      const sessionId = 'sess-memory-journal'
+      const store = new SessionEventStore({ basePath: logs })
+      store.ensureSession({ v: 1, sessionId, schemaVersion: 1, source: 'web' })
+      const adapter = new LoopRunnerAdapter()
+
+      const memories = await retrieveMemoriesWithDecision({
+        adapter,
+        sessionId,
+        memoryRetriever: { retrieve: async () => [], retrieveScored: async () => [scoredMemory] },
+        userMessage: 'analyze x.com site',
+        logger,
+        failureEvent: 'memory_retrieval_failed',
+        sessionEvents: store,
+        layer: 'layer1',
+        turnIndex: 2,
+        trace: { spanName: 'memory_retrieval_decision', modelLabel: 'provider/model' },
+      })
+      expect(memories?.map((memory) => memory.id)).toEqual(['mem_x'])
+
+      const parent = store.readEvents(sessionId)
+      expect(parent.map((event) => event.type)).toEqual([
+        'session',
+        'memory/retrieval/start',
+        'subagent/spawn',
+        'memory/retrieval/end',
+      ])
+      const spawn = parent[2]
+      if (spawn.type !== 'subagent/spawn') throw new Error('expected subagent/spawn')
+      expect(spawn.data).toMatchObject({ name: 'memory_retrieval', role: 'layer1' })
+      expect(spawn.data.logFile).toBe(
+        `sessions/${sessionId}/sub-${spawn.data.childSessionId}.jsonl`,
+      )
+
+      const childId = spawn.data.childSessionId
+      const child = store.readEvents(childId)
+      expect(child[0]).toMatchObject({
+        type: 'session',
+        data: { origin: 'subagent', parentSessionId: sessionId, name: 'memory_retrieval' },
+      })
+      expect(child.map((event) => event.type).slice(1)).toEqual([
+        'system/prompt',
+        'tools/set',
+        'loop/start',
+        'user/message',
+        'step/start',
+        'step/end',
+        'assistant/message',
+        'tool/call',
+        'tool/result',
+        'user/message',
+        'step/start',
+        'step/end',
+        'assistant/message',
+      ])
+      const steps = child.filter((event) => event.type === 'step/start')
+      expect(steps.map((event) => event.data.model)).toEqual(['provider/model', 'provider/model'])
+      const rebuilt = steps.map((event) => {
+        const input = store.getRequestAssemblyInput(childId, event.seq)
+        if (!input) throw new Error(`step ${event.seq} cannot be rebuilt`)
+        return hashRequest(assembleRequest(input))
+      })
+      expect(steps.map((event) => event.data.requestHash)).toEqual(adapter.received)
+      expect(rebuilt).toEqual(adapter.received)
+    } finally {
+      rmSync(logs, { recursive: true, force: true })
+    }
+  })
+
   test('records side-loop tool calls on the trace span data', async () => {
     const adapter = new LoopRunnerAdapter()
     const updated: Array<Record<string, unknown> | undefined> = []
