@@ -340,9 +340,9 @@ describe('request list from the event stream', () => {
     const eventFile = join(run.logs, 'sessions', SESSION, 'session.jsonl')
     const lines = readFileSync(eventFile, 'utf-8').trimEnd().split('\n')
     const first = lines.findIndex((line) => line.includes('"type":"step/end"'))
-    const old = JSON.parse(lines[first])
-    delete old.data.cost
-    lines[first] = JSON.stringify(old)
+    const { cost, ...oldData } = JSON.parse(lines[first]).data
+    expect(cost).toBeDefined()
+    lines[first] = JSON.stringify({ ...JSON.parse(lines[first]), data: oldData })
     writeFileSync(eventFile, `${lines.join('\n')}\n`)
 
     const merged = new ObservabilityStore(run.logs).readSessionRequests(SESSION, filter.filter)
