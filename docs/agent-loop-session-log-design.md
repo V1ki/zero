@@ -168,7 +168,7 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
 | 4 | 基座写事件流；记忆检索、Router、Codex Worker 依次接入 | 已完成，见下 |
 | 5 | 删除旧式 `compressConversation` 和切换模型时对 canonical 的覆盖；预算改为按压缩后的投影判断 | 已完成：[检查点压缩](context-compaction.md)是唯一的压缩机制，旧代码已删除 |
 | 6 | 主会话 `Agent` 改为「基座 + 模块」，从 `agent-hooks.ts` 一次搬出一项功能 | 已完成，见下 |
-| 7 | Web 读事件流；切 `file-only`；`run.log` 与 trace 里与事件流重复的部分退役 | 后续 |
+| 7 | Web 读事件流；切 `file-only`；`run.log` 与 trace 里与事件流重复的部分退役 | 进行中，分 7a～7d，见下 |
 
 ### 步骤 1：组装改为纯函数投影
 
@@ -347,6 +347,42 @@ hooks 读取请求历史的唯一来源。
     逐行相同。请求失败时 `run.log` 的 `llm_request.error` 与记忆提醒 span 结束的先后对调（前者现在晚于后者，两者写在不同的文件里，
     span 之间的顺序不变）；提醒期间请求失败和 DeepSeek 无签名回复两条路径没有进比对脚本，由 `completion-gate.test.ts` 覆盖。
   - 终态：`agent-hooks.ts` 从 1896 行降到约 540 行，只剩 trace 与 artifact 替换；`modules/` 下五个文件互不 import。
+
+### 步骤 7：Web 读事件流，旁路日志退役
+
+会话详情页现在从四个地方读数据。消息已经读事件流，其余三类还读 trace：
+
+| 读者 | 现在读 | 事件流里的对应 |
+| --- | --- | --- |
+| 消息、压缩块、检查点（`/sessions/:id`） | 事件流投影（`getMessagesFromDB` 等已读 `project()`） | 已完成 |
+| 请求列表（`/sessions/:id/requests`）、会话评审 | `trace.jsonl` 里 `llm_request` span 的 `data.request` | `step/*`、消息事件、`injection/context`、`tools/set` |
+| 决策与任务闭合事件（`/decisions`、`/task-closure-events`） | `trace.jsonl` 的压缩、记忆、闭合 span | `compaction/*`、`memory/retrieval/*`、`closure/*` |
+| span 树（`/traces`） | `trace.jsonl` | 没有对应，继续读 trace |
+
+`run.log` 里有两类内容：trace 每条 span 记录的镜像（`trace.<kind>.<status>`，与 `trace.jsonl` 完全重复），和 logger 行
+（会话 logger 的 info / warn / error、`llm_request.error` 等，别处没有）。Web 的 run.log 页面和 `zero logs` 读它。
+
+分四步，每一步单独合并：
+
+- **7a 请求列表改读事件流。** 服务端从事件算出与现在相同形状的 `RequestLogEntry`，Web 前端不改。事件里缺的字段补上，
+  都是可选的增项：`step/start.provider`，`step/end.cost`、`step/end.reasoningContent`，排队拼接的 `injection/context`
+  带每条排队消息的摘要。`spawn_agent` 子代理的请求读它自己的子文件（父会话的 `subagent/spawn.logFile`）；记忆检索的子文件
+  不进请求列表，和现在一致。旧会话的事件没有这些字段：一次请求在事件里带 `provider` 时用事件算出的条目，否则沿用 trace
+  算出的条目，按请求编号合并。验收：同一脚本下两种算法得到的条目逐项相同。
+- **7b 决策与任务闭合事件改读事件流。** 同样的做法：服务端投影成现在的形状，缺的字段补进事件，旧会话沿用 trace。
+  会话评审读的请求、闭合随之换源。
+- **7c 停写重复内容。** trace 的 `llm_request` span 不再带 `data.request`；`run.log` 不再镜像 span 记录，只留 logger 行。
+  span 树、快照和 trace 自己的 span 元数据不动。
+- **7d 默认 `file-only`。** `ZERO_SESSION_STORE` 的默认值从 `dual` 改为 `file-only`，`dual` 仍可显式设置。没有事件文件的
+  旧会话恢复时照旧从 DB 快照导入。清理旧数据的 `convert`、`purge` 仍由运维手动执行，见
+  [session-event-log.md](session-event-log.md)「旧数据迁移」。
+
+7c、7d 之前要定的两件事：
+
+- **run.log 页面和 `zero logs`。** 7c 之后 `run.log` 只剩 logger 行，页面仍可用，但看不到 span 记录，要看 span 去会话详情的
+  span 树。是否接受，还是页面改成读事件流。
+- **直接读 DB 大字段的脚本。** `benchmarks/zero-runtime` 下有三个脚本直接查 `session_messages`、`session_compaction_blocks`。
+  7d 之后这些表不再更新，脚本要先跑 `rebuild`，或改成读事件文件。
 
 ## 已定事项
 
