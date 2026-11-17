@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto'
 import { type RetrievedMemoryMatch, detectMemoryEcho } from '@zero-os/memory'
 import type { ModelRouter, ResolvedModel } from '@zero-os/model'
-import type { RequestMemoryInjectionEntry } from '@zero-os/observe'
 import type {
   ContextCheckpoint,
   Message,
@@ -13,11 +12,7 @@ import type {
 import { now } from '@zero-os/shared'
 import type { Agent, AgentConfig, AgentContext } from '../agent/agent'
 import { retrieveMemoriesWithDecision } from '../agent/memory-retrieval'
-import {
-  buildDynamicContext,
-  buildRetrievedMemoriesBlock,
-  wrapMemoryInjection,
-} from '../agent/prompt'
+import { buildDynamicContext, buildRetrievedMemoriesBlock } from '../agent/prompt'
 import { supportsVision } from '../tool/capabilities'
 import {
   applyFailedTurnRollback,
@@ -110,22 +105,11 @@ export async function processSessionMessageTurn({
     newSkills: newSkills.length > 0 ? newSkills : undefined,
     retrievedMemories: memoryInjection.block,
   })
-  const requestMemoryInjections: RequestMemoryInjectionEntry[] | undefined = memoryInjection.block
-    ? [
-        {
-          layer: 'layer1',
-          source: 'retrieved_memories',
-          formattedText: wrapMemoryInjection('layer1', memoryInjection.block),
-        },
-      ]
-    : undefined
-
   let latestCheckpoint = checkpoint
   const context: AgentContext = {
     systemPrompt,
     identityMemory: deps.identityMemory,
     dynamicContext,
-    requestMemoryInjections,
     injectedMemoryIds,
     imageDelegationFiles,
     conversationHistory: [...messages],

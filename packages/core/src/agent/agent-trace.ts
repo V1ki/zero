@@ -1,36 +1,24 @@
 import { createHash } from 'node:crypto'
-import { computeCost } from '@zero-os/model'
-import type {
-  RequestMemoryInjectionEntry,
-  RequestToolCallEntry,
-  RequestToolResultEntry,
-  Tracer,
-} from '@zero-os/observe'
+import type { Tracer } from '@zero-os/observe'
 import type {
   CompletionRequest,
   CompletionResponse,
   ContentBlock,
   Message,
-  ModelPricing,
   SecretFilter,
   ToolEvidence,
   ToolLogger,
 } from '@zero-os/shared'
-import type { QueuedInjectionTrace } from './queue'
 import type { ToolEvidenceReason } from './truncate'
 
 export interface AgentTraceRecorderDeps {
   sessionId: string
   agentName: string
-  spawnedByRequestId?: string
   logger: ToolLogger
   tracer?: Pick<Tracer, 'startSpan' | 'updateSpan' | 'endSpan' | 'getSpan'> & {
     logSession?: Tracer['logSession']
   }
   secretFilter?: SecretFilter
-  providerName?: string
-  modelLabel?: string
-  pricing?: ModelPricing
   getCurrentSnapshotId?: () => string | undefined
 }
 
@@ -90,126 +78,29 @@ export class AgentTraceRecorder {
     this.deps.logger.info('tool_evidence_persisted', payload)
   }
 
+  /**
+   * 请求本身(回复、工具调用、工具结果、token、费用)记在事件流里,会话详情按 span 编号补回,见
+   * `attachRequestsToSpans`;span 上只留编号、工具名、hash 和当时的快照。
+   */
   logLLMRequest(options: {
     request: CompletionRequest
     response: CompletionResponse
-    userPrompt: string
-    durationMs: number
-    meta: {
-      turnIndex: number
-      parentId?: string
-    }
-    requestToolResults: RequestToolResultEntry[]
-    queuedInjection?: QueuedInjectionTrace
-    memoryInjections?: RequestMemoryInjectionEntry[]
     traceSpanId?: string
   }): void {
-    const cost = computeCost(options.response.usage, this.deps.pricing)
-    const filter = this.deps.secretFilter
+    if (!options.traceSpanId) return
     const requestMetadata = buildRequestMetadata(options.request)
-    const snapshotId = this.deps.getCurrentSnapshotId?.()
-    const responseText = options.response.content
-      .filter((block) => block.type === 'text')
-      .map((block) => (block as { text: string }).text)
-      .join('')
-    const toolCalls = extractToolCalls(options.response.content, filter)
-    const toolUseCount = toolCalls.length
-    const safeUserPrompt = filter ? filter.filter(options.userPrompt) : options.userPrompt
-    const safeResponseText = filter ? filter.filter(responseText) : responseText
-    const safeReasoningContent = options.response.reasoningContent
-      ? filter
-        ? filter.filter(options.response.reasoningContent)
-        : options.response.reasoningContent
-      : undefined
-    const safeQueuedInjection = filterQueuedInjection(options.queuedInjection, filter)
-    const safeMemoryInjections = filterMemoryInjections(options.memoryInjections, filter)
-
-    if (options.traceSpanId) {
-      this.deps.tracer?.updateSpan(options.traceSpanId, {
-        data: {
-          request: {
-            id: options.response.id,
-            turnIndex: options.meta.turnIndex,
-            parentId: options.meta.parentId,
-            sessionId: this.deps.sessionId,
-            agentName: this.deps.agentName,
-            spawnedByRequestId: this.deps.spawnedByRequestId,
-            snapshotId,
-            model: this.deps.modelLabel ?? options.response.model,
-            provider: this.deps.providerName ?? 'unknown',
-            userPrompt: safeUserPrompt,
-            response: safeResponseText,
-            reasoningContent: safeReasoningContent,
-            stopReason: options.response.stopReason,
-            toolUseCount,
-            toolCalls,
-            toolResults: options.requestToolResults,
-            ...(safeQueuedInjection ? { queuedInjection: safeQueuedInjection } : {}),
-            ...(safeMemoryInjections ? { memoryInjections: safeMemoryInjections } : {}),
-            toolNames: requestMetadata.toolNames,
-            toolDefinitionsHash: requestMetadata.toolDefinitionsHash,
-            systemHash: requestMetadata.systemHash,
-            staticPrefixHash: requestMetadata.staticPrefixHash,
-            messageCount: options.request.messages.length,
-            tokens: {
-              input: options.response.usage.input,
-              output: options.response.usage.output,
-              cacheWrite: options.response.usage.cacheWrite,
-              cacheRead: options.response.usage.cacheRead,
-              reasoning: options.response.usage.reasoning,
-            },
-            cost,
-            durationMs: options.durationMs,
-          },
-        },
-        metadata: {
-          requestId: options.response.id,
-          toolNames: requestMetadata.toolNames,
-          toolDefinitionsHash: requestMetadata.toolDefinitionsHash,
-          systemHash: requestMetadata.systemHash,
-          staticPrefixHash: requestMetadata.staticPrefixHash,
-        },
-      })
-      this.deps.tracer?.endSpan(options.traceSpanId, 'success')
-    }
+    this.deps.tracer?.updateSpan(options.traceSpanId, {
+      metadata: {
+        requestId: options.response.id,
+        toolNames: requestMetadata.toolNames,
+        toolDefinitionsHash: requestMetadata.toolDefinitionsHash,
+        systemHash: requestMetadata.systemHash,
+        staticPrefixHash: requestMetadata.staticPrefixHash,
+        snapshotId: this.deps.getCurrentSnapshotId?.(),
+      },
+    })
+    this.deps.tracer?.endSpan(options.traceSpanId, 'success')
   }
-}
-
-export function cloneMemoryInjections(
-  memoryInjections?: RequestMemoryInjectionEntry[],
-): RequestMemoryInjectionEntry[] | undefined {
-  if (!memoryInjections || memoryInjections.length === 0) return undefined
-  return memoryInjections.map((memoryInjection) => ({ ...memoryInjection }))
-}
-
-export function filterQueuedInjection(
-  queuedInjection: QueuedInjectionTrace | undefined,
-  secretFilter: SecretFilter | undefined,
-): QueuedInjectionTrace | undefined {
-  if (!queuedInjection) return undefined
-  if (!secretFilter) return queuedInjection
-
-  return {
-    ...queuedInjection,
-    formattedText: secretFilter.filter(queuedInjection.formattedText),
-    messages: queuedInjection.messages.map((message) => ({
-      ...message,
-      content: secretFilter.filter(message.content),
-    })),
-  }
-}
-
-export function filterMemoryInjections(
-  memoryInjections: RequestMemoryInjectionEntry[] | undefined,
-  secretFilter: SecretFilter | undefined,
-): RequestMemoryInjectionEntry[] | undefined {
-  if (!memoryInjections || memoryInjections.length === 0) return undefined
-  if (!secretFilter) return cloneMemoryInjections(memoryInjections)
-
-  return memoryInjections.map((memoryInjection) => ({
-    ...memoryInjection,
-    formattedText: secretFilter.filter(memoryInjection.formattedText),
-  }))
 }
 
 export function buildRequestMetadata(request: CompletionRequest): {
@@ -243,39 +134,6 @@ export function extractTextFromMessage(message: Message): string {
     .filter((block) => block.type === 'text')
     .map((block) => block.text)
     .join('\n')
-}
-
-export function extractToolCalls(
-  content: ContentBlock[],
-  secretFilter?: SecretFilter,
-): RequestToolCallEntry[] {
-  return content.flatMap((block) => {
-    if (block.type !== 'tool_use') return []
-    return [
-      {
-        id: block.id,
-        name: block.name,
-        input: filterToolInput(block.input, secretFilter),
-        evidence: block.evidence,
-      },
-    ]
-  })
-}
-
-export function toRequestToolResults(content: ContentBlock[]): RequestToolResultEntry[] {
-  return content.flatMap((block) => {
-    if (block.type !== 'tool_result') return []
-    return [
-      {
-        type: 'tool_result',
-        toolUseId: block.toolUseId,
-        content: block.content,
-        isError: block.isError,
-        outputSummary: block.outputSummary,
-        evidence: block.evidence,
-      },
-    ]
-  })
 }
 
 export function filterToolInput(

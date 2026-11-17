@@ -36,7 +36,7 @@ turn 结束的对账走 `syncCanonical`，其余事件走 `append`。seq 写入�
 | `request/message` ✅ | `AgentLoop`（模块的 `requestOnly` 给出原因时，现为记忆模块的提醒进行中;store `append` 把图片外置） | 记忆提醒阶段 loop 追加进请求的消息：提醒 prompt、提醒回复、提醒阶段的工具结果 | message 全量、reason=memory_nudge | 只追加进本 loop 之后的请求,不进 canonical,后续 turn 看不到 |
 | `system/prompt` ✅ | persistence `ensureSessionPromptEvent`（hash 比对）：session-turn 每 turn 开始、persistSessionState;子代理由 spawn-agent 写 | 请求的 system 文本变化（prompt 重建、identityMemory 变化） | hash 与 chars（描述发出的 system = content + `\n\n` + identity）、content（静态系统提示词）、identity | getSystemPrompt;DB 列只存最新一份静态提示词，事件流保留谱系 |
 | `tools/set` ✅ | session-turn `ensureToolsSetEvent`（turn 开始比对名字列表 hash，空列表也记） | 工具集变化 | hash、toolNames、count | getToolSet;完整定义由代码版本推导 |
-| `step/start` ✅ | `AgentLoop`，`onCompletionStart` hook 之后 | 每次模型请求开始 | stepIndex、requestSpanId、model、messageCount、requestHash（`hashRequest`：system、工具名、传给 adapter 的消息，图片按内容 hash 归一） | **事件自身 seq 即请求重建锚点**，规则见 session-event-log.md「请求重建」;`hashRequest(assembleRequest(...))` 应等于 requestHash |
+| `step/start` ✅ | `AgentLoop`，`onCompletionStart` hook 之后 | 每次模型请求开始 | stepIndex、requestSpanId、model、provider、messageCount、requestHash（`hashRequest`：system、工具名、传给 adapter 的消息，图片按内容 hash 归一） | **事件自身 seq 即请求重建锚点**，规则见 session-event-log.md「请求重建」;`hashRequest(assembleRequest(...))` 应等于 requestHash |
 | `closure/start` ✅ | 闭合模块 `closureModule` 的 `evaluateEndTurn` | closure 评估开始 | turnIndex、requestId、model、baseSeq、messageCount | 分类器看到的消息都在 baseSeq 之前;messageCount 对账;未评估不产生任何 closure 事件 |
 
 ## ③ diagnostics（时间线/排障）
@@ -45,7 +45,7 @@ turn 结束的对账走 `syncCanonical`，其余事件走 `append`。seq 写入�
 |---|---|---|---|
 | `turn/start` ✅ | session-turn | 每 turn 开始 | turnIndex、trigger、model、agentName、baseSeq（本 turn 消息 seq 均大于它）;恢复时下一个 turn 编号 = 最大 turnIndex + 1 |
 | `turn/end` ✅ | session-turn 成功/异常两条路径;恢复时 `sealInterruptedTurn` 补写 | turn 结束;进程在 turn 中途退出后恢复（最后一个 `turn/start` 之后没有 `turn/end`） | turnIndex、status(completed/failed/aborted)、durationMs;补写的封口为 status=failed、reason=process_restart |
-| `step/end` ✅ | `AgentLoop`，`onCompletionEnd` hook 之前（调用方拒绝这次响应时也已写入） | 每次模型请求返回 | stepIndex、stopReason、requestId、usage、durationMs |
+| `step/end` ✅ | `AgentLoop`，`onCompletionEnd` hook 之前（调用方拒绝这次响应时也已写入） | 每次模型请求返回 | stepIndex、stopReason、requestId、usage、durationMs、cost（按 journal 的定价算，没有定价时为 0，与 trace 一致）、reasoningContent（有推理文本时，已过滤密钥） |
 | `tool/call` ✅ | `AgentLoop`，`onToolCallStart` hook 之后;`WorkerTool.runRouterJob`（Router 的 Codex 派工，开始执行前）。两处都经 `journalToolCall` | 工具开始 | toolUseId、name、inputHash、inputPreview、spanId |
 | `tool/result` ✅ | `AgentLoop`，`onToolCallEnd` hook 之后;`WorkerTool.runRouterJob`（结束或抛错时）。两处都经 `journalToolResult` | 工具返回 | toolUseId、name、status、durationMs、chars、summary |
 | `compaction/prune` ✅ | agent-hooks `processAgentToolResults`（artifactize） | tool_result 内容真的被 artifact 引用替换时（只写了 evidence、原文仍在 canonical 的中等输出不发） | toolUseId、from(chars+hash)、to(artifact_ref)、evidence 指针 |
@@ -58,7 +58,7 @@ turn 结束的对账走 `syncCanonical`，其余事件走 `append`。seq 写入�
 | `model/selection` ✅（仅 1/4 触发点） | session `switchSessionModel` | /model 命令 | from、to(label/provider/modelId)、trigger=user_command、detail |
 | `params/reasoning` ✅ | session-controllers `updateSessionReasoningEffort` | /think 变更 effort | from、to |
 | `agent/inbox/enqueued` ✅ | session `handleSessionMessageEntry` 排队分支 | turn 进行中消息入队 | messageIndex（canonical 下标）、reason、interrupt |
-| `agent/inbox/drained` ✅ | 排队模块 `queueModule` 的 `mergeQueued`（工具结果之后） | loop 取走排队消息 | count |
+| `agent/inbox/drained` ✅ | 排队模块 `queueModule`：`mergeQueued`（工具结果之后）与 `takeQueued`（一轮结束、闭合评估之后等检查点，取走后作为续写消息） | loop 取走排队消息 | count、messages（每条的 timestamp、content、imageCount、mediaTypes，请求列表据此展示） |
 | `agent/inbox/spliced` ✅ | 同上 | 拼进首条 user 消息 | strategy=inject_into_last_user、count |
 | `job/registered` ✅ | `BackgroundToolTaskManager.run`（经 agent 的工具执行器） | 每次 bash 执行开始，紧跟该调用的 `tool/call` | jobId、toolUseId、toolName |
 | `job/settled` ✅ | 同上;前台结束在 `run`，转后台后结束在 `completeTask` | bash 执行真正结束 | jobId、status(success/error)、durationMs、backgrounded、evidence（转后台且输出超过 8000 字符时，完整输出的落盘指针） |

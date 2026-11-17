@@ -14,14 +14,18 @@ import {
 import { basename, dirname, join, relative } from 'node:path'
 import {
   type CompletionResponse,
+  SESSION_EVENT_FILE,
   type StopReason,
   type ToolEvidence,
   type ToolResultBlock,
   getSessionLogRelativeDir,
   now,
 } from '@zero-os/shared'
+import { readEventsFile } from './session-event-store'
+import { type SessionRequestSource, projectSessionRequestsFromEvents } from './session-requests'
 import { collapseTraceEntries } from './trace'
 import {
+  attachRequestsToTraceEntries,
   projectSessionClosuresFromTraceEntries,
   projectSessionDecisionsFromTraceEntries,
   projectSessionRequestsFromTraceEntries,
@@ -69,6 +73,8 @@ export interface RequestMemoryInjectionEntry {
 
 export interface RequestLogEntry {
   id: string
+  /** 这次请求的 trace span(`llm_request`)编号,span 树据此找回请求 */
+  traceSpanId?: string
   turnIndex: number
   parentId?: string
   sessionId: string
@@ -214,7 +220,7 @@ export interface SessionRunLogSummary {
 export class ObservabilityStore {
   private files: ObservabilityFileStore
 
-  constructor(basePath: string) {
+  constructor(private readonly basePath: string) {
     this.files = new ObservabilityFileStore(basePath)
   }
 
@@ -273,12 +279,38 @@ export class ObservabilityStore {
   }
 
   /**
-   * Read requests for a session from trace.jsonl.
+   * 会话的请求列表。请求在事件流里带齐字段时(见 `projectSessionRequestsFromEvents`)从事件流算,
+   * 更早的请求沿用 trace.jsonl 算出的条目,按请求编号合并。事件里的消息是原文,`filter` 是密钥过滤,
+   * 作用于从事件流算出的展示文本(trace 写入时已过滤过);必填,免得调用方把原文交给前端。
    */
-  readSessionRequests(sessionId: string): RequestLogEntry[] {
-    return projectSessionRequestsFromTraceEntries(this.readSessionTraceEntries(sessionId)).map(
-      normalizeStoredRequestEntry,
+  readSessionRequests(sessionId: string, filter: (text: string) => string): RequestLogEntry[] {
+    const fromEvents = projectSessionRequestsFromEvents(
+      sessionId,
+      this.readSessionRequestSources(sessionId),
+      filter,
     )
+    const inEvents = new Set(fromEvents.map((request) => request.id))
+    return [
+      ...projectSessionRequestsFromTraceEntries(this.readSessionTraceEntries(sessionId))
+        .map(normalizeStoredRequestEntry)
+        .filter((request) => !inEvents.has(request.id)),
+      ...fromEvents,
+    ].sort((left, right) => left.ts.localeCompare(right.ts))
+  }
+
+  /** 主会话的事件文件,加上 `subagent/spawn` 指向的 `spawn_agent` 子代理文件(逐层);记忆检索的子文件不算 */
+  private readSessionRequestSources(sessionId: string): SessionRequestSource[] {
+    const sources: SessionRequestSource[] = []
+    const visit = (relativeFile: string, subagent: boolean) => {
+      const events = readEventsFile(join(this.basePath, relativeFile))
+      if (events.length === 0) return
+      sources.push({ events, subagent })
+      for (const event of events)
+        if (event.type === 'subagent/spawn' && event.data.name !== 'memory_retrieval')
+          visit(event.data.logFile, true)
+    }
+    visit(join(getSessionLogRelativeDir(sessionId), SESSION_EVENT_FILE), false)
+    return sources
   }
 
   /**
@@ -291,8 +323,14 @@ export class ObservabilityStore {
   /**
    * Read projected decisions for a session from trace.jsonl.
    */
-  readSessionDecisions(sessionId: string): DecisionLogEntry[] {
-    return projectSessionDecisionsFromTraceEntries(this.readSessionTraceEntries(sessionId))
+  readSessionDecisions(sessionId: string, filter: (text: string) => string): DecisionLogEntry[] {
+    // 决策里的 tool_selection 读 llm_request span 上的请求;新 span 不再带它,由事件算出的请求补回
+    return projectSessionDecisionsFromTraceEntries(
+      attachRequestsToTraceEntries(
+        this.readSessionTraceEntries(sessionId),
+        this.readSessionRequests(sessionId, filter),
+      ),
+    )
   }
 
   /**

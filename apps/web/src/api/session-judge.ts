@@ -129,7 +129,9 @@ export async function runSessionJudge(
   const messages = session
     ? session.getMessages()
     : zero.sessionManager.getMessagesFromDB(sessionId)
-  const requests = zero.observability.readSessionRequests(sessionId)
+  const requests = zero.observability.readSessionRequests(sessionId, (text) =>
+    zero.secretFilter.filter(text),
+  )
   const closures = zero.observability.readSessionClosures(sessionId)
   const snapshots = zero.observability.readSessionSnapshots(sessionId)
   const traces = zero.tracer.exportSession(sessionId)

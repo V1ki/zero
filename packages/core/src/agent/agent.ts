@@ -99,8 +99,6 @@ export class Agent {
         config: this.config,
         toolContext: this.toolContext,
         obs: this.obs,
-        context,
-        userMessage,
         onNewMessage: (message) => {
           emittedMessageCount++
           onNewMessage?.(message)
@@ -228,13 +226,9 @@ export class Agent {
     return new AgentTraceRecorder({
       sessionId: this.toolContext.sessionId,
       agentName: this.config.name,
-      spawnedByRequestId: this.toolContext.spawnedByRequestId,
       logger: this.toolContext.logger,
       tracer: this.obs.tracer,
       secretFilter: this.obs.secretFilter,
-      providerName: this.obs.providerName,
-      modelLabel: this.obs.modelLabel,
-      pricing: this.obs.pricing,
       getCurrentSnapshotId: this.obs.getCurrentSnapshotId,
     })
   }

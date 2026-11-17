@@ -168,7 +168,7 @@ Router 和 Codex Worker 因为接不上第三层，各自又做了一份：
 | 4 | 基座写事件流；记忆检索、Router、Codex Worker 依次接入 | 已完成，见下 |
 | 5 | 删除旧式 `compressConversation` 和切换模型时对 canonical 的覆盖；预算改为按压缩后的投影判断 | 已完成：[检查点压缩](context-compaction.md)是唯一的压缩机制，旧代码已删除 |
 | 6 | 主会话 `Agent` 改为「基座 + 模块」，从 `agent-hooks.ts` 一次搬出一项功能 | 已完成，见下 |
-| 7 | Web 读事件流；切 `file-only`；`run.log` 与 trace 里与事件流重复的部分退役 | 后续 |
+| 7 | Web 读事件流；切 `file-only`；`run.log` 与 trace 里与事件流重复的部分退役 | 7a～7c 已完成；7d 待定，见下 |
 
 ### 步骤 1：组装改为纯函数投影
 
@@ -347,6 +347,72 @@ hooks 读取请求历史的唯一来源。
     逐行相同。请求失败时 `run.log` 的 `llm_request.error` 与记忆提醒 span 结束的先后对调（前者现在晚于后者，两者写在不同的文件里，
     span 之间的顺序不变）；提醒期间请求失败和 DeepSeek 无签名回复两条路径没有进比对脚本，由 `completion-gate.test.ts` 覆盖。
   - 终态：`agent-hooks.ts` 从 1896 行降到约 540 行，只剩 trace 与 artifact 替换；`modules/` 下五个文件互不 import。
+
+### 步骤 7：Web 读事件流，旁路日志退役
+
+会话详情页现在从四个地方读数据。消息已经读事件流，其余三类还读 trace：
+
+| 读者 | 现在读 | 事件流里的对应 |
+| --- | --- | --- |
+| 消息、压缩块、检查点（`/sessions/:id`） | 事件流投影（`getMessagesFromDB` 等已读 `project()`） | 已完成 |
+| 请求列表（`/sessions/:id/requests`）、会话评审 | `trace.jsonl` 里 `llm_request` span 的 `data.request` | `step/*`、消息事件、`injection/context`、`tools/set` |
+| 决策与任务闭合事件（`/decisions`、`/task-closure-events`） | `trace.jsonl` 的压缩、记忆、闭合 span | `compaction/*`、`memory/retrieval/*`、`closure/*` |
+| span 树（`/traces`） | `trace.jsonl` | 没有对应，继续读 trace |
+
+`run.log` 里有两类内容：trace 每条 span 记录的镜像（`trace.<kind>.<status>`，与 `trace.jsonl` 完全重复），和 logger 行
+（会话 logger 的 info / warn / error、`llm_request.error` 等，别处没有）。Web 的 run.log 页面和 `zero logs` 读它。
+
+分四步，每一步单独合并：
+
+- **7a 请求列表改读事件流（已完成）。** 服务端从事件算出与现在相同形状的 `RequestLogEntry`，Web 前端不改。实际落点：
+  - 投影是 `projectSessionRequestsFromEvents`（`packages/observe/src/session-requests.ts`），`ObservabilityStore.readSessionRequests`
+    调它。读主会话的 `session.jsonl`，加上 `subagent/spawn` 指向的 `spawn_agent` 子代理文件（逐层）；记忆检索的子文件不进请求列表，
+    和原来一致。子代理的请求 `agentName` 取子文件 header 的 `name`，`turnIndex` 恒为 1，与 trace 的记法相同。
+  - 事件补的字段都是可选增项：`step/start.provider`，`step/end.cost`（没有定价时为 0，与 trace 一致）、`step/end.reasoningContent`
+    （过滤过密钥），`agent/inbox/drained.messages`（每条排队消息的摘要）。排队消息在一轮结束时被取走、作为续写消息发出时，
+    原来不写事件，现在也写一条 `agent/inbox/drained`。
+  - 新旧判断看 `step/end.cost`：带它的请求用事件算出的条目，其余沿用 trace 算出的条目，按请求编号合并，所以跨越升级的会话两段都在。
+  - 事件里的消息是原文，trace 写入时过滤过密钥，所以 `readSessionRequests` 的密钥过滤函数是必填参数，作用于从事件算出的
+    展示文本（用户输入、回复、工具输入、注入、推理文本）。
+  - 事件不带、也没有读者的四个字段不再出现在新请求的条目里：`systemHash`、`toolDefinitionsHash`、`staticPrefixHash`、`snapshotId`。
+    `ts` 取 `step/end` 的时间，比原来取的 span 结束时间早几毫秒。
+  - 验收：`request-list.test.ts` 用真实的 `Agent`、`Tracer` 和事件存储跑带密钥的工具调用、未知工具、空响应重试、排队拼接、
+    排队续写、推理文本与缓存用量、开场记忆注入、工具失败后的记忆提示，两种算法得到的条目除上面四个字段和 `ts` 外逐项相同；
+    `spawn-agent.test.ts` 对子代理的请求做同样的比对；同一测试把一次请求改成旧格式，核对按编号合并。
+- **7b span 上的请求改由事件补回（已完成）。** 原计划是把决策和任务闭合事件也改读事件流，做 7a 时发现不该这样做：
+  - 决策条目以 trace 的 span 编号为 `id`，时间线按它在 span 树里定位（`timeline.ts`），span 树按计划继续读 trace。
+  - 闭合条目里的分类器请求全文、压缩决策里的模型和费用，事件流里没有，它们不是重复内容。
+  - trace 里真正与事件流重复的，只有 `llm_request` span 的 `data.request`（请求的回复、工具调用、工具结果、token、费用）。
+    读它的除了 7a 已换掉的请求列表，还有决策里的 `tool_selection`，以及前端的轨迹视图和时间线（取 token、回复、模型、工具调用）。
+
+  所以 7b 改为：事件算出的请求条目带上 `step/start.requestSpanId`；服务端读 trace（决策投影、`/sessions/:id/traces`）时，
+  没有 `data.request` 的 `llm_request` span 由这个编号找到事件算出的请求补回，形状不变。决策、闭合、快照的投影和 span 树
+  仍读 trace，前端不改。补回的文本经过同一个密钥过滤。
+- **7c 停写 `data.request`（已完成）。** trace 的 `llm_request` span 不再带请求本身，`run.log` 里它的镜像随之变小；
+  `run.log` 镜像 span 记录这件事本身不动，它重复的是 trace，不是事件流。7b、7c 的实际落点：
+  - 请求条目新增 `traceSpanId`（事件算出的取 `step/start.requestSpanId`，trace 算出的取 span 编号）。
+    `attachRequestsToSpans`、`attachRequestsToTraceEntries`（`trace-projections.ts`）按它把请求补回没有 `data.request` 的
+    `llm_request` span；补回时去掉 `ts`，与原来 span 上的请求同形，读者照旧取 span 的结束时间。
+    `ObservabilityStore.readSessionDecisions` 和 `/sessions/:id/traces` 先补回再投影或返回，两处的密钥过滤函数都是必填参数。
+    补回函数也从浏览器入口 `browser.ts` 导出：`apps/web` 的服务端代码按那里解析 `@zero-os/observe`。
+  - `AgentTraceRecorder.logLLMRequest` 只在 span 的 `metadata` 上写请求编号、工具名、三个 hash 和当时的快照编号，
+    不再写 `data.request`。`snapshotId` 原来只在 `data.request` 里，事件流没有它，所以挪到 `metadata`，没有丢。
+  - 只为 `data.request` 收集的状态一并删除：hooks 里本次请求的工具结果、待记的记忆注入与排队注入，
+    `AgentContext.requestMemoryInjections`（`Session` 只为 trace 准备它），以及 `agent-trace.ts` 里对应的过滤与复制函数。
+  - `run.log` 的 `llm_request.error` 原来带整条请求（全部消息），现在只带 `messageCount`；请求可由同一 span 编号的
+    `step/start` 从事件流重建。
+  - 原来断言 span 上请求内容的测试，改为给 `Agent` 接上事件存储，从事件算出的请求核对同样的事实；只在 trace 上的字段
+    （工具名、hash、快照编号、轮次与上一请求编号）改读 span 的 `metadata` 和 `data`。
+  - 验收：同一脚本下主会话的事件流与改动前逐行相同，trace 只有请求 span 的更新内容不同；`request-list.test.ts` 断言
+    trace 的请求 span 不再带请求、补回后每个 span 对上一条请求、决策里的 `tool_selection` 仍能找到请求，并用一条旧格式的
+    trace 记录核对新旧合并。7a 时做过的「事件算出 = trace 算出」逐项比对，7c 之后的新 trace 没有请求可比，测试改为直接
+    断言事件算出的各字段。
+- **7d 默认 `file-only`。** `ZERO_SESSION_STORE` 的默认值从 `dual` 改为 `file-only`，`dual` 仍可显式设置。没有事件文件的
+  旧会话恢复时照旧从 DB 快照导入。清理旧数据的 `convert`、`purge` 仍由运维手动执行，见
+  [session-event-log.md](session-event-log.md)「旧数据迁移」。
+
+7d 之前要定的一件事：直接读 DB 大字段的脚本。`benchmarks/zero-runtime` 下有三个脚本直接查 `session_messages`、
+`session_compaction_blocks`。7d 之后这些表不再更新，脚本要先跑 `rebuild`，或改成读事件文件。
 
 ## 已定事项
 

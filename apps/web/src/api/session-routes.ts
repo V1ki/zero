@@ -1,4 +1,5 @@
 import { type Session, buildSessionInfoReply, parseSessionArgs } from '@zero-os/core'
+import { attachRequestsToSpans } from '@zero-os/observe'
 import { toErrorMessage } from '@zero-os/shared'
 import { Hono } from 'hono'
 import type { ZeroOS } from '../../../server/src/main'
@@ -670,7 +671,9 @@ function createSessionObservabilityRoutes(zero: ZeroOS) {
         return c.json({ error: 'Session not found' }, 404)
       }
 
-      const requests = zero.observability.readSessionRequests(id)
+      const requests = zero.observability.readSessionRequests(id, (text) =>
+        zero.secretFilter.filter(text),
+      )
       return c.json({
         sessionId: id,
         requests,
@@ -684,7 +687,9 @@ function createSessionObservabilityRoutes(zero: ZeroOS) {
         return c.json({ error: 'Session not found' }, 404)
       }
 
-      const decisions = zero.observability.readSessionDecisions(id)
+      const decisions = zero.observability.readSessionDecisions(id, (text) =>
+        zero.secretFilter.filter(text),
+      )
       return c.json({
         sessionId: id,
         decisions,
@@ -693,7 +698,11 @@ function createSessionObservabilityRoutes(zero: ZeroOS) {
 
     .get('/sessions/:id/traces', (c) => {
       const id = c.req.param('id')
-      const traces = zero.tracer.exportSession(id).map((span) => sanitizeTraceSpanForClient(span))
+      // 新的 llm_request span 不带请求本身,由事件算出的请求按 span 编号补回
+      const traces = attachRequestsToSpans(
+        zero.tracer.exportSession(id),
+        zero.observability.readSessionRequests(id, (text) => zero.secretFilter.filter(text)),
+      ).map((span) => sanitizeTraceSpanForClient(span))
       return c.json({ traces })
     })
 

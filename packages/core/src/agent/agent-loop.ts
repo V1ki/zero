@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { ProviderAdapter } from '@zero-os/model'
+import { type ProviderAdapter, computeCost } from '@zero-os/model'
 import type { SessionEventStore } from '@zero-os/observe'
 import type {
   CompactionTrigger,
@@ -10,6 +10,7 @@ import type {
   ContextCheckpoint,
   InjectionContextEventData,
   Message,
+  ModelPricing,
   ReasoningEffort,
   RequestEntry,
   RequestMessageEventData,
@@ -210,9 +211,15 @@ export interface QueueTaken {
  */
 export interface AgentLoopJournal {
   events: Pick<SessionEventStore, 'append' | 'appendMessage'>
-  /** Recorded as the model of each `step/start`. */
+  /** Recorded as the model and provider of each `step/start`. */
   modelLabel?: string
-  /** Applied to tool input before it is hashed and previewed in `tool/call`. */
+  providerName?: string
+  /** Prices each response for the `cost` of its `step/end`; without it the cost is 0. */
+  pricing?: ModelPricing
+  /**
+   * Applied to tool input before it is hashed and previewed in `tool/call`, and to the reasoning
+   * text recorded in `step/end`.
+   */
   secretFilter?: SecretFilter
   /** Trace span of the request that just started. Read after `onCompletionStart`. */
   requestSpanId?(): string | undefined
@@ -1012,6 +1019,7 @@ async function completeAgentLoopRequest({
         stepIndex,
         requestSpanId: journal.requestSpanId?.(),
         model: journal.modelLabel,
+        provider: journal.providerName,
         messageCount: request.messages.length,
         requestHash: hashRequest({
           system: request.system ?? '',
@@ -1039,6 +1047,10 @@ async function completeAgentLoopRequest({
           requestId: response.id,
           usage: response.usage,
           durationMs,
+          cost: computeCost(response.usage, journal.pricing),
+          reasoningContent:
+            response.reasoningContent &&
+            (journal.secretFilter?.filter(response.reasoningContent) ?? response.reasoningContent),
         },
       },
     ])

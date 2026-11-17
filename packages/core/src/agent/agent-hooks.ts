@@ -1,20 +1,11 @@
 import { createHash } from 'node:crypto'
-import type { RequestMemoryInjectionEntry, RequestToolResultEntry } from '@zero-os/observe'
 import type { ContentBlock, Message, ToolContext, ToolResult } from '@zero-os/shared'
 import { toErrorMessage } from '@zero-os/shared'
 import type { AgentLoopHooks, AgentLoopJournal, AgentLoopModule, QueueTaken } from './agent-loop'
 import type { AgentTraceRecorder } from './agent-trace'
-import {
-  cloneMemoryInjections,
-  extractTextFromMessage,
-  filterContent,
-  filterToolInput,
-  filterTraceValue,
-  stringifyTraceData,
-  toRequestToolResults,
-} from './agent-trace'
-import type { AgentConfig, AgentContext, AgentObservability } from './agent-types'
-import { type QueuedInjectionTrace, formatAppliedQueuedIntent } from './queue'
+import { filterContent, filterToolInput, stringifyTraceData } from './agent-trace'
+import type { AgentConfig, AgentObservability } from './agent-types'
+import { formatAppliedQueuedIntent } from './queue'
 import { attachLargeToolUseEvidence } from './tool-evidence'
 import { artifactizeToolOutput } from './truncate'
 
@@ -22,8 +13,6 @@ export interface CreateAgentLoopHooksOptions {
   config: AgentConfig
   toolContext: ToolContext
   obs: AgentObservability
-  context: AgentContext
-  userMessage: string
   onNewMessage?: (msg: Message) => void
   onTextDelta?: (delta: string, meta: { role: 'assistant'; turnId: string }) => void
   turnIndex: number
@@ -44,38 +33,19 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
   /** trace 在模块扩展点上的部分(排队取走时的 span 与 bus),放在模块数组最后 */
   traceModule: AgentLoopModule
 } {
-  const {
-    config,
-    toolContext,
-    obs,
-    context,
-    userMessage,
-    turnIndex,
-    rootSpanId,
-    executionState,
-    traceRecorder,
-  } = options
+  const { config, toolContext, obs, turnIndex, rootSpanId, executionState, traceRecorder } = options
 
-  // 排队消息进入请求的事实:trace 记下它和拼进来的原文的长度
-  let pendingQueuedInjection: QueuedInjectionTrace | undefined
+  // 排队消息进入请求的事实:trace 记下拼进来的原文的长度
   let appliedQueuedIntentText: string | undefined
 
   const llmRequestHooks = createAgentLLMRequestHooks({
     config,
     toolContext,
     obs,
-    userMessage,
     turnIndex,
     rootSpanId,
     executionState,
     traceRecorder,
-    initialMemoryInjections: context.requestMemoryInjections,
-    queueTrace: {
-      getPendingInjection: () => pendingQueuedInjection,
-      clearPendingInjection: () => {
-        pendingQueuedInjection = undefined
-      },
-    },
   })
 
   const toolCallHooks = createAgentToolCallHooks({
@@ -89,15 +59,6 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
     onNewMessage: (message, ctx) => {
       // 消息事件由 loop 在这之前写入:转给调用方的是 canonical 消息,只进请求的阶段不转
       if (!ctx.requestOnly()) options.onNewMessage?.(message)
-      // 工具结果之后追加的 notification(记忆检索的 memory_hint)记进下一次请求的 trace
-      if (message.role === 'user' && message.messageType === 'notification')
-        llmRequestHooks.setPendingMemoryInjections([
-          {
-            layer: 'layer2',
-            source: 'memory_hint',
-            formattedText: extractTextFromMessage(message),
-          },
-        ])
 
       if (message.role === 'assistant') {
         obs.bus?.emit('session:update', {
@@ -135,7 +96,6 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
         turnIndex,
         requestId: executionState.currentRequestId,
       })
-      llmRequestHooks.setRequestToolResults(toRequestToolResults(toolResultBlocks))
       return { toolResultBlocks }
     },
   }
@@ -147,7 +107,6 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
         appliedQueuedIntentText = appliedQueuedIntentText
           ? `${appliedQueuedIntentText}\n${intentText}`
           : intentText
-      pendingQueuedInjection = taken.injection
       if (!taken.continuation) return
       const phase = queueTracePhase(taken)
       const drainSpan = obs.tracer?.startSpan(
@@ -183,6 +142,8 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
     journal: obs.sessionEvents && {
       events: obs.sessionEvents,
       modelLabel: obs.modelLabel,
+      providerName: obs.providerName,
+      pricing: obs.pricing,
       secretFilter: obs.secretFilter,
       requestSpanId: () => llmRequestHooks.getCurrentRequestSpanId(),
       toolSpanId: (toolUseId) => toolCallHooks.getToolSpanId(toolUseId),
@@ -274,7 +235,6 @@ interface CreateAgentLLMRequestHooksOptions {
   config: AgentConfig
   toolContext: ToolContext
   obs: AgentObservability
-  userMessage: string
   turnIndex: number
   rootSpanId?: string
   executionState: {
@@ -282,17 +242,10 @@ interface CreateAgentLLMRequestHooksOptions {
     currentTraceSpanId?: string
   }
   traceRecorder: AgentTraceRecorder
-  initialMemoryInjections?: RequestMemoryInjectionEntry[]
-  queueTrace: {
-    getPendingInjection(): QueuedInjectionTrace | undefined
-    clearPendingInjection(): void
-  }
 }
 
 interface AgentLLMRequestHooks {
   getCurrentRequestSpanId(): string | undefined
-  setRequestToolResults(results: RequestToolResultEntry[]): void
-  setPendingMemoryInjections(memoryInjections: RequestMemoryInjectionEntry[]): void
   onCompletionStart: NonNullable<AgentLoopHooks['onCompletionStart']>
   onCompletionEnd: NonNullable<AgentLoopHooks['onCompletionEnd']>
   onCompletionError: NonNullable<AgentLoopHooks['onCompletionError']>
@@ -302,27 +255,16 @@ function createAgentLLMRequestHooks({
   config,
   toolContext,
   obs,
-  userMessage,
   turnIndex,
   rootSpanId,
   executionState,
   traceRecorder,
-  initialMemoryInjections,
-  queueTrace,
 }: CreateAgentLLMRequestHooksOptions): AgentLLMRequestHooks {
   let pendingParentRequestId: string | undefined
-  let currentRequestToolResults: RequestToolResultEntry[] = []
-  let pendingMemoryInjections = cloneMemoryInjections(initialMemoryInjections)
   let currentRequestSpanId: string | undefined
 
   return {
     getCurrentRequestSpanId: () => currentRequestSpanId,
-    setRequestToolResults: (results) => {
-      currentRequestToolResults = results
-    },
-    setPendingMemoryInjections: (memoryInjections) => {
-      pendingMemoryInjections = cloneMemoryInjections(memoryInjections)
-    },
     onCompletionStart: () => {
       const llmSpan = obs.tracer?.startSpan(toolContext.sessionId, 'llm_request', rootSpanId, {
         kind: 'llm_request',
@@ -335,35 +277,18 @@ function createAgentLLMRequestHooks({
       })
       currentRequestSpanId = llmSpan?.id
     },
-    onCompletionEnd: (request, response, durationMs) => {
+    onCompletionEnd: (request, response) => {
       response.model = obs.modelLabel ?? response.model
       executionState.currentRequestId = response.id
-
-      traceRecorder.logLLMRequest({
-        request,
-        response,
-        userPrompt: userMessage,
-        durationMs,
-        meta: {
-          turnIndex,
-          parentId: pendingParentRequestId,
-        },
-        requestToolResults: currentRequestToolResults,
-        queuedInjection: queueTrace.getPendingInjection(),
-        memoryInjections: pendingMemoryInjections,
-        traceSpanId: currentRequestSpanId,
-      })
-
-      currentRequestToolResults = []
-      queueTrace.clearPendingInjection()
-      pendingMemoryInjections = undefined
+      traceRecorder.logLLMRequest({ request, response, traceSpanId: currentRequestSpanId })
       pendingParentRequestId = response.stopReason === 'tool_use' ? response.id : undefined
     },
     onCompletionError: (request, error) => {
+      // 请求本身可由同一 span 编号的 step/start 从事件流重建,这里只记它的大小
       obs.tracer?.logSession?.(toolContext.sessionId, 'error', 'llm_request.error', {
         traceSpanId: currentRequestSpanId,
         turnIndex,
-        request: filterTraceValue(request, obs.secretFilter),
+        messageCount: request.messages.length,
         error: toErrorMessage(error),
       })
 

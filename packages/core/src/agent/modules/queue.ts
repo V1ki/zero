@@ -41,9 +41,16 @@ export function queueModule(options: {
       if (queued.length === 0) return undefined
       hadQueuedMessages = true
       track(queued)
+      const injection = buildQueuedInjectionTrace(queued)
+      options.events?.append(sessionId, [
+        {
+          type: 'agent/inbox/drained',
+          data: { count: queued.length, messages: injection?.messages },
+        },
+      ])
       return {
         queued,
-        injection: buildQueuedInjectionTrace(queued),
+        injection,
         continuationMessage: buildLoopUserMessage({
           sessionId,
           text: buildQueuedInjectionText(queued),
@@ -56,7 +63,10 @@ export function queueModule(options: {
       hadQueuedMessages = false
       if (queued.length === 0) return undefined
       options.events?.append(sessionId, [
-        { type: 'agent/inbox/drained', data: { count: queued.length } },
+        {
+          type: 'agent/inbox/drained',
+          data: { count: queued.length, messages: buildQueuedInjectionTrace(queued)?.messages },
+        },
       ])
       if (last.role !== 'user') return undefined
       const injected = injectQueuedMessagesWithTrace(last, queued)
