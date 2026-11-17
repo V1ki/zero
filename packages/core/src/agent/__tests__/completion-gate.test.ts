@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MEMORY_NUDGE_PROMPT } from '@zero-os/memory'
 import { type ProviderAdapter, TrackedAdapter } from '@zero-os/model'
-import { MetricsDB, ObservabilityStore, Tracer } from '@zero-os/observe'
+import { MetricsDB, ObservabilityStore, SessionEventStore, Tracer } from '@zero-os/observe'
 import type {
   CompletionRequest,
   CompletionResponse,
@@ -972,6 +972,14 @@ describe('Agent task closure gate', () => {
     tempDirs.push(dir)
     const observability = new ObservabilityStore(dir)
     const tracer = new Tracer(dir)
+    // 请求列表从会话事件流算出;闭合仍从 trace 读
+    const sessionEvents = new SessionEventStore({ basePath: dir })
+    sessionEvents.ensureSession({
+      v: 1,
+      sessionId: 'test-session',
+      schemaVersion: 1,
+      source: 'web',
+    })
     const registry = new ToolRegistry()
     const adapter = new TaskClosureAdapter('continue')
     const agent = new Agent(
@@ -979,7 +987,7 @@ describe('Agent task closure gate', () => {
       adapter,
       registry,
       createToolContext(),
-      { tracer },
+      { tracer, sessionEvents },
     )
 
     await agent.run(createContext(registry), '帮我看看这帖值不值得信')
@@ -1280,7 +1288,6 @@ describe('Agent task closure gate', () => {
   })
 
   test('drains pending queue before memory_nudge starts', async () => {
-    const registry = new ToolRegistry()
     const adapter = new MemoryNudgeAdapter('skip')
     const tracer = new Tracer()
     const config = { name: 'test-agent', agentInstruction: 'Test prompt' }
@@ -1299,8 +1306,6 @@ describe('Agent task closure gate', () => {
       config,
       toolContext,
       obs,
-      context: createContext(registry),
-      userMessage: '完成一个需要先查再总结的任务',
       turnIndex: 1,
       executionState: {},
       traceRecorder,

@@ -1,10 +1,4 @@
-import type {
-  MetricsDB,
-  RequestMemoryInjectionEntry,
-  SessionEventStore,
-  Tracer,
-  UsagePurpose,
-} from '@zero-os/observe'
+import type { MetricsDB, SessionEventStore, Tracer, UsagePurpose } from '@zero-os/observe'
 import type {
   ContextCheckpoint,
   Message,
@@ -29,8 +23,6 @@ export interface AgentContext {
   dynamicContext?: string
   /** Local image files saved for text-only models to delegate to a vision sub-agent. */
   imageDelegationFiles?: Array<{ path: string; mediaType: string }>
-  /** Request-scoped memory injections for observability and UI trace previews. */
-  requestMemoryInjections?: RequestMemoryInjectionEntry[]
   /** Session-scoped memory ids already injected in prior layer1/layer2 retrievals. */
   injectedMemoryIds?: Map<string, string>
   conversationHistory: Message[]

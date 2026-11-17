@@ -49,7 +49,13 @@ function projectSource(
   let memoryInjections: RequestMemoryInjectionEntry[] | undefined
   let drained: { count?: number; messages?: RequestQueuedInjectionEntry['messages'] } | undefined
   let step:
-    | { stepIndex: number; model?: string; provider?: string; messageCount?: number }
+    | {
+        stepIndex: number
+        requestSpanId?: string
+        model?: string
+        provider?: string
+        messageCount?: number
+      }
     | undefined
   /** 最近一次 `step/end` 的条目,等它后面的 assistant 消息补上回复 */
   let awaiting: RequestLogEntry | undefined
@@ -158,6 +164,7 @@ function projectSource(
         if (requestId && usage && cost !== undefined) {
           awaiting = {
             id: requestId,
+            traceSpanId: step.requestSpanId,
             turnIndex,
             parentId,
             sessionId,

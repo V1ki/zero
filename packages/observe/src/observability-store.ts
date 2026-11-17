@@ -25,6 +25,7 @@ import { readEventsFile } from './session-event-store'
 import { type SessionRequestSource, projectSessionRequestsFromEvents } from './session-requests'
 import { collapseTraceEntries } from './trace'
 import {
+  attachRequestsToTraceEntries,
   projectSessionClosuresFromTraceEntries,
   projectSessionDecisionsFromTraceEntries,
   projectSessionRequestsFromTraceEntries,
@@ -72,6 +73,8 @@ export interface RequestMemoryInjectionEntry {
 
 export interface RequestLogEntry {
   id: string
+  /** 这次请求的 trace span(`llm_request`)编号,span 树据此找回请求 */
+  traceSpanId?: string
   turnIndex: number
   parentId?: string
   sessionId: string
@@ -320,8 +323,14 @@ export class ObservabilityStore {
   /**
    * Read projected decisions for a session from trace.jsonl.
    */
-  readSessionDecisions(sessionId: string): DecisionLogEntry[] {
-    return projectSessionDecisionsFromTraceEntries(this.readSessionTraceEntries(sessionId))
+  readSessionDecisions(sessionId: string, filter: (text: string) => string): DecisionLogEntry[] {
+    // 决策里的 tool_selection 读 llm_request span 上的请求;新 span 不再带它,由事件算出的请求补回
+    return projectSessionDecisionsFromTraceEntries(
+      attachRequestsToTraceEntries(
+        this.readSessionTraceEntries(sessionId),
+        this.readSessionRequests(sessionId, filter),
+      ),
+    )
   }
 
   /**

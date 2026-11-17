@@ -77,6 +77,8 @@ export type {
   UpdateSpanInput,
 } from './trace-types'
 export {
+  attachRequestsToSpans,
+  attachRequestsToTraceEntries,
   projectSessionDecisionsFromTraceEntries,
   projectSessionClosuresFromTraceEntries,
   projectSessionRequestsFromTraceEntries,

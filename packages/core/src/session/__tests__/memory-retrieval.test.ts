@@ -285,11 +285,6 @@ describe('Session memory retrieval', () => {
       | {
           dynamicContext?: string
           injectedMemoryIds?: Map<string, string>
-          requestMemoryInjections?: Array<{
-            layer: 'layer1' | 'layer2'
-            source: 'retrieved_memories' | 'memory_hint'
-            formattedText: string
-          }>
         }
       | undefined
     ;(session as unknown as { activeModel: ResolvedModel }).activeModel = fakeResolvedModel
@@ -298,11 +293,6 @@ describe('Session memory retrieval', () => {
         context: {
           dynamicContext?: string
           injectedMemoryIds?: Map<string, string>
-          requestMemoryInjections?: Array<{
-            layer: 'layer1' | 'layer2'
-            source: 'retrieved_memories' | 'memory_hint'
-            formattedText: string
-          }>
         },
         _userMessage: string,
         _images?: unknown,
@@ -331,13 +321,6 @@ describe('Session memory retrieval', () => {
       .usageSummaryByPurpose('1d')
       .find((entry) => entry.purpose === 'memory_retrieval')
     expect(retrievalUsage?.eventCount).toBe(2)
-    expect(capturedContext?.requestMemoryInjections).toEqual([
-      expect.objectContaining({
-        layer: 'layer1',
-        source: 'retrieved_memories',
-        formattedText: expect.stringContaining('<memory_inject layer="layer1">'),
-      }),
-    ])
     expect(session.getMessages()).toEqual([])
     const decisionSpan = flattenTraceSpans(tracer.exportSession(session.data.id)).find(
       (span) => span.name === 'memory_retrieval_decision',

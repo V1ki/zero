@@ -9,7 +9,7 @@ import type {
   RequestToolResultEntry,
   SnapshotEntry,
 } from './observability-store'
-import type { TraceEntry } from './trace-types'
+import type { TraceEntry, TraceKind, TraceSpan } from './trace-types'
 import { asRecord, asString } from './utils'
 
 const MAX_DECISION_RATIONALE_LENGTH = 1500
@@ -339,6 +339,7 @@ export function projectSessionRequestsFromTraceEntries(entries: TraceEntry[]): R
       return [
         {
           id,
+          traceSpanId: entry.spanId,
           turnIndex,
           parentId: asString(request.parentId),
           sessionId: entry.sessionId,
@@ -685,4 +686,53 @@ export function projectSessionDecisionsFromTraceEntries(entries: TraceEntry[]): 
   }
 
   return sortByTs(results)
+}
+
+/**
+ * `llm_request` span 原来在 `data.request` 里带着整条请求(回复、工具调用、工具结果、token、费用),与事件流重复,
+ * 新的 span 不再写它。读 trace 的地方先用这两个函数,按 `traceSpanId` 把事件算出的请求补回没有它的 span,
+ * 补回后的形状与原来相同;旧 span 自己带的不动。
+ */
+export function attachRequestsToTraceEntries(
+  entries: TraceEntry[],
+  requests: RequestLogEntry[],
+): TraceEntry[] {
+  const bySpan = requestsBySpan(requests)
+  return entries.map((entry) => ({
+    ...entry,
+    data: withRequest(entry.kind, entry.spanId, entry.data, bySpan),
+  }))
+}
+
+export function attachRequestsToSpans(
+  spans: TraceSpan[],
+  requests: RequestLogEntry[],
+): TraceSpan[] {
+  const bySpan = requestsBySpan(requests)
+  const attach = (span: TraceSpan): TraceSpan => ({
+    ...span,
+    data: withRequest(span.kind, span.id, span.data, bySpan),
+    children: span.children.map(attach),
+  })
+  return spans.map(attach)
+}
+
+function requestsBySpan(requests: RequestLogEntry[]): Map<string, RequestLogEntry> {
+  return new Map(
+    requests.flatMap((request) => (request.traceSpanId ? [[request.traceSpanId, request]] : [])),
+  )
+}
+
+function withRequest(
+  kind: TraceKind,
+  spanId: string,
+  data: Record<string, unknown> | undefined,
+  bySpan: Map<string, RequestLogEntry>,
+): Record<string, unknown> | undefined {
+  if (kind !== 'llm_request' || data?.request !== undefined) return data
+  const found = bySpan.get(spanId)
+  if (!found) return data
+  // span 上的请求原来不带 ts:读者取 span 的结束时间
+  const { ts: _ts, ...request } = found
+  return { ...data, request }
 }

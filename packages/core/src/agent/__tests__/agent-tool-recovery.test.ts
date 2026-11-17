@@ -1,6 +1,14 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { ProviderAdapter } from '@zero-os/model'
-import { Tracer, flattenTraceSpans } from '@zero-os/observe'
+import {
+  SessionEventStore,
+  Tracer,
+  flattenTraceSpans,
+  projectSessionRequestsFromEvents,
+} from '@zero-os/observe'
 import type {
   CompletionRequest,
   CompletionResponse,
@@ -246,11 +254,33 @@ function expectDefined<T>(value: T | null | undefined): NonNullable<T> {
   return value
 }
 
+const logDirs: string[] = []
+afterEach(() => {
+  for (const dir of logDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
+
+/** 会话事件文件;请求列表从它算出 */
+function sessionLog() {
+  const dir = mkdtempSync(join(tmpdir(), 'zero-agent-tool-recovery-'))
+  logDirs.push(dir)
+  const store = new SessionEventStore({ basePath: dir })
+  store.ensureSession({ v: 1, sessionId: 'test-session', schemaVersion: 1, source: 'web' })
+  return store
+}
+
+function requestsOf(store: SessionEventStore) {
+  return projectSessionRequestsFromEvents(
+    'test-session',
+    [{ events: store.readEvents('test-session'), subagent: false }],
+    (text) => text,
+  )
+}
+
 describe('Agent tool recovery', () => {
-  test('run: layer1 memory injections are recorded on the request trace', async () => {
+  test('run: layer1 memory injections are recorded on the request', async () => {
     const adapter = new SimpleReplyAdapter()
     const registry = new ToolRegistry()
-    const tracer = new Tracer()
+    const sessionEvents = sessionLog()
 
     const toolContext: ToolContext = {
       sessionId: 'test-session',
@@ -271,40 +301,29 @@ describe('Agent tool recovery', () => {
       adapter,
       registry,
       toolContext,
-      { tracer },
+      { sessionEvents },
     )
 
     const context: AgentContext = {
       systemPrompt: 'Test prompt',
       conversationHistory: [],
       tools: registry.getDefinitions(),
-      requestMemoryInjections: [
-        {
-          layer: 'layer1',
-          source: 'retrieved_memories',
-          formattedText:
-            '<memory_inject layer="layer1"><retrieved_memories>demo</retrieved_memories></memory_inject>',
-        },
-      ],
+      // 会话把检索到的记忆放进动态上下文
+      dynamicContext:
+        '<system-reminder>\n<retrieved_memories>demo</retrieved_memories>\n</system-reminder>',
     }
 
     await agent.run(context, 'Analyze this link')
 
-    const requestSpan = flattenTraceSpans(tracer.exportSession('test-session')).find(
-      (span) => span.kind === 'llm_request',
-    )
-    expect(requestSpan?.data?.request).toEqual(
-      expect.objectContaining({
-        memoryInjections: [
-          {
-            layer: 'layer1',
-            source: 'retrieved_memories',
-            formattedText:
-              '<memory_inject layer="layer1"><retrieved_memories>demo</retrieved_memories></memory_inject>',
-          },
-        ],
-      }),
-    )
+    const [request] = requestsOf(sessionEvents)
+    expect(request?.memoryInjections).toEqual([
+      {
+        layer: 'layer1',
+        source: 'retrieved_memories',
+        formattedText:
+          '<memory_inject layer="layer1">\n<retrieved_memories>demo</retrieved_memories>\n</memory_inject>',
+      },
+    ])
   })
 
   test('run: tool exceptions are converted into tool_result errors', async () => {
@@ -404,6 +423,7 @@ describe('Agent tool recovery', () => {
     const registry = new ToolRegistry()
     registry.register(new FailingFetchTool())
     const tracer = new Tracer()
+    const sessionEvents = sessionLog()
 
     const toolContext: ToolContext = {
       sessionId: 'test-session',
@@ -453,7 +473,7 @@ describe('Agent tool recovery', () => {
       adapter,
       registry,
       toolContext,
-      { tracer },
+      { tracer, sessionEvents },
     )
 
     const context: AgentContext = {
@@ -474,11 +494,9 @@ describe('Agent tool recovery', () => {
       }),
     ])
 
-    const requestSpans = flattenTraceSpans(tracer.exportSession('test-session')).filter(
-      (span) => span.kind === 'llm_request' && span.data?.request,
-    )
-    expect(requestSpans).toHaveLength(2)
-    expect(requestSpans[1]?.data?.request).toEqual(
+    const requests = requestsOf(sessionEvents)
+    expect(requests).toHaveLength(2)
+    expect(requests[1]).toEqual(
       expect.objectContaining({
         memoryInjections: [
           {

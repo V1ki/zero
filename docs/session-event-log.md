@@ -231,8 +231,9 @@ purge。注意 purge 前必须已切 file-only，否则下次 persist 会把 DB 
 ## run.log 止血（本次同步变更）
 
 - `llm_request.raw_request/raw_response`、`tool_call.raw_input/raw_result`
-  四个全量事件已从 agent hook 删除；请求投影继续走 trace.jsonl 的
-  llm_request span（systemHash/toolDefinitionsHash/messageCount 等）。
+  四个全量事件已从 agent hook 删除。之后请求列表也改从事件流算出，trace 的 llm_request span 只在
+  `metadata` 上留请求编号、工具名、hash 和快照编号，`llm_request.error` 只记消息数，见
+  [agent-loop-session-log-design.md](agent-loop-session-log-design.md) 步骤 7。
 - 工具 span 载荷瘦身为有界预览（≤2048 字符）+ chars + outputSummary；
   完整工具 IO 由 `.artifacts/` evidence 文件承载。
 

@@ -1,6 +1,15 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { ProviderAdapter } from '@zero-os/model'
-import { Tracer } from '@zero-os/observe'
+import {
+  type RequestLogEntry,
+  SessionEventStore,
+  Tracer,
+  flattenTraceSpans,
+  projectSessionRequestsFromEvents,
+} from '@zero-os/observe'
 import type {
   CompletionRequest,
   CompletionResponse,
@@ -781,6 +790,7 @@ describe('Agent streaming callback', () => {
 
   test('reasoning deltas are aggregated and logged to session requests', async () => {
     const tracer = new Tracer()
+    const sessionEvents = sessionLog({ agentName: 'stream-agent', toolNames: [] })
     const adapter = new ReasoningStreamingAdapter()
     const agent = new Agent(
       {
@@ -797,6 +807,7 @@ describe('Agent streaming callback', () => {
       },
       {
         tracer,
+        sessionEvents,
       },
     )
 
@@ -806,7 +817,9 @@ describe('Agent streaming callback', () => {
       .filter((b) => b.type === 'text')
       .map((b) => (b as { text: string }).text)
       .join('')
-    const entries = getRequestEntries(tracer, 'sess-stream')
+    const entries = requestsOf(sessionEvents)
+    // 工具名与 hash 留在 trace 的 span 上
+    const [span] = requestSpans(tracer)
 
     expect(visibleText).toBe('visible answer')
     expect(entries).toHaveLength(1)
@@ -814,16 +827,22 @@ describe('Agent streaming callback', () => {
     expect(entries[0].reasoningContent).toBe('step 1. step 2.')
     expect(entries[0].toolCalls).toEqual([])
     expect(entries[0].toolNames).toEqual([])
-    expect(entries[0].toolDefinitionsHash).toBeUndefined()
-    expect(entries[0].systemHash).toBeDefined()
-    expect(entries[0].staticPrefixHash).toBeDefined()
+    expect(span?.metadata?.toolNames).toEqual([])
+    expect(span?.metadata?.toolDefinitionsHash).toBeUndefined()
+    expect(span?.metadata?.systemHash).toBeDefined()
+    expect(span?.metadata?.staticPrefixHash).toBeDefined()
     expect(entries[0].toolResults).toEqual([])
     expect(entries[0].messageCount).toBe(1)
-    expect((entries[0].tokens as Record<string, unknown>).reasoning).toBe(7)
+    expect(entries[0].tokens.reasoning).toBe(7)
   })
 
   test('tool_use retries share turnIndex and chain parentId to the prior response id', async () => {
     const tracer = new Tracer()
+    const sessionEvents = sessionLog({
+      agentName: 'stream-agent',
+      toolNames: ['noop'],
+      turnIndex: 4,
+    })
     const adapter = new ToolLoopAdapter()
     const registry = new ToolRegistry()
     registry.register(new NoopTool())
@@ -843,6 +862,7 @@ describe('Agent streaming callback', () => {
       },
       {
         tracer,
+        sessionEvents,
       },
     )
 
@@ -860,7 +880,14 @@ describe('Agent streaming callback', () => {
     )
 
     expect(messages.at(-1)?.role).toBe('assistant')
-    const entries = getRequestEntries(tracer, 'sess-stream')
+    const entries = requestsOf(sessionEvents)
+    // span 上的轮次与上一请求编号仍由 Agent 记下,与请求列表一致
+    expect(requestSpans(tracer).map((span) => span.data?.turnIndex)).toEqual([4, 4, 4])
+    expect(requestSpans(tracer).map((span) => span.data?.parentId ?? null)).toEqual([
+      null,
+      'resp_tool_1',
+      'resp_tool_2',
+    ])
     expect(entries).toHaveLength(3)
     expect(entries.map((entry) => entry.agentName)).toEqual([
       'stream-agent',
@@ -902,8 +929,9 @@ describe('Agent streaming callback', () => {
     ])
   })
 
-  test('queued message injections are logged on the matching llm_request span', async () => {
+  test('queued message injections are logged on the matching request', async () => {
     const tracer = new Tracer()
+    const sessionEvents = sessionLog({ agentName: 'stream-agent', toolNames: ['noop'] })
     const adapter = new QueuedInjectionAdapter()
     const registry = new ToolRegistry()
     registry.register(new NoopTool())
@@ -931,6 +959,7 @@ describe('Agent streaming callback', () => {
       {
         tracer,
         secretFilter,
+        sessionEvents,
       },
     )
 
@@ -950,7 +979,7 @@ describe('Agent streaming callback', () => {
       ],
     )
 
-    const entries = getRequestEntries(tracer, 'sess-stream')
+    const entries = requestsOf(sessionEvents, secretFilter.filter)
     expect(entries).toHaveLength(2)
     expect(entries[0].queuedInjection).toBeUndefined()
     expect(entries[1].queuedInjection).toEqual({
@@ -977,21 +1006,43 @@ queued [redacted] update
   })
 })
 
-function getRequestEntries(tracer: Tracer, sessionId: string): Array<Record<string, unknown>> {
-  return flattenTraceSpans(tracer.exportSession(sessionId))
-    .map((span) => span.data?.request as Record<string, unknown> | undefined)
-    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+const logDirs: string[] = []
+afterEach(() => {
+  for (const dir of logDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
+
+/** 会话事件文件,先写 Session 在 Agent.run 之前写的 tools/set 与 turn/start */
+function sessionLog(turn: { agentName: string; toolNames: string[]; turnIndex?: number }) {
+  const dir = mkdtempSync(join(tmpdir(), 'zero-agent-streaming-'))
+  logDirs.push(dir)
+  const store = new SessionEventStore({ basePath: dir })
+  store.ensureSession({ v: 1, sessionId: 'sess-stream', schemaVersion: 1, source: 'web' })
+  store.append('sess-stream', [
+    {
+      type: 'tools/set',
+      data: { hash: 'sha256:x', toolNames: turn.toolNames, count: turn.toolNames.length },
+    },
+    {
+      type: 'turn/start',
+      data: { turnIndex: turn.turnIndex ?? 1, trigger: 'channel', agentName: turn.agentName },
+    },
+  ])
+  return store
 }
 
-function flattenTraceSpans(
-  spans: Array<{ data?: Record<string, unknown>; children?: unknown[] }>,
-): Array<{ data?: Record<string, unknown>; children?: unknown[] }> {
-  return spans.flatMap((span) => [
-    span,
-    ...flattenTraceSpans(
-      (span.children as
-        | Array<{ data?: Record<string, unknown>; children?: unknown[] }>
-        | undefined) ?? [],
-    ),
-  ])
+function requestsOf(
+  store: SessionEventStore,
+  filter: (text: string) => string = (text) => text,
+): RequestLogEntry[] {
+  return projectSessionRequestsFromEvents(
+    'sess-stream',
+    [{ events: store.readEvents('sess-stream'), subagent: false }],
+    filter,
+  )
+}
+
+function requestSpans(tracer: Tracer) {
+  return flattenTraceSpans(tracer.exportSession('sess-stream')).filter(
+    (span) => span.name === 'llm_request',
+  )
 }

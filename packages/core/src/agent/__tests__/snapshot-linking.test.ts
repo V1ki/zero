@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { ProviderAdapter } from '@zero-os/model'
-import { Tracer } from '@zero-os/observe'
+import { Tracer, flattenTraceSpans } from '@zero-os/observe'
 import type {
   CompletionRequest,
   CompletionResponse,
@@ -136,26 +136,14 @@ describe('Agent snapshot linking', () => {
 
     await agent.run(context, 'trigger compression')
 
-    const requests = flattenTraceSpans(tracer.exportSession('test-session'))
-      .map((span) => span.data?.request as Record<string, unknown> | undefined)
-      .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    // 请求本身在事件流里;当时的快照编号记在请求 span 的 metadata 上
+    const requests = flattenTraceSpans(tracer.exportSession('test-session')).filter(
+      (span) => span.name === 'llm_request',
+    )
 
     expect(context.checkpoint?.summary).toBe('compressed summary')
     expect(requests).toHaveLength(2)
-    expect(requests[0]?.snapshotId).toBe('snap_initial')
-    expect(requests[1]?.snapshotId).toBe('snap_initial')
+    expect(requests[0]?.metadata?.snapshotId).toBe('snap_initial')
+    expect(requests[1]?.metadata?.snapshotId).toBe('snap_initial')
   })
 })
-
-function flattenTraceSpans(
-  spans: Array<{ data?: Record<string, unknown>; children?: unknown[] }>,
-): Array<{ data?: Record<string, unknown>; children?: unknown[] }> {
-  return spans.flatMap((span) => [
-    span,
-    ...flattenTraceSpans(
-      (span.children as
-        | Array<{ data?: Record<string, unknown>; children?: unknown[] }>
-        | undefined) ?? [],
-    ),
-  ])
-}

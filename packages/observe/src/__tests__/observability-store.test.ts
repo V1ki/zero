@@ -514,7 +514,7 @@ describe('ObservabilityStore', () => {
       },
     ])
 
-    const entries = store.readSessionDecisions(sessionId)
+    const entries = store.readSessionDecisions(sessionId, (text) => text)
     expect(entries).toHaveLength(4)
     expect(entries.map((entry) => entry.decisionType)).toEqual([
       'context_compression',
@@ -660,7 +660,7 @@ describe('ObservabilityStore', () => {
       },
     ])
 
-    const entries = store.readSessionDecisions(sessionId)
+    const entries = store.readSessionDecisions(sessionId, (text) => text)
     expect(entries).toHaveLength(2)
     expect(entries[0]).toMatchObject({
       decisionType: 'context_compression',
@@ -720,7 +720,7 @@ describe('ObservabilityStore', () => {
       },
     ])
 
-    const entries = store.readSessionDecisions(sessionId)
+    const entries = store.readSessionDecisions(sessionId, (text) => text)
     expect(entries).toHaveLength(1)
     expect(entries[0]).toMatchObject({
       decisionType: 'context_compression',
@@ -796,7 +796,7 @@ describe('ObservabilityStore', () => {
       },
     ])
 
-    const entries = store.readSessionDecisions(sessionId)
+    const entries = store.readSessionDecisions(sessionId, (text) => text)
     expect(entries).toHaveLength(1)
     expect(entries[0]).toMatchObject({
       decisionType: 'context_compression',
@@ -900,7 +900,7 @@ describe('ObservabilityStore', () => {
       },
     ])
 
-    const entries = store.readSessionDecisions(sessionId)
+    const entries = store.readSessionDecisions(sessionId, (text) => text)
     expect(entries).toHaveLength(2)
     expect(entries[0]).toMatchObject({
       detail: {
@@ -995,7 +995,7 @@ describe('ObservabilityStore', () => {
       },
     ])
 
-    const entries = store.readSessionDecisions(sessionId)
+    const entries = store.readSessionDecisions(sessionId, (text) => text)
 
     expect(entries.map((entry) => entry.outcome)).toEqual(['injected', 'empty', 'skipped'])
     expect(entries[0]?.detail).toMatchObject({ turnIndex: 1 })
@@ -1040,7 +1040,7 @@ describe('ObservabilityStore', () => {
       },
     ])
 
-    const entries = store.readSessionDecisions(sessionId)
+    const entries = store.readSessionDecisions(sessionId, (text) => text)
     expect(entries).toHaveLength(1)
     expect(entries[0]).toMatchObject({
       decisionType: 'tool_selection',

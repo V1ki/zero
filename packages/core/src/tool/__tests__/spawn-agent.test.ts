@@ -8,7 +8,8 @@ import {
   ObservabilityStore,
   SessionEventStore,
   Tracer,
-  projectSessionRequestsFromEvents,
+  attachRequestsToSpans,
+  flattenTraceSpans,
 } from '@zero-os/observe'
 import {
   type AgentControlHandle,
@@ -469,20 +470,16 @@ describe('SpawnAgentTool', () => {
           response: 'spawn complete',
         }),
       ])
-      // 来自子文件:清空子文件后只剩 trace 算出的条目,二者除事件不带的 hash 与快照字段外相同
-      const [fromEvents] = projectSessionRequestsFromEvents(
-        ctx.sessionId,
-        [{ events: sessionEvents.readEvents(agentId), subagent: true }],
-        identity,
-      )
-      expect(fromEvents?.id).toBe('resp_spawn_001')
+      // span 不带请求,按编号补回的就是这一条
+      const spans = flattenTraceSpans(
+        attachRequestsToSpans(new Tracer(logsDir).exportSession(ctx.sessionId), requests),
+      ).filter((span) => span.name === 'llm_request')
+      expect(spans.map((span) => (span.data?.request as { id?: string } | undefined)?.id)).toEqual([
+        'resp_spawn_001',
+      ])
+      // 来自子文件:清空它,请求列表随之为空
       writeFileSync(join(logsDir, 'sessions', ctx.sessionId, `sub-${agentId}.jsonl`), '')
-      const [fromTrace] = observability.readSessionRequests(ctx.sessionId, identity)
-      const { systemHash, toolDefinitionsHash, staticPrefixHash, snapshotId, ts, ...traced } =
-        fromTrace
-      expect(JSON.parse(JSON.stringify({ ...fromEvents, ts: undefined }))).toEqual(
-        JSON.parse(JSON.stringify(traced)),
-      )
+      expect(observability.readSessionRequests(ctx.sessionId, identity)).toEqual([])
     } finally {
       rmSync(logsDir, { recursive: true, force: true })
     }

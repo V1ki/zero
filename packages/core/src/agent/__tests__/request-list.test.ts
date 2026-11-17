@@ -8,6 +8,8 @@ import {
   type RequestLogEntry,
   SessionEventStore,
   Tracer,
+  attachRequestsToSpans,
+  flattenTraceSpans,
   projectSessionRequestsFromEvents,
   readEventsFile,
 } from '@zero-os/observe'
@@ -23,11 +25,12 @@ import type {
 import { BaseTool } from '../../tool/base'
 import { ToolRegistry } from '../../tool/registry'
 import { Agent, type AgentContext } from '../agent'
-import { buildDynamicContext, buildRetrievedMemoriesBlock, wrapMemoryInjection } from '../prompt'
+import { buildDynamicContext, buildRetrievedMemoriesBlock } from '../prompt'
 
 /**
- * 步骤 7a 的验收:会话详情的请求列表从事件流算出,与原来从 trace 的 llm_request span 算出的条目逐项相同。
- * 事件不带的只有没人读的四个 hash / 快照字段;ts 取 step/end 的时间,比 span 结束早不到几毫秒。
+ * 会话详情的请求列表从事件流算出(步骤 7a),trace 的 llm_request span 不再带请求本身(步骤 7c),
+ * span 树和决策读 trace 时按 span 编号补回(步骤 7b)。7a 当时对每个场景做过「事件算出 = 原 trace 算出」的逐项比对,
+ * 7c 之后新的 trace 没有请求可比,这里直接断言事件算出的各字段。
  */
 
 const SESSION = 'sess_request_list'
@@ -195,13 +198,6 @@ async function runTurn(options: {
       { id: 'mem_x', type: 'note', title: 'Answer token-123', content: 'C', score: 0.9 },
     ])
     context.dynamicContext = buildDynamicContext({ retrievedMemories: block })
-    context.requestMemoryInjections = [
-      {
-        layer: 'layer1',
-        source: 'retrieved_memories',
-        formattedText: wrapMemoryInjection('layer1', block),
-      },
-    ]
   }
   await agent.run(
     context,
@@ -225,31 +221,25 @@ function fromEvents(logs: string): RequestLogEntry[] {
   )
 }
 
-function fromTrace(observability: ObservabilityStore): RequestLogEntry[] {
-  return observability.readSessionRequests(SESSION, filter.filter)
-}
-
-/** 去掉事件不带的四个字段,ts 允许几毫秒的差 */
-function comparable(entries: RequestLogEntry[], reference: RequestLogEntry[]) {
-  return entries.map((entry, index) => {
-    const { systemHash, toolDefinitionsHash, staticPrefixHash, snapshotId, ...rest } = entry
-    const ts = reference[index]?.ts
-    const close = ts !== undefined && Math.abs(Date.parse(ts) - Date.parse(entry.ts)) <= 20
-    return JSON.parse(JSON.stringify({ ...rest, ts: close ? 'close' : entry.ts }))
-  })
-}
-
-async function expectSameRequests(run: Awaited<ReturnType<typeof runTurn>>) {
-  const events = fromEvents(run.logs)
-  // 清空事件文件再读一次,得到只从 trace 算出的条目
-  const eventFile = join(run.logs, 'sessions', SESSION, 'session.jsonl')
-  const saved = readFileSync(eventFile, 'utf-8')
-  writeFileSync(eventFile, '')
-  const trace = fromTrace(run.observability)
-  writeFileSync(eventFile, saved)
-  expect(events.length).toBeGreaterThan(0)
-  expect(comparable(events, trace)).toEqual(comparable(trace, trace))
-  return { events, trace }
+/** 读请求列表,并核对 7b、7c:trace 的 span 不带请求,补回后每个 llm_request span 都对上一条请求 */
+function requestsOf(run: Awaited<ReturnType<typeof runTurn>>): RequestLogEntry[] {
+  const requests = run.observability.readSessionRequests(SESSION, filter.filter)
+  expect(requests).toEqual(fromEvents(run.logs))
+  const spans = flattenTraceSpans(new Tracer(run.logs).exportSession(SESSION)).filter(
+    (span) => span.name === 'llm_request',
+  )
+  expect(spans.length).toBe(requests.length)
+  expect(spans.every((span) => span.data?.request === undefined)).toBe(true)
+  const attached = flattenTraceSpans(
+    attachRequestsToSpans(new Tracer(run.logs).exportSession(SESSION), requests),
+  ).filter((span) => span.name === 'llm_request')
+  expect(attached.map((span) => (span.data?.request as RequestLogEntry | undefined)?.id)).toEqual(
+    requests.map((request) => request.id),
+  )
+  expect(attached.map((span) => span.metadata?.requestId)).toEqual(
+    requests.map((request) => request.id),
+  )
+  return requests
 }
 
 describe('request list from the event stream', () => {
@@ -268,18 +258,41 @@ describe('request list from the event stream', () => {
             ? { content: [] }
             : { content: text('all done token-123') },
     })
-    const { events } = await expectSameRequests(run)
-    expect(events[0]).toMatchObject({
+    const requests = requestsOf(run)
+    // 第一次请求、回复为空的那次、重试拿到的回答、记忆提醒
+    expect(requests.map((entry) => entry.id)).toEqual(['resp_1', 'resp_2', 'resp_3', 'nudge'])
+    expect(requests[0]).toMatchObject({
+      sessionId: SESSION,
       turnIndex: 3,
       agentName: 'test-agent',
       model: 'provider/model',
       provider: 'fake-provider',
       userPrompt: 'do the task [redacted]',
-      toolCalls: [{ id: 'call_1', input: { secret: '[redacted]' } }, { id: 'call_2' }],
+      response: 'working',
+      stopReason: 'tool_use',
+      toolUseCount: 2,
+      toolCalls: [
+        { id: 'call_1', name: 'noop', input: { secret: '[redacted]' } },
+        { id: 'call_2', name: 'missing', input: {} },
+      ],
+      toolResults: [],
       toolNames: ['noop', 'flaky'],
+      messageCount: 1,
+      tokens: { input: 10, output: 5 },
     })
-    expect(events[1].parentId).toBe(events[0].id)
-    expect(events[0].cost).toBeGreaterThan(0)
+    expect(requests[0].cost).toBeCloseTo((10 * 3 + 5 * 15) / 1_000_000, 12)
+    expect(requests[0].parentId).toBeUndefined()
+    // 工具结果进入下一次请求;工具输出在执行时已经过滤过密钥
+    expect(requests[1]).toMatchObject({
+      parentId: 'resp_1',
+      response: '',
+      stopReason: 'end_turn',
+      toolResults: [
+        { toolUseId: 'call_1', isError: false, content: 'ok [redacted]' },
+        { toolUseId: 'call_2', isError: true },
+      ],
+    })
+    expect(requests[2]).toMatchObject({ response: 'all done [redacted]', toolResults: [] })
   })
 
   test('queued messages spliced into tool results, and a queued continuation', async () => {
@@ -288,12 +301,26 @@ describe('request list from the event stream', () => {
       main: (_request, n) =>
         n <= 2 ? { content: [call(`call_${n}`)] } : { content: text(`answer ${n}`) },
     })
-    const { events } = await expectSameRequests(run)
-    const queued = events.filter((entry) => entry.queuedInjection)
-    expect(queued.length).toBeGreaterThan(0)
-    expect(queued[0].queuedInjection?.messages).toEqual([
-      expect.objectContaining({ content: 'also check [redacted]', imageCount: 0 }),
-    ])
+    const requests = requestsOf(run)
+    const queued = requests.filter((entry) => entry.queuedInjection)
+    expect(queued).toHaveLength(2)
+    for (const entry of queued) {
+      expect(entry.queuedInjection).toMatchObject({
+        count: 1,
+        formattedText: expect.stringContaining('also check [redacted]'),
+        messages: [
+          {
+            timestamp: '2026-01-01T00:00:00.000Z',
+            content: 'also check [redacted]',
+            imageCount: 0,
+            mediaTypes: [],
+          },
+        ],
+      })
+    }
+    // 第一份拼在工具结果后面,第二份是一轮结束时取走的续写消息
+    expect(queued[0].toolResults).toHaveLength(1)
+    expect(queued[1].toolResults).toEqual([])
   })
 
   test('reasoning text, cache usage and a layer-1 memory injection', async () => {
@@ -305,10 +332,19 @@ describe('request list from the event stream', () => {
         usage: { input: 100, output: 20, cacheRead: 50, cacheWrite: 10, reasoning: 7 },
       }),
     })
-    const { events } = await expectSameRequests(run)
-    expect(events[0].reasoningContent).toBe('thinking 1 [redacted]')
-    expect(events[0].memoryInjections?.[0]).toMatchObject({ layer: 'layer1' })
-    expect(events[0].tokens).toEqual({
+    const requests = requestsOf(run)
+    expect(requests[0].reasoningContent).toBe('thinking 1 [redacted]')
+    expect(requests[0].memoryInjections).toEqual([
+      {
+        layer: 'layer1',
+        source: 'retrieved_memories',
+        formattedText: expect.stringMatching(
+          /^<memory_inject layer="layer1">\n<retrieved_memories>[\s\S]*Answer \[redacted\][\s\S]*<\/retrieved_memories>\n<\/memory_inject>$/,
+        ),
+      },
+    ])
+    expect(requests[1].memoryInjections).toBeUndefined()
+    expect(requests[0].tokens).toEqual({
       input: 100,
       output: 20,
       cacheRead: 50,
@@ -322,34 +358,73 @@ describe('request list from the event stream', () => {
       memories: true,
       main: (_request, n) => ({ content: n === 1 ? [call('call_1', 'flaky')] : text('recovered') }),
     })
-    const { events } = await expectSameRequests(run)
-    expect(events[1].memoryInjections?.[0]).toMatchObject({
-      layer: 'layer2',
-      source: 'memory_hint',
-    })
+    const requests = requestsOf(run)
+    expect(requests[1].memoryInjections).toEqual([
+      {
+        layer: 'layer2',
+        source: 'memory_hint',
+        formattedText: expect.stringContaining('<memory_inject layer="layer2">'),
+      },
+    ])
+    expect(requests[1].toolResults).toEqual([
+      expect.objectContaining({ toolUseId: 'call_1', isError: true }),
+    ])
   })
 
-  test('requests whose events predate the new fields come from the trace, merged by id', async () => {
+  test('decisions still find each tool-selection request through its span', async () => {
+    const run = await runTurn({
+      main: (_request, n) => ({
+        content: n === 1 ? [call('call_1')] : text('done'),
+        reasoningContent: `why ${n}`,
+      }),
+    })
+    requestsOf(run)
+    const decisions = run.observability.readSessionDecisions(SESSION, filter.filter)
+    expect(decisions.filter((decision) => decision.decisionType === 'tool_selection')).toEqual([
+      expect.objectContaining({ outcome: 'noop', rationale: 'why 1', sourceKind: 'llm_request' }),
+    ])
+  })
+
+  test('requests logged before the events carried them come from the trace, merged by time', async () => {
     const run = await runTurn({
       main: (_request, n) => ({ content: n === 1 ? [call('call_1')] : text('done') }),
     })
-    const all = run.observability.readSessionRequests(SESSION, filter.filter)
-    // 两次正常请求加一次记忆提醒
-    expect(all).toHaveLength(3)
-    // 把第一次请求的 step/end 改成旧格式(没有 cost)
-    const eventFile = join(run.logs, 'sessions', SESSION, 'session.jsonl')
-    const lines = readFileSync(eventFile, 'utf-8').trimEnd().split('\n')
-    const first = lines.findIndex((line) => line.includes('"type":"step/end"'))
-    const { cost, ...oldData } = JSON.parse(lines[first]).data
-    expect(cost).toBeDefined()
-    lines[first] = JSON.stringify({ ...JSON.parse(lines[first]), data: oldData })
-    writeFileSync(eventFile, `${lines.join('\n')}\n`)
+    const current = requestsOf(run)
+    // 升级前写的 trace:span 上带着整条请求
+    const old = {
+      spanId: 'span_old',
+      sessionId: SESSION,
+      kind: 'llm_request',
+      name: 'llm_request',
+      startTime: '2020-01-01T00:00:00.000Z',
+      endTime: '2020-01-01T00:00:01.000Z',
+      status: 'success',
+      data: {
+        request: {
+          id: 'resp_old',
+          turnIndex: 1,
+          model: 'provider/old',
+          provider: 'fake-provider',
+          userPrompt: 'earlier [redacted]',
+          response: 'old answer',
+          stopReason: 'end_turn',
+          toolUseCount: 0,
+          toolCalls: [],
+          toolResults: [],
+          tokens: { input: 1, output: 1 },
+          cost: 0,
+        },
+      },
+    }
+    const traceFile = join(run.logs, 'sessions', SESSION, 'trace.jsonl')
+    writeFileSync(traceFile, `${JSON.stringify(old)}\n${readFileSync(traceFile, 'utf-8')}`)
 
     const merged = new ObservabilityStore(run.logs).readSessionRequests(SESSION, filter.filter)
-    expect(fromEvents(run.logs).map((entry) => entry.id)).toEqual(
-      all.slice(1).map((entry) => entry.id),
-    )
-    expect(merged.map((entry) => entry.id)).toEqual(all.map((entry) => entry.id))
-    expect(comparable(merged, all)).toEqual(comparable(all, all))
+    expect(merged.map((entry) => entry.id)).toEqual([
+      'resp_old',
+      ...current.map((entry) => entry.id),
+    ])
+    expect(merged[0]).toMatchObject({ traceSpanId: 'span_old', userPrompt: 'earlier [redacted]' })
+    expect(merged.slice(1)).toEqual(current)
   })
 })
