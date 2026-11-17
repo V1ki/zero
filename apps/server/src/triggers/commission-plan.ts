@@ -72,7 +72,8 @@ const directions = [
   'deadline 必须是用户明确给出的含时区 ISO 时间，否则为 null 或澄清。名称、目的、关键词为纯文字。',
 ].join('\n')
 
-export function createCommissionPlanner({ modelRouter, secretFilter }: AgentDependencies) {
+export function createCommissionPlanner(deps: AgentDependencies) {
+  const { secretFilter } = deps
   return async (
     question: string,
     intent: CommissionIntent,
@@ -103,8 +104,9 @@ export function createCommissionPlanner({ modelRouter, secretFilter }: AgentDepe
             ]
           : [],
       )
-    const raw = await runTriggerModel(modelRouter, {
+    const raw = await runTriggerModel(deps, {
       sessionId: `commission-${crypto.randomUUID()}`,
+      purpose: 'router_commission',
       label: '委托草案',
       system: directions,
       signal,

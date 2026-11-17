@@ -10,8 +10,8 @@ interface AllocateUniqueSessionIdOptions {
 
 export function createSessionLogger(options: {
   sessionId: string
-  tracer?: Tracer
-  secretFilter?: SecretFilter
+  tracer?: Pick<Tracer, 'logSession'>
+  secretFilter?: Pick<SecretFilter, 'filter'>
 }): ToolLogger {
   const log = (level: 'info' | 'warn' | 'error', event: string, data?: Record<string, unknown>) => {
     const safeData = filterLogData(data, options.secretFilter)
@@ -68,7 +68,7 @@ export function deriveNextTurnIndex(options: {
 
 function filterLogData(
   data: Record<string, unknown> | undefined,
-  secretFilter?: SecretFilter,
+  secretFilter?: Pick<SecretFilter, 'filter'>,
 ): Record<string, unknown> | undefined {
   if (!data) return undefined
   const filtered = filterLogValue(data, secretFilter)
@@ -77,7 +77,7 @@ function filterLogData(
     : undefined
 }
 
-function filterLogValue(value: unknown, secretFilter?: SecretFilter): unknown {
+function filterLogValue(value: unknown, secretFilter?: Pick<SecretFilter, 'filter'>): unknown {
   if (typeof value === 'string') {
     return secretFilter ? secretFilter.filter(value) : value
   }

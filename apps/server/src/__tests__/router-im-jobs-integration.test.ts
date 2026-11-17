@@ -2,6 +2,7 @@ import { expect, mock, test } from 'bun:test'
 import type { ProviderAdapter } from '@zero-os/model'
 import { type RouterJob, TriggerStore } from '@zero-os/observe'
 import type { CommissionOperator, CompletionRequest } from '@zero-os/shared'
+import { discardedEvents } from '../triggers/__tests__/router-log-fixture'
 import { createRouterAgent } from '../triggers/router-agent'
 import { createRouterJobExecutor } from '../triggers/router-job-executors'
 import { RouterJobPrincipals, jobActor } from '../triggers/router-job-principal'
@@ -137,6 +138,7 @@ test('a private Router can delegate a named repository and resume only its own j
   const deps = {
     modelRouter: { getDefaultModel: () => ({ adapter }), getCurrentModel: () => undefined },
     secretFilter: { filter: (text: string) => text },
+    sessionEvents: discardedEvents,
   }
   const execute = createRouterJobExecutor({
     ...deps,
@@ -326,6 +328,7 @@ test('Web card follow-ups inherit job repository access across failed turns and 
     createRouterAgent({
       modelRouter: { getDefaultModel: () => ({ adapter }), getCurrentModel: () => undefined },
       secretFilter: { filter: (text) => text },
+      sessionEvents: discardedEvents,
     }),
     { principals, delegatedJobs: jobs },
   )

@@ -18,6 +18,7 @@ import { taskAnalysisRequest, taskFixRequest, taskJobRepository } from '../route
 import { RouterWorkspaceService } from '../router-workspace'
 import type { RouterWriteRequest } from '../router-write-check'
 import { TriggerRoutingRuntime } from '../routing-runtime'
+import { discardedEvents } from './router-log-fixture'
 import { addTasks, taskRepository } from './router-task-fixture'
 
 const cleanup: Array<() => Promise<void>> = []
@@ -458,6 +459,7 @@ test('the executor receives the task as labelled, filtered, bounded background',
       },
     } as never,
     secretFilter: filter,
+    sessionEvents: discardedEvents,
     codex: {
       async runRouterJob(input) {
         instruction = input.instruction

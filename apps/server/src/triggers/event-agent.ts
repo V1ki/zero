@@ -1,13 +1,22 @@
-import { AgentLoopStoppedError, runAgentLoop } from '@zero-os/core'
+import {
+  type AgentLoopJournal,
+  AgentLoopStoppedError,
+  createSessionLogger,
+  runAgentLoop,
+} from '@zero-os/core'
 import type { ProviderAdapter } from '@zero-os/model'
-import type {
-  Message,
-  SecretFilter,
-  ToolDefinition,
-  TriggerAgentResult,
-  TriggerInboxItem,
-  TriggerPriorEvent,
-  TriggerTriage,
+import type { SessionEventStore, Tracer, UsagePurpose } from '@zero-os/observe'
+import {
+  type Message,
+  type SecretFilter,
+  type ToolDefinition,
+  type ToolLogger,
+  type TriggerAgentResult,
+  type TriggerInboxItem,
+  type TriggerPriorEvent,
+  type TriggerTriage,
+  formatLocalSessionDateParts,
+  generateId,
 } from '@zero-os/shared'
 
 const instructions = [
@@ -30,6 +39,10 @@ export interface AgentDependencies {
     getCurrentModel(): { adapter: ProviderAdapter } | undefined
   }
   secretFilter: Pick<SecretFilter, 'filter'>
+  /** Every model call writes its own event file, see `runTriggerModel`. */
+  sessionEvents: Pick<SessionEventStore, 'openRun'>
+  /** Receives the structured log of each call, as a session's logger does. */
+  tracer?: Pick<Tracer, 'logSession'>
 }
 
 export class TriggerAgentError extends Error {}
@@ -71,8 +84,53 @@ export function triggerEventContext(
   }
 }
 
+/** Router's model calls, one usage purpose each. */
+export type RouterUsagePurpose = Extract<UsagePurpose, `router_${string}`>
+
+/** Router's event files live in one directory per day, `sessions/router-<local date>/`. */
+export const routerLogPrefix = 'router-'
+
+export function routerLogSessionId(at = new Date()): string {
+  return `${routerLogPrefix}${formatLocalSessionDateParts(at).dateDirectory}`
+}
+
+/**
+ * Opens the event file of one Router call: a new `sub-<sessionId>.<uuidv7>.jsonl` in the day's
+ * Router directory, so the business id `sessionId` prefixes it. The logger is the session logger,
+ * writing to that day's `run.log` with the call id on every line.
+ */
+export function openRouterCall(
+  { secretFilter, sessionEvents, tracer }: AgentDependencies,
+  call: { sessionId: string; purpose: UsagePurpose; label: string },
+): { journal: AgentLoopJournal; logger: ToolLogger } {
+  const day = routerLogSessionId()
+  const callId = `${call.sessionId}.${generateId()}`
+  const run = sessionEvents.openRun({
+    childSessionId: callId,
+    parentSessionId: day,
+    name: call.label,
+    role: call.purpose,
+  })
+  const log = createSessionLogger({ sessionId: day, tracer, secretFilter })
+  return {
+    journal: {
+      events: {
+        append: (_sessionId, events) => run.append(events),
+        appendMessage: (_sessionId, message) => run.appendMessage(message),
+      },
+    },
+    logger: {
+      info: (event, data) => log.info(event, { callId, ...data }),
+      warn: (event, data) => log.warn(event, { callId, ...data }),
+      error: (event, data) => log.error(event, { callId, ...data }),
+    },
+  }
+}
+
 interface TriggerModelRequest {
+  /** The id the business records keep. The call's event file is `sub-<sessionId>.<uuid>.jsonl`. */
   sessionId: string
+  purpose: RouterUsagePurpose
   label: string
   system: string
   prompt: string
@@ -88,21 +146,29 @@ interface TriggerModelRequest {
 const maxModelSteps = 6
 const maxToolCalls = 8
 
-/** An isolated AgentLoop. Only an explicitly supplied toolset enables multi-step execution. */
+/**
+ * An isolated AgentLoop. Only an explicitly supplied toolset enables multi-step execution.
+ *
+ * Each call writes a new event file in the day's Router directory (`routerLogSessionId`), named
+ * after `sessionId`, with the prompt, history and every request exactly as the model received them.
+ */
 export async function runTriggerModel(
-  modelRouter: AgentDependencies['modelRouter'],
-  { sessionId, label, system, prompt, history = [], signal, toolset }: TriggerModelRequest,
+  deps: AgentDependencies,
+  { sessionId, purpose, label, system, prompt, history = [], signal, toolset }: TriggerModelRequest,
 ): Promise<string> {
-  const model = modelRouter.getDefaultModel() ?? modelRouter.getCurrentModel()
+  const model = deps.modelRouter.getDefaultModel() ?? deps.modelRouter.getCurrentModel()
   if (!model) throw new TriggerAgentError('没有可用的模型，请先配置 ZeRo 模型。')
   const names = new Set(toolset?.definitions.map((definition) => definition.name))
   const seen = new Set<string>()
   const dispatchErrors = new Set<string>()
 
+  const { journal, logger } = openRouterCall(deps, { sessionId, purpose, label })
+
   const { messages, finalText } = await runAgentLoop({
     adapter: model.adapter,
     sessionId,
-    meta: { sessionId, purpose: 'agent_loop' },
+    meta: { sessionId, purpose },
+    journal,
     system,
     prompt,
     history,
@@ -127,7 +193,7 @@ export async function runTriggerModel(
     stream: false,
     timeoutMs: 90_000,
     signal,
-    logger: console,
+    logger,
     hooks: {
       onEmptyResponse: () => 'break',
       onCompletionEnd(_request, response) {
@@ -227,7 +293,8 @@ export function parseTriageOutput(raw: string): { summary: string; triage?: Trig
   return { summary: summary.trim() }
 }
 
-export function createTriggerAgent({ modelRouter, secretFilter }: AgentDependencies) {
+export function createTriggerAgent(deps: AgentDependencies) {
+  const { secretFilter } = deps
   const filtered = (value: string, limit: number) =>
     secretFilter.filter(value.replace(/\s+/g, ' ')).slice(0, limit)
   return async (
@@ -237,8 +304,9 @@ export function createTriggerAgent({ modelRouter, secretFilter }: AgentDependenc
     context?: TriggerAnalysisContext,
   ): Promise<TriggerAgentResult> => {
     const event = triggerEventContext(item, secretFilter)
-    const text = await runTriggerModel(modelRouter, {
+    const text = await runTriggerModel(deps, {
       sessionId,
+      purpose: 'router_triage',
       label: '事件摘要',
       system: instructions,
       prompt: JSON.stringify({

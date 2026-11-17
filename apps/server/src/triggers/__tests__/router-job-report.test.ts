@@ -13,6 +13,7 @@ import {
   isPrintedDecisionAnswer,
   jobReply,
 } from '../router-work-reply'
+import { discardedEvents } from './router-log-fixture'
 
 const report = {
   verdict: '发布失败是因为令牌过期，新令牌是否生效未能核实。',
@@ -105,6 +106,7 @@ test('the report call sees the job as filtered data, offers no tools and validat
       return reply
     }),
     secretFilter: filter,
+    sessionEvents: discardedEvents,
   })
   const signal = new AbortController().signal
   expect(await reporter(step, signal)).toEqual({ ...report, verdict: '令牌 [redacted] 过期。' })
@@ -191,6 +193,7 @@ test('each executor receives the owner sentence, the brief as background and the
       throw Error('unexpected model')
     }),
     secretFilter: filter,
+    sessionEvents: discardedEvents,
     codex: {
       async runRouterJob(input) {
         codexInstruction = input.instruction
@@ -220,6 +223,7 @@ test('each executor receives the owner sentence, the brief as background and the
       return '分析完成'
     }),
     secretFilter: filter,
+    sessionEvents: discardedEvents,
     codex: {
       runRouterJob: () => {
         throw Error('unexpected codex')
@@ -315,6 +319,7 @@ test('history shows the verdict and the open decision of an earlier job, not its
       return '好的。'
     }),
     secretFilter: filter,
+    sessionEvents: discardedEvents,
   })
   const job = { ...receipt, result: '原始工作记录全文', report }
   const turn: TriggerConversationTurn = {

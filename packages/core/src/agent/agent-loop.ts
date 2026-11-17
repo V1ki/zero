@@ -1,11 +1,20 @@
+import { createHash } from 'node:crypto'
 import type { ProviderAdapter } from '@zero-os/model'
+import type { SessionEventStore } from '@zero-os/observe'
 import type {
+  CompactionTrigger,
   CompletionRequest,
   CompletionRequestMeta,
   CompletionResponse,
   ContentBlock,
+  ContextCheckpoint,
+  InjectionContextEventData,
   Message,
   ReasoningEffort,
+  RequestEntry,
+  RequestMessageEventData,
+  SecretFilter,
+  StepStopReason,
   ToolDefinition,
   ToolLogger,
   ToolResult,
@@ -17,7 +26,10 @@ import {
   now,
   toErrorMessage,
 } from '@zero-os/shared'
+import { filterToolInput } from './agent-trace'
 import { CONTEXT_PARAMS } from './params'
+import type { QueuedInjectionTrace, QueuedMessage } from './queue'
+import { applyUserInjections, hashRequest } from './request-assembly'
 
 const MAX_TRANSIENT_STREAM_RETRIES = 3
 const MAX_TRANSPORT_STREAM_RETRIES = 1
@@ -47,11 +59,172 @@ export interface LoopIterationContext {
   iteration: number
   userMessage: string
   state: Record<string, unknown>
+  /**
+   * Every change the loop made to the request messages, in the order it was logged: the messages
+   * it appended and the request-only injections. The same entries rebuild a request from the log.
+   */
+  requestEntries: RequestEntry[]
+  /** The base's fact: a reason while the request-only phase is on (see `AgentLoopModule.requestOnly`). */
+  requestOnly(): RequestMessageEventData['reason'] | undefined
+}
+
+/**
+ * A function of an assembly, passed by the caller in `AgentLoopConfig.modules`. Writing the log stays
+ * in the base: a module hands the base what belongs in the request, and the base logs and applies it.
+ * Modules never hold each other. At one extension point, observers are all called, rewrites are
+ * chained in array order, and decisions take the first non-default answer in array order.
+ */
+export interface AgentLoopModule {
+  /** Names the module in the trace, e.g. the queue check before its end-of-turn decision. */
+  name?: string
+  /**
+   * Text placed in front of the loop's first user message, in the request only. The base writes
+   * each piece as `injection/context` and applies them in array order.
+   */
+  requestInjections?(message: Message): Array<Pick<InjectionContextEventData, 'kind' | 'content'>>
+  /**
+   * A reason while new messages belong to the request only and stay out of the canonical history;
+   * the base writes them as `request/message`. Decision: the first module with a reason wins.
+   */
+  requestOnly?(): RequestMessageEventData['reason'] | undefined
+  /**
+   * Takes the session's queued messages at a point the base chooses (see `QueuePoint`) and hands
+   * back the continuation message that carries them. Decision: the first module that takes wins.
+   */
+  takeQueued?(point: QueuePoint, ctx: LoopIterationContext): QueueTake | undefined
+  /**
+   * After tool results: takes the queued messages and hands back the blocks to append to the
+   * request's last user message. Decision: the first module that takes wins. The base appends them
+   * and writes `injection/context` (`queued_merge`).
+   */
+  mergeQueued?(last: Message, ctx: LoopIterationContext): QueueMerge | undefined
+  /**
+   * Rewrite, chained in array order: compacts the canonical messages under pressure at the start of
+   * a loop (`turn_start`) and after tool results (`in_turn`), and returns the new checkpoint when it
+   * made one. The module writes the compaction events; the base records the checkpoint in
+   * `requestEntries` and projects the request from it.
+   */
+  compact?(
+    canonical: Message[],
+    trigger: CompactionTrigger,
+    checkpoint: ContextCheckpoint | undefined,
+  ): Promise<ContextCheckpoint | undefined>
+  /** Observer: queued messages were taken into the request. Emitted before the request changes. */
+  onQueueTaken?(taken: QueueTaken, ctx: LoopIterationContext): void
+  /** Observer: a message was appended and logged (canonical, or request-only in that phase). */
+  onNewMessage?(message: Message, ctx: LoopIterationContext): void
+  /** Observer, before the caller's hooks: a completion request failed. */
+  onCompletionError?(error: unknown, ctx: LoopIterationContext): void
+  /** Observer, before the caller's hooks and before `tool/result` is written: a tool call ended. */
+  onToolCallEnd?(
+    toolName: string,
+    toolUseId: string,
+    input: Record<string, unknown>,
+    result: ToolExecutionResult,
+    ctx: LoopIterationContext,
+  ): void
+  /**
+   * After the tool results were processed, before the tool results message is appended: messages
+   * each module adds after it, in array order after the caller's `processToolResults` additions.
+   */
+  additionalMessages?(
+    failedAttempts: FailedToolAttempt[],
+    ctx: LoopIterationContext,
+  ): Promise<Message[]>
+  /** Decision on a response that cannot become a message: the first answer that is not `undefined` wins. */
+  onInvalidAssistantResponse?(
+    request: CompletionRequest,
+    response: CompletionResponse,
+    error: unknown,
+    ctx: LoopIterationContext,
+  ): { action: 'break' } | undefined
+  /** Observer: a completion returned and the caller's hooks accepted it. */
+  onCompletionEnd?(response: CompletionResponse, ctx: LoopIterationContext): void
+  /** Observer, awaited in array order: a response ended the turn. */
+  evaluateEndTurn?(response: CompletionResponse, ctx: LoopIterationContext): Promise<void>
+  /**
+   * Observer: after the evaluation, whether queued messages were taken at that point (then the turn
+   * continues with them and no decision is asked).
+   */
+  settleEndTurn?(response: CompletionResponse, ctx: LoopIterationContext, queueTaken: boolean): void
+  /**
+   * Decision: the first module that continues the turn wins; `undefined` passes. Before the
+   * continuation takes effect the base checks the queue once more; `commit` runs only when the
+   * module's continuation is the one the turn takes.
+   */
+  decideEndTurn?(
+    response: CompletionResponse,
+    ctx: LoopIterationContext,
+  ): EndTurnContinuation | undefined
+  /** Decision on an empty response: the first answer that is not `undefined` wins. */
+  onEmptyResponse?(
+    retryCount: number,
+    ctx: LoopIterationContext,
+  ): boolean | 'break' | { action: 'continue'; continuationMessage: Message } | undefined
+  /** Decision: whether to stop after the next answer; any module saying yes wins. */
+  shouldInterrupt?(ctx: LoopIterationContext): boolean
+}
+
+/**
+ * Where the base looks for queued messages: when a response ends the turn, after the modules
+ * evaluated it, before each module's decision, and on an empty response in the request-only phase.
+ */
+export type QueuePoint = 'end_turn' | 'after_evaluation' | 'before_decision' | 'request_only_empty'
+
+export interface EndTurnContinuation {
+  action: 'continue'
+  continuationMessage: Message
+  commit?(): void
+}
+
+export interface QueueTake {
+  queued: QueuedMessage[]
+  continuationMessage: Message
+  /** What the request will carry, for the trace. */
+  injection?: QueuedInjectionTrace
+}
+
+export interface QueueMerge {
+  queued: QueuedMessage[]
+  /** Blocks appended to the last user message; none when there is nothing to append. */
+  blocks: ContentBlock[]
+  injection?: QueuedInjectionTrace
+}
+
+/** The fact the base emits when queued messages go into the request. */
+export interface QueueTaken {
+  point: QueuePoint | 'after_tool_results'
+  /** At `before_decision`: the name of the module whose continuation gave way. */
+  decider?: string
+  queued: QueuedMessage[]
+  injection?: QueuedInjectionTrace
+  /** True for a continuation message; false when appended to the last user message. */
+  continuation: boolean
+  /** Whether the request-only phase was on when the messages were taken. */
+  wasRequestOnly: boolean
+}
+
+/**
+ * Where the loop writes its session events. With a journal, every request, tool call and message
+ * is written at the moment it happens, to the file of `AgentLoopConfig.sessionId`.
+ */
+export interface AgentLoopJournal {
+  events: Pick<SessionEventStore, 'append' | 'appendMessage'>
+  /** Recorded as the model of each `step/start`. */
+  modelLabel?: string
+  /** Applied to tool input before it is hashed and previewed in `tool/call`. */
+  secretFilter?: SecretFilter
+  /** Trace span of the request that just started. Read after `onCompletionStart`. */
+  requestSpanId?(): string | undefined
+  /** Trace span of the tool call that just started. Read after `onToolCallStart`. */
+  toolSpanId?(toolUseId: string): string | undefined
 }
 
 export interface AgentLoopConfig {
   adapter: ProviderAdapter
   sessionId: string
+  journal?: AgentLoopJournal
+  modules?: AgentLoopModule[]
   toolExecutor: ToolExecutor
   system: string
   tools: ToolDefinition[]
@@ -69,8 +242,6 @@ export interface AgentLoopHooks {
   /** Continue a provider-truncated response without executing partial tool calls. */
   onTruncatedResponse?(response: CompletionResponse, ctx: LoopIterationContext): Message[]
 
-  /** loop 首条 user 消息发给模型的内容(只在请求里,canonical 消息不变) */
-  buildRequestUserContent?(message: Message, ctx: LoopIterationContext): ContentBlock[]
   onNewMessage?(msg: Message, ctx: LoopIterationContext): void
   filterAssistantContent?(content: ContentBlock[], ctx: LoopIterationContext): ContentBlock[]
   onInvalidAssistantResponse?(
@@ -446,6 +617,7 @@ function parseAnthropicStreamErrorPayload(
 export class AgentLoop {
   private config: AgentLoopConfig
   private hooks: AgentLoopHooks
+  private stepIndex = 0
 
   constructor(config: AgentLoopConfig, hooks: AgentLoopHooks = {}) {
     this.config = config
@@ -458,6 +630,7 @@ export class AgentLoop {
     userImages?: Array<{ mediaType: string; data: string }>,
     userMessageEntry?: Message,
   ): Promise<Message[]> {
+    this.stepIndex = 0
     const messages: Message[] = [...conversationHistory]
     const newMessages: Message[] = []
     const ctx: LoopIterationContext = {
@@ -466,12 +639,14 @@ export class AgentLoop {
       iteration: 0,
       userMessage,
       state: {},
+      requestEntries: [],
+      requestOnly: () => requestOnlyReason(this.modules),
     }
 
     const userMsg = userMessageEntry ?? this.buildUserMessage(userMessage, userImages)
     this.notifyNewMessage(userMsg, ctx)
 
-    const requestUserContent = this.hooks.buildRequestUserContent?.(userMsg, ctx) ?? userMsg.content
+    const requestUserContent = this.injectIntoFirstUserMessage(userMsg, ctx)
     messages.push(
       requestUserContent === userMsg.content
         ? userMsg
@@ -509,7 +684,7 @@ export class AgentLoop {
         }
 
         const decision =
-          this.hooks.onEmptyResponse?.(emptyResponseRetryCount, ctx) ??
+          this.emptyResponseDecision(emptyResponseRetryCount, ctx) ??
           (emptyResponseRetryCount < CONTEXT_PARAMS.completion.maxEmptyResponseRetries
             ? true
             : 'break')
@@ -543,12 +718,11 @@ export class AgentLoop {
       try {
         assistantMsg = this.buildAssistantMessage(response, ctx)
       } catch (error) {
-        const decision = await this.hooks.onInvalidAssistantResponse?.(
-          request,
-          response,
-          error,
-          ctx,
-        )
+        const decision =
+          this.modules
+            .map((module) => module.onInvalidAssistantResponse?.(request, response, error, ctx))
+            .find((answer) => answer !== undefined) ??
+          (await this.hooks.onInvalidAssistantResponse?.(request, response, error, ctx))
         if (decision?.action === 'break') {
           break
         }
@@ -567,7 +741,7 @@ export class AgentLoop {
       }
 
       if (response.stopReason !== 'tool_use') {
-        const endTurnDecision = await this.hooks.onEndTurn?.(response, ctx)
+        const endTurnDecision = await endTurn(this.modules, this.hooks, response, ctx)
         if (!endTurnDecision || endTurnDecision.action === 'break') {
           break
         }
@@ -587,24 +761,34 @@ export class AgentLoop {
         ? await this.hooks.processToolResults(toolResultBlocks, failedToolAttempts, ctx)
         : { toolResultBlocks }
 
+      const additionalMessages = [...(processed.additionalMessages ?? [])]
+      for (const module of this.modules)
+        additionalMessages.push(
+          ...((await module.additionalMessages?.(failedToolAttempts, ctx)) ?? []),
+        )
+
       if (processed.toolResultBlocks.length > 0) {
         const toolResultMsg = this.buildToolResultMessage(processed.toolResultBlocks)
         messages.push(toolResultMsg)
         this.notifyNewMessage(toolResultMsg, ctx)
       }
 
-      for (const additionalMessage of processed.additionalMessages ?? []) {
+      for (const additionalMessage of additionalMessages) {
         messages.push(additionalMessage)
         this.notifyNewMessage(additionalMessage, ctx)
       }
 
       await this.hooks.afterToolResults?.(ctx)
+      this.mergeQueuedIntoRequest(ctx)
 
       if (this.hooks.shouldAbort?.(ctx)) {
         break
       }
 
-      if (this.hooks.shouldInterrupt?.(ctx)) {
+      if (
+        this.modules.some((module) => module.shouldInterrupt?.(ctx)) ||
+        this.hooks.shouldInterrupt?.(ctx)
+      ) {
         const finalRequest = this.buildRequest(messages, ctx)
         const finalResponse = await this.complete(finalRequest, ctx)
         const finalMsg = this.buildAssistantMessage(finalResponse, ctx)
@@ -699,8 +883,93 @@ export class AgentLoop {
     }
   }
 
+  private get modules(): AgentLoopModule[] {
+    return this.config.modules ?? []
+  }
+
+  private requestOnly(): RequestMessageEventData['reason'] | undefined {
+    return requestOnlyReason(this.modules)
+  }
+
+  /** After tool results: queued messages appended to the request's last user message, logged. */
+  private mergeQueuedIntoRequest(ctx: LoopIterationContext): void {
+    const lastIndex = ctx.messages.length - 1
+    const last = ctx.messages[lastIndex]
+    if (!last) return
+    const wasRequestOnly = this.requestOnly() !== undefined
+    for (const module of this.modules) {
+      const merge = module.mergeQueued?.(last, ctx)
+      if (!merge) continue
+      if (merge.blocks.length > 0)
+        ctx.messages[lastIndex] = { ...last, content: [...last.content, ...merge.blocks] }
+      const taken: QueueTaken = {
+        point: 'after_tool_results',
+        queued: merge.queued,
+        injection: merge.injection,
+        continuation: false,
+        wasRequestOnly,
+      }
+      for (const observer of this.modules) observer.onQueueTaken?.(taken, ctx)
+      if (merge.injection) {
+        const injection = {
+          kind: 'queued_merge' as const,
+          content: merge.injection.formattedText,
+          refs: { count: merge.injection.count },
+          messageId: last.id,
+          blocks: merge.blocks,
+        }
+        this.config.journal?.events.append(this.config.sessionId, [
+          { type: 'injection/context', data: injection },
+        ])
+        ctx.requestEntries.push({ kind: 'injection', injection })
+      }
+      return
+    }
+  }
+
+  private emptyResponseDecision(
+    retryCount: number,
+    ctx: LoopIterationContext,
+  ): ReturnType<NonNullable<AgentLoopHooks['onEmptyResponse']>> | undefined {
+    if (requestOnlyReason(this.modules)) {
+      const queued = takeQueued(this.modules, 'request_only_empty', ctx)
+      if (queued) return { action: 'continue', continuationMessage: queued }
+    }
+    for (const module of this.modules) {
+      const decision = module.onEmptyResponse?.(retryCount, ctx)
+      if (decision !== undefined) return decision
+    }
+    return this.hooks.onEmptyResponse?.(retryCount, ctx)
+  }
+
+  /** The first user message as the request carries it: the modules' injections in front, logged. */
+  private injectIntoFirstUserMessage(message: Message, ctx: LoopIterationContext): ContentBlock[] {
+    const injections = (this.config.modules ?? []).flatMap((module) =>
+      (module.requestInjections?.(message) ?? []).map((injection) => ({
+        ...injection,
+        messageId: message.id,
+      })),
+    )
+    if (injections.length === 0) return message.content
+    this.config.journal?.events.append(
+      this.config.sessionId,
+      injections.map((data) => ({ type: 'injection/context', data })),
+    )
+    for (const injection of injections) ctx.requestEntries.push({ kind: 'injection', injection })
+    return applyUserInjections(message.content, injections)
+  }
+
   private notifyNewMessage(message: Message, ctx: LoopIterationContext): void {
     ctx.newMessages.push(message)
+    ctx.requestEntries.push({ kind: 'message', message })
+    const { journal, sessionId } = this.config
+    if (journal) {
+      const reason = this.requestOnly()
+      if (reason)
+        journal.events.append(sessionId, [{ type: 'request/message', data: { message, reason } }])
+      else journal.events.appendMessage(sessionId, message)
+    }
+    for (const module of this.modules) module.onNewMessage?.(message, ctx)
     this.hooks.onNewMessage?.(message, ctx)
   }
 
@@ -708,11 +977,13 @@ export class AgentLoop {
     request: CompletionRequest,
     ctx: LoopIterationContext,
   ): Promise<CompletionResponse> {
+    this.stepIndex += 1
     return completeAgentLoopRequest({
       config: this.config,
       hooks: this.hooks,
       request,
       ctx,
+      stepIndex: this.stepIndex,
     })
   }
 }
@@ -722,6 +993,7 @@ interface CompleteAgentLoopRequestOptions {
   hooks: AgentLoopHooks
   request: CompletionRequest
   ctx: LoopIterationContext
+  stepIndex: number
 }
 
 async function completeAgentLoopRequest({
@@ -729,8 +1001,26 @@ async function completeAgentLoopRequest({
   hooks,
   request,
   ctx,
+  stepIndex,
 }: CompleteAgentLoopRequestOptions): Promise<CompletionResponse> {
+  const { journal, sessionId } = config
   hooks.onCompletionStart?.(request, ctx)
+  journal?.events.append(sessionId, [
+    {
+      type: 'step/start',
+      data: {
+        stepIndex,
+        requestSpanId: journal.requestSpanId?.(),
+        model: journal.modelLabel,
+        messageCount: request.messages.length,
+        requestHash: hashRequest({
+          system: request.system ?? '',
+          toolNames: (request.tools ?? []).map((tool) => tool.name),
+          messages: request.messages,
+        }),
+      },
+    },
+  ])
   const startedAt = Date.now()
 
   try {
@@ -739,9 +1029,24 @@ async function completeAgentLoopRequest({
         ? await config.adapter.complete({ ...request, stream: false })
         : await completeWithStreamFallback({ config, hooks, request, ctx })
 
-    hooks.onCompletionEnd?.(request, response, Date.now() - startedAt, ctx)
+    const durationMs = Date.now() - startedAt
+    journal?.events.append(sessionId, [
+      {
+        type: 'step/end',
+        data: {
+          stepIndex,
+          stopReason: mapStopReason(response.stopReason),
+          requestId: response.id,
+          usage: response.usage,
+          durationMs,
+        },
+      },
+    ])
+    hooks.onCompletionEnd?.(request, response, durationMs, ctx)
+    for (const module of config.modules ?? []) module.onCompletionEnd?.(response, ctx)
     return response
   } catch (error) {
+    for (const module of config.modules ?? []) module.onCompletionError?.(error, ctx)
     hooks.onCompletionError?.(request, error, Date.now() - startedAt, ctx)
     throw error
   }
@@ -752,7 +1057,7 @@ async function completeWithStreamFallback({
   hooks,
   request,
   ctx,
-}: CompleteAgentLoopRequestOptions): Promise<CompletionResponse> {
+}: Omit<CompleteAgentLoopRequestOptions, 'stepIndex'>): Promise<CompletionResponse> {
   let transientAttempts = 0
 
   while (true) {
@@ -834,6 +1139,53 @@ function resolveTransientRetryDelay(config: AgentLoopConfig, attempt: number): n
   return config.transientRetryDelayMs?.(attempt) ?? Math.min(5_000 * 2 ** (attempt - 1), 60_000)
 }
 
+/**
+ * Writes `tool/call` for a tool call that starts now. The loop writes it for every tool_use; a caller
+ * that runs one tool outside a loop (the Router's Codex job) writes it with the same function.
+ */
+export function journalToolCall(
+  journal: AgentLoopJournal,
+  sessionId: string,
+  call: { id: string; name: string; input: Record<string, unknown> },
+): void {
+  const input = JSON.stringify(filterToolInput(call.input, journal.secretFilter))
+  journal.events.append(sessionId, [
+    {
+      type: 'tool/call',
+      data: {
+        toolUseId: call.id,
+        name: call.name,
+        inputHash: `sha256:${createHash('sha256').update(input).digest('hex')}`,
+        inputPreview: input.length > 512 ? `${input.slice(0, 512)}…` : input,
+        spanId: journal.toolSpanId?.(call.id),
+      },
+    },
+  ])
+}
+
+/** Writes `tool/result` for a tool call that `journalToolCall` recorded. */
+export function journalToolResult(
+  journal: AgentLoopJournal,
+  sessionId: string,
+  call: { id: string; name: string },
+  result: ToolExecutionResult,
+  durationMs: number,
+): void {
+  journal.events.append(sessionId, [
+    {
+      type: 'tool/result',
+      data: {
+        toolUseId: call.id,
+        name: call.name,
+        status: result.success ? 'success' : 'error',
+        durationMs,
+        chars: result.output.length,
+        summary: result.outputSummary,
+      },
+    },
+  ])
+}
+
 interface AgentLoopToolExecutionResult {
   toolResultBlocks: ContentBlock[]
   failedToolAttempts: FailedToolAttempt[]
@@ -848,42 +1200,44 @@ async function executeAgentLoopToolCalls(options: {
   const toolResultBlocks: ContentBlock[] = []
   const failedToolAttempts: FailedToolAttempt[] = []
 
+  const { journal, sessionId } = options.config
+
   for (const block of options.response.content) {
     if (block.type !== 'tool_use') continue
 
     options.hooks.onToolCallStart?.(block.name, block.id, block.input, options.ctx)
+    if (journal) journalToolCall(journal, sessionId, block)
     const startedAt = Date.now()
+    const end = (result: ToolExecutionResult) => {
+      toolResultBlocks.push(buildToolResultBlock(block.id, result))
+      const durationMs = Date.now() - startedAt
+      for (const module of options.config.modules ?? [])
+        module.onToolCallEnd?.(block.name, block.id, block.input, result, options.ctx)
+      options.hooks.onToolCallEnd?.(
+        block.name,
+        block.id,
+        block.input,
+        result,
+        durationMs,
+        options.ctx,
+      )
+      if (journal) journalToolResult(journal, sessionId, block, result, durationMs)
+    }
 
     const malformedInputError =
       typeof block.input.__parse_error === 'string' ? block.input.__parse_error : undefined
 
     if (malformedInputError) {
-      const result = buildToolFailure(
-        `Tool input JSON was malformed (likely truncated by max_tokens). ${malformedInputError}. Please retry with shorter content or split into multiple calls.`,
-      )
-      toolResultBlocks.push(buildToolResultBlock(block.id, result))
-      options.hooks.onToolCallEnd?.(
-        block.name,
-        block.id,
-        block.input,
-        result,
-        Date.now() - startedAt,
-        options.ctx,
+      end(
+        buildToolFailure(
+          `Tool input JSON was malformed (likely truncated by max_tokens). ${malformedInputError}. Please retry with shorter content or split into multiple calls.`,
+        ),
       )
       continue
     }
 
     if (!options.config.toolExecutor.has(block.name)) {
-      const result = buildToolFailure(`Unknown tool: ${block.name}`)
-      toolResultBlocks.push(buildToolResultBlock(block.id, result))
-      options.hooks.onToolCallEnd?.(
-        block.name,
-        block.id,
-        block.input,
-        result,
-        Date.now() - startedAt,
-        options.ctx,
-      )
+      end(buildToolFailure(`Unknown tool: ${block.name}`))
       continue
     }
 
@@ -909,15 +1263,7 @@ async function executeAgentLoopToolCalls(options: {
       })
     }
 
-    toolResultBlocks.push(buildToolResultBlock(block.id, result))
-    options.hooks.onToolCallEnd?.(
-      block.name,
-      block.id,
-      block.input,
-      result,
-      Date.now() - startedAt,
-      options.ctx,
-    )
+    end(result)
   }
 
   return { toolResultBlocks, failedToolAttempts }
@@ -942,4 +1288,82 @@ function buildToolFailure(message: string): ToolExecutionResult {
     output: message,
     outputSummary: message,
   }
+}
+
+function mapStopReason(stopReason: string | undefined): StepStopReason {
+  if (stopReason === 'tool_use') return 'tool_use'
+  if (stopReason === 'aborted' || stopReason === 'interrupted') return 'aborted'
+  if (stopReason === 'error' || stopReason === 'max_tokens') return 'error'
+  return 'end_turn'
+}
+
+function requestOnlyReason(
+  modules: AgentLoopModule[],
+): RequestMessageEventData['reason'] | undefined {
+  for (const module of modules) {
+    const reason = module.requestOnly?.()
+    if (reason) return reason
+  }
+  return undefined
+}
+
+/** Asks the modules for queued messages; when one takes them, emits the fact before returning. */
+function takeQueued(
+  modules: AgentLoopModule[],
+  point: QueuePoint,
+  ctx: LoopIterationContext,
+  decider?: string,
+): Message | undefined {
+  const wasRequestOnly = requestOnlyReason(modules) !== undefined
+  for (const module of modules) {
+    const take = module.takeQueued?.(point, ctx)
+    if (!take) continue
+    const taken: QueueTaken = {
+      point,
+      decider,
+      queued: take.queued,
+      injection: take.injection,
+      continuation: true,
+      wasRequestOnly,
+    }
+    for (const observer of modules) observer.onQueueTaken?.(taken, ctx)
+    return take.continuationMessage
+  }
+  return undefined
+}
+
+/**
+ * A response ended the turn. Queued messages are checked first; then every module evaluates (in
+ * array order, awaited), queued messages are checked again, and every module settles knowing
+ * whether they were taken. Otherwise the first module that continues decides: its continuation
+ * takes effect unless queued messages arrived meanwhile (checked again, except for a module that
+ * takes queued messages itself). The caller's `onEndTurn` hook is asked last.
+ */
+export async function endTurn(
+  modules: AgentLoopModule[],
+  hooks: Pick<AgentLoopHooks, 'onEndTurn'>,
+  response: CompletionResponse,
+  ctx: LoopIterationContext,
+): Promise<{ action: 'break' } | { action: 'continue'; continuationMessage: Message } | undefined> {
+  const continueWith = (continuationMessage: Message) => ({
+    action: 'continue' as const,
+    continuationMessage,
+  })
+  const first = takeQueued(modules, 'end_turn', ctx)
+  if (first) return continueWith(first)
+  for (const module of modules) await module.evaluateEndTurn?.(response, ctx)
+  const afterEvaluation = takeQueued(modules, 'after_evaluation', ctx)
+  for (const module of modules) module.settleEndTurn?.(response, ctx, afterEvaluation !== undefined)
+  if (afterEvaluation) return continueWith(afterEvaluation)
+  for (const module of modules) {
+    const decision = module.decideEndTurn?.(response, ctx)
+    if (!decision) continue
+    const queued = module.takeQueued
+      ? undefined
+      : takeQueued(modules, 'before_decision', ctx, module.name)
+    if (queued) return continueWith(queued)
+    decision.commit?.()
+    return continueWith(decision.continuationMessage)
+  }
+  return hooks.onEndTurn?.(response, ctx)
 }

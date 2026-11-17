@@ -72,12 +72,14 @@ export function parseRouterJobReport(raw: string): RouterJobReport | null {
 }
 
 /** Asks the model, without tools, to turn one completed step into a report for its owner. */
-export function createRouterJobReporter({ modelRouter, secretFilter }: AgentDependencies) {
+export function createRouterJobReporter(deps: AgentDependencies) {
+  const { secretFilter } = deps
   const filtered = (value: string, limit: number) => secretFilter.filter(value).slice(0, limit)
   return async (job: RouterJob, signal: AbortSignal): Promise<RouterJobReport | null> => {
     if (job.status !== 'completed' || !job.result) return null
-    const raw = await runTriggerModel(modelRouter, {
+    const raw = await runTriggerModel(deps, {
       sessionId: `router-job-${job.id}-report`,
+      purpose: 'router_job_report',
       label: '派工汇报',
       system: instructions,
       prompt: JSON.stringify({

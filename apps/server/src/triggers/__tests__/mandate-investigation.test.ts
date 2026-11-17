@@ -10,6 +10,7 @@ import type {
 } from '@zero-os/shared'
 import { InvestigationError } from '../investigation'
 import { createMandateInvestigation, parseInvestigationOutput } from '../mandate-investigation'
+import { discardedEvents } from './router-log-fixture'
 
 const event: TriggerInboxItem = {
   id: 7,
@@ -75,6 +76,7 @@ function fixture(
     {
       modelRouter: { getDefaultModel: () => ({ adapter }), getCurrentModel: () => undefined },
       secretFilter: filter,
+      sessionEvents: discardedEvents,
     },
     {
       available: () => options.available ?? ['inspect_github', 'compare_runs'],

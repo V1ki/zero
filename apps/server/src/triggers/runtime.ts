@@ -55,6 +55,8 @@ export class ListenerRuntime {
       mandates: MandateService
       bridge: TriggerTaskBridge
     },
+    /** Deletes Router's event files last written at or before the content retention cutoff. */
+    private readonly deleteExpiredLogs?: (cutoff: Date) => void,
   ) {}
 
   get mandates() {
@@ -84,7 +86,9 @@ export class ListenerRuntime {
     if (this.controller.signal.aborted) return
     let delay = 60 * 60_000
     try {
-      if (this.store.retention.sweep().more) delay = 1000
+      const swept = this.store.retention.sweep()
+      if (swept.cutoff) this.deleteExpiredLogs?.(swept.cutoff)
+      if (swept.more) delay = 1000
     } catch (error) {
       console.error(
         '[listeners] Router history cleanup failed, retrying in one minute.',

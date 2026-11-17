@@ -22,7 +22,7 @@ import type { ChannelAdapter } from '../channels/adapter'
 import { createBackgroundToolCompletionDeliveryHandler } from '../message/background-delivery'
 import { writeRestartTrigger } from '../system/restart-trigger'
 import { rebuildWebBundleAsync } from '../system/runtime'
-import { TriggerAgentError, createTriggerAgent } from '../triggers/event-agent'
+import { TriggerAgentError, createTriggerAgent, routerLogPrefix } from '../triggers/event-agent'
 import { createGithubInvestigator } from '../triggers/investigation'
 import { createMandateInvestigation } from '../triggers/mandate-investigation'
 import { createMandatePlatforms } from '../triggers/mandate-platforms'
@@ -289,6 +289,8 @@ async function createStartupRuntimeShell({
     execute: createRouterJobExecutor({
       modelRouter: core.modelRouter,
       secretFilter: core.secretFilter,
+      sessionEvents: core.sessionEvents,
+      tracer: core.tracer,
       codex: core.worker,
       async workspaceForRepository(job, repository) {
         const actor = jobActor(job)
@@ -344,11 +346,15 @@ async function createStartupRuntimeShell({
     },
   })
   return {
-    listeners: new ListenerRuntime(store, resolveSecret, routing, workspace, undefined, {
-      runtime: taskRuntime,
-      mandates,
-      bridge,
-    }),
+    listeners: new ListenerRuntime(
+      store,
+      resolveSecret,
+      routing,
+      workspace,
+      undefined,
+      { runtime: taskRuntime, mandates, bridge },
+      (cutoff) => core.sessionEvents.deleteFilesBefore(routerLogPrefix, cutoff),
+    ),
     channels,
     channelAdapters,
     channelDefinitions,

@@ -12,10 +12,43 @@
 （带子文件的相对路径）。子代理的 `system/prompt`、`tools/set` 和 step、tool 等过程事件写进子文件，
 不混入父会话。子代理仍在进程内运行，trace 和 usage 账本继续沿用父会话的 sessionId。
 
-子文件也带子代理自己的 `user/message` / `assistant/message`：消息由 agent hooks 经 `obs.sessionEvents`
+子文件也带子代理自己的 `user/message` / `assistant/message`：消息由 loop 经 `obs.sessionEvents`
 在产生时写入，spawn_agent 把这个句柄重定向到子文件，下标从 0 开始。子文件没有 `turn/*`，子代理不经过 `Session`。
 子代理消息里的图片写进父会话目录的 `images/`，与子文件放在一起。
 子代理的结束状态不另落事件：结果由父会话后续 `wait_agent` 的 `tool/result` 承载。
+
+记忆检索的 side loop 也用同样的子文件：每次检索 loop 一份 `sub-memory_<uuid>.jsonl`（header 的 `name` 为
+`memory_retrieval`），父会话在 `memory/retrieval/start` 与 `end` 之间记一条 `subagent/spawn` 指向它。子文件里有
+`system/prompt`、`tools/set`、`loop/start` 和 loop 的全部过程与消息事件，请求能按「请求重建」还原。
+
+## Router 的事件文件
+
+Router 的每次模型调用（`runTriggerModel`）写一份子文件，按天放在同一个目录：
+
+```text
+.zero/logs/sessions/router-<本地日期>/sub-<业务会话编号>.<uuidv7>.jsonl
+```
+
+- header 与子代理相同（`origin:"subagent"`、`source:"spawn"`），`parentSessionId` 是当天的目录名 `router-<日期>`（没有对应的
+  `session.jsonl`），`name` 是调用的中文标签，`role` 是 usage 用途（如 `router_triage`）。文件由 `SessionEventStore.openRun` 建立，不进 `subagent-index.json`：
+  按文件名在当天目录里找，按路径读（`readEventsFile`）。
+- 内容由基座 `runAgentLoop` 写：`system/prompt`、`tools/set`，Router 对话传入的历史逐条写成 `user/message` /
+  `assistant/message`，然后是 `loop/start` 和 loop 的全部事件。每个 `step/start` 都能按「请求重建」还原。
+- 业务表里的会话编号是文件名去掉 `.<uuidv7>` 的前缀，同一个编号可能对应多份文件（重试、同一任务的多次分诊与调查、同一对话的多轮）：
+
+  | 调用 | 业务会话编号 | 存在哪里 |
+  | --- | --- | --- |
+  | 分诊（个人线） | `trigger-<uuid>` | `trigger_routes.session_id` |
+  | 分诊与 GitHub 调查（委托线） | 任务第一次分析时的 `mandate-<uuid>` | `mandate_tasks.session_id` |
+  | ZeRo 派工执行、派工汇报 | `router-job-<派工编号>`、`router-job-<派工编号>-report` | 由派工编号推出 |
+  | Router 对话 | `router-general`、`router-task-<任务编号>`、`router-event-<事件编号>`、IM 为 `router-im-…` | 由对话范围推出 |
+  | 渠道任务追问 | `router-im-<受众摘要>` | 由受众推出 |
+  | 写入确认、委托草案 | `router-write-check`、`commission-<uuid>` | 不存 |
+
+- Codex 派工的每次执行也是这里的一份文件（`sub-router-job-<派工编号>.<uuidv7>.jsonl`，`role` 为 `codex_worker`），
+  里面只有一对 `tool/call`、`tool/result`（`name: worker`），没有 `step/*` 和消息；Codex 的中间过程不落盘。
+- 保留期：设置了 Router 正文保留期时，`ListenerRuntime` 每次清理业务表后调用 `SessionEventStore.deleteFilesBefore`，删除
+  `router-*` 目录里最后写入早于截止时间的文件（含当天的 `run.log`）。没有设置保留期时一直保留。
 
 ## 设计原则
 
@@ -45,7 +78,7 @@
 {"seq":0,"ts":"...","type":"session","data":{"v":1,"sessionId":"...","schemaVersion":1,"source":"feishu","channelId":"oc_..."}}
 {"type":"turn/start","data":{"turnIndex":12,"trigger":"channel|control|queued_drain","model":"...","agentName":"..."}}
 {"type":"turn/end","data":{"turnIndex":12,"status":"completed|failed|aborted","durationMs":83400}}  // 恢复时补写的封口另带 "reason":"process_restart"
-{"type":"loop/start","data":{"requireThinkingForToolUse":false}}  // 每次 Agent.run 开始,早于 turn 开始的压缩
+{"type":"loop/start","data":{"requireThinkingForToolUse":false}}  // 基座 runAgentLoop 每次开始时写(主会话、子代理、记忆检索、Router),早于 turn 开始的压缩
 {"type":"step/start","data":{"stepIndex":3,"requestSpanId":"span_...","model":"...","messageCount":21,"requestHash":"sha256:..."}}
 {"type":"step/end","data":{"stepIndex":3,"stopReason":"end_turn|tool_use|error|aborted","requestId":"resp_...","usage":{},"durationMs":12400}}
 {"type":"tool/call","data":{"toolUseId":"toolu_...","name":"bash","inputHash":"sha256:...","inputPreview":"...","spanId":"span_..."}}
@@ -102,7 +135,7 @@ persistSessionState 都做比对）与 `tools/set`（turn 开始时比对名字�
 检查点也镜像到 sessions.db 的 `session_context_checkpoints`（file-only 模式不写），无事件文件时从那里恢复。
 
 memory 相关覆盖说明：检索决策是成对事件 `memory/retrieval/start|end`（end 带
-queries、搜索数、选中记忆与是否注入，失败也落 end）；注入原文落在
+queries、搜索数、选中记忆与是否注入，失败也落 end），检索 loop 本身的请求与工具调用在 `subagent/spawn` 指向的子文件里；注入原文落在
 `injection/context`（kind=memory/memory_hint）；写入落在 `memory/recorded`；
 memory 工具的完整调用过程仍由 `tool/call`+`tool/result` 承载。任务结束判断是
 成对事件 `closure/start|end`：本 turn 未评估时不产生任何 closure 事件；
@@ -114,7 +147,7 @@ memory 工具的完整调用过程仍由 `tool/call`+`tool/result` 承载。任�
 `buildRequestAssemblyInput(events, S)`（`@zero-os/observe`，只需要事件，`SessionEventStore.getRequestAssemblyInput`
 是它的包装）从日志取得：
 
-1. **所属 loop**：S 之前最近的 `loop/start`（seq = L）。`Agent.run` 每次开始时写一条，早于 turn 开始的压缩。
+1. **所属 loop**：S 之前最近的 `loop/start`（seq = L）。基座 `runAgentLoop` 每次开始时写一条（主会话经 `Agent.run` 进入），早于 turn 开始的压缩。
 2. **history 与 checkpoint**：`projectUpTo(L)` 的消息与检查点，即 loop 开始时的 canonical 投影。
 3. **system 与工具名**：S 之前最后一条 `system/prompt`（system = `content`，有 `identity` 时接上 `\n\n` + identity）
    与最后一条 `tools/set`。
@@ -150,7 +183,7 @@ turn 内压缩后运行时也经 `assembleRequest` 重建请求消息（它记�
 ## 写入与读取
 
 - 消息写入：**在产生的那一刻写**，入口只有 `SessionEventStore.appendMessage`（外置图片、按投影长度分配
-  下标）。loop 产生的消息由 agent hooks 在转给调用方时写（`onNewMessage`；记忆提醒阶段的消息不转给调用方，
+  下标）。loop 产生的消息由 `AgentLoop` 在转给调用方之前写（记忆提醒阶段的消息不转给调用方，
   不进 canonical，写成 `request/message`）；turn 进行中排队的消息由 `queueMessage` 在追加进 canonical 时写。已写入的消息不再原地修改
   （任务结束判定只记在 `closure/end`，不再写回 assistant 消息的 `taskClosure`）。
 - 改动已有消息的一方当场调用 `syncMessages(sessionId, messages, reason)`：前缀缩短时写

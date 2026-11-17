@@ -1,5 +1,15 @@
 import { createHash } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  rmdirSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import {
   type ContextCheckpoint,
@@ -117,13 +127,62 @@ export class SessionEventStore {
   }
 
   /**
+   * 一次性运行(记忆检索、Router 的每次模型调用)的事件文件:在父会话目录下新建 `sub-<childSessionId>.jsonl`。
+   * 它的状态只在返回的句柄里,不进子文件索引,也不进按 sessionId 的缓存:这类文件每个 turn、每次调用都会新建一份,
+   * 进索引会让索引一直变大。之后不能用 childSessionId 读写它,读它按 `logFile` 读文件。
+   */
+  openRun(registration: {
+    childSessionId: string
+    parentSessionId: string
+    name?: string
+    role?: string
+  }): SessionRunLog {
+    const { childSessionId, parentSessionId } = registration
+    const logFile = join(
+      getSessionLogRelativeDir(parentSessionId),
+      `${SUBAGENT_EVENT_FILE_PREFIX}${childSessionId}.jsonl`,
+    )
+    const state = createSessionEventState(
+      logFile,
+      this.writeEvents(logFile, -1, [
+        {
+          type: 'session',
+          data: {
+            v: 1,
+            sessionId: childSessionId,
+            schemaVersion: SESSION_EVENT_SCHEMA_VERSION,
+            origin: 'subagent',
+            parentSessionId,
+            name: registration.name,
+            role: registration.role,
+            source: 'spawn',
+          },
+        },
+      ]),
+    )
+    return {
+      logFile,
+      append: (events) => this.appendTo(childSessionId, state, events),
+      appendMessage: (message) => this.appendMessageTo(childSessionId, state, message),
+    }
+  }
+
+  /**
    * Append non-message events (seq/ts assigned here). Returns first assigned seq.
    * 事件里的图片(request/message、queued_merge 的 blocks)与消息一样外置为 imageRef。
    */
   append(sessionId: string, events: SessionEventInput[]): number | null {
-    if (events.length === 0) return null
     const state = this.loadState(sessionId)
     if (!state || state.corrupt) return null
+    return this.appendTo(sessionId, state, events)
+  }
+
+  private appendTo(
+    sessionId: string,
+    state: SessionEventState,
+    events: SessionEventInput[],
+  ): number | null {
+    if (events.length === 0) return null
     return this.appendEvents(
       sessionId,
       state,
@@ -141,7 +200,10 @@ export class SessionEventStore {
   appendMessage(sessionId: string, message: Message): void {
     const state = this.loadState(sessionId)
     if (!state || state.corrupt) return
+    this.appendMessageTo(sessionId, state, message)
+  }
 
+  private appendMessageTo(sessionId: string, state: SessionEventState, message: Message): void {
     const [externalized] = externalizeImageData([message], {
       logsBasePath: this.basePath,
       sessionId: state.projection.header?.parentSessionId ?? sessionId,
@@ -293,6 +355,28 @@ export class SessionEventStore {
     return state !== undefined && !state.corrupt
   }
 
+  /**
+   * 删除 `sessions/` 下名字以 `prefix` 开头的目录里、最后写入不晚于 `cutoff` 的文件,目录删空后一并删除。
+   * Router 按天的事件目录到了正文保留期由它清理;那里的文件都由 `openRun` 建立,不在子文件索引里。返回删除的文件数。
+   */
+  deleteFilesBefore(prefix: string, cutoff: Date): number {
+    const root = join(this.basePath, 'sessions')
+    if (!existsSync(root)) return 0
+    let deleted = 0
+    for (const dir of readdirSync(root, { withFileTypes: true })) {
+      if (!dir.isDirectory() || !dir.name.startsWith(prefix)) continue
+      const path = join(root, dir.name)
+      for (const file of readdirSync(path, { withFileTypes: true })) {
+        const filePath = join(path, file.name)
+        if (!file.isFile() || statSync(filePath).mtime > cutoff) continue
+        rmSync(filePath)
+        deleted += 1
+      }
+      if (readdirSync(path).length === 0) rmdirSync(path)
+    }
+    return deleted
+  }
+
   // --- internals ---
 
   /** 上一条 checkpoint 之后消息或压缩块有变化时写一条 checkpoint */
@@ -354,31 +438,44 @@ export class SessionEventStore {
     if (inputs.length === 0) return null
 
     const relative = state?.relative ?? relativeOverride ?? this.defaultRelativeFile(sessionId)
-    const filePath = join(this.basePath, relative)
-    mkdirSync(dirname(filePath), { recursive: true })
-
-    const now = this.options.now ?? defaultNow
-    let seq = state?.lastSeq ?? -1
-    const firstSeq = seq + 1
-    const lines: string[] = []
-    const events: SessionEvent[] = []
-    for (const input of inputs) {
-      seq += 1
-      const event = { seq, ts: now(), type: input.type, data: input.data } as SessionEvent
-      lines.push(JSON.stringify(event))
-      events.push(event)
-    }
-
-    appendFileSync(filePath, `${lines.join('\n')}\n`, 'utf-8')
+    const events = this.writeEvents(relative, state?.lastSeq ?? -1, inputs)
+    const lastSeq = events[events.length - 1].seq
 
     if (state) {
       applySurfaceEvents(state.projection, events)
-      state.lastSeq = seq
+      state.lastSeq = lastSeq
       state.changedSinceCheckpoint = changedSinceCheckpoint(events, state.changedSinceCheckpoint)
     } else {
       this.states.set(sessionId, createSessionEventState(relative, events))
     }
-    return firstSeq
+    return events[0].seq
+  }
+
+  /** 把事件追加到文件末尾,seq 从 `lastSeq + 1` 起分配。 */
+  private writeEvents(
+    relative: string,
+    lastSeq: number,
+    inputs: SessionEventInput[],
+  ): SessionEvent[] {
+    const filePath = join(this.basePath, relative)
+    mkdirSync(dirname(filePath), { recursive: true })
+
+    const now = this.options.now ?? defaultNow
+    const events = inputs.map(
+      (input, index) =>
+        ({
+          seq: lastSeq + 1 + index,
+          ts: now(),
+          type: input.type,
+          data: input.data,
+        }) as SessionEvent,
+    )
+    appendFileSync(
+      filePath,
+      `${events.map((event) => JSON.stringify(event)).join('\n')}\n`,
+      'utf-8',
+    )
+    return events
   }
 
   private loadState(sessionId: string): SessionEventState | undefined {
@@ -440,6 +537,14 @@ export class SessionEventStore {
 }
 
 const SUBAGENT_INDEX_FILE = 'subagent-index.json'
+
+/** `SessionEventStore.openRun` 返回的句柄:一次性运行的事件文件,只经它写入。 */
+export interface SessionRunLog {
+  /** 文件相对日志根目录的路径 */
+  logFile: string
+  append(events: SessionEventInput[]): number | null
+  appendMessage(message: Message): void
+}
 
 interface SessionEventState {
   relative: string
@@ -742,7 +847,8 @@ function describeBlockChange(
   return { blockId: next[0]?.id ?? '', lifecycle: 'reused' }
 }
 
-function readEventsFile(filePath: string): SessionEvent[] {
+/** 读一份事件文件;文件不存在或读不了时返回空数组,写了一半的行跳过。 */
+export function readEventsFile(filePath: string): SessionEvent[] {
   if (!existsSync(filePath)) return []
   let content: string
   try {

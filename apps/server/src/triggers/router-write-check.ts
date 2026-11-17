@@ -66,10 +66,8 @@ function subject(request: RouterWriteRequest) {
  * Confirms, from the owner's sentence and server-written facts alone, that write-capable work was
  * asked for. Resolves only on an explicit yes; every other outcome throws and starts nothing.
  */
-export function createRouterWriteCheck({
-  modelRouter,
-  secretFilter,
-}: AgentDependencies): RouterWriteCheck {
+export function createRouterWriteCheck(deps: AgentDependencies): RouterWriteCheck {
+  const { secretFilter } = deps
   return async (request, signal) => {
     const message = secretFilter.filter(request.question.trim())
     if (!message || message.length > sentenceLimit)
@@ -79,8 +77,9 @@ export function createRouterWriteCheck({
     const limit = AbortSignal.timeout(checkTimeout)
     let raw: string
     try {
-      raw = await runTriggerModel(modelRouter, {
+      raw = await runTriggerModel(deps, {
         sessionId: 'router-write-check',
+        purpose: 'router_write_check',
         label: '工程授权确认',
         system: instructions,
         prompt: JSON.stringify({

@@ -1,5 +1,7 @@
 import { isAbsolute } from 'node:path'
-import type { SecretFilter, ToolContext, ToolResult } from '@zero-os/shared'
+import type { SecretFilter, ToolContext, ToolLogger, ToolResult } from '@zero-os/shared'
+import { generatePrefixedId, toErrorMessage } from '@zero-os/shared'
+import { type AgentLoopJournal, journalToolCall, journalToolResult } from '../agent/agent-loop'
 import { SessionRunningToolRegistry, steerRunningWorker } from '../session/running-tool-registry'
 import { BaseTool } from './base'
 import { type CodexWorkerInput, runCodexWorker } from './worker/codex-worker'
@@ -128,7 +130,12 @@ export class WorkerTool extends BaseTool {
     return { ...result, outputSummary: `${result.outputSummary} (quota fallback)` }
   }
 
-  /** Host-only entrypoint. Workspace and continuation IDs come from the authorized Router job. */
+  /**
+   * Host-only entrypoint. Workspace and continuation IDs come from the authorized Router job.
+   * The run is one tool call in the job's event file: `tool/call` when it starts and `tool/result`
+   * with the final outcome, written by the same functions as the loop's. Codex's intermediate
+   * steps are not logged.
+   */
   async runRouterJob(input: {
     sessionId: string
     workingDirectory: string
@@ -137,17 +144,32 @@ export class WorkerTool extends BaseTool {
     onThreadReady?(threadId: string): void
     onPublicEvent?: CodexWorkerInput['onPublicEvent']
     signal: AbortSignal
+    /** Events of this job run, written to the file of `sessionId`. */
+    journal: AgentLoopJournal
+    logger: ToolLogger
   }): Promise<{ result: string; threadId: string }> {
     if (!isAbsolute(input.workingDirectory) || !input.instruction.trim() || input.signal.aborted)
       throw new RouterCodexError('Codex 任务已取消或缺少有效工作区和指令。', false)
     const registry = new SessionRunningToolRegistry()
     const handle = registry.register({
       toolName: this.name,
-      toolUseId: 'router-job',
+      toolUseId: generatePrefixedId('router_job'),
       abortable: true,
     })
     const onAbort = () => handle.requestAbort('Router job cancelled')
     input.signal.addEventListener('abort', onAbort, { once: true })
+    const call = {
+      id: handle.toolUseId,
+      name: this.name,
+      input: {
+        type: 'codex',
+        instruction: input.instruction,
+        workingDirectory: input.workingDirectory,
+        ...(input.resumeThreadId && { resumeThreadId: input.resumeThreadId }),
+      },
+    }
+    journalToolCall(input.journal, input.sessionId, call)
+    const startedAt = Date.now()
     try {
       const completed = await this.runWithQuotaFallback(
         {
@@ -156,7 +178,7 @@ export class WorkerTool extends BaseTool {
           workDir: input.workingDirectory,
           runningToolRegistry: registry,
           secretFilter: this.secretFilter,
-          logger: { info: (event, data) => console.info(event, data), warn() {}, error() {} },
+          logger: input.logger,
         },
         {
           instruction: input.instruction,
@@ -165,7 +187,22 @@ export class WorkerTool extends BaseTool {
           onPublicEvent: input.onPublicEvent,
           routerJob: true,
         },
-      )
+      ).catch((error: unknown) => {
+        const message = toErrorMessage(error)
+        journalToolResult(
+          input.journal,
+          input.sessionId,
+          call,
+          {
+            success: false,
+            output: message,
+            outputSummary: `Tool execution failed: ${message.slice(0, 100)}`,
+          },
+          Date.now() - startedAt,
+        )
+        throw error
+      })
+      journalToolResult(input.journal, input.sessionId, call, completed, Date.now() - startedAt)
       const outcome = completed.routerJob
       if (!completed.success || !outcome?.text.trim() || !outcome.threadId) {
         const submitted = outcome?.outcomeUnknown ?? true

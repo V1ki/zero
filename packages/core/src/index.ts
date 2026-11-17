@@ -32,12 +32,14 @@ export type { AgentConfig, AgentContext } from './agent/agent'
 export type {
   AgentLoopConfig,
   AgentLoopHooks,
+  AgentLoopJournal,
   FailedToolAttempt,
   LoopIterationContext,
   ToolExecutionResult,
   ToolExecutor,
 } from './agent/agent-loop'
 export { AgentLoopStoppedError, runAgentLoop } from './agent/agent-run'
+export { assembleRequest, hashRequest } from './agent/request-assembly'
 export type {
   AgentLoopRun,
   AgentLoopRunOptions,
@@ -55,6 +57,7 @@ export type {
   BackgroundToolCompletionEvent,
 } from './session/background-tool-tasks'
 export { SessionManager } from './session/manager'
+export { createSessionLogger } from './session/session-runtime'
 export type {
   InterruptedSessionRef,
   RecoverStalledCurrentSessionForChannelOptions,

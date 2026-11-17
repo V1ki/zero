@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -8,7 +8,7 @@ import {
   type TimelineCompactionBlock,
   isMessageAppendEvent,
 } from '@zero-os/shared'
-import { SessionEventStore, checkSessionEvents } from '../session-event-store'
+import { SessionEventStore, checkSessionEvents, readEventsFile } from '../session-event-store'
 
 function createStore(basePath: string) {
   const errors: string[] = []
@@ -354,6 +354,83 @@ describe('SessionEventStore', () => {
       const index = JSON.parse(relative) as { children: Record<string, string> }
       expect(index.children.sess_child).toBe(logFile as string)
       expect(existsSync(join(dir, index.children.sess_child))).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('openRun writes a file that only its handle reaches, outside the index and the cache', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ses-test-'))
+    try {
+      const { store } = createStore(dir)
+      const run = store.openRun({
+        childSessionId: 'memory_1',
+        parentSessionId: 'sess_main',
+        name: 'memory_retrieval',
+        role: 'layer1',
+      })
+      expect(run.logFile).toBe('sessions/sess_main/sub-memory_1.jsonl')
+      expect(run.append([{ type: 'loop/start', data: { requireThinkingForToolUse: false } }])).toBe(
+        1,
+      )
+      run.appendMessage(userMessage('hello'))
+      run.appendMessage(assistantMessage('hi'))
+
+      const events = readEventsFile(join(dir, run.logFile))
+      expect(events.map((event) => [event.seq, event.type])).toEqual([
+        [0, 'session'],
+        [1, 'loop/start'],
+        [2, 'user/message'],
+        [3, 'assistant/message'],
+      ])
+      expect(events[0].data).toMatchObject({
+        sessionId: 'memory_1',
+        origin: 'subagent',
+        parentSessionId: 'sess_main',
+        name: 'memory_retrieval',
+        role: 'layer1',
+      })
+      expect(
+        events.slice(2).map((event) => (event.data as { messageIndex: number }).messageIndex),
+      ).toEqual([0, 1])
+      // 每个 turn、每次调用都会新建一份:不进索引,store 也不按 id 持有它
+      expect(existsSync(join(dir, 'subagent-index.json'))).toBe(false)
+      expect(store.hasSession('memory_1')).toBe(false)
+      expect(
+        store.append('memory_1', [
+          { type: 'loop/start', data: { requireThinkingForToolUse: false } },
+        ]),
+      ).toBeNull()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('deleteFilesBefore removes old files of matching directories', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ses-test-'))
+    try {
+      const { store } = createStore(dir)
+      const register = (child: string, parent: string) =>
+        store.openRun({ childSessionId: child, parentSessionId: parent }).logFile
+      const old = register('call-old', 'router-2026-11-01')
+      const fresh = register('call-fresh', 'router-2026-11-01')
+      const other = register('agent-x', 'sess_main')
+      const runLog = join(dir, 'sessions', 'router-2026-11-01', 'run.log')
+      writeFileSync(runLog, '{}\n')
+      const cutoff = new Date('2026-11-05T00:00:00.000Z')
+      const before = new Date('2026-11-02T00:00:00.000Z')
+      for (const file of [join(dir, old), runLog, join(dir, other)])
+        utimesSync(file, before, before)
+
+      expect(store.deleteFilesBefore('router-', cutoff)).toBe(2)
+      expect(existsSync(join(dir, old))).toBe(false)
+      expect(existsSync(runLog)).toBe(false)
+      expect(existsSync(join(dir, fresh))).toBe(true)
+      expect(existsSync(join(dir, other))).toBe(true)
+
+      utimesSync(join(dir, fresh), before, before)
+      expect(store.deleteFilesBefore('router-', cutoff)).toBe(1)
+      expect(existsSync(join(dir, 'sessions', 'router-2026-11-01'))).toBe(false)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
