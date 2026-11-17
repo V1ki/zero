@@ -185,3 +185,26 @@ bunx biome check benchmarks/zero-runtime/src/prompt-bench benchmarks/zero-runtim
 ## 完整任务质量评分
 
 自动通过率之外，已新增 [真实任务评估标准](benchmark-evaluation-standard.md) 和 [14张逐项评分卡](benchmark-task-scorecards.md)，共75项，区分实际完成状态、质量分与证据覆盖。评分计算器不替代独立事实/语义/视觉审阅，旧试验不会自动获得新质量分。历史公众号任务的试评见 [校准示例](benchmark-publication-assessment-20260906.md)。
+
+## Router 提示词 benchmark
+
+Router 的四个模型判断（写入确认、分诊、派工汇报、GitHub 调查）另有一个小型标注用例 benchmark，入口是 `bun run router:prompt-bench`。它不冻结快照，也不比较新旧版本，而是直接调用发布代码的入口（`createRouterWriteCheck`、`createTriggerAgent`、`createRouterJobReporter`、`createMandateInvestigation`），所以提示词、输入拼装、预算和解析器都与线上一致，只把模型换成所选的真实模型。调查用每个用例写好的 GitHub 记录代替真实读取；不访问 GitHub、不发送消息、不写应用数据库。
+
+```sh
+bun run router:prompt-bench --model <provider/model>
+bun run router:prompt-bench --dry-run
+```
+
+- 用例是 95 个合成用例，在 `benchmarks/zero-runtime/src/router-prompt-bench/cases-*.ts`：写入确认 39、分诊 28、派工汇报 15、调查 13。每个用例写明它在测什么和正确答案。
+- 默认每个用例重复 3 次。写入确认、分诊、汇报每次试验一次模型调用（空白消息由程序拒绝，不调用模型），调查按发布的工具循环每次 1 到 6 次。默认一次完整运行约 350 次模型调用，最少 282、最多 477；开始时会打印估计值。`--reps`、`--only write_check,triage`、`--cases <id,...>` 可缩小范围，`--concurrency` 默认 3。
+- 模型和凭据的解析与 `prompt:bench` 相同：精确的 `provider/model`，不走 pool 或 route；默认读 vault，`--secret-source env` 读环境变量。结果文件经过 secret filter，provider 的原始错误不写入。
+- 结果默认写到 `.zero/benchmarks/router-prompt-bench/<时间>/`：`report.md`（给用户看的报告）、`review.md`（汇报、调查和分诊摘要的输入输出对照）、`results.jsonl`（每次试验）、`summary.json`、`manifest.json`。输出目录非空时拒绝运行；中断后用 `--resume --out <原目录>` 只补跑未完成和出错的试验，模型、用例集、重复次数或提示词变了会拒绝续跑。
+- `--dry-run` 不读凭据、不调用模型，回答来自脚本，每类故意答错一例，用来检查用例、评分和报告。报告和终端输出都会写明没有调用模型。
+
+报告开头一张表：每个判断的用例数、试验数、通过率，以及危险错误（写入确认的误放行、分诊的误跳过、汇报漏掉决定或注入内容进入汇报、调查断言无依据的原因或照做注入指令）的次数和比例。下面按判断列出失败的试验和它们的用例目的。评分全部是机械检查：写入确认和分诊只看结论；汇报和调查按用例写明的条件检查决定或下一步有无、必需的关键词和禁止的词，关键词判断是近似的，写得好不好要看 `review.md`。基础设施错误不计入通过率。报告记录了实际响应的模型、重复次数、被测源码和实际发送的系统提示词指纹，指纹不同的结果不要直接比较。模型的回答不确定，重跑时个别用例会变，反复出错的用例才说明问题。
+
+开发验证：
+
+```sh
+bun test benchmarks/zero-runtime/src/router-prompt-bench
+```
