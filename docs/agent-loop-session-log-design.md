@@ -364,11 +364,21 @@ hooks 读取请求历史的唯一来源。
 
 分四步，每一步单独合并：
 
-- **7a 请求列表改读事件流。** 服务端从事件算出与现在相同形状的 `RequestLogEntry`，Web 前端不改。事件里缺的字段补上，
-  都是可选的增项：`step/start.provider`，`step/end.cost`、`step/end.reasoningContent`，排队拼接的 `injection/context`
-  带每条排队消息的摘要。`spawn_agent` 子代理的请求读它自己的子文件（父会话的 `subagent/spawn.logFile`）；记忆检索的子文件
-  不进请求列表，和现在一致。旧会话的事件没有这些字段：一次请求在事件里带 `provider` 时用事件算出的条目，否则沿用 trace
-  算出的条目，按请求编号合并。验收：同一脚本下两种算法得到的条目逐项相同。
+- **7a 请求列表改读事件流（已完成）。** 服务端从事件算出与现在相同形状的 `RequestLogEntry`，Web 前端不改。实际落点：
+  - 投影是 `projectSessionRequestsFromEvents`（`packages/observe/src/session-requests.ts`），`ObservabilityStore.readSessionRequests`
+    调它。读主会话的 `session.jsonl`，加上 `subagent/spawn` 指向的 `spawn_agent` 子代理文件（逐层）；记忆检索的子文件不进请求列表，
+    和原来一致。子代理的请求 `agentName` 取子文件 header 的 `name`，`turnIndex` 恒为 1，与 trace 的记法相同。
+  - 事件补的字段都是可选增项：`step/start.provider`，`step/end.cost`（没有定价时为 0，与 trace 一致）、`step/end.reasoningContent`
+    （过滤过密钥），`agent/inbox/drained.messages`（每条排队消息的摘要）。排队消息在一轮结束时被取走、作为续写消息发出时，
+    原来不写事件，现在也写一条 `agent/inbox/drained`。
+  - 新旧判断看 `step/end.cost`：带它的请求用事件算出的条目，其余沿用 trace 算出的条目，按请求编号合并，所以跨越升级的会话两段都在。
+  - 事件里的消息是原文，trace 写入时过滤过密钥，所以 `readSessionRequests` 的密钥过滤函数是必填参数，作用于从事件算出的
+    展示文本（用户输入、回复、工具输入、注入、推理文本）。
+  - 事件不带、也没有读者的四个字段不再出现在新请求的条目里：`systemHash`、`toolDefinitionsHash`、`staticPrefixHash`、`snapshotId`。
+    `ts` 取 `step/end` 的时间，比原来取的 span 结束时间早几毫秒。
+  - 验收：`request-list.test.ts` 用真实的 `Agent`、`Tracer` 和事件存储跑带密钥的工具调用、未知工具、空响应重试、排队拼接、
+    排队续写、推理文本与缓存用量、开场记忆注入、工具失败后的记忆提示，两种算法得到的条目除上面四个字段和 `ts` 外逐项相同；
+    `spawn-agent.test.ts` 对子代理的请求做同样的比对；同一测试把一次请求改成旧格式，核对按编号合并。
 - **7b 决策与任务闭合事件改读事件流。** 同样的做法：服务端投影成现在的形状，缺的字段补进事件，旧会话沿用 trace。
   会话评审读的请求、闭合随之换源。
 - **7c 停写重复内容。** trace 的 `llm_request` span 不再带 `data.request`；`run.log` 不再镜像 span 记录，只留 logger 行。

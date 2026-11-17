@@ -57,7 +57,8 @@ export function deriveNextTurnIndex(options: {
   observability?: ObservabilityStore
 }): number {
   const maxLoggedTurnIndex = findMaxLoggedTurnIndex(
-    options.observability?.readSessionRequests(options.sessionId) ?? [],
+    // 只读 turnIndex,不展示文本,不需要密钥过滤
+    options.observability?.readSessionRequests(options.sessionId, (text) => text) ?? [],
   )
   if (maxLoggedTurnIndex > 0) {
     return maxLoggedTurnIndex + 1

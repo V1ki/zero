@@ -670,7 +670,9 @@ function createSessionObservabilityRoutes(zero: ZeroOS) {
         return c.json({ error: 'Session not found' }, 404)
       }
 
-      const requests = zero.observability.readSessionRequests(id)
+      const requests = zero.observability.readSessionRequests(id, (text) =>
+        zero.secretFilter.filter(text),
+      )
       return c.json({
         sessionId: id,
         requests,

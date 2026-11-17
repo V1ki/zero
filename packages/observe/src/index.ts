@@ -48,6 +48,8 @@ export {
   readEventsFile,
 } from './session-event-store'
 export type { SessionRunLog } from './session-event-store'
+export { projectSessionRequestsFromEvents } from './session-requests'
+export type { SessionRequestSource } from './session-requests'
 export { decodeImageData } from './image-ref'
 export { ROUTER_JOB_BRIEF_LIMIT, RouterJobConflictError } from './router-job-store'
 export type {

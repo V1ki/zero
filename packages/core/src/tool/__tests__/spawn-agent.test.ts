@@ -1,9 +1,15 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ModelRouter, ProviderAdapter } from '@zero-os/model'
-import { MetricsDB, SessionEventStore } from '@zero-os/observe'
+import {
+  MetricsDB,
+  ObservabilityStore,
+  SessionEventStore,
+  Tracer,
+  projectSessionRequestsFromEvents,
+} from '@zero-os/observe'
 import {
   type AgentControlHandle,
   type CompletionRequest,
@@ -421,6 +427,62 @@ describe('SpawnAgentTool', () => {
       const stepStart = childEvents.find((event) => event.type === 'step/start')
       expect(childMessages[0].seq).toBeLessThan(stepStart?.seq ?? -1)
       expect(parentEvents.some(isMessageAppendEvent)).toBe(false)
+    } finally {
+      rmSync(logsDir, { recursive: true, force: true })
+    }
+  })
+
+  test('the sub-agent request in the parent session list comes from its event file', async () => {
+    const logsDir = mkdtempSync(join(tmpdir(), 'zero-spawn-requests-'))
+    try {
+      const sessionEvents = new SessionEventStore({ basePath: logsDir })
+      sessionEvents.ensureSession({
+        v: 1,
+        sessionId: ctx.sessionId,
+        schemaVersion: 1,
+        source: 'web',
+      })
+      const tool = new SpawnAgentTool(
+        createStubRouter(new StaticResponseAdapter()),
+        createToolRegistry(),
+        undefined,
+        sessionEvents,
+      )
+      const agentControl = new AgentControl()
+      const result = await tool.run(
+        { ...ctx, agentControl, currentRequestId: 'req_parent_1', tracer: new Tracer(logsDir) },
+        { instruction: 'Summarize the repository.', label: 'Worker' },
+      )
+      const agentId = (JSON.parse(result.output) as { agent_id: string }).agent_id
+      await agentControl.waitAll([agentId], 5000)
+
+      const observability = new ObservabilityStore(logsDir)
+      const identity = (text: string) => text
+      const requests = observability.readSessionRequests(ctx.sessionId, identity)
+      expect(requests).toEqual([
+        expect.objectContaining({
+          id: 'resp_spawn_001',
+          turnIndex: 1,
+          agentName: 'Worker',
+          spawnedByRequestId: 'req_parent_1',
+          userPrompt: 'Summarize the repository.',
+          response: 'spawn complete',
+        }),
+      ])
+      // 来自子文件:清空子文件后只剩 trace 算出的条目,二者除事件不带的 hash 与快照字段外相同
+      const [fromEvents] = projectSessionRequestsFromEvents(
+        ctx.sessionId,
+        [{ events: sessionEvents.readEvents(agentId), subagent: true }],
+        identity,
+      )
+      expect(fromEvents?.id).toBe('resp_spawn_001')
+      writeFileSync(join(logsDir, 'sessions', ctx.sessionId, `sub-${agentId}.jsonl`), '')
+      const [fromTrace] = observability.readSessionRequests(ctx.sessionId, identity)
+      const { systemHash, toolDefinitionsHash, staticPrefixHash, snapshotId, ts, ...traced } =
+        fromTrace
+      expect(JSON.parse(JSON.stringify({ ...fromEvents, ts: undefined }))).toEqual(
+        JSON.parse(JSON.stringify(traced)),
+      )
     } finally {
       rmSync(logsDir, { recursive: true, force: true })
     }

@@ -79,8 +79,8 @@ Router 的每次模型调用（`runTriggerModel`）写一份子文件，按天�
 {"type":"turn/start","data":{"turnIndex":12,"trigger":"channel|control|queued_drain","model":"...","agentName":"..."}}
 {"type":"turn/end","data":{"turnIndex":12,"status":"completed|failed|aborted","durationMs":83400}}  // 恢复时补写的封口另带 "reason":"process_restart"
 {"type":"loop/start","data":{"requireThinkingForToolUse":false}}  // 基座 runAgentLoop 每次开始时写(主会话、子代理、记忆检索、Router),早于 turn 开始的压缩
-{"type":"step/start","data":{"stepIndex":3,"requestSpanId":"span_...","model":"...","messageCount":21,"requestHash":"sha256:..."}}
-{"type":"step/end","data":{"stepIndex":3,"stopReason":"end_turn|tool_use|error|aborted","requestId":"resp_...","usage":{},"durationMs":12400}}
+{"type":"step/start","data":{"stepIndex":3,"requestSpanId":"span_...","model":"...","provider":"...","messageCount":21,"requestHash":"sha256:..."}}
+{"type":"step/end","data":{"stepIndex":3,"stopReason":"end_turn|tool_use|error|aborted","requestId":"resp_...","usage":{},"durationMs":12400,"cost":0.012,"reasoningContent":"...可选..."}}
 {"type":"tool/call","data":{"toolUseId":"toolu_...","name":"bash","inputHash":"sha256:...","inputPreview":"...","spanId":"span_..."}}
 {"type":"tool/result","data":{"toolUseId":"toolu_...","name":"bash","status":"success","durationMs":9800,"chars":45210,"summary":"..."}}
 {"type":"user/message","data":{"messageIndex":86,"message":{...canonical Message...},"hash":"sha256:..."}}
@@ -102,7 +102,7 @@ Router 的每次模型调用（`runTriggerModel`）写一份子文件，按天�
 {"type":"tools/set","data":{"hash":"sha256:...","toolNames":["read","bash","..."],"count":79}}
 {"type":"params/reasoning","data":{"from":"medium","to":"high"}}
 {"type":"agent/inbox/enqueued","data":{"messageIndex":91,"reason":"turn_in_progress","interrupt":true}}
-{"type":"agent/inbox/drained","data":{"count":2}}
+{"type":"agent/inbox/drained","data":{"count":2,"messages":[{"timestamp":"...","content":"...","imageCount":0,"mediaTypes":[]}]}}
 {"type":"agent/inbox/spliced","data":{"strategy":"inject_into_last_user","count":2}}
 {"type":"compaction/prune","data":{"toolUseId":"toolu_...","from":{"chars":91000,"hash":"sha256:..."},"to":{"chars":120,"mode":"artifact_ref"},"evidence":{"path":"...","sha256":"..."}}}
 {"type":"job/registered","data":{"jobId":"...","toolUseId":"toolu_...","toolName":"bash"}}
@@ -123,7 +123,8 @@ persistSessionState 都做比对）与 `tools/set`（turn 开始时比对名字�
 排队消息链路:入队时先写 `agent/inbox/enqueued`（带 canonical 下标），canonical 追加 'queued' 消息的同一刻
 写它的 `user/message`;被 loop 消费拼进首条 user 消息时发
 `agent/inbox/drained`+`agent/inbox/spliced`，拼接原文以 `injection/context`
-（kind=queued_merge）落盘。canonical 中 messageType='queued' 的消息即排队原文。
+（kind=queued_merge）落盘；一轮结束时被取走、作为续写消息发出的，只发 `agent/inbox/drained`，续写消息本身是
+`controlKind: queued_injection` 的 `user/message`。`drained` 带每条排队消息的摘要，会话详情的请求列表据此展示。canonical 中 messageType='queued' 的消息即排队原文。
 
 工具输出降级:超大 tool_result 在进入 canonical 前被替换为 artifact 引用
 （evidence 文件 + sha256），`compaction/prune` 记录替换前后体积与 evidence 指针。

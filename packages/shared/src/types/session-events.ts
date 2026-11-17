@@ -152,6 +152,8 @@ export interface InboxDrainedEventData {
   /** canonical 下标在排队消息为 'queued' 消息时可知;仅诊断用途,未知时省略 */
   messageIndexes?: number[]
   count?: number
+  /** 取走的每条排队消息的摘要,请求列表据此展示这次请求带上的排队消息 */
+  messages?: Array<{ timestamp: string; content: string; imageCount: number; mediaTypes: string[] }>
 }
 
 export interface InboxSplicedEventData {
@@ -165,6 +167,8 @@ export interface StepStartEventData {
   stepIndex: number
   requestSpanId?: string
   model?: string
+  /** provider 名(如 "openai-codex"),与 model 一起标识这次请求发给了谁 */
+  provider?: string
   messageCount?: number
   /** 实际发给 adapter 的 system、工具名与消息的 hash(hashRequest,图片按内容 hash 归一) */
   requestHash?: string
@@ -178,6 +182,10 @@ export interface StepEndEventData {
   requestId?: string
   usage?: TokenUsage
   durationMs?: number
+  /** 按当时的模型定价算出的费用 */
+  cost?: number
+  /** 模型在消息内容之外返回的推理文本(已过滤密钥);它不进 canonical,以后的请求看不到 */
+  reasoningContent?: string
 }
 
 export interface ToolCallEventData {

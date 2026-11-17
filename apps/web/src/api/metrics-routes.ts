@@ -257,7 +257,9 @@ function computeCacheEconomics(
 
 export function createSessionCacheEconomicsSummarizer(zero: ZeroOS) {
   return (sessionId: string) => {
-    const requests = zero.observability.readSessionRequests(sessionId)
+    const requests = zero.observability.readSessionRequests(sessionId, (text) =>
+      zero.secretFilter.filter(text),
+    )
     let cacheReadCost = 0
     let cacheWriteCost = 0
     let grossAvoidedInputCost = 0

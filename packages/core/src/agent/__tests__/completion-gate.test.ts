@@ -988,7 +988,7 @@ describe('Agent task closure gate', () => {
     expect(existsSync(join(sessionDir, 'trace.jsonl'))).toBe(true)
     expect(existsSync(join(sessionDir, 'requests.jsonl'))).toBe(false)
     expect(existsSync(join(sessionDir, 'closure.jsonl'))).toBe(false)
-    expect(observability.readSessionRequests('test-session')).toHaveLength(2)
+    expect(observability.readSessionRequests('test-session', (text) => text)).toHaveLength(2)
     expect(observability.readSessionClosures('test-session')).toHaveLength(2)
   })
 

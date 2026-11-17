@@ -105,7 +105,7 @@ describe('ObservabilityStore', () => {
       },
     ])
 
-    const entries = store.readSessionRequests(sessionId)
+    const entries = store.readSessionRequests(sessionId, (text) => text)
     expect(entries).toHaveLength(1)
     expect(entries[0].id).toBe('req_trace_001')
     expect(entries[0].agentName).toBe('trace-agent')
@@ -189,7 +189,7 @@ describe('ObservabilityStore', () => {
       },
     ])
 
-    const entries = store.readSessionRequests(sessionId)
+    const entries = store.readSessionRequests(sessionId, (text) => text)
     expect(entries).toHaveLength(1)
     expect(entries[0].queuedInjection).toBeUndefined()
     expect(entries[0].memoryInjections).toBeUndefined()
@@ -215,7 +215,7 @@ describe('ObservabilityStore', () => {
       },
     ])
 
-    expect(store.readSessionRequests(sessionId)).toEqual([])
+    expect(store.readSessionRequests(sessionId, (text) => text)).toEqual([])
   })
 
   test('readAllRequests includes trace-only session requests', () => {
@@ -1183,7 +1183,7 @@ describe('ObservabilityStore', () => {
     expect(entries).toHaveLength(1)
     expect(entries[0].status).toBe('success')
     expect(entries[0].durationMs).toBe(2000)
-    expect(store.readSessionRequests(sessionId)[0].response).toBe('done')
+    expect(store.readSessionRequests(sessionId, (text) => text)[0].response).toBe('done')
   })
 
   test('appendSessionJudge writes history into the session log directory', () => {

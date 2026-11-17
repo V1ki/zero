@@ -183,6 +183,8 @@ export function createAgentLoopHooks(options: CreateAgentLoopHooksOptions): {
     journal: obs.sessionEvents && {
       events: obs.sessionEvents,
       modelLabel: obs.modelLabel,
+      providerName: obs.providerName,
+      pricing: obs.pricing,
       secretFilter: obs.secretFilter,
       requestSpanId: () => llmRequestHooks.getCurrentRequestSpanId(),
       toolSpanId: (toolUseId) => toolCallHooks.getToolSpanId(toolUseId),
